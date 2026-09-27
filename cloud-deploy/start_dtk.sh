@@ -44,7 +44,7 @@ for f in "$PY_APP" "$PY_NL" "$HAS_TEXT_HF_MODEL_PATH/config.json"; do
     [ -e "$f" ] || { echo "缺少 $f，先跑 setup_dtk.sh"; exit 1; }
 done
 
-# 双卡分配: 卡0 = NER(+YOLOE), 卡1 = LocateAnything(10G 大头)；单卡则共卡0
+# 双卡分配: 卡0 = NER, 卡1 = LocateAnything(10G 大头)；单卡则共卡0
 NGPU=$("$PY_NL" -c 'import torch; print(torch.cuda.device_count())' 2>/dev/null || echo 1)
 LA_DEV=$(( NGPU >= 2 ? 1 : 0 ))
 LA_DTYPE="${LA_DTYPE:-bfloat16}"   # DCU 若 bf16 算子缺失导致 LA 起不来: LA_DTYPE=float16 ./start_dtk.sh

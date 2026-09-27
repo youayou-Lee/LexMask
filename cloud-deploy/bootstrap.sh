@@ -59,7 +59,6 @@ link(){ # <持久卷目标> <容器内路径>
 link "$P/dot-venvs"              /root/.venvs
 link "$P/backend-models"         "$UP/backend/models"
 link "$P/dot-cache"              /root/.cache
-link "$P/yoloe-service"          /root/redaction/yoloe-service
 # 注意: node_modules 绝不能软链! Node 按 realpath 向上找 node_modules, 软链会断链
 # (报 ERR_MODULE_NOT_FOUND), 保持实体目录, 缺了在 step 4 自愈重装
 # .local 特例: 平台 Jupyter 开机会重建 share/jupyter，保留实体、只软链 node-v22
