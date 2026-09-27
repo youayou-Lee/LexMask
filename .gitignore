@@ -1,0 +1,152 @@
+# Claude Code / AI assistant
+.claude/
+CLAUDE.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.*
+!.env.example
+!.env.production.example
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+
+# Build & cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+
+# Local data & outputs（运行时生成，不提交）
+backend/uploads/
+backend/outputs/
+backend/models/
+backend/data/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+
+# 本地模型文件（用户自行下载）
+*.gguf
+*.bin
+*.safetensors
+
+# 调试日志
+debug.log
+logs/
+
+# 本地宣传材料与生成脚本（不入库）
+generate_qingjing_docx.py
+qingjing-dataset-platform-intro.docx
+wechat_article.md
+
+# 一次性历史清洗规则（勿提交）
+_filter_repo_replacements.txt
+
+# Playwright test results & screenshots
+frontend/test-results/
+frontend/*.png
+frontend/test-doc*.docx
+frontend/test-img.png
+
+# Vite cache
+frontend/.vite/
+
+# Playwright CLI artifacts
+.playwright-cli/
+frontend/.playwright-cli/
+backend/.playwright-cli/
+frontend/frontend-preview.log
+*.log
+
+# Temp data & fixtures
+tmp/
+data/*.json
+data/*.sqlite3
+data/*.migrated
+
+# Claude review-loop plugin
+.claude/review-loop.local.md
+.claude/review-loop-run-codex.sh
+.claude/review-loop-prompt.md
+.claude/review-loop.log
+reviews/
+
+# Claude Code / AI assistant artifacts
+.claude/skills/
+.mcp.json
+OPTIMIZATION_PLAN.md
+
+# Playwright screenshots and test artifacts
+output/
+frontend/output/
+frontend/playwright-report/
+
+# Temporary test scripts
+backend/test_*.py
+
+# One-off scratch scripts (backend root) — probes / manual NER & render pipelines
+backend/*_ph.py
+backend/*_pii.py
+backend/tmp_*.py
+backend/wb_render.py
+backend/deepseek_ner.py
+backend/run_ner.sh
+backend/run_render*.sh
+backend/run_wordbox.sh
+
+# Stale build backups and e2e run artifacts
+dist.bak*
+e2e/.artifacts/
+
+# Runtime data
+*.db
+*.db-journal
+*.db-wal
+AUDIT_2026-07-12_findings.json
+
+# Backup files and folders
+*bak*/
+*.bak
+*.bak-*
+*/.bak/
+*.bak-/
+deploy/offline/
+.omc/
+
+# 符号链接形式的 node_modules 不被 node_modules/ 规则匹配，显式忽略
+frontend/node_modules
+node_modules
+
+# Issue #37 真实案卷私有评测子集：数据与清单含真实 PII/案名，永不入库（铁律）
+eval/datasets/manifest.private.json
+eval/.obsidian/
+
+# Issue #46 格式矩阵运行时产物（成品下载/异常样件）
+eval/.format-matrix-tmp/
+
+# git worktree 本地工作区（不在库内）
+.worktrees/
+
+# Issue #93 T2 benchmark 本地数据（raw/桶/manifest 含真实语料，不入库）
+test-data/

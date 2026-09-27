@@ -1,0 +1,62 @@
+﻿# FastAPI framework
+fastapi>=0.136.1
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.26
+
+# Data validation
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+
+# File processing
+python-docx==1.2.0
+PyMuPDF==1.27.2.2
+pdf2docx==0.5.13  # 文本型 PDF 替换模式的 docx 回转链路（Issue #61）；缺失时自动回退原位替换
+Pillow>=12.2.0
+numpy>=2.0.0
+pydicom>=3.0.1,<4
+openpyxl>=3.1.5
+pywin32==311; sys_platform == 'win32'  # Windows: .doc processing
+
+# HTTP client
+httpx>=0.28.0
+
+# GPU memory checks for /health/services through NVML.
+nvidia-ml-py>=12.535.133
+aiofiles>=24.1.0
+
+# Local app/model environment. PaddlePaddle GPU is pulled from the official
+# CUDA wheel index via the extra-index-url below, so
+# `pip install -r backend/requirements.txt` keeps the app venv complete.
+# vLLM intentionally lives in a separate WSL venv (VLLM_VENV_DIR) because its
+# Torch/CUDA stack conflicts with Paddle/PaddleX in the same environment.
+--extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu129/
+paddlepaddle-gpu==3.3.0
+paddleocr[doc-parser]==3.7.0
+# Used by the legacy Windows fallback helper backend/scripts/start_has_python.py
+# (Docker's ner service uses the ghcr.io/ggerganov/llama.cpp:server image instead).
+llama-cpp-python[server]>=0.3.16
+
+# Utility libraries
+PyJWT>=2.12.0
+json-repair>=0.58.0
+SQLAlchemy>=2.0.45
+# PyMySQL / psycopg: runtime drivers for structured DB connections 鈥?loaded
+# dynamically by SQLAlchemy via mysql+pymysql:// and postgresql+psycopg://
+# URLs built in app/services/structured_service.py (no direct import).
+PyMySQL>=1.1.1
+psycopg[binary]>=3.2.3
+
+# Observability
+python-json-logger>=2.0.0
+prometheus-client>=0.20.0
+
+# Security
+cryptography>=46.0.7
+ldap3>=2.9.1  # 企业 AD/LDAP 对接（LDAP_ENABLED=true 时才懒加载；纯 Python，可离线 wheel）
+# pyclamd>=0.4.0  # Optional; requires a ClamAV daemon.
+
+# Development tools
+python-dotenv>=1.2.2
+pytest>=9.0.3
+setuptools>=77,<81
+paramiko>=3.4  # SFTP 主动拉取（内网服务器间文件接入,第五段方案二）
