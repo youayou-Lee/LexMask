@@ -1,5 +1,5 @@
 > [!tip] 相关文档
-> Issue：[#46](https://github.com/youayou-Lee/DataInfra-RedactionEverything/issues/46) ｜ 用户手册：工作区 `docs/用户使用说明-preview2.0.0.md`（第 2 节格式表待本 Issue 结论回写）｜ 复用设施：[[issue-37-eval-benchmark]] 的 eval/scripts 与生成器
+> Issue：归档仓 #46（youayou-Lee/DataInfra-RedactionEverything-archived，私有） ｜ 用户手册：工作区 `docs/用户使用说明.md`（第 2 节格式表待本 Issue 结论回写）｜ 复用设施：[[issue-37-eval-benchmark]] 的 eval/scripts 与生成器
 
 # Issue #46：上传格式支持面端到端实测（格式 × 处理方式矩阵）
 
@@ -10,7 +10,7 @@
 
 | 决策点 | 结论 |
 |---|---|
-| 执行环境 | **直打 dcu-main 实例 API**（preview2.0.0 生产构建，保真最高、零部署）；测试账号 apitester；**测试文件与任务用完即删** |
+| 执行环境 | **直打云实例 API**（v1.0.0 生产构建，保真最高、零部署）；测试账号 apitester；**测试文件与任务用完即删** |
 | 上线期门控 | **先不做前端门控**，手册口径约束（「未经完整测试勿用于正式业务」）；是否收窄 accept 列表待测试结论后定 |
 | 样张来源 | **全合成虚构数据**，随仓库入库（沿用 #37 合成数据惯例，无敏感信息） |
 | 执行节奏 | 实现+本地单测 → **P1 冒烟 8 格**（约 10 分钟，报用户）→ 用户点头 → **全量约 30 格**（约 40 分钟） |
@@ -106,7 +106,7 @@ GT 判定用原文精确匹配（同 #37 口径）；payload 全虚构，`.gt.js
 ## 6. 执行 runbook（dcu-main）
 
 ```bash
-# 0. 环境预检：确认实例部署版本与 preview2.0.0 一致（grep dist 文案 / 版本接口）；
+# 0. 环境预检：确认实例部署版本与 v1.0.0 一致（grep dist 文案 / 版本接口）；
 #    确认实例是否安装 /usr/bin/soffice（.doc 结论的关键输入，缺=记入报告）
 # 1. P1 冒烟（6 格 + 2 异常例：doc/rtf 打码+化名、jpg/png 打码、伪造扩展名、超 50MB）
 python eval/scripts/run_format_matrix.py --base-url <实例地址> --smoke

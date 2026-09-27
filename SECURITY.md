@@ -13,7 +13,7 @@ If you discover a security vulnerability, please follow responsible disclosure:
 如果你发现安全漏洞，请遵循负责任的披露流程：
 
 1. **Do not** open a public Issue. / **不要**在公开 Issue 中描述漏洞细节。
-2. Use [GitHub Security Advisories](https://github.com/TracyWang95/DataInfra-RedactionEverything/security/advisories/new) to report privately. / 使用 GitHub Security Advisories 私下报告。
+2. Use [GitHub Security Advisories](https://github.com/youayou-Lee/LexMask/security/advisories/new) to report privately. / 使用 GitHub Security Advisories 私下报告。
 3. Or contact the maintainer directly via [GitHub profile](https://github.com/TracyWang95). / 或通过 GitHub 主页联系维护者。
 
 We will acknowledge receipt within **48 hours** and aim to provide a fix within **7 days**.

@@ -61,7 +61,7 @@ bash ~/redaction/cloud-deploy/setup_dtk.sh
 
 # 持久卷模型软链(新实例必做一次, setup 不含此步)
 ln -sfn /root/private_data/redaction-persist/backend-models \
-        ~/redaction/DataInfra-RedactionEverything/backend/models
+        ~/redaction/LexMask/backend/models
 
 # 启动(串行拉起+健康等待; OCR 首启经代理下 PaddleX 模型 ~5min, 已落持久卷则秒级)
 bash ~/redaction/cloud-deploy/start_dtk.sh
