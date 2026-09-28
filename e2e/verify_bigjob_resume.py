@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """万级恢复验证/取证：5000 items 任务点「继续审阅」——网络计数+步骤高亮。"""
 from __future__ import annotations
 

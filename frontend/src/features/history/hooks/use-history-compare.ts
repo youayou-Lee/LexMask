@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { useCallback, useEffect, useState } from 'react';
 import { authenticatedBlobUrl, revokeObjectUrl } from '@/services/api-client';

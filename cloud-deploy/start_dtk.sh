@@ -30,7 +30,7 @@ export MIOPEN_USER_CACHE_PATH=/root/private_data/redaction-persist/miopen-cache
 DTK_EXPORT="source /opt/dtk/env.sh; export MIOPEN_USER_CACHE_PATH=/root/private_data/redaction-persist/miopen-cache;"
 
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UPSTREAM="$(cd "$DEPLOY_DIR/../DataInfra-RedactionEverything" && pwd)"
+UPSTREAM="$(cd "$DEPLOY_DIR/../LexMask" && pwd)"
 BACKEND="$UPSTREAM/backend"
 FRONTEND="$UPSTREAM/frontend"
 LOG_DIR="$DEPLOY_DIR/logs"; mkdir -p "$LOG_DIR"

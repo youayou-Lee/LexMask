@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """Tier-2 golden path: single text file end-to-end on the playground.
 
 Text-only pipeline (HaS NER, seconds of GPU) — cheap enough to run against

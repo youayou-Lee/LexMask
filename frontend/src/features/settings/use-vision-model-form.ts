@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { useState, useCallback } from 'react';
 import { DEFAULT_MODEL_FORM, type ModelConfig } from './hooks/use-model-config';

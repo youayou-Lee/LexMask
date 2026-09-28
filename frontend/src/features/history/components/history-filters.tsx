@@ -1,4 +1,4 @@
-﻿// Copyright 2026 DataInfra-RedactionEverything Contributors
+﻿// Copyright 2026 LexMask Contributors
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Download, RefreshCw, SlidersHorizontal, Trash2 } from 'lucide-react';

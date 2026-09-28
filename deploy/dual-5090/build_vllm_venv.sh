@@ -2,7 +2,7 @@ LOG=~/vllm-env-build.log
 exec >> "$LOG" 2>&1
 set -x
 echo "=== VENV VLLM BUILD $(date) ==="
-/home/adminroot/anaconda3/envs/dataInfra/bin/python -m venv ~/rvenv/vllm && echo ENV_CREATED
+/home/adminroot/anaconda3/envs/lexmask/bin/python -m venv ~/rvenv/vllm && echo ENV_CREATED
 P=~/rvenv/vllm/bin/pip
 $P install -U pip -i https://mirrors.aliyun.com/pypi/simple/
 echo "=== torch cu128 from SJTU ==="

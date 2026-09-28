@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { AlertCircle, CheckCircle2, Info } from 'lucide-react';
 import { Toaster, toast } from 'sonner';

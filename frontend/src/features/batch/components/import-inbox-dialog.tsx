@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FolderInput, RefreshCw } from 'lucide-react';

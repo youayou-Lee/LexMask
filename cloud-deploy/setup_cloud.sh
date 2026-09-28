@@ -12,7 +12,7 @@ export no_proxy='localhost,127.0.0.1,0.0.0.0'
 export HF_ENDPOINT=https://hf-mirror.com
 
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UPSTREAM="$DEPLOY_DIR/../DataInfra-RedactionEverything"
+UPSTREAM="$DEPLOY_DIR/../LexMask"
 BACKEND="$UPSTREAM/backend"
 FRONTEND="$UPSTREAM/frontend"
 MODELS="$BACKEND/models"

@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import type { ServicesHealth } from '@/hooks/use-service-health';
 import type { BatchWizardMode } from '@/services/batchPipeline';

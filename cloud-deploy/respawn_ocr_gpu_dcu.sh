@@ -3,7 +3,7 @@
 # 2026-09-10 dcu-bw 实测: DTK25.04.2+gfx926 conv/pool PASS, PPStructureV3 GPU 可用
 set -uo pipefail
 P=/root/private_data/redaction-persist
-BACKEND=/root/redaction/DataInfra-RedactionEverything/backend
+BACKEND=/root/redaction/LexMask/backend
 LOG_DIR=/root/redaction/cloud-deploy/logs; mkdir -p "$LOG_DIR"
 SESSION=redaction
 : '${PLATFORM_PROXY_URL:?export PLATFORM_PROXY_URL=平台代理}'; export http_proxy="$PLATFORM_PROXY_URL"

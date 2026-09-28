@@ -1,4 +1,4 @@
-﻿# Copyright 2026 DataInfra-RedactionEverything Contributors
+﻿# Copyright 2026 LexMask Contributors
 """F2-1 EN 模式漏中文自动扫：切 EN 后全路由抓可见文本，CJK 正则取证。
 
 机器判定 i18n 完整度；输出 e2e/.artifacts/en_leak_report.md。

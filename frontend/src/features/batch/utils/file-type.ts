@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { FileType } from '@/types';
 import type { BatchWizardMode } from '@/services/batchPipeline';

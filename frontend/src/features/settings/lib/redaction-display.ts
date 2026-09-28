@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { normalizeEntityTypeId } from '@/config/entityTypes';
 import { normalizeVisualTypeId } from '@/services/defaultRedactionPreset';

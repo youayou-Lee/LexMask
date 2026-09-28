@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import React from 'react';
 import { createBrowserRouter, Navigate, useLocation, useParams } from 'react-router-dom';

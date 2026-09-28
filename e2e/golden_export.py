@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """Tier-2 golden path: async volume export (P0 万级导出 machinery), API level.
 
 Pure IO (no GPU): estimate must answer instantly, the export task must run to

@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useT } from '@/i18n';
@@ -152,8 +152,8 @@ export function useRedactionPresets() {
       setBridgeText(getActivePresetTextId() ?? '');
       setBridgeVision(getActivePresetVisionId() ?? '');
     };
-    window.addEventListener('datainfra-redaction-active-preset', syncActivePreset);
-    return () => window.removeEventListener('datainfra-redaction-active-preset', syncActivePreset);
+    window.addEventListener('lexmask-active-preset', syncActivePreset);
+    return () => window.removeEventListener('lexmask-active-preset', syncActivePreset);
   }, []);
 
   const textPresets = useMemo(

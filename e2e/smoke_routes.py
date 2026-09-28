@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """Tier-1 smoke: login, every top-level route renders without an error screen.
 
 Cheap (no GPU work) — safe to run against the production tunnel at any time.

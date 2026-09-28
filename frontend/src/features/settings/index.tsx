@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 export { SettingsHub as Settings } from './settings-hub';
 export { SystemSettings } from './system-settings';

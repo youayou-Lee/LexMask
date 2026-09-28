@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 // ---------------------------------------------------------------------------
 // Shared / canonical type definitions used across features (history, batch

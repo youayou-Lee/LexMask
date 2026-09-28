@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """操作员恢复 CLI（R1-1）。必须停服后运行——活库的 WAL 句柄、进程内缓存
 （auth 版本缓存）与内存任务队列会让在线恢复三重踩坑，因此刻意不提供
 HTTP 恢复端点。

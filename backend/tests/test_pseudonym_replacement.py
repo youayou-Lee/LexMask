@@ -456,7 +456,7 @@ def test_public_institutions_preserved_verbatim():
 
 
 def test_local_government_agencies_still_anonymized():
-    # preview2.0.0 已验收行为：地方机关照常匿名化，不在白名单范围
+    # v1.0.0 已验收行为：地方机关照常匿名化，不在白名单范围
     for text in ("某市公安局", "南宁市司法局", "南宁市青秀区人民法院"):
         ctx = RedactionContext(ReplacementMode.PSEUDONYM, word_pools=ORG_POOLS)
         assert ctx.get_replacement(_entity(text, type_="ORG")) != text, text

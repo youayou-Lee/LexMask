@@ -10,7 +10,7 @@
 # 不用 -u：/opt/dtk/env.sh 会引用未定义的 LD_LIBRARY_PATH（nounset 下报错）
 set -eo pipefail
 
-REPO=${REPO:-/root/redaction/DataInfra-RedactionEverything}
+REPO=${REPO:-/root/redaction/LexMask}
 MODEL=${MODEL:-$REPO/backend/models/has/HaS_Text_0209_0.6B}
 SERVER=${SERVER:-/root/redaction/cloud-deploy/ner_transformers_server.py}
 PY=${PY:-/root/.venvs/nl/bin/python}

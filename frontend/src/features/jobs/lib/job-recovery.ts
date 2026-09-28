@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import type { JobDetail, JobItemRow } from '@/services/jobsApi';
 import { buildBatchWorkbenchUrl } from '@/utils/jobPrimaryNavigation';

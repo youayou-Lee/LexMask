@@ -1,4 +1,4 @@
-﻿// Copyright 2026 DataInfra-RedactionEverything Contributors
+﻿// Copyright 2026 LexMask Contributors
 
 import { RefreshCw, Sparkles, Trash2 } from 'lucide-react';
 import { useT } from '@/i18n';

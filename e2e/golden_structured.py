@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """Tier-2 golden path: structured (库表) pipeline end to end.
 
 Tiny 3-row CSV (CPU-only redaction, no GPU) — safe against production.

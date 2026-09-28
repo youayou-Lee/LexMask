@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """SFTP 主动拉取（第五段方案二）：平台从内网另一台服务器拉文件进批量任务。
 
 - 源配置每用户各自持有；凭据 Fernet 加密（复用 structured 的密钥）

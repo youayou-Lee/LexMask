@@ -1,7 +1,7 @@
 #!/bin/bash
 cd ~/redaction-deploy || exit 1
 LOG=~/models-dl.log
-PY=~/anaconda3/envs/dataInfra/bin/python
+PY=~/anaconda3/envs/lexmask/bin/python
 exec >> "$LOG" 2>&1
 echo "=== START $(date) ==="
 "$PY" -m pip install -q huggingface_hub 2>&1 | tail -1

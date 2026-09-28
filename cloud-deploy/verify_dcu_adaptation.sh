@@ -4,7 +4,7 @@
 #       bash verify_dcu_adaptation.sh --spawn  # 连服务一起拉起（多 ~8 分钟）
 set -uo pipefail
 P=/root/private_data/redaction-persist
-UP=/root/redaction/DataInfra-RedactionEverything
+UP=/root/redaction/LexMask
 SPAWN=0; [ "${1:-}" = "--spawn" ] && SPAWN=1
 PASS=0; FAIL=0; SKIP=0
 ok()  { printf "  ✓ %s\n" "$1"; PASS=$((PASS+1)); }

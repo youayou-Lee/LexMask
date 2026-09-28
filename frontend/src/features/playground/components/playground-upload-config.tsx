@@ -1,4 +1,4 @@
-﻿// Copyright 2026 DataInfra-RedactionEverything Contributors
+﻿// Copyright 2026 LexMask Contributors
 
 import { type FC, useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';

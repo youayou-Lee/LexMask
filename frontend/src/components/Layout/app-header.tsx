@@ -1,4 +1,4 @@
-﻿// Copyright 2026 DataInfra-RedactionEverything Contributors
+﻿// Copyright 2026 LexMask Contributors
 
 import { useState } from 'react';
 import { Globe, KeyRound, LogOut } from 'lucide-react';

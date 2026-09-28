@@ -1,5 +1,5 @@
 > [!tip] 相关文档
-> Issue：归档仓 #46（youayou-Lee/DataInfra-RedactionEverything-archived，私有） ｜ 用户手册：工作区 `docs/用户使用说明.md`（第 2 节格式表待本 Issue 结论回写）｜ 复用设施：[[issue-37-eval-benchmark]] 的 eval/scripts 与生成器
+> Issue：归档仓 #46（youayou-Lee/LexMask-archived，私有） ｜ 用户手册：工作区 `docs/用户使用说明.md`（第 2 节格式表待本 Issue 结论回写）｜ 复用设施：[[issue-37-eval-benchmark]] 的 eval/scripts 与生成器
 
 # Issue #46：上传格式支持面端到端实测（格式 × 处理方式矩阵）
 

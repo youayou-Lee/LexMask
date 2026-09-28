@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """F2-2 长会话取证：20 轮全路由循环导航，JS 堆增长曲线。
 
 判定：末轮堆 < 首轮×2 且绝对值 < 300MB 视为无泄漏迹象（SPA 常态波动内）。

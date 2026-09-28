@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { useCallback, useEffect } from 'react';
 import type { useUndoRedo } from '@/hooks/useUndoRedo';

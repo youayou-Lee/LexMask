@@ -1,3 +1,3 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 export { Playground } from './playground-page';

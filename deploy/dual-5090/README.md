@@ -29,5 +29,5 @@ ports, starts the load balancers, and then starts the API. Secrets are loaded
 from `~/.redaction_secrets`; the launcher fails closed when that file is absent.
 
 Scripts use the repository at
-`/data/ubuntu/lh/projects/DataInfra-RedactionEverything`, model assets below its
-`backend/models` directory, and the `dataInfra`/`dataInfra-ocr` conda runtimes.
+`/data/ubuntu/lh/projects/LexMask`, model assets below its
+`backend/models` directory, and the `lexmask`/`lexmask-ocr` conda runtimes.

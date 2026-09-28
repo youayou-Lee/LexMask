@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { Outlet, useLocation } from 'react-router-dom';
 import type { CSSProperties } from 'react';

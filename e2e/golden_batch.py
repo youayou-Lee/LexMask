@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """Tier-2 golden path: batch wizard, all five steps, on the real stack.
 
 Two tiny text files (NER-only, seconds of GPU) so it is safe to run against

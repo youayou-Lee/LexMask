@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """Tier-1 permission matrix (regular-user side; cheap, no GPU).
 
 Asserts the enforcement chain for a non-admin account:

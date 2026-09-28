@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { t } from '@/i18n';
 import { getScopedStorageItem, setScopedStorageItem } from '@/lib/storage';
@@ -23,7 +23,7 @@ const entityNameCollator = new Intl.Collator('zh-Hans-CN', {
 
 const RECOGNITION_CONFIG_CACHE_VERSION = 1;
 const RECOGNITION_CONFIG_CACHE_TTL_MS = 10 * 60 * 1000;
-const RECOGNITION_CONFIG_CACHE_KEY = 'datainfraRedaction:recognitionConfigCache';
+const RECOGNITION_CONFIG_CACHE_KEY = 'lexmask:recognitionConfigCache';
 
 type CachedConfigPayload = {
   version: number;

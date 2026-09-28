@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """Capture real-product screenshots for the operations manual (docs/manual/)."""
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """Tier-1 golden path: change-password round trip (no GPU).
 
 UI: header button -> dialog -> submit -> success state.

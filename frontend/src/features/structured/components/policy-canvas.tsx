@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 // SPDX-License-Identifier: Apache-2.0
 
 import { Link } from 'react-router-dom';

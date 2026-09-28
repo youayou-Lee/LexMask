@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import React, { memo, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { ImagePlus, Trash2 } from 'lucide-react';

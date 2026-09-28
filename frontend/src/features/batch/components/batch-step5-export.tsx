@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { memo, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Download, FileJson, RefreshCw, ShieldCheck } from 'lucide-react';

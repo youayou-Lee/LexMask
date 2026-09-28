@@ -19,8 +19,8 @@ aliases:
 | 名称 | 仓库 | 说明 |
 |---|---|---|
 | 产品主仓（origin） | `youayou-Lee/LexMask` | **所有 Issue、开发、PR 都在这里** |
-| 参考实现（只读） | `ttttccxxui/DataInfra-RedactionEverything` | 不提 Issue / PR / push，不建 remote 同步 |
-| 历史归档（私有） | `youayou-Lee/DataInfra-RedactionEverything-archived` | 开发期历史 Issue 与提交记录，仅回溯用 |
+| 参考实现（只读） | `ttttccxxui/LexMask` | 不提 Issue / PR / push，不建 remote 同步 |
+| 历史归档（私有） | `youayou-Lee/LexMask-archived` | 开发期历史 Issue 与提交记录，仅回溯用 |
 
 ⚠️ 所有 `gh issue / gh pr / gh repo` 命令**显式指定 `--repo youayou-Lee/LexMask`**，防止 gh 按上下文误选其他仓库。
 

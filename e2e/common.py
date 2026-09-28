@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """E2E harness shared helpers.
 
 House rules: ALWAYS headed real Chrome (never headless/bundled Chromium).

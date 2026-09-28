@@ -55,7 +55,7 @@ def _log_wsl_drvfs_wal_disabled_once(db_path: str) -> None:
             return
         _wsl_drvfs_wal_disabled_logged_paths.add(log_key)
     logger.info(
-        "SQLite WAL disabled by default for WSL drvfs database %s; set DATAINFRA_SQLITE_WAL_ON_DRVFS=1 to override",
+        "SQLite WAL disabled by default for WSL drvfs database %s; set LEXMASK_SQLITE_WAL_ON_DRVFS=1 to override",
         db_path,
     )
 
@@ -101,7 +101,7 @@ def connect_sqlite(
     conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
 
     use_wal = wal
-    if wal and _is_wsl_drvfs_path(db_path) and not _env_flag("DATAINFRA_SQLITE_WAL_ON_DRVFS"):
+    if wal and _is_wsl_drvfs_path(db_path) and not _env_flag("LEXMASK_SQLITE_WAL_ON_DRVFS"):
         use_wal = False
         _log_wsl_drvfs_wal_disabled_once(db_path)
 

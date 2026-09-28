@@ -5,7 +5,7 @@
 
 用法（在 DCU 实例上，DTK 环境已 source，见 bench_ner_onekey.sh 包装）：
   python bench_ner_onekey.py \
-      --model /root/redaction/DataInfra-RedactionEverything/backend/models/has/HaS_Text_0209_0.6B \
+      --model /root/redaction/LexMask/backend/models/has/HaS_Text_0209_0.6B \
       --server-script /root/redaction/cloud-deploy/ner_transformers_server.py \
       --python /root/.venvs/nl/bin/python \
       --pages 10 --out /root/issue23-eval/run-latest \

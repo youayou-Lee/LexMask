@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { useEffect, useRef } from 'react';
 import { fileApi, authenticatedBlobUrl } from '@/services/api';
