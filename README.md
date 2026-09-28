@@ -50,7 +50,7 @@ cd frontend && npm run build && npm test && npm run lint
 
 ## 致谢
 
-项目演进过程中参考了开源实现 [LexMask](https://github.com/ttttccxxui/LexMask)。
+项目演进过程中参考了开源实现 [DataInfra-RedactionEverything](https://github.com/ttttccxxui/DataInfra-RedactionEverything)。
 
 ## 许可证
 

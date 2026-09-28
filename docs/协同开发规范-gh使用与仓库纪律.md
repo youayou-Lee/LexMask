@@ -19,12 +19,16 @@ aliases:
 | 名称 | 仓库 | 说明 |
 |---|---|---|
 | 产品主仓（origin） | `youayou-Lee/LexMask` | **所有 Issue、开发、PR 都在这里** |
-| 参考实现（只读） | `ttttccxxui/LexMask` | 不提 Issue / PR / push，不建 remote 同步 |
-| 历史归档（私有） | `youayou-Lee/LexMask-archived` | 开发期历史 Issue 与提交记录，仅回溯用 |
+| 参考实现（只读） | `ttttccxxui/DataInfra-RedactionEverything` | 不提 Issue / PR / push，不建 remote 同步 |
+| 历史归档（私有） | `youayou-Lee/DataInfra-RedactionEverything-archived` | 开发期历史 Issue 与提交记录，仅回溯用 |
 
 ⚠️ 所有 `gh issue / gh pr / gh repo` 命令**显式指定 `--repo youayou-Lee/LexMask`**，防止 gh 按上下文误选其他仓库。
 
 ## 2. 与参考实现的关系
+
+> 命名豁免（Issue #1 验收标准 1 的白名单）：上表两个外部仓在 GitHub 的真实仓名含 "DataInfra-RedactionEverything" 字样，指称它们时**必须用真实仓名**（否则死链），不计入旧名残留。
+
+
 
 - 仅在 README 致谢中注明；不 fetch、不 merge、不贡献。
 - 借鉴其修复/功能时在 Issue/PR 描述中注明来源。

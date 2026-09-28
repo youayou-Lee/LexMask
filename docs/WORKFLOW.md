@@ -132,7 +132,7 @@ git tag vX.Y.Z main && git push --tags
 
 ## 6. Roadmap（初始口径：2026-09-28）
 
-以下主题承接自开发期（历史 Issue 留存在归档仓 `LexMask-archived`，私有），在 `youayou-Lee/LexMask` 重建 Issue 后挂 v1.1.0 Milestone：
+以下主题承接自开发期（历史 Issue 留存在归档仓 `youayou-Lee/DataInfra-RedactionEverything-archived`（真实仓名，豁免条目），私有），在 `youayou-Lee/LexMask` 重建 Issue 后挂 v1.1.0 Milestone：
 
 | 主题 | 建仓 Issue 前缀 | 优先级 |
 |---|---|---|

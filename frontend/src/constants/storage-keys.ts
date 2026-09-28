@@ -1,6 +1,12 @@
 // Copyright 2026 LexMask Contributors
 
-/** Centralized localStorage / sessionStorage key constants */
+/** Centralized localStorage / sessionStorage key constants
+ *
+ * 破坏性变更（2026-09-28，Issue #1）：`lexmask:*` 前缀取代旧 `datainfraRedaction:*`。
+ * 老用户 localStorage 中旧 key 的数据（currentUser、playgroundDraft、vision selection、
+ * activePreset）不会自动迁移，相关 UI 状态将重置；AUTH_TOKEN 不带前缀，不受影响。
+ * 如需兼容老用户，参照 activePresetBridge.ts 的 LEGACY 桥模式补迁移。
+ */
 export const STORAGE_KEYS = {
   AUTH_TOKEN: 'auth_token',
   CURRENT_USER: 'lexmask:currentUser',
