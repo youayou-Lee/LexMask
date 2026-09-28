@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { RefreshCw } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';

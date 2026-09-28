@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { useEffect, useMemo, useRef } from 'react';
 import { t } from '@/i18n';

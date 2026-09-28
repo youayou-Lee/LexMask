@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { describe, expect, it } from 'vitest';
 import { buildPseudonymCsv, getModePreview } from './utils';

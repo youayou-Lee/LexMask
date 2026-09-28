@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 /**
  * 白标配置（W1-1）：客户交付时通过构建期环境变量整站换牌，

@@ -1,13 +1,13 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { scopedStorageKey } from '@/lib/storage';
 
-const K_TEXT = 'datainfraRedaction:activePresetTextId';
+const K_TEXT = 'lexmask:activePresetTextId';
 const K_TEXT_LEGACY = 'legalRedaction:activePresetTextId';
-const K_VISION = 'datainfraRedaction:activePresetVisionId';
+const K_VISION = 'lexmask:activePresetVisionId';
 const K_VISION_LEGACY = 'legalRedaction:activePresetVisionId';
 
-const ACTIVE_PRESET_EVENT = 'datainfra-redaction-active-preset';
+const ACTIVE_PRESET_EVENT = 'lexmask-active-preset';
 
 export function getActivePresetTextId(): string | null {
   try {

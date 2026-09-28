@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 export async function parseJson<T>(res: Response): Promise<T | null> {
   try {

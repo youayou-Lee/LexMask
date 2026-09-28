@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import type { Dispatch, FC, ReactNode, SetStateAction } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';

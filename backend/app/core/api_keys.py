@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """API 密钥（R1-5）：机器对接（M2M）认证。
 
 密钥形如 ``rk_<32位随机>``，只在创建时明文返回一次，存储只留 SHA-256 哈希。

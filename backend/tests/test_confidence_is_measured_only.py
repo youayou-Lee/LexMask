@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 
 """A confidence must be something a model measured, or absent.
 

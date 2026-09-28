@@ -69,7 +69,7 @@ def _download(sample: dict[str, Any], destination: Path, *, timeout: float) -> N
     partial = destination.with_name(destination.name + ".part")
     request = urllib.request.Request(
         sample["url"],
-        headers={"User-Agent": "DataInfra-DICOM-fixture-fetcher/1.0"},
+        headers={"User-Agent": "LexMask-DICOM-fixture-fetcher/1.0"},
     )
     digest = hashlib.sha256()
     total = 0

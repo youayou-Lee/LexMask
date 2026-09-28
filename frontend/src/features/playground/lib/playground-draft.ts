@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import type { BoundingBox, Entity, FileInfo, Stage } from '../types';
 

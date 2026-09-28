@@ -10,7 +10,7 @@ set -euo pipefail
 # 平台代理账密不入库: 运行前必须 export PLATFORM_PROXY_URL(平台控制台获取)
 : "${PLATFORM_PROXY_URL:?请先 export PLATFORM_PROXY_URL='http://<user>:<pass>@<代理地址:端口>'}"
 P=/root/private_data/redaction-persist
-UP=/root/redaction/DataInfra-RedactionEverything
+UP=/root/redaction/LexMask
 LOG=/root/redaction/cloud-deploy/logs
 PROXY_URL="$PLATFORM_PROXY_URL"
 step(){ echo; echo "==> $*"; }
@@ -73,7 +73,7 @@ fi
 step "3/5 run_backend.sh 重建（引号防剥离写法）"
 cat > /root/run_backend.sh <<'RB'
 #!/bin/bash
-cd /root/redaction/DataInfra-RedactionEverything/backend
+cd /root/redaction/LexMask/backend
 export no_proxy=localhost,127.0.0.1
 exec env DEBUG=false AUTH_ENABLED=true JOB_CONCURRENCY=2 OCR_REQUIRE_GPU=false CORS_ORIGINS='["http://localhost:3000"]' /root/.venvs/app/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 RB

@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """成品水印（W2-1）：给匿名化输出叠加半透明平铺文案。
 
 中文渲染不依赖系统字体：用 PyMuPDF 内置 CJK 字体（china-s）把文案渲染成

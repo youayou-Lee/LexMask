@@ -15,7 +15,7 @@ from app.models.type_mapping import TYPE_REGISTRY
 
 # 化名模式下默认保留原文的公共机构后缀。
 # 范围=国家部委级机关 + 党的机关 + 省/厅级政府组成部门 + 司法行政类公共
-# 机构；县级及以下机关（公安局/法院/司法局等）不在白名单——preview2.0.0
+# 机构；县级及以下机关（公安局/法院/司法局等）不在白名单——v1.0.0
 # 已验收行为是照常匿名化（某人民法院1/某公安局1）。
 PUBLIC_INSTITUTION_SUFFIXES: tuple[str, ...] = (
     "律师事务中心",
@@ -213,7 +213,7 @@ _QUOTED_PUBLICATION_RE = __import__("re").compile(r"^《[^》]{1,40}》$")
 
 # 组织子类型 → 词池键：按原文后缀路由（Issue #55）
 # 法院/检察院不在此列：它们照常匿名化，由 _pool_key_for 的机关关键词精化
-# 路由到 GOVERNMENT_AGENCY 池（preview2.0.0 已验收行为，勿劫走）。
+# 路由到 GOVERNMENT_AGENCY 池（v1.0.0 已验收行为，勿劫走）。
 ORG_POOL_RULES: tuple[tuple[str, str], ...] = (
     ("律师事务所", "LAW_FIRM"),
     ("医院", "HOSPITAL"),

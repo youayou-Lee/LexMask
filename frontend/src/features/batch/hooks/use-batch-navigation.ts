@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { useCallback, useEffect, useMemo } from 'react';
 import type { SetURLSearchParams } from 'react-router-dom';

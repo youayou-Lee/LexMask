@@ -1,10 +1,10 @@
 #!/bin/bash
-export PATH=/home/ubuntu/miniconda3/envs/dataInfra-la/bin:$PATH
-cd /data/ubuntu/lh/projects/DataInfra-RedactionEverything/backend || exit 1
+export PATH=/home/ubuntu/miniconda3/envs/lexmask-la/bin:$PATH
+cd /data/ubuntu/lh/projects/LexMask/backend || exit 1
 export CUDA_VISIBLE_DEVICES=6
-export PYTHONPATH=/data/ubuntu/lh/projects/DataInfra-RedactionEverything/backend
+export PYTHONPATH=/data/ubuntu/lh/projects/LexMask/backend
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export LOCATE_ANYTHING_MODEL=/data/ubuntu/lh/projects/DataInfra-RedactionEverything/backend/models/locateanything/LocateAnything-3B-HF
+export LOCATE_ANYTHING_MODEL=/data/ubuntu/lh/projects/LexMask/backend/models/locateanything/LocateAnything-3B-HF
 export LOCATE_ANYTHING_MODEL_NAME=LocateAnything-3B
 export LOCATE_ANYTHING_BACKEND=hf
 export LOCATE_ANYTHING_DTYPE=bfloat16
@@ -19,5 +19,5 @@ export LOCATE_ANYTHING_VLLM_SAMPLES=1
 export LOCATE_ANYTHING_TEMPERATURE=0.2
 export LOCATE_ANYTHING_TOP_K=20
 export LOCATE_ANYTHING_TOP_P=0.9
-exec /home/ubuntu/miniconda3/envs/dataInfra-la/bin/python scripts/locate_anything_server.py \
+exec /home/ubuntu/miniconda3/envs/lexmask-la/bin/python scripts/locate_anything_server.py \
   --backend hf --model "$LOCATE_ANYTHING_MODEL" --dtype bfloat16 --port 28090

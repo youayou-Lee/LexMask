@@ -1,4 +1,4 @@
-﻿// Copyright 2026 DataInfra-RedactionEverything Contributors
+﻿// Copyright 2026 LexMask Contributors
 
 import type { Dispatch, FC, SetStateAction } from 'react';
 import { Button } from '@/components/ui/button';

@@ -421,7 +421,7 @@ async function startLocateAnything() {
   const wslRoot = winToWsl(repoRoot);
   const wslBackend = winToWsl(backendDir);
   const cuda = shellQuote(env.CUDA_VISIBLE_DEVICES || '0');
-  const locateDeps = env.LOCATE_ANYTHING_DEPS || '/home/tracy/.cache/datainfra-redaction/locateanything-hf-deps';
+  const locateDeps = env.LOCATE_ANYTHING_DEPS || '/home/tracy/.cache/lexmask/locateanything-hf-deps';
   const locatePythonPath = [locateDeps, path.posix.join(wslBackend, 'scripts'), wslBackend].join(':');
   await ensurePortFree(Number(locatePort), 'locateanything', wslHost);
   const locateAnything = spawnWsl(

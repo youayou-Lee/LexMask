@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { ArrowLeftRight, ArrowRight, ChevronDown, ChevronRight, Download, Trash2 } from 'lucide-react';
 import { memo, type CSSProperties } from 'react';

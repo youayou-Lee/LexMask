@@ -26,6 +26,10 @@ aliases:
 
 ## 2. 与参考实现的关系
 
+> 命名豁免（Issue #1 验收标准 1 的白名单）：上表两个外部仓在 GitHub 的真实仓名含 "DataInfra-RedactionEverything" 字样，指称它们时**必须用真实仓名**（否则死链），不计入旧名残留。
+
+
+
 - 仅在 README 致谢中注明；不 fetch、不 merge、不贡献。
 - 借鉴其修复/功能时在 Issue/PR 描述中注明来源。
 

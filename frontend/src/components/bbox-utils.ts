@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 /**
  * Pure utility functions for bounding-box coordinate transforms and resize computation.

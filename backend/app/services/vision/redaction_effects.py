@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 
 """遮盖效果的像素级原语：把一块矩形涂成实心/马赛克/模糊，以及画框预览。
 

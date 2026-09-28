@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { cn } from '@/lib/utils';
 import { tonePanelClass } from '@/utils/toneClasses';

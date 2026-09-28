@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 /**
  * Shared DOM selection helpers used by both Playground and Batch review UIs.

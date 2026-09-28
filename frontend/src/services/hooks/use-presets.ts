@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchPresets, type RecognitionPreset } from '@/services/presetsApi';

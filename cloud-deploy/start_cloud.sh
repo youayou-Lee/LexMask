@@ -12,7 +12,7 @@ export http_proxy="$PLATFORM_PROXY_URL"
 export https_proxy="$PLATFORM_PROXY_URL"
 
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UPSTREAM="$(cd "$DEPLOY_DIR/../DataInfra-RedactionEverything" && pwd)"
+UPSTREAM="$(cd "$DEPLOY_DIR/../LexMask" && pwd)"
 BACKEND="$UPSTREAM/backend"
 FRONTEND="$UPSTREAM/frontend"
 LOG_DIR="$DEPLOY_DIR/logs"; mkdir -p "$LOG_DIR"

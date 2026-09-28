@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 export { Structured, StructuredOverview } from './pages/overview';
 export { StructuredFiles } from './pages/files';

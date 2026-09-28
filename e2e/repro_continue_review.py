@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """复现 PM 问题：任务中心点「继续审阅」落在第 1 步。
 
 API 造 awaiting_review 任务 → headed 从 /jobs 点箭头 → 取证落地 URL/步骤/console。

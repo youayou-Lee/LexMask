@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import type React from 'react';
 import { memo, useCallback, useMemo, useRef, useState } from 'react';

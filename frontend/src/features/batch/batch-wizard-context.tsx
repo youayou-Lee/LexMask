@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { createContext, useContext } from 'react';
 import type { useBatchWizard } from './hooks/use-batch-wizard';

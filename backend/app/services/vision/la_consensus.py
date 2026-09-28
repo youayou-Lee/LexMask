@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """LA 多采样共识：同一图跑 N 次 seedless 采样，聚合成稳定的一组框。
 
 LA 用官方 temp 0.7 + seedless 开放采样（A/B 验证过：低温=硬漏检、固定seed=坏样本

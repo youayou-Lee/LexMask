@@ -21,7 +21,7 @@ source /opt/dtk/env.sh
 set -u
 
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UPSTREAM="$DEPLOY_DIR/../DataInfra-RedactionEverything"
+UPSTREAM="$DEPLOY_DIR/../LexMask"
 BACKEND="$UPSTREAM/backend"
 FRONTEND="$UPSTREAM/frontend"
 MODELS="$BACKEND/models"

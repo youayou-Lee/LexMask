@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 /**
  * Extracted from review-text-content.tsx — the text selection annotation popover.

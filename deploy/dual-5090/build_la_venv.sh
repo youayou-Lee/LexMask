@@ -2,7 +2,7 @@ LOG=~/la-env-build.log
 exec >> "$LOG" 2>&1
 set -x
 echo "=== VENV LA BUILD $(date) ==="
-/home/adminroot/anaconda3/envs/dataInfra/bin/python -m venv ~/rvenv/la && echo ENV_CREATED
+/home/adminroot/anaconda3/envs/lexmask/bin/python -m venv ~/rvenv/la && echo ENV_CREATED
 P=~/rvenv/la/bin/pip
 $P install -U pip -i https://mirrors.aliyun.com/pypi/simple/
 echo "=== torch+torchvision cu128 from SJTU ==="

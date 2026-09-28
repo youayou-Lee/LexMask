@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """License 冒烟（无需管理员账号）：
 1. 公开 /license/status 可达且 unlicensed（默认关闭=存量零变化）
 2. unlicensed 时登录页不显示到期横幅

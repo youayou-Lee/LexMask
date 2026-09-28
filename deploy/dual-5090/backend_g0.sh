@@ -1,8 +1,8 @@
-cd /data/ubuntu/lh/projects/DataInfra-RedactionEverything/backend || exit 1
+cd /data/ubuntu/lh/projects/LexMask/backend || exit 1
 # nohup 起的非交互 shell PATH 里没有 conda bin，flashinfer JIT 调不到 ninja 会起不来。
-export PATH="/home/ubuntu/miniconda3/envs/dataInfra/bin:$PATH"
-export PATH="/home/ubuntu/miniconda3/envs/dataInfra/bin:$PATH"
-export PYTHONPATH=/data/ubuntu/lh/projects/DataInfra-RedactionEverything/backend
+export PATH="/home/ubuntu/miniconda3/envs/lexmask/bin:$PATH"
+export PATH="/home/ubuntu/miniconda3/envs/lexmask/bin:$PATH"
+export PYTHONPATH=/data/ubuntu/lh/projects/LexMask/backend
 export HAS_TEXT_RUNTIME=vllm
 export HAS_TEXT_VLLM_BASE_URL=http://127.0.0.1:29080/v1
 export HAS_TEXT_MODEL_NAME=HaS_Text_0209_0.6B
@@ -26,9 +26,9 @@ if [ ! -f ~/.redaction_secrets ]; then echo 'FATAL: ~/.redaction_secrets missing
 . ~/.redaction_secrets
 export JOB_CONCURRENCY=6
 export BATCH_RECOGNITION_PAGE_CONCURRENCY=3
-export DATA_DIR=/data/ubuntu/lh/projects/DataInfra-RedactionEverything/backend/data
-export UPLOAD_DIR=/data/ubuntu/lh/projects/DataInfra-RedactionEverything/backend/uploads
-export OUTPUT_DIR=/data/ubuntu/lh/projects/DataInfra-RedactionEverything/backend/outputs
+export DATA_DIR=/data/ubuntu/lh/projects/LexMask/backend/data
+export UPLOAD_DIR=/data/ubuntu/lh/projects/LexMask/backend/uploads
+export OUTPUT_DIR=/data/ubuntu/lh/projects/LexMask/backend/outputs
 mkdir -p "$DATA_DIR" "$UPLOAD_DIR" "$OUTPUT_DIR"
 export HAS_NER_GLOBAL_MAX_INFLIGHT=6
 export BATCH_VISUAL_MERGE_PAGE_CONCURRENCY=2
@@ -44,4 +44,4 @@ export VISIBLE_GPU_INDICES=6,7
 export HAS_IMAGE_URL="http://127.0.0.1:29140"
 export VISUAL_EDGE_SEAL_REFINE=0
 export VISION_DETECTOR_EPOCH=3
-exec /home/ubuntu/miniconda3/envs/dataInfra/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 23001 --workers 1
+exec /home/ubuntu/miniconda3/envs/lexmask/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 23001 --workers 1

@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { Link } from 'react-router-dom';
 import { ArrowRight, Clock3 } from 'lucide-react';

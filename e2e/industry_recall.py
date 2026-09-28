@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """行业包召回率评测（Phase 2 验收轨）：黄金语料 → 真实 NER 管线 → 记分卡。
 
 用法：python industry_recall.py [legal]

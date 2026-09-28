@@ -4,7 +4,7 @@
 
 ## 1. 全新安装（从零）
 
-1. 前置：Ubuntu 22/24、NVIDIA 驱动、CUDA 12.8+、`~/anaconda3/envs/dataInfra`（python+node）、
+1. 前置：Ubuntu 22/24、NVIDIA 驱动、CUDA 12.8+、`~/anaconda3/envs/lexmask`（python+node）、
    `~/rvenv/vllm` 与 `~/rvenv/la` 两个 venv——按 `deploy/dual-5090/bootstrap.sh` 与
    `build_*_venv.sh` 执行；模型经魔搭下载（`dl_models.sh`，HF 网络不可用时的默认路径）。
 2. 代码落位：`~/redaction-deploy/`（backend + frontend/dist）。

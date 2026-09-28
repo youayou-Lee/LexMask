@@ -17,7 +17,7 @@ python eval/scripts/run_eval.py --level ner \
 # 2) 端到端层：走 backend 公开 API（pdf 逐页 vision；docx/txt 走 parse+hybrid NER）
 python eval/scripts/run_eval.py --level e2e --suite synthetic \
     --api-base http://127.0.0.1:8000 \
-    --target-label preview2.0.0 --env-label <你的环境标签>
+    --target-label v1.0.0 --env-label <你的环境标签>
 #    与上一版对比 / 只跑指定文件 / 保留逐页明细：
 python eval/scripts/run_eval.py --level e2e --suite synthetic \
     --baseline eval/reports/<上一版>.json --only syn_contract_1p_mid --with-perf ...

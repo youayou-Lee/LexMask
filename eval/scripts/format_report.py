@@ -38,7 +38,7 @@ def render_md(data: dict) -> str:
 
     lines: list[str] = []
     lines.append("> [!tip] 相关文档")
-    lines.append("> Issue：[#46](https://github.com/youayou-Lee/DataInfra-RedactionEverything/issues/46)"
+    lines.append("> Issue：[#46](https://github.com/youayou-Lee/LexMask/issues/46)"
                  " ｜ 设计：[[issue-46-format-matrix-testing]] ｜ 样张：`eval/datasets/formats/`")
     lines.append("")
     lines.append("# Issue #46：格式 × 处理方式实测矩阵报告")

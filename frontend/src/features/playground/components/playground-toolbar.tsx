@@ -1,4 +1,4 @@
-﻿// Copyright 2026 DataInfra-RedactionEverything Contributors
+﻿// Copyright 2026 LexMask Contributors
 
 import { type FC, memo } from 'react';
 import { ArrowUpRight, FileText, Redo2, RotateCcw, Undo2 } from 'lucide-react';

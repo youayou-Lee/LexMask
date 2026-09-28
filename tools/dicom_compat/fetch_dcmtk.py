@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     archive = destination / "dcmtk-3.7.0-win64-chocolatey.zip"
     partial = archive.with_suffix(".zip.part")
     try:
-        request = urllib.request.Request(URL, headers={"User-Agent": "DataInfra-DICOM-validator/1.0"})
+        request = urllib.request.Request(URL, headers={"User-Agent": "LexMask-DICOM-validator/1.0"})
         with urllib.request.urlopen(request, timeout=120) as response, partial.open("wb") as output:
             shutil.copyfileobj(response, output)
         os.replace(partial, archive)

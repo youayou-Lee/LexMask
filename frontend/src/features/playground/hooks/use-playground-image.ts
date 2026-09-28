@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { startTransition, useState, useCallback, useEffect, useRef } from 'react';
 import { useUndoRedo } from '@/hooks/useUndoRedo';

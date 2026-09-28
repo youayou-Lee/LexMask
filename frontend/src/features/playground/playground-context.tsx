@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { createContext, useContext, useMemo, type FC, type ReactNode } from 'react';
 import { usePlayground } from './hooks/use-playground';

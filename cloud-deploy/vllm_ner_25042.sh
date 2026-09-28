@@ -2,7 +2,7 @@
 # vLLM 0.9.2(DTK25.04.2) 服务 HaS Qwen3-0.6B —— NER 高速路线
 # 2026-09-10 dcu-bw 实测: 3/3 全命中 @0.53s (与 25.04.1 同速), cudagraph 正常无需 eager
 set -uo pipefail
-MODEL=/root/redaction/DataInfra-RedactionEverything/backend/models/has/HaS_Text_0209_0.6B
+MODEL=/root/redaction/LexMask/backend/models/has/HaS_Text_0209_0.6B
 LOG_DIR=/root/redaction/cloud-deploy/logs; mkdir -p "$LOG_DIR"
 SESSION=redaction
 : '${PLATFORM_PROXY_URL:?export PLATFORM_PROXY_URL=平台代理}'; export http_proxy="$PLATFORM_PROXY_URL"

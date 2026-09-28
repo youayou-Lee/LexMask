@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 const enBase: Record<string, string> = {
   'nav.start': 'Start Processing',

@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { computeFitScale, type DisplaySize } from '../bbox-utils';

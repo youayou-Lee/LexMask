@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fileApi } from '@/services/api';

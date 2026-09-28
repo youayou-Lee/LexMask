@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 # 文件树备份（uploads/outputs/structured_uploads）——操作员 cron 任务，
 # 刻意不进 FastAPI 进程（数十 GB 拷贝抢 I/O + 进程重启产生半快照）。
 # rsync --link-dest 硬链增量：未变文件近零成本。

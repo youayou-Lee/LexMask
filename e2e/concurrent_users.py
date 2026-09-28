@@ -1,4 +1,4 @@
-# Copyright 2026 DataInfra-RedactionEverything Contributors
+# Copyright 2026 LexMask Contributors
 """F1-3 多用户并发实测：两账号同时跑完整处理链，断言租户隔离与双双成功。
 
 说明：本项验证后端多租户并发正确性，走 API 级并发（两线程真并发）；

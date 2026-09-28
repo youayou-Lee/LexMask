@@ -1,4 +1,4 @@
-// Copyright 2026 DataInfra-RedactionEverything Contributors
+// Copyright 2026 LexMask Contributors
 
 const zhBase: Record<string, string> = {
   'nav.playground': '处理单个文件',
