@@ -14,7 +14,7 @@ aliases:
 
 > 仓库 → `youayou-Lee/LexMask`（单人 + AI 协作；gh 操作仍建议显式 `--repo`，防误操作别的仓库）。
 > 测试 → backend pytest（`backend/tests/`）；方案文档 → `docs/issue-<编号>-<主题>.md`。
-> 原则：**main 随时可部署，tag 即发布；每个变更有据可查，一切以测试数据为准**（分支模型见 §7）。
+> 原则：**preview 随时可部署（验收/演示实例跟踪它），晋级 main 即发布、tag 只打 main；每个变更有据可查，一切以测试数据为准**（分支模型见 §7）。
 > 配套设施：分支保护（禁 force push / 删除）、Issue 模板、Milestone。
 
 ## 0. 计划表三层：在哪、怎么看
@@ -45,7 +45,7 @@ gh issue list --milestone "v1.1" --state all
 - [ ] 关键决策列 A/B 备选 + 取舍理由
 
 ### Step 3 开发 —— 分支 + 小步提交
-- [ ] `git switch main && git pull --ff-only` 后切 `feat/xxx` / `fix/xxx` / `docs/xxx`；一分支一 Issue
+- [ ] `git switch preview && git pull --ff-only` 后切 `feat/xxx` / `fix/xxx` / `docs/xxx`；一分支一 Issue
 - [ ] 多功能并行时用 worktree 隔离：每分支一个 `../.worktrees/<分支名>` 检出（约定见容器根 AGENTS.md）
 - [ ] **测试红不 commit 不 push**；一个 commit 一件事；message `type: 动机`（feat/fix/docs/refactor/test/chore）
 - [ ] 混了就 `git rebase -i` 拆
@@ -58,10 +58,10 @@ gh issue list --milestone "v1.1" --state all
 ### Step 5 PR
 - [ ] 描述四要素：动机（`Refs #N`）/ 改动（逐模块一句话）/ 验证（数据）/ 风险与回滚
 - [ ] **审核阶段**：merge 前派发 reviewer 子代理（只给 BASE..HEAD diff + 需求描述，不给会话历史）；意见按 `receiving-code-review` 处理：Critical 立即修，Important merge 前修，Minor 记 Issue；reviewer 说错要有依据地反驳
-- [ ] CI 绿（分支保护强制，不许绕）；merge 前自己通读一遍 diff
+- [ ] CI 全绿（base-guard 强制校验分支模型：功能 PR 须 base=preview 且含最新 preview）；merge 前自己通读一遍 diff
 
-### Step 6 合并收尾（合入 main）
-- [ ] 只用 squash：`gh pr merge --squash --delete-branch`（PR base=main）
+### Step 6 合并收尾（合入 preview）
+- [ ] 只用 squash：`gh pr merge --squash --delete-branch`（PR base=preview；误选 main 会被 base-guard 拒）
 - [ ] CHANGELOG 当天有条目；`Closes #N` 仅限"本 PR 完全解决该 Issue"，前置/关联一律 `Refs #N`
 - [ ] 核对 Milestone 进度
 
@@ -111,15 +111,19 @@ gh issue list --milestone "v1.1" --state all
 ## 5. 常用命令
 
 ```bash
-# 分支与提交（临时分支从 main 切）
-git switch main && git pull --ff-only
+# 分支与提交（临时分支从 preview 切）
+git switch preview && git pull --ff-only
 git switch -c feat/xxx
 
 # Issue / PR
 gh issue create -t "标题" -l enhancement -m "v1.1" -b "正文"
 gh pr create --fill-first          # 标题取首个 commit，正文补四要素
 gh pr checks                       # CI 状态
-gh pr merge --squash --delete-branch   # PR base=main
+gh pr merge --squash --delete-branch   # PR base=preview
+
+# 晋级发布（preview 验收通过后）
+gh pr create --base main --head preview -t "promote: preview → main"
+gh pr merge --squash --delete-branch
 
 # 测试
 cd backend && pytest tests/ -v                             # L1 后端
@@ -143,16 +147,19 @@ git tag vX.Y.Z main && git push --tags
 
 > Roadmap 为快照，活口径以 GitHub Issues 为准。
 
-## 7. 分支模型（2026-09-28 定）
+## 7. 分支模型（2026-09-29 改回 preview 线，用户拍板 Issue #20 方案 B）
 
 ```
-临时分支（feat|fix|perf|docs，从 main 切，一分支一 Issue，走完七道门）
-   └─ squash 合入 main（PR base=main，CI + 独立 review 强制）
-main —— 唯一长期分支；随时可部署；tag 只打在这里（vX.Y.Z，自 v1.0.0 起）
+临时分支（feat|fix|perf|docs，从 preview 切，一分支一 Issue，走完七道门）
+   └─ squash 合入 preview（PR base=preview；base-guard 强制须含最新 preview）
+preview —— 集成/验收线：验收与演示实例跟踪 preview；云实例共享模型层亦跟踪 preview
+   └─ 晋级：squash PR（head=preview，base=main）合入 main
+main —— 稳定线：发布只发生在晋级；tag 只打在这里（vX.Y.Z，自 v1.0.0 起）
+hotfix/<主题>：从 main 切，走门禁后合回 main，打 patch tag（vX.Y.Z → vX.Y.(Z+1)）
 ```
 
-- 无 preview 线：验收/演示实例直接跟踪 main（或指定 release tag）；客户环境上线后改为跟踪 release tag。
-- hotfix：从 main 切 `hotfix/<主题>`，走门禁后合回 main，打 patch tag（vX.Y.Z → vX.Y.(Z+1)）。
-- **配套（已在 GitHub 设置）**：main 分支保护（禁 force push、禁删除）。
+- 功能分支一律 base=preview；误选 main 会被 ci.yml base-guard 拒（目标 main 只收 preview 晋级或 hotfix/*）。
+- 模型服务（NER/LA/OCR）改动 PR 先行合入 preview，消费它的 backend PR 随后——共享模型层跟 preview 更新，backend 分支开发不依赖环境内再起模型服务（多环境槽位细则见部署文档）。
+- **配套（已在 GitHub 设置）**：main 分支保护（禁 force push、禁删除）；base-guard 建议进一步配为 required check（待用户确认）。
 
 > 本文件随流程演进更新；改本文件也走 PR（docs/ 前缀）。
