@@ -97,9 +97,10 @@ fi
 if [ -f "$UP/frontend/dist/index.html" ]; then
   echo "dist OK"
 else
-  echo "dist 缺失 → 自动 npm run build（约1分钟）"
-  (cd "$UP/frontend" && /root/.local/node-v22/bin/npm run build >/dev/null 2>&1 \
-    && echo "dist 构建完成" || echo "警告: 前端构建失败，手动跑: cd $UP/frontend && npm run build")
+  echo "dist 缺失 → 自动 npm run build（约1分钟，日志 $LOG/frontend-build.log）"
+  mkdir -p "$LOG"
+  (cd "$UP/frontend" && /root/.local/node-v22/bin/npm run build >> "$LOG/frontend-build.log" 2>&1 \
+    && echo "dist 构建完成" || echo "警告: 前端构建失败，看 $LOG/frontend-build.log，手动跑: cd $UP/frontend && PATH=/root/.local/node-v22/bin:\$PATH npm run build")
 fi
 
 step "5/5 服务"
