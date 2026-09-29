@@ -112,10 +112,8 @@ async def resumable_upload_init(
             detail=f"不支持的文件类型: {ext}，支持的类型: {settings.ALLOWED_EXTENSIONS}",
         )
     if body.file_size <= 0 or (settings.MAX_FILE_SIZE and body.file_size > settings.MAX_FILE_SIZE):
-        raise HTTPException(
-            status_code=400,
-            detail=f"文件大小无效，最大支持 {settings.MAX_FILE_SIZE // 1024 // 1024}MB",
-        )
+        limit = f"，最大支持 {settings.MAX_FILE_SIZE // 1024 // 1024}MB" if settings.MAX_FILE_SIZE else ""
+        raise HTTPException(status_code=400, detail=f"文件大小无效{limit}")
 
     owner_dir = _resumable_owner_dir(owner_id)
     os.makedirs(owner_dir, exist_ok=True)

@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -196,8 +196,9 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     OUTPUT_DIR: str = "./outputs"
     DATA_DIR: str = "./data"
-    # 单文件上传上限（字节）；0 = 不限制。部署方需要时用环境变量恢复，如 MAX_FILE_SIZE=52428800
-    MAX_FILE_SIZE: int = 0
+    # 单文件上传上限（字节）；0 = 不限制。部署方需要时用环境变量恢复，如 MAX_FILE_SIZE=52428800。
+    # ge=0：负数在启动时即报错——各校验点只对「0=不限 / 正数=上限」两种取值有定义
+    MAX_FILE_SIZE: int = Field(default=0, ge=0)
     # Issue #92：.doc 解禁——#46 判「转换链不可用」实为当时实例宿主未装 LibreOffice，
     # 2026-09-18 实例探针（含 WPS 真实样本）转换/解析/脱敏 0 残留；.rtf 仍不予受理
     # （解析毁 CJK 转义、成品残留原文）。
