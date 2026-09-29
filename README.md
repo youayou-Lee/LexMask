@@ -40,13 +40,15 @@ cd frontend && npm run build && npm test && npm run lint
 
 | 主题 | 位置 |
 |---|---|
-| 云上部署（含 DCU 构建） | [cloud-deploy/README_CLOUD.md](./cloud-deploy/README_CLOUD.md) |
-| 海光 DCU（K100_AI / DTK 26.04）部署教程 | [docs/deploy/](./docs/deploy/) |
+| 云上源码部署 B 方案（NVIDIA / ModelScope 通用；`setup_cloud.sh`+`start_cloud.sh`） | [cloud-deploy/README_CLOUD.md](./cloud-deploy/README_CLOUD.md) |
+| 海光 DCU（K100_AI / DTK 26.04）首次部署教程（历史参考） | [docs/deploy/](./docs/deploy/) |
 | 海光 DCU 适配总览（镜像矩阵/卡型/坑清单） | [docs/dcu/海光DCU适配总览.md](./docs/dcu/海光DCU适配总览.md) |
 | 开发工作流 / 测试门禁 / 仓库纪律 | [docs/WORKFLOW.md](./docs/WORKFLOW.md) · [docs/开发门禁-测试与独立评审规范.md](./docs/开发门禁-测试与独立评审规范.md) · [docs/协同开发规范-gh使用与仓库纪律.md](./docs/协同开发规范-gh使用与仓库纪律.md) |
 | 用户使用说明 | [docs/用户使用说明.md](./docs/用户使用说明.md) |
 | 性能与质量白皮书 | [docs/性能与质量白皮书.md](./docs/性能与质量白皮书.md) |
 | NER 评测套件 | [eval/README.md](./eval/README.md) |
+
+> **⚠️ 两条部署线不要混用**：`cloud-deploy/start_cloud.sh` 只服务上面的 B 方案（NVIDIA 环境：venv-vllm、CPU OCR、前端 3000）。**海光 DCU 租用实例（DTK 25.04.2）不适用**——其启动/运维走私有辅仓 `LexMask-workspace/docs/deploy/`（SSH 信息、环境清单、服务运维；冷启动脚本 `start_all_dcu.sh` 在云实例持久卷 `/root/private_data/redaction-persist/`）。注意本仓 `docs/deploy/` 是 DTK 26.04 的历史部署教程，不是 DCU 租用实例的运维入口；DCU 技术背景见 `docs/dcu/海光DCU适配总览.md`。
 
 ## 致谢
 
