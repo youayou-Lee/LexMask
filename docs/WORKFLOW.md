@@ -45,7 +45,7 @@ gh issue list --milestone "v1.1" --state all
 - [ ] 关键决策列 A/B 备选 + 取舍理由
 
 ### Step 3 开发 —— 分支 + 小步提交
-- [ ] `git switch preview && git pull --ff-only` 后切 `feat/xxx` / `fix/xxx` / `docs/xxx`；一分支一 Issue
+- [ ] `git switch preview && git pull --ff-only` 后切 `feat/xxx` / `fix/xxx` / `perf/xxx` / `docs/xxx`；一分支一 Issue
 - [ ] 多功能并行时用 worktree 隔离：每分支一个 `../.worktrees/<分支名>` 检出（约定见容器根 AGENTS.md）
 - [ ] **测试红不 commit 不 push**；一个 commit 一件事；message `type: 动机`（feat/fix/docs/refactor/test/chore）
 - [ ] 混了就 `git rebase -i` 拆
@@ -66,7 +66,7 @@ gh issue list --milestone "v1.1" --state all
 - [ ] 核对 Milestone 进度
 
 ### Step 7 版本收口 —— 打 tag + 复盘
-- [ ] 版本验收实例部署验证通过（GPU 栈变更必须过门禁④）→ `git tag vX.Y.Z main && git push --tags`
+- [ ] 版本验收实例部署验证通过（GPU 栈变更必须过门禁④）→ 先按 §5 晋级 main（squash PR，**不带 --delete-branch**）→ `git tag vX.Y.Z main && git push --tags`
 - [ ] 对照 README"路线图"逐项更新勾选
 - [ ] CHANGELOG 版本总结：做了什么、验证数据、下一版本为什么是它
 
@@ -121,9 +121,9 @@ gh pr create --fill-first          # 标题取首个 commit，正文补四要素
 gh pr checks                       # CI 状态
 gh pr merge --squash --delete-branch   # PR base=preview
 
-# 晋级发布（preview 验收通过后）
+# 晋级发布（preview 验收通过后；preview 为常驻分支，晋级**不删它**，故不带 --delete-branch）
 gh pr create --base main --head preview -t "promote: preview → main"
-gh pr merge --squash --delete-branch
+gh pr merge --squash
 
 # 测试
 cd backend && pytest tests/ -v                             # L1 后端
