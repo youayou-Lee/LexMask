@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { PaginationRail } from '@/components/PaginationRail';
+import { useTruncated } from '@/components/hooks/useTruncated';
 import { Switch } from '@/components/ui/switch';
 import {
   Tooltip,
@@ -112,7 +113,7 @@ export function EntityTypeList({
           </div>
         </div>
 
-        <div className={cn('page-surface-body flex overflow-hidden', compact ? 'p-2.5' : 'p-3')}>
+        <div className={cn('page-surface-body flex overflow-y-auto', compact ? 'p-2.5' : 'p-3')}>
           {types.length === 0 ? (
             <div
               className={cn(
@@ -130,7 +131,7 @@ export function EntityTypeList({
                 'grid w-full gap-3',
                 compact
                   ? 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 xl:grid-rows-3'
-                  : 'h-full min-h-0 flex-1 grid-cols-1 grid-rows-3 sm:grid-cols-2 xl:grid-cols-3',
+                  : 'h-full min-h-0 flex-1 grid-cols-1 grid-rows-[repeat(3,minmax(min-content,1fr))] sm:grid-cols-2 xl:grid-cols-3',
               )}
             >
               {visibleTypes.map((type) => {
@@ -142,16 +143,17 @@ export function EntityTypeList({
                     key={type.id}
                     className={cn(
                       'flex overflow-hidden rounded-[20px] border border-border/70 bg-[var(--surface-control)] px-3.5 py-3.5 shadow-[var(--shadow-sm)] transition-colors hover:border-border',
-                      compact ? 'h-[112px]' : 'h-full min-h-0',
+                      compact ? 'h-[112px]' : 'h-full',
                       showOverrides && accountDisabled && 'opacity-70',
                     )}
                   >
                   <div className="flex min-w-0 flex-1 flex-col gap-2.5">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <span className="line-clamp-2 text-sm font-semibold leading-5 text-foreground">
-                          {systemManaged ? getEntityTypeName(type.id) : type.name}
-                        </span>
+                        <ClampTooltipText
+                          kind="title"
+                          text={systemManaged ? getEntityTypeName(type.id) : type.name}
+                        />
                         {systemManaged && (
                           <span className="mt-1 inline-flex rounded-md border border-border/70 bg-muted/40 px-1.5 py-0.5 text-xs text-muted-foreground">
                             {t('settings.entityList.systemManaged')}
@@ -241,18 +243,22 @@ export function EntityTypeList({
                       </TooltipProvider>
                     )}
 
-                    <div className="min-h-0 flex-1 rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5">
+                    <div
+                      className={cn(
+                        'flex-1 rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5',
+                        compact && 'min-h-0 overflow-hidden',
+                      )}
+                    >
                       <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                         {isRegex ? t('settings.matchExpression') : t('settings.cardDescriptionLabel')}
                       </p>
                       {isRegex ? (
-                        <code className="mt-1 block line-clamp-3 break-all text-xs leading-4 text-foreground">
-                          {type.regex_pattern ?? '-'}
-                        </code>
+                        <ClampTooltipText kind="regex" text={type.regex_pattern ?? '-'} />
                       ) : (
-                        <p className="mt-1 line-clamp-4 text-xs leading-4 text-foreground">
-                          {type.description || t('settings.semanticDescriptionPlaceholder')}
-                        </p>
+                        <ClampTooltipText
+                          kind="description"
+                          text={type.description || t('settings.semanticDescriptionPlaceholder')}
+                        />
                       )}
                     </div>
                   </div>
@@ -277,6 +283,51 @@ export function EntityTypeList({
         )}
       </div>
     </div>
+  );
+}
+
+/** Issue #9：标题/描述/正则被截断时悬浮显示全文；未截断时渲染与原实现一致。 */
+function ClampTooltipText({
+  text,
+  kind,
+}: {
+  text: string;
+  kind: 'title' | 'description' | 'regex';
+}) {
+  const { ref, truncated } = useTruncated(text);
+  const node =
+    kind === 'title' ? (
+      <span ref={ref} className="line-clamp-2 text-sm font-semibold leading-5 text-foreground">
+        {text}
+      </span>
+    ) : kind === 'regex' ? (
+      <code
+        ref={ref}
+        className="mt-1 block line-clamp-3 break-all text-xs leading-4 text-foreground"
+      >
+        {text}
+      </code>
+    ) : (
+      <p ref={ref} className="mt-1 line-clamp-4 text-xs leading-4 text-foreground">
+        {text}
+      </p>
+    );
+  if (!truncated) return node;
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>{node}</TooltipTrigger>
+        <TooltipContent
+          side="top"
+          className={cn(
+            'max-w-[min(24rem,calc(100vw-2rem))] text-xs leading-4',
+            kind === 'regex' && 'break-all',
+          )}
+        >
+          {text}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 
