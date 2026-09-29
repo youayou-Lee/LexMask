@@ -50,9 +50,13 @@ export async function run(action, instanceName) {
       await userInput.fill(conf.username);
       await page.getByPlaceholder(/请输入密码|Enter password/).fill(conf.password);
       await page.getByRole("button", { name: /登录|Login/ }).click();
-      // 验证码兜底：若出现图形验证码，无人值守无法处理，立即报错
+      // 验证码兜底：给最多 3s 渲染窗口再检查，无人值守无法处理，立即报错
       const captcha = page.getByPlaceholder(/请输入图形验证码|captcha/i);
-      if (await captcha.isVisible().catch(() => false)) {
+      const captchaHit = await captcha
+        .waitFor({ state: "visible", timeout: 3000 })
+        .then(() => true)
+        .catch(() => false);
+      if (captchaHit) {
         throw new Error("登录触发了图形验证码，请人工登录一次后再试");
       }
     }
@@ -81,7 +85,8 @@ export async function run(action, instanceName) {
             const any = rows.find((r) => re2.test(r.textContent));
             return {
               found: false,
-              text: any ? any.textContent.replace(/\s+/g, " ").slice(0, 160) : "",
+              // 不截断：幂等判断要在这段文本里找状态词，截断可能把状态截掉
+              text: any ? any.textContent.replace(/\s+/g, " ") : "",
             };
           }
           const anchor = row
