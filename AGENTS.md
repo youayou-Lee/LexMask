@@ -7,7 +7,7 @@
 1. **参考实现只读**：不对 `ttttccxxui/DataInfra-RedactionEverything`（外部真实仓名，见协同规范豁免条目）提 Issue/PR/push；`gh` 一律显式 `--repo youayou-Lee/LexMask`。
 2. **分支从 preview 切，合入 preview**：`feat|fix|perf/<主题>`；一分支一 Issue，走完七道门。分支模型与晋级 main 见 `docs/WORKFLOW.md` §7。
 3. **敏感数据绝不入库**：真实案卷、云平台凭据/IP 不进代码、文档、commit message、本文件（本文件随仓库公开）——pre-commit 钩子会拦截，但别依赖它兜底。
-4. **开发门禁（`docs/开发门禁-测试与独立评审规范.md`）是铁律**：验收标准前置、独立 review、用户手动验收放行后才 merge。
+4. **开发门禁（`docs/开发门禁-测试与独立评审规范.md`）是铁律**：验收标准前置、验收分级（人工 / AI 自验收，见门禁 §4）、独立 review、用户放行后才 merge。
 
 ## 服务拓扑（docker compose --profile gpu）
 | 容器 | 端口 | 说明 |
