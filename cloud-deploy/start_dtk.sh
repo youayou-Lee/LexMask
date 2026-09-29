@@ -4,7 +4,7 @@
 # 会拖 CUDA 版 torch 覆盖 DTK 栈，不可行；本服务与 backend 的 HAS_BASE_URL 契约完全一致。
 # 显存布局: 实测环境 DCU 单卡 64G → NER ~2G + LocateAnything ~10G 共卡0；双卡时 LA 自适应上卡1。
 # OCR/backend/frontend 在 CPU。
-# 凭据脱敏: 平台代理账密不入库, 运行前必须 export PLATFORM_PROXY_URL='http://<user>:<pass>@<host>:<port>'
+# 凭据脱敏: 平台代理账密不入库, 运行前必须 export PLATFORM_PROXY_URL='http://<user>:<pass>@<host>:<port>'
 : "${PLATFORM_PROXY_URL:?请先 export PLATFORM_PROXY_URL(平台控制台获取)}"
 
 # 坑(L20 实测⑤⑥): tmux 服务器环境在首次启动时定死，.bashrc/.env 的变量传不进窗口
