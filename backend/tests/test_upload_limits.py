@@ -9,10 +9,14 @@ import asyncio
 import hashlib
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.api.dicom import DicomWorkflowError, _save_upload
-from app.core.config import Settings
+from app.core.config import Settings, settings
+from app.main import app
+
+client = TestClient(app)
 
 
 class _FakeUpload:
@@ -65,3 +69,63 @@ def test_negative_max_file_size_rejected_at_startup():
 def test_zero_and_positive_max_file_size_accepted():
     assert Settings(MAX_FILE_SIZE=0).MAX_FILE_SIZE == 0
     assert Settings(MAX_FILE_SIZE=52428800).MAX_FILE_SIZE == 52428800
+
+
+# ---------------------------------------------------------------------------
+# MaxBodySizeMiddleware：非 JSON 上限跟随 MAX_FILE_SIZE（0=不拦截），JSON 恒 1MB
+# （Issue #27：旧实现硬编码 60MB，与 MAX_FILE_SIZE 脱钩，100MB 整包上传秒 413）
+# ---------------------------------------------------------------------------
+@pytest.fixture()
+def _mw_env(monkeypatch, tmp_path):
+    from app.main import MaxBodySizeMiddleware
+
+    monkeypatch.setattr(settings, "AUTH_ENABLED", False)
+    monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path))
+    # 把 multipart 开销调小，便于用小请求体触发上限分支
+    monkeypatch.setattr(MaxBodySizeMiddleware, "MULTIPART_OVERHEAD_BYTES", 4)
+    return MaxBodySizeMiddleware
+
+
+def _init_session(size=10):
+    return client.post(
+        "/api/v1/files/upload/resumable/init",
+        json={"filename": "mw.txt", "file_size": size},
+    )
+
+
+def _chunk(upload_id, payload: bytes):
+    return client.put(
+        f"/api/v1/files/upload/resumable/{upload_id}/chunk",
+        params={"offset": 0},
+        content=payload,
+        headers={"Content-Type": "application/octet-stream"},
+    )
+
+
+def test_middleware_unlimited_when_max_file_size_zero(_mw_env, monkeypatch):
+    monkeypatch.setattr(settings, "MAX_FILE_SIZE", 0)
+    assert _init_session(size=20).status_code == 200
+    upload_id = _init_session(size=20).json()["upload_id"]
+    r = _chunk(upload_id, b"A" * 20)
+    assert r.status_code == 200 and r.json()["received_bytes"] == 20
+
+
+def test_middleware_rejects_over_configured_cap(_mw_env, monkeypatch):
+    monkeypatch.setattr(settings, "MAX_FILE_SIZE", 10)  # 生效上限 = 10 + 4 = 14
+    upload_id = _init_session(size=10).json()["upload_id"]
+    r = _chunk(upload_id, b"A" * 15)
+    assert r.status_code == 413 and r.json()["error_code"] == "BODY_TOO_LARGE"
+    # 上限内的请求正常通过（10 字节 ≤ 声明尺寸 10，也 ≤ 中间件上限 14）
+    upload_id2 = _init_session(size=10).json()["upload_id"]
+    r2 = _chunk(upload_id2, b"A" * 10)
+    assert r2.status_code == 200 and r2.json()["received_bytes"] == 10
+
+
+def test_middleware_json_cap_independent_of_max_file_size(_mw_env, monkeypatch):
+    monkeypatch.setattr(settings, "MAX_FILE_SIZE", 0)
+    big_name = "x" * (1 * 1024 * 1024 + 1024)
+    r = client.post(
+        "/api/v1/files/upload/resumable/init",
+        json={"filename": big_name, "file_size": 1},
+    )
+    assert r.status_code == 413 and r.json()["error_code"] == "BODY_TOO_LARGE"
