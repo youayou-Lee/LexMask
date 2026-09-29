@@ -787,7 +787,7 @@ async def import_inbox_files(
             failed.append({"name": name, "reason": f"不支持的类型 {ext}"})
             continue
         size = os.path.getsize(src)
-        if size > settings.MAX_FILE_SIZE:
+        if settings.MAX_FILE_SIZE and size > settings.MAX_FILE_SIZE:
             failed.append({"name": name, "reason": "文件过大"})
             continue
         # magic bytes 预检在 move 之前做：process_upload 对伪造文件的语义是

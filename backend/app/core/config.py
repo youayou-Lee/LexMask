@@ -196,7 +196,8 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     OUTPUT_DIR: str = "./outputs"
     DATA_DIR: str = "./data"
-    MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50MB
+    # 单文件上传上限（字节）；0 = 不限制。部署方需要时用环境变量恢复，如 MAX_FILE_SIZE=52428800
+    MAX_FILE_SIZE: int = 0
     # Issue #92：.doc 解禁——#46 判「转换链不可用」实为当时实例宿主未装 LibreOffice，
     # 2026-09-18 实例探针（含 WPS 真实样本）转换/解析/脱敏 0 残留；.rtf 仍不予受理
     # （解析毁 CJK 转义、成品残留原文）。

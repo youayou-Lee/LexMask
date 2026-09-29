@@ -648,7 +648,6 @@ const enBase: Record<string, string> = {
   'batchWizard.step2.dismissIssues': 'Dismiss',
   'batchWizard.step2.retryFailed': 'Retry failed ({count})',
   'batchWizard.step2.moreIssues': '+ {count} more issues',
-  'batchWizard.step2.rejectTooLarge': 'The file exceeds the 50 MB upload limit.',
   'batchWizard.step2.rejectInvalidType': 'This file type is not supported by the current uploader.',
   'batchWizard.step2.rejectModeMismatchText':
     'This looks like a scanned image. Use the mixed-file batch entry so the system can choose the right recognition path.',
@@ -1097,7 +1096,6 @@ const enOverrides: Record<string, string> = {
   'playground.clickToUpload': 'Or click to choose a file',
   'playground.upload.rejectInvalidType':
     '{filename} is not supported. Choose a Word, text, PDF, or image file.',
-  'playground.upload.rejectTooLarge': '{filename} is larger than {max}. Choose a smaller file.',
   'playground.upload.rejectTooMany': 'Upload one file at a time.',
   'playground.upload.rejectGeneric': 'This file cannot be uploaded. Check the format and size.',
   'playground.recognitionTypes': 'Recognition types',

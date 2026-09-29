@@ -50,7 +50,8 @@ from app.services.dicom_jobs import (
 router = APIRouter(prefix="/dicom", tags=["DICOM"])
 
 _CHUNK_SIZE = 1024 * 1024
-_MAX_UPLOAD_BYTES = max(1, int(os.environ.get("DICOM_MAX_UPLOAD_BYTES", settings.MAX_FILE_SIZE)))
+# 0 = 不限制（与 MAX_FILE_SIZE=0 语义一致）；DICOM_MAX_UPLOAD_BYTES 显式设置优先
+_MAX_UPLOAD_BYTES = max(0, int(os.environ.get("DICOM_MAX_UPLOAD_BYTES", str(settings.MAX_FILE_SIZE))))
 _MAX_ARCHIVE_EXPANDED_BYTES = max(
     _MAX_UPLOAD_BYTES,
     int(os.environ.get("DICOM_MAX_ARCHIVE_EXPANDED_BYTES", 500 * 1024**2)),
@@ -123,7 +124,7 @@ async def _save_upload(upload: UploadFile, destination: str, remaining: int) -> 
                 if not chunk:
                     break
                 size += len(chunk)
-                if size > remaining:
+                if remaining and size > remaining:
                     raise DicomWorkflowError(
                         413,
                         "DICOM_UPLOAD_TOO_LARGE",
@@ -172,7 +173,9 @@ async def _prepare_files(uploads: list[UploadFile], staging: str) -> list[_Prepa
             )
         seen.add(key)
         destination = os.path.join(staging, f"upload-{index:08d}.bin")
-        size, digest = await _save_upload(upload, destination, _MAX_UPLOAD_BYTES - total)
+        # 0 = 不限制：不传剩余预算（_save_upload 对 0 跳过校验），避免 -total 变负数误判
+        remaining = _MAX_UPLOAD_BYTES - total if _MAX_UPLOAD_BYTES else 0
+        size, digest = await _save_upload(upload, destination, remaining)
         total += size
         prepared.append(_PreparedEntry(destination, relative, size, digest))
     return prepared

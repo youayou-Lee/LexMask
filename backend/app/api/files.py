@@ -496,7 +496,7 @@ async def upload_file(
                 if not chunk:
                     break
                 file_size += len(chunk)
-                if file_size > settings.MAX_FILE_SIZE:
+                if settings.MAX_FILE_SIZE and file_size > settings.MAX_FILE_SIZE:
                     await f.close()
                     os.remove(file_path)
                     raise HTTPException(
