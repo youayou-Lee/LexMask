@@ -2,14 +2,14 @@
 
 import { useEffect, useState } from 'react';
 
-/** Issue #9：任一维度 scroll 尺寸超过 client 尺寸即视为内容被截断（如 line-clamp）。 */
+/** Issue #9：任一维度 scroll 尺寸超过 client 尺寸即视为内容被截断（如 line-clamp）。1px 容差吸收 DPI 缩放下的分数行高取整误差。 */
 export function isElementTruncated(el: {
   scrollHeight: number;
   clientHeight: number;
   scrollWidth: number;
   clientWidth: number;
 }): boolean {
-  return el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth;
+  return el.scrollHeight - el.clientHeight > 1 || el.scrollWidth - el.clientWidth > 1;
 }
 
 /**

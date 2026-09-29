@@ -297,18 +297,27 @@ function ClampTooltipText({
   const { ref, truncated } = useTruncated(text);
   const node =
     kind === 'title' ? (
-      <span ref={ref} className="line-clamp-2 text-sm font-semibold leading-5 text-foreground">
+      <span
+        ref={ref}
+        tabIndex={truncated ? 0 : undefined}
+        className="line-clamp-2 text-sm font-semibold leading-5 text-foreground"
+      >
         {text}
       </span>
     ) : kind === 'regex' ? (
       <code
         ref={ref}
+        tabIndex={truncated ? 0 : undefined}
         className="mt-1 block line-clamp-3 break-all text-xs leading-4 text-foreground"
       >
         {text}
       </code>
     ) : (
-      <p ref={ref} className="mt-1 line-clamp-4 text-xs leading-4 text-foreground">
+      <p
+        ref={ref}
+        tabIndex={truncated ? 0 : undefined}
+        className="mt-1 line-clamp-4 text-xs leading-4 text-foreground"
+      >
         {text}
       </p>
     );

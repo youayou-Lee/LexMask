@@ -16,6 +16,12 @@ describe('isElementTruncated', () => {
     expect(isElementTruncated(el({ height: 64, width: 200 }, { height: 48, width: 200 }))).toBe(true);
   });
 
+  it('tolerates 1px rounding noise from fractional DPI scaling', () => {
+    expect(isElementTruncated(el({ height: 49, width: 200 }, { height: 48, width: 200 }))).toBe(false);
+    expect(isElementTruncated(el({ height: 200, width: 201 }, { height: 200, width: 200 }))).toBe(false);
+    expect(isElementTruncated(el({ height: 50, width: 200 }, { height: 48, width: 200 }))).toBe(true);
+  });
+
   it('detects horizontal clipping', () => {
     expect(isElementTruncated(el({ height: 16, width: 500 }, { height: 16, width: 200 }))).toBe(true);
   });
