@@ -3,6 +3,8 @@
 适用：ModelScope 免费 GPU 实例等**无法运行 Docker** 的环境。
 本地机器只需要跑一次打包脚本，其余都在云上执行。
 
+> **⚠️ 本 README 与 `start_cloud.sh` 仅适用 NVIDIA 通用环境。** 海光 DCU 租用实例（DTK 25.04.2，gfx928）不适用本流程：其 venv 布局、OCR 运行形态（DCU 线为 paddle-dcu GPU 推理，B 方案为 CPU）、前端端口均不同。DCU 实例的启动与运维见私有辅仓 `LexMask-workspace/docs/deploy/`，冷启动用实例持久卷上的 `/root/private_data/redaction-persist/start_all_dcu.sh`。
+
 > `setup_dtk.sh`/`start_dtk.sh`（transformers 自包 NER），本 README 描述的 NVIDIA 路径用
 > `setup_cloud.sh`/`start_cloud.sh`（vLLM NER）。
 
