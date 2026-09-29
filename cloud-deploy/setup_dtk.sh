@@ -2,7 +2,7 @@
 # DTK(海光DCU) 环境一次性安装。前置: 平台镜像已带 torch 2.9(DTK) + python 3.11。
 # 实测环境: 云 DCU 单卡 64GB (HIP 6.3), DTK 26.04 位于 /opt/dtk。
 # 可重复执行。
-# 凭据脱敏: 平台代理账密不入库, 运行前必须 export PLATFORM_PROXY_URL='http://<user>:<pass>@<host>:<port>'
+# 凭据脱敏: 平台代理账密不入库, 运行前必须 export PLATFORM_PROXY_URL='http://<user>:<pass>@<host>:<port>'
 : "${PLATFORM_PROXY_URL:?请先 export PLATFORM_PROXY_URL(平台控制台获取)}"
 
 # 云平台代理: 容器访问 pypi/hf-mirror/modelscope/npmmirror 的唯一出网通道(直连全不通)
