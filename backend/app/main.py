@@ -355,14 +355,22 @@ app.add_exception_handler(RequestValidationError, validation_exception_handler)
 # Request body size limit middleware (runs before CORS)
 # ---------------------------------------------------------------------------
 class MaxBodySizeMiddleware(BaseHTTPMiddleware):
+    """请求体上限：非 JSON 跟随 settings.MAX_FILE_SIZE（0=不限制），JSON 固定 1MB。
+
+    上限每请求动态读取（而非构造时快照），与各端点的 MAX_FILE_SIZE 校验保持同一
+    语义源；非 JSON 的余量 = 上限 + multipart 封装开销（boundary/表单字段/头）。
+    MAX_FILE_SIZE=0 时不做 Content-Length 拦截——超大请求体由端点流式校验与
+    磁盘余量检查（<500MB → 507）兜底。
+    """
+
+    MULTIPART_OVERHEAD_BYTES = 10 * 1024 * 1024
+
     def __init__(
         self,
         app,
-        max_body_size: int = 60 * 1024 * 1024,  # 60MB for uploads
         max_json_body_size: int = 1 * 1024 * 1024,  # 1MB for JSON requests
     ):
         super().__init__(app)
-        self.max_body_size = max_body_size
         self.max_json_body_size = max_json_body_size
 
     @staticmethod
@@ -394,12 +402,17 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         content_length = request.headers.get("content-length")
         content_type = (request.headers.get("content-type") or "").lower()
-        limit = self.max_body_size
         is_json_request = "application/json" in content_type or content_type.endswith("+json")
         if is_json_request:
-            limit = self.max_json_body_size
+            limit: int | None = self.max_json_body_size
+        else:
+            limit = (
+                settings.MAX_FILE_SIZE + self.MULTIPART_OVERHEAD_BYTES
+                if settings.MAX_FILE_SIZE
+                else None
+            )
 
-        if content_length:
+        if limit is not None and content_length:
             try:
                 if int(content_length) > limit:
                     return self._body_too_large_response()
