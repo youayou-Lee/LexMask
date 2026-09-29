@@ -243,7 +243,7 @@ async def pull_files(
             try:
                 client.get(remote, tmp_dest)
                 size = os.path.getsize(tmp_dest)
-                if size > settings.MAX_FILE_SIZE:
+                if settings.MAX_FILE_SIZE and size > settings.MAX_FILE_SIZE:
                     raise ValueError("文件过大")
                 if not validate_magic_bytes(tmp_dest, ext):
                     raise ValueError(f"文件内容与扩展名 {ext} 不匹配")
