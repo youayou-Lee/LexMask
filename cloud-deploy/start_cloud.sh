@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 云端启动：tmux 会话 redaction，5 个服务按依赖顺序拉起并等待健康。
 # 服务参数与启动目录 = 已验证的 Docker compose / dev.mjs 同款。
-# 凭据脱敏: 平台代理账密不入库, 运行前必须 export PLATFORM_PROXY_URL='http://<user>:<pass>@<host>:<port>'
+# 凭据脱敏: 平台代理账密不入库, 运行前必须 export PLATFORM_PROXY_URL='http://<user>:<pass>@<host>:<port>'
 : "${PLATFORM_PROXY_URL:?请先 export PLATFORM_PROXY_URL(平台控制台获取)}"
 
 # 健康检查 curl 127.0.0.1 不能走代理；conda python 进 PATH
