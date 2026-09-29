@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 云端一次性环境安装。可重复执行（已装的部分自动跳过）。
 # 前置：代码已解包到脚本所在仓库布局中（见 README_CLOUD.md 步骤②）
-# 凭据脱敏: 平台代理账密不入库, 运行前必须 export PLATFORM_PROXY_URL='http://<user>:<pass>@<host>:<port>'
+# 凭据脱敏: 平台代理账密不入库, 运行前必须 export PLATFORM_PROXY_URL='http://<user>:<pass>@<host>:<port>'
 : "${PLATFORM_PROXY_URL:?请先 export PLATFORM_PROXY_URL(平台控制台获取)}"
 
 # 云 DCU 实例适配：conda python3 进 PATH + 平台代理（pip/npm/hf 都需要）

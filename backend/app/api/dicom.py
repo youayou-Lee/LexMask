@@ -50,7 +50,8 @@ from app.services.dicom_jobs import (
 router = APIRouter(prefix="/dicom", tags=["DICOM"])
 
 _CHUNK_SIZE = 1024 * 1024
-_MAX_UPLOAD_BYTES = max(1, int(os.environ.get("DICOM_MAX_UPLOAD_BYTES", settings.MAX_FILE_SIZE)))
+# 0 = 不限制（与 MAX_FILE_SIZE=0 语义一致）；DICOM_MAX_UPLOAD_BYTES 显式设置优先
+_MAX_UPLOAD_BYTES = max(0, int(os.environ.get("DICOM_MAX_UPLOAD_BYTES", str(settings.MAX_FILE_SIZE))))
 _MAX_ARCHIVE_EXPANDED_BYTES = max(
     _MAX_UPLOAD_BYTES,
     int(os.environ.get("DICOM_MAX_ARCHIVE_EXPANDED_BYTES", 500 * 1024**2)),
@@ -113,7 +114,7 @@ def _archive_relative_name(name: str) -> str:
     return relative
 
 
-async def _save_upload(upload: UploadFile, destination: str, remaining: int) -> tuple[int, str]:
+async def _save_upload(upload: UploadFile, destination: str, remaining: int | None) -> tuple[int, str]:
     size = 0
     digest = hashlib.sha256()
     try:
@@ -123,7 +124,7 @@ async def _save_upload(upload: UploadFile, destination: str, remaining: int) -> 
                 if not chunk:
                     break
                 size += len(chunk)
-                if size > remaining:
+                if remaining is not None and size > remaining:
                     raise DicomWorkflowError(
                         413,
                         "DICOM_UPLOAD_TOO_LARGE",
@@ -172,7 +173,9 @@ async def _prepare_files(uploads: list[UploadFile], staging: str) -> list[_Prepa
             )
         seen.add(key)
         destination = os.path.join(staging, f"upload-{index:08d}.bin")
-        size, digest = await _save_upload(upload, destination, _MAX_UPLOAD_BYTES - total)
+        # None = 不限制；配置了上限时传精确剩余预算（可为 0：预算恰好用尽，后续文件应 413 而非绕过）
+        remaining = _MAX_UPLOAD_BYTES - total if _MAX_UPLOAD_BYTES else None
+        size, digest = await _save_upload(upload, destination, remaining)
         total += size
         prepared.append(_PreparedEntry(destination, relative, size, digest))
     return prepared
@@ -180,7 +183,7 @@ async def _prepare_files(uploads: list[UploadFile], staging: str) -> list[_Prepa
 
 async def _prepare_archive(upload: UploadFile, staging: str) -> tuple[list[_PreparedEntry], str]:
     archive_path = os.path.join(staging, "source.zip")
-    archive_size, archive_digest = await _save_upload(upload, archive_path, _MAX_UPLOAD_BYTES)
+    archive_size, archive_digest = await _save_upload(upload, archive_path, _MAX_UPLOAD_BYTES or None)
     del archive_size
     if not zipfile.is_zipfile(archive_path):
         raise DicomWorkflowError(400, "DICOM_ARCHIVE_INVALID", "仅支持有效的ZIP归档")

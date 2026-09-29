@@ -35,7 +35,14 @@ def _init(filename="doc.png", size=12):
 def test_init_rejects_bad_extension_and_size():
     assert _init(filename="evil.exe").status_code == 400
     assert _init(size=0).status_code == 400
-    assert _init(size=settings.MAX_FILE_SIZE + 1).status_code == 400
+
+
+def test_init_unlimited_by_default_and_cap_configurable(monkeypatch):
+    # 默认 0 = 不限制：远超旧 50MB 上限的声明尺寸放行（磁盘余量不足时另行 507）
+    assert _init(size=64 * 1024 * 1024).status_code == 200
+    # 配置了上限（如部署方设 MAX_FILE_SIZE）后超限仍拒绝
+    monkeypatch.setattr(settings, "MAX_FILE_SIZE", 1024)
+    assert _init(size=2048).status_code == 400
 
 
 def test_chunk_sequential_and_status():

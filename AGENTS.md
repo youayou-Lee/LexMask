@@ -5,9 +5,9 @@
 
 ## 铁律
 1. **参考实现只读**：不对 `ttttccxxui/DataInfra-RedactionEverything`（外部真实仓名，见协同规范豁免条目）提 Issue/PR/push；`gh` 一律显式 `--repo youayou-Lee/LexMask`。
-2. **分支从 main 切，合入 main**：`feat|fix|perf/<主题>`；一分支一 Issue，走完七道门。模型细则见 `docs/WORKFLOW.md` §7。
+2. **分支从 preview 切，合入 preview**：`feat|fix|perf/<主题>`；一分支一 Issue，走完七道门。分支模型与晋级 main 见 `docs/WORKFLOW.md` §7。
 3. **敏感数据绝不入库**：真实案卷、云平台凭据/IP 不进代码、文档、commit message、本文件（本文件随仓库公开）——pre-commit 钩子会拦截，但别依赖它兜底。
-4. **开发门禁（`docs/开发门禁-测试与独立评审规范.md`）是铁律**：验收标准前置、独立 review、用户手动验收放行后才 merge。
+4. **开发门禁（`docs/开发门禁-测试与独立评审规范.md`）是铁律**：验收标准前置、验收分级（人工 / AI 自验收，见门禁 §4）、独立 review、用户放行后才 merge。
 
 ## 服务拓扑（docker compose --profile gpu）
 | 容器 | 端口 | 说明 |
@@ -34,9 +34,9 @@ GPU 栈（paddle/vLLM/DTK）相关改动本地**不可验证**，必须上云实
 主检出留给集流与发布操作；每个功能分支一个独立 worktree，位置固定 `../../.worktrees/<分支名>`（容器目录下、仓库外）。创建与 setup：
 
 ```bash
-# 在主检出执行（先快进本地 main，不切分支；分支名含 / 时目录保留全名）
-git fetch origin main:main
-git worktree add ../../.worktrees/feat-issue2-x -b feat/issue2-x main
+# 在主检出执行（先快进本地 preview，不切分支；分支名含 / 时目录保留全名）
+git fetch origin preview:preview
+git worktree add ../../.worktrees/feat-issue2-x -b feat/issue2-x preview
 cd ../../.worktrees/feat-issue2-x
 # setup：不入库的东西从主检出补（主检出 = 容器内 LexMask/）
 cp ../../LexMask/.env .    # 没有则从 .env.example 新建
