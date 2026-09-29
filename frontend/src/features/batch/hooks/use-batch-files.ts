@@ -130,11 +130,9 @@ export function useBatchFiles(
   const rejectionToIssue = useCallback((rejection: FileRejection): BatchUploadIssue => {
     const firstError = rejection.errors[0];
     const reason =
-      firstError?.code === 'file-too-large'
-        ? t('batchWizard.step2.rejectTooLarge')
-        : firstError?.code === 'file-invalid-type'
-          ? t('batchWizard.step2.rejectInvalidType')
-          : firstError?.message || t('batchWizard.step2.rejectGeneric');
+      firstError?.code === 'file-invalid-type'
+        ? t('batchWizard.step2.rejectInvalidType')
+        : firstError?.message || t('batchWizard.step2.rejectGeneric');
     return {
       id: `reject-${rejection.file.name}-${rejection.file.size}-${Date.now()}`,
       filename: rejection.file.name,
@@ -377,7 +375,6 @@ export function useBatchFiles(
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: ACCEPTED_UPLOAD_FILE_TYPES,
-    maxSize: 50 * 1024 * 1024,
     disabled: loading,
     multiple: true,
   });

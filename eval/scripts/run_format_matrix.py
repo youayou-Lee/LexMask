@@ -387,7 +387,7 @@ def _vision_texts_from_boxes(boxes: list[dict]) -> list[str]:
 
 
 def _build_anomalies(workdir: Path) -> dict[str, tuple[Path, str]]:
-    """异常路径样件（设计文档 §2）：截断 docx / 伪扩展名 / 截断 png / 超 50MB / 空文件。"""
+    """异常路径样件（设计文档 §2）：截断 docx / 伪扩展名 / 截断 png / 超大 txt / 空文件。"""
     docx = (FORMATS_DIR / "fmt_docx.docx").read_bytes()
     png = (FORMATS_DIR / "fmt_png.png").read_bytes()
     cases = {
@@ -405,7 +405,7 @@ def _build_anomalies(workdir: Path) -> dict[str, tuple[Path, str]]:
     oversize = workdir / "anom_oversize.txt"
     if not oversize.exists() or oversize.stat().st_size != 51 * 1024 * 1024:
         oversize.write_bytes(b"\x00" * (51 * 1024 * 1024))
-    cases["oversize"] = (oversize, "51MB 超 50MB 上限 → 明确拒绝")
+    cases["oversize"] = (oversize, "51MB 超大输入 → 不再因大小拒绝，内容校验仍生效")
     return cases
 
 
@@ -431,7 +431,7 @@ def run_suite(api: common_api.EvalApi, *, suite: str, workdir: Path, cleanup: bo
         if unknown:
             raise ValueError(f"未知格式: {unknown}（可选: {list(MATRIX)}）")
         formats = formats_filter
-    cases = _build_anomalies(workdir)  # 一次性构建（51MB 超限样件带大小缓存）
+    cases = _build_anomalies(workdir)  # 一次性构建（51MB 超大样件带大小缓存）
     anomaly_ids = list(cases) if suite == "full" else SMOKE_ANOMALIES
     cells: list[dict] = []
     anomalies: list[dict] = []

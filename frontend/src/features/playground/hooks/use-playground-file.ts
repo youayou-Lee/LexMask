@@ -19,8 +19,6 @@ import type {
   NerResponse,
 } from '../types';
 
-const PLAYGROUND_MAX_FILE_SIZE = 50 * 1024 * 1024;
-
 async function responseErrorMessage(res: Response, fallbackKey: string) {
   try {
     const data = await safeJson<{ detail?: unknown; message?: unknown; error?: unknown }>(res);
@@ -100,11 +98,6 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
 
   const rejectionMessage = useCallback((rejection: FileRejection): string => {
     const firstError = rejection.errors[0];
-    if (firstError?.code === 'file-too-large') {
-      return t('playground.upload.rejectTooLarge')
-        .replace('{filename}', rejection.file.name)
-        .replace('{max}', '50 MB');
-    }
     if (firstError?.code === 'file-invalid-type') {
       return t('playground.upload.rejectInvalidType').replace('{filename}', rejection.file.name);
     }
@@ -419,7 +412,6 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     onDrop: handleFileDrop,
     onDropRejected,
     accept: ACCEPTED_UPLOAD_FILE_TYPES,
-    maxSize: PLAYGROUND_MAX_FILE_SIZE,
     maxFiles: 1,
     disabled: isLoading,
     noClick: true,
