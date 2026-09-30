@@ -134,3 +134,70 @@ def test_fully_recalled_page_has_zero_verify_calls():
     entities, stage = _run_analysis(_dense_blocks(), client)
     assert _verify_entities(entities, "USD 125.00")
     assert "has_text_verify_calls" not in stage or stage["has_text_verify_calls"] == 0
+
+
+def _many_amount_blocks(n: int):
+    lines = [f"发票号 {i:04d} 款项 USD {i},000.00 经手人 张三{i}" for i in range(1, n + 1)]
+    return [
+        OCRTextBlock(
+            text=t,
+            polygon=[[100, 40 * i], [600, 40 * i], [600, 40 * i + 30], [100, 40 * i + 30]],
+            confidence=0.98,
+        )
+        for i, t in enumerate(lines)
+    ]
+
+
+def _partial_recall_rules(n: int):
+    """部分召回锚点（residual 触发前提=≥1 已消费值）：主 payload（spaced）只召回
+    第一个值；残差 payload（compact，含末值）全量补召回；verify 单值逐值应答。"""
+    return [
+        ("款项 USD 1,000.00", {"金额": ["USD1,000.00"]}),
+        (f"USD{n},000.00", {"金额": [f"USD{i},000.00" for i in range(1, n + 1)]}),
+    ] + [
+        (f"USD{i},000.00", {"金额": [f"USD{i},000.00"]}) for i in range(1, n)
+    ]
+
+
+def test_verify_concurrency_bounded_by_gate(monkeypatch):
+    """闸门=4 时峰值 >1 且 ≤4（并发生效、被闸门约束）。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "SERIALIZE_SHARED_GPU_MODELS", True, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_GLOBAL_MAX_INFLIGHT", 4, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_VERIFY_PARALLEL_CAP", 4, raising=False)
+    # n 个待验证值：主调用全不召回，residual 捞回 → verify n 次
+    rules = _partial_recall_rules(8)
+    client = _ContentKeyedHaS(rules, hold_sec=0.05)
+    entities, stage = _run_analysis(_many_amount_blocks(8), client)
+    assert stage["has_text_verify_calls"] >= 7  # 主召回 1 个 + 残差补回 7 个
+    assert 2 <= stage["has_text_verify_peak_concurrency"] <= 4
+
+
+def test_verify_bounded_even_when_gate_bypassed(monkeypatch):
+    """闸门旁路（slot 空操作）下窗口独立界仍生效：CAP=3 → 峰值恰为 3（Review Focus 2）。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "SERIALIZE_SHARED_GPU_MODELS", False, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_GLOBAL_MAX_INFLIGHT", 8, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_VERIFY_PARALLEL_CAP", 3, raising=False)
+    rules = _partial_recall_rules(9)
+    client = _ContentKeyedHaS(rules, hold_sec=0.05)
+    entities, stage = _run_analysis(_many_amount_blocks(9), client)
+    assert stage["has_text_verify_calls"] >= 8
+    assert stage["has_text_verify_peak_concurrency"] == 3
+
+
+def test_verify_results_multiset_equal_to_serial():
+    """同一输入下并发版与串行版结果按 (type, text) 多重集相等（Review Focus 4，顺序无语义）。"""
+    def run(gate):
+        from app.core.config import settings
+
+        settings.SERIALIZE_SHARED_GPU_MODELS = True
+        settings.HAS_NER_GLOBAL_MAX_INFLIGHT = gate
+        settings.HAS_NER_VERIFY_PARALLEL_CAP = 4
+        client = _ContentKeyedHaS(_FAKE_RULES)
+        entities, _ = _run_analysis(_dense_blocks(), client)
+        return sorted((e["type"], e["text"]) for e in entities)
+
+    assert run(1) == run(4)

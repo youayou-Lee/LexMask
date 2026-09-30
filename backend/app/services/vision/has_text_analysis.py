@@ -662,31 +662,60 @@ async def run_has_text_analysis(
                             if clean_text not in bucket:
                                 bucket.append(clean_text)
                 if residual_new:
+                    from app.core.config import settings as verify_settings
                     from app.core.gpu_inference_gate import shared_gpu_inference_slot
 
-                    verify_calls = 0
-                    verify_errors = 0
-                    async with shared_gpu_inference_slot("OCR HaS Text residual verify NER"):
-                        for entity_type, fresh in residual_new.items():
-                            merged_ner_result.setdefault(entity_type, [])
-                            for clean_text in fresh:
-                                verify_calls += 1
-                                try:
-                                    verify = await asyncio.to_thread(
-                                        has_client.ner, clean_text, [entity_type]
-                                    )
-                                except Exception:
-                                    verify_errors += 1
-                                    continue
-                                confirmed = {
-                                    _compact_text(v)
-                                    for v in ((verify or {}).get(entity_type, []) or [])
-                                }
-                                if clean_text in confirmed:
-                                    merged_ner_result[entity_type].append(clean_text)
-                    _record_has_text_metric(stage_status, "has_text_verify_calls", verify_calls)
-                    _record_has_text_metric(stage_status, "has_text_verify_peak_concurrency", 1)
-                    _record_has_text_metric(stage_status, "has_text_verify_errors", verify_errors)
+                    verify_jobs: list[tuple[str, str]] = [
+                        (entity_type, clean_text)
+                        for entity_type, fresh in residual_new.items()
+                        for clean_text in fresh
+                    ]
+                    # 独立于闸门的硬界：闸门旁路（SERIALIZE_SHARED_GPU_MODELS=False
+                    # 时 slot 变空操作）下防止 N 个值同时砸向模型服务。
+                    window = max(
+                        1,
+                        min(
+                            int(verify_settings.HAS_NER_VERIFY_PARALLEL_CAP),
+                            int(verify_settings.HAS_NER_GLOBAL_MAX_INFLIGHT),
+                            len(verify_jobs),
+                        ),
+                    )
+                    verify_sem = asyncio.Semaphore(window)
+                    verify_state = {"calls": 0, "current": 0, "peak": 0, "errors": 0}
+
+                    async def _verify_one(job: tuple[str, str]) -> tuple[str, str, bool]:
+                        entity_type, clean_text = job
+                        async with verify_sem, shared_gpu_inference_slot("OCR HaS Text residual verify NER"):
+                            verify_state["calls"] += 1
+                            verify_state["current"] += 1
+                            verify_state["peak"] = max(verify_state["peak"], verify_state["current"])
+                            try:
+                                verify = await asyncio.to_thread(has_client.ner, clean_text, [entity_type])
+                            except Exception:
+                                # 未确认丢弃：与真客户端吞异常返回 {} 的生产语义对齐
+                                # （评审 B2）。等价于 gather(return_exceptions=True) 后
+                                # 逐项兜底——其余任务照常落定，无孤儿持槽。
+                                verify_state["errors"] += 1
+                                return entity_type, clean_text, False
+                            finally:
+                                verify_state["current"] -= 1
+                        confirmed = {
+                            _compact_text(v)
+                            for v in ((verify or {}).get(entity_type, []) or [])
+                        }
+                        return entity_type, clean_text, clean_text in confirmed
+
+                    outcomes = await asyncio.gather(*(_verify_one(job) for job in verify_jobs))
+                    for entity_type, clean_text, confirmed_ok in outcomes:
+                        if not confirmed_ok:
+                            continue
+                        merged_ner_result.setdefault(entity_type, [])
+                        if clean_text not in merged_ner_result[entity_type]:
+                            merged_ner_result[entity_type].append(clean_text)
+
+                    _record_has_text_metric(stage_status, "has_text_verify_calls", verify_state["calls"])
+                    _record_has_text_metric(stage_status, "has_text_verify_peak_concurrency", verify_state["peak"])
+                    _record_has_text_metric(stage_status, "has_text_verify_errors", verify_state["errors"])
 
         for entity_type, entity_list in merged_ner_result.items():
             if not entity_list:
