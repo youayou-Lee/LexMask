@@ -269,11 +269,62 @@ def _block_residual_ink(block_compact: str, consumed_values: list[str]) -> str |
     return leftover if has_value_sized_run else None
 
 
+def _find_all(text: str, sub: str) -> list[int]:
+    """All start offsets of sub in text (overlapping stepping; Issue#37 WS-1)."""
+    if not text or not sub:
+        return []
+    hits: list[int] = []
+    start = text.find(sub)
+    while start != -1:
+        hits.append(start)
+        start = text.find(sub, start + 1)
+    return hits
+
+
+def _inject_known_values(
+    entities: list[dict[str, str]],
+    known_values: list[dict[str, str]] | None,
+    ocr_blocks: list[OCRTextBlock],
+    stage_status: dict[str, Any] | None,
+) -> int:
+    """WS-1 半 B（Issue#37）：被剔块的已知值出现处照样进实体表产出 region。
+
+    regions 只来自本页 NER 实体，A 半把整消费块剔出 payload 后，被剔块中的
+    已知值必须经此确定性回填（纯字符串匹配，零模型开销），否则该出现处在
+    输出文档保持明文——没有 B，A 不许合入。逐块 isolated-token 判定（与
+    matcher 逐块定位同构；页级拼接会把相邻纯值块粘连成 CJK-CJK 边界漏判）。
+    空载荷页（全块被剔）与常规路径共用本助手（①.5 二轮空载荷守卫）。
+    """
+    block_compacts = [_compact_text(_block_search_text(block)) for block in ocr_blocks]
+    known_by_text = {
+        _compact_text(str(v.get("text") or "")): str(v.get("type") or "")
+        for v in (known_values or [])
+        if v.get("type") and v.get("text")
+    }
+    existing_texts = {e["text"] for e in entities}
+    injected = 0
+    for text, vtype in known_by_text.items():
+        if len(text) < _NER_MIN_LEN_BY_TYPE.get(vtype, _NER_DEFAULT_MIN_LEN):
+            continue
+        if text in existing_texts:
+            continue
+        if any(
+            _is_isolated_token_occurrence(bc, start, start + len(text))
+            for bc in block_compacts
+            for start in _find_all(bc, text)
+        ):
+            entities.append({"type": vtype, "text": text})
+            injected += 1
+    _record_has_text_metric(stage_status, "has_text_known_injected", injected)
+    return injected
+
+
 async def run_has_text_analysis(
     ocr_blocks: list[OCRTextBlock],
     has_client: Any,
     vision_types: list | None = None,
     stage_status: dict[str, Any] | None = None,
+    known_values: list[dict[str, str]] | None = None,
 ) -> list[dict[str, str]]:
     """
     Analyse OCR text with HaS local NER model to identify sensitive entities.
@@ -332,6 +383,48 @@ async def run_has_text_analysis(
         prepare_start = time.perf_counter()
         selected_type_ids = [_canonical_image_text_type(getattr(vt, "id", "")) for vt in (vision_types or [])]
         candidate_blocks = _filter_blocks_for_has_text(ocr_blocks, selected_type_ids)
+        # WS-1 按文件增量识别（Issue#37）：整块被文件已知实体解释掉的块不进
+        # 主/bridge payload——模型看不到就不会重复生成该值。部分消费块整块保留
+        # （上下文不丢）；字段标签不参与消费；isolated-token 防子串误吞。
+        # 页级预筛防幻影吞块：_block_residual_ink 的 block ⊂ value 分支不需要
+        # 值在本页出现，他页长值会把本页碎片块整吞且注入侧无从回填。
+        known_filter_values: list[str] = []
+        if known_values and bool(settings.HAS_VISION_INCREMENTAL_KNOWN_FILTER):
+            candidates: list[str] = []
+            for value in known_values:
+                vtype = str(value.get("type") or "")
+                text = _compact_text(str(value.get("text") or ""))
+                if not vtype or not text:
+                    continue
+                if len(text) < _NER_MIN_LEN_BY_TYPE.get(vtype, _NER_DEFAULT_MIN_LEN):
+                    continue
+                candidates.append(text)
+            if candidates:
+                page_text = _compact_text(
+                    "".join(_block_search_text(block) for block in candidate_blocks)
+                )
+                known_filter_values = [v for v in dict.fromkeys(candidates) if v in page_text]
+        dropped_blocks = 0
+        saved_chars = 0
+        if known_filter_values:
+            kept_blocks: list[OCRTextBlock] = []
+            for block in candidate_blocks:
+                block_compact = _compact_text(_block_search_text(block))
+                if _block_residual_ink(block_compact, known_filter_values) is None:
+                    dropped_blocks += 1
+                    saved_chars += len(block_compact)
+                    continue
+                kept_blocks.append(block)
+            if dropped_blocks:
+                logger.info(
+                    "HaS incremental filter: dropped %d/%d fully-consumed blocks",
+                    dropped_blocks,
+                    len(candidate_blocks),
+                )
+                candidate_blocks = kept_blocks
+        _record_has_text_metric(stage_status, "has_text_known_filter_blocks_dropped", dropped_blocks)
+        _record_has_text_metric(stage_status, "has_text_known_filter_chars_saved", saved_chars)
+        _record_has_text_metric(stage_status, "has_text_known_filter_candidate_values", len(known_filter_values))
         _record_has_text_metric(stage_status, "has_text_reconstructed_lines", 0)
         has_payload = _build_has_text_payload(
             candidate_blocks,
@@ -355,6 +448,22 @@ async def run_has_text_analysis(
         _record_has_text_metric(stage_status, "has_text_truncated", has_payload.truncated)
 
         if not text_content.strip():
+            if known_filter_values:
+                # WS-1 空载荷守卫（①.5 二轮）：本页整页被剔（或剔后无合格文本）
+                # 时不发 NER 调用，但注入照常回填——否则被剔块的已知值出现处
+                # 明文残留（遮盖完整性红线）。
+                logger.info(
+                    "HaS incremental filter dropped all %d blocks; injecting known values only",
+                    dropped_blocks,
+                )
+                injected_entities: list[dict[str, str]] = []
+                _inject_known_values(injected_entities, known_values, ocr_blocks, stage_status)
+                _record_has_text_metric(
+                    stage_status,
+                    "has_text_total_ms",
+                    round((time.perf_counter() - total_start) * 1000),
+                )
+                return injected_entities
             logger.info(
                 "HaS skipped; no eligible OCR text blocks (source=%d, eligible=%d, duplicates=%d)",
                 has_payload.source_block_count,
@@ -791,6 +900,11 @@ async def run_has_text_analysis(
                     "text": text,
                 })
                 logger.debug("HaS found entity: %s (%s)", text, normalized_type)
+
+        # WS-1 半 B（①.5 阻断级前置）：注入不做预筛集合短路——被剔块的值恰在
+        # candidate 文本中，按预筛集合跳过会放过被剔块场景（旗舰测试钉住）。
+        if known_filter_values:
+            _inject_known_values(entities, known_values, ocr_blocks, stage_status)
 
         await _narrow_amount_entities(entities, has_client)
 
