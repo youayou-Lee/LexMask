@@ -46,7 +46,7 @@ gh issue list --milestone "v1.1" --state all
 - [ ] 关键决策列 A/B 备选 + 取舍理由
 - [ ] **定验收方案（谁来验收）**：AI 自验收或人工验收，写进设计评论——AI 自验收适用于 AI 能凭浏览器实测 / API 实测 / 页面截图逐条核对、不依赖真实案卷与主观判断的改动（典型：纯 UI 显示/文案/样式、纯接口行为），AI 逐条实测留证后直接进独立 review；涉及真实案卷、业务正确性、主观效果判断或验证环境 AI 触达不了的走人工验收。设计评论未写验收方案 → 按人工验收从严（分级细则见门禁规范 §4）
 - [ ] **定影响面与环境计划**：标注改动范围（前端 / 后端 / 模型服务 NER|LA|OCR / 多者）；worktree 全量拉码，但开发环境只起影响面内的服务（纯前端改动不起后端，除非有真实依赖）；凡需起服务先核对端口占用——生产与开发端口段分离，多分支并行时按分支分配端口段，防串台
-- [ ] **验收方案独立评审（所有 Issue 一律过此门）**：设计+验收方案成稿后、交给用户点头前，调 `reviewing-acceptance-plan` skill 派冷视角子代理评审（只给 Issue 正文，不给设计方案）——独立起草预期结果、逐条负样本检验（"bug 不修这条必须失败"，答不出即恒真断言，判无效）、补边界攻击面与部署链覆盖；分歧修订后**设计与验收方案一起交给用户确认**，确认后才开工（细则见门禁规范 §1.5）
+- [ ] **验收方案独立评审（所有 Issue 一律过此门）**：设计+验收方案成稿后、交给用户点头前，调 `reviewing-acceptance-plan` skill 派冷视角子代理评审（只给 Issue 正文 + 验收方案全文，不给设计方案与 diff）——独立起草预期结果、逐条负样本检验（"bug 不修这条必须失败"，答不出即恒真断言，判无效）、补边界攻击面与部署链覆盖；分歧修订后**设计与验收方案一起交给用户确认**，确认后才开工（细则见门禁规范 §1.5）
 
 ### Step 3 开发 —— 分支 + 小步提交
 - [ ] `git switch preview && git pull --ff-only` 后切 `feat/xxx` / `fix/xxx` / `perf/xxx` / `docs/xxx`；一分支一 Issue
@@ -107,7 +107,7 @@ gh issue list --milestone "v1.1" --state all
 | 环节 | 一票否决项 |
 |---|---|
 | Issue | 无可测试验收标准 → 不开工 |
-| 设计 | 讲不清数据流动 → 重想 |
+| 设计 | 讲不清数据流动 → 重想；验收方案未经独立评审（①.5）→ 不开工 |
 | 开发 | 测试红 commit → 打回 |
 | PR | CI 不绿 / 描述缺要素 → 不 merge |
 | 收尾 | CHANGELOG 缺条目 / Issue 关错 → 补完算完 |
@@ -155,7 +155,7 @@ git tag vX.Y.Z main && git push --tags
 ## 7. 分支模型（2026-09-29 改回 preview 线，用户拍板 Issue #20 方案 B）
 
 ```
-临时分支（feat|fix|perf|docs，从 preview 切，一分支一 Issue，走完七道门）
+临时分支（feat|fix|perf|docs，从 preview 切，一分支一 Issue，走完八道门）
    └─ squash 合入 preview（PR base=preview；base-guard 强制须含最新 preview）
 preview —— 集成/验收线：验收与演示实例跟踪 preview；云实例共享模型层亦跟踪 preview
    └─ 晋级：squash PR（head=preview，base=main）合入 main
