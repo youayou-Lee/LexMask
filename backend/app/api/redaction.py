@@ -152,6 +152,9 @@ async def get_comparison(file_id: str, owner_id: str = Depends(require_auth)):
     try:
         _fms.assert_file_owner(file_id, owner_id)
         return await _orch.get_comparison(file_id)
+    except PdfEncryptedError as exc:
+        # Issue #30：compare 链路（get_comparison→_extract_pdf_text）遇加密卷 400+错误码，不落 500
+        raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
     except ValueError as exc:
         detail = str(exc)
         if "has not been redacted" in detail:

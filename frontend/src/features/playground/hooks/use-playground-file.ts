@@ -30,13 +30,24 @@ async function responseErrorMessage(res: Response, fallbackKey: string) {
   return t(fallbackKey);
 }
 
-/** 读取后端错误信封里的结构化错误码（app/core/errors.py error_response）。 */
-async function errorCodeFromResponse(res: Response): Promise<string | null> {
+/** 读取后端错误信封（响应体只能读一次，务必一次取全 code + message，评审 P1-5）。 */
+async function readErrorEnvelope(
+  res: Response,
+): Promise<{ code: string | null; message: string | null }> {
   try {
-    const data = await safeJson<{ error_code?: unknown }>(res);
-    return typeof data?.error_code === 'string' && data.error_code ? data.error_code : null;
+    const data = await safeJson<{
+      error_code?: unknown;
+      detail?: unknown;
+      message?: unknown;
+      error?: unknown;
+    }>(res);
+    const code =
+      typeof data?.error_code === 'string' && data.error_code ? data.error_code : null;
+    const detail = data?.detail ?? data?.message ?? data?.error;
+    const message = typeof detail === 'string' && detail.trim() ? detail.trim() : null;
+    return { code, message };
   } catch {
-    return null;
+    return { code: null, message: null };
   }
 }
 
@@ -207,14 +218,15 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       const parseRes = await authFetch(`/api/v1/files/${uploadData.file_id}/parse`, { signal });
       if (signal.aborted) return;
       if (!parseRes.ok) {
+        const { code, message } = await readErrorEnvelope(parseRes);
         // Issue #30：需打开密码的 PDF 不报错，挂起流程弹密码框
-        if ((await errorCodeFromResponse(parseRes)) === 'PDF_ENCRYPTED_NEEDS_PASSWORD') {
+        if (code === 'PDF_ENCRYPTED_NEEDS_PASSWORD') {
           setEncryptedPrompt({ fileId: uploadData.file_id, filename: uploadData.filename });
           setIsLoading(false);
           setLoadingMessage('');
           return;
         }
-        throw new Error(await responseErrorMessage(parseRes, 'playground.parseFailed'));
+        throw new Error(message || t('playground.parseFailed'));
       }
       const parseData = await safeJson<ParseResponse>(parseRes);
       if (signal.aborted) return;
@@ -257,8 +269,9 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       if (!infoRes.ok) throw new Error(await responseErrorMessage(infoRes, 'playground.parseFailed'));
       const info = await safeJson<Record<string, unknown>>(infoRes);
       if (!parseRes.ok) {
+        const { code, message } = await readErrorEnvelope(parseRes);
         // Issue #30：历史会话里的加密 PDF 同样挂起弹密码框
-        if ((await errorCodeFromResponse(parseRes)) === 'PDF_ENCRYPTED_NEEDS_PASSWORD') {
+        if (code === 'PDF_ENCRYPTED_NEEDS_PASSWORD') {
           setEncryptedPrompt({
             fileId,
             filename: (info.original_filename as string | undefined) || fileId,
@@ -267,7 +280,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
           setLoadingMessage('');
           return;
         }
-        throw new Error(await responseErrorMessage(parseRes, 'playground.parseFailed'));
+        throw new Error(message || t('playground.parseFailed'));
       }
       const parseData = await safeJson<ParseResponse>(parseRes);
       if (signal.aborted) return;

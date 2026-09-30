@@ -339,3 +339,46 @@ class TestVisionAndLocateGuards:
         assert resp.status_code == 400
         body = resp.json()
         assert body["error_code"] == "PDF_ENCRYPTED_NEEDS_PASSWORD"
+
+
+class TestReviewGaps:
+    """独立评审 P1 回归钉：漏网接缝补齐后不得再退化。"""
+
+    def test_page_image_endpoint_400_code_not_500(self):
+        file_id, _ = _register("pi.pdf", user_pw="userpw")
+        resp = client.get(f"/api/v1/files/{file_id}/page-image?page=1")
+        assert resp.status_code == 400
+        assert resp.json()["error_code"] == "PDF_ENCRYPTED_NEEDS_PASSWORD"
+
+    def test_compare_endpoint_400_code_not_500(self):
+        file_id, _ = _register("cmp.pdf", user_pw="userpw")
+        # 过「未匿名化」与「输出文件存在」两道前置门（get_comparison 先查这两项再碰 PDF）
+        out = os.path.join(settings.UPLOAD_DIR, "fake-output.pdf")
+        with open(out, "wb") as f:
+            f.write(b"%PDF-1.6 fake\n")
+        info = dict(fms.file_store[file_id])
+        info["output_path"] = out
+        fms.file_store[file_id] = info
+        resp = client.get(f"/api/v1/redaction/{file_id}/compare")
+        assert resp.status_code == 400
+        assert resp.json()["error_code"] == "PDF_ENCRYPTED_NEEDS_PASSWORD"
+
+    def test_redact_pdf_rasterize_path_raises_structured(self):
+        # execute 栅格化链路（vision_service._redact_pdf，评审 P1-1）：无 self 依赖可直调
+        from app.services.vision_service import VisionService
+
+        _, path = _register("rz.pdf", user_pw="userpw")
+        out = os.path.join(settings.UPLOAD_DIR, "rz-out.pdf")
+        with pytest.raises(PdfEncryptedError) as ei:
+            asyncio.run(VisionService._redact_pdf(None, path, [], out, "blur", 50, "#000000"))
+        assert ei.value.error_code == "PDF_ENCRYPTED_NEEDS_PASSWORD"
+
+    def test_decrypt_accepts_pdf_scanned_file_type(self):
+        # 修复前被误判扫描件落库的存量加密卷，decrypt 不得被 file_type 门禁挡住（评审 P1-4）
+        file_id, path = _register("scan-type.pdf", user_pw="right")
+        info = dict(fms.file_store[file_id])
+        info["file_type"] = "pdf_scanned"
+        fms.file_store[file_id] = info
+        resp = client.post(f"/api/v1/files/{file_id}/decrypt", json={"password": "right"})
+        assert resp.status_code == 200
+        assert not _is_encrypted_on_disk(path)

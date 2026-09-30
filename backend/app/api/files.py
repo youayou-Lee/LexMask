@@ -591,7 +591,8 @@ async def decrypt_file(file_id: str, body: DecryptRequest, owner_id: str = Depen
     if not snapshot or _fms.file_owner_id(snapshot) != owner_id:
         raise HTTPException(status_code=404, detail="文件不存在")
     file_path = snapshot.get("file_path")
-    if not file_path or str(snapshot.get("file_type", "")).lower() != "pdf":
+    # pdf_scanned：修复前被误判扫描件落库的存量加密卷，同样允许解密（评审 P1-4）
+    if not file_path or str(snapshot.get("file_type", "")).lower() not in ("pdf", "pdf_scanned"):
         raise HTTPException(status_code=400, detail="仅 PDF 支持密码解密")
     try:
         decrypted = await asyncio.to_thread(decrypt_pdf_with_password, file_path, body.password)
@@ -793,9 +794,14 @@ async def get_page_image(
 
     ft = str(snapshot.get("file_type", "")).lower()
     if ft in ("pdf", "pdf_scanned"):
-        from app.services.file_parser import FileParser
+        from app.services.file_parser import FileParser, PdfEncryptedError
+
         parser = FileParser()
-        image_bytes = await parser.get_pdf_page_image(file_path, page)
+        try:
+            image_bytes = await parser.get_pdf_page_image(file_path, page)
+        except PdfEncryptedError as exc:
+            # Issue #30：加密卷 400+错误码，不落 500
+            raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
         return RawResponse(content=image_bytes, media_type="image/png")
 
     if ft in ("image", "jpg", "jpeg", "png"):

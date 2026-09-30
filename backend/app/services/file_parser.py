@@ -5,6 +5,7 @@
 import logging
 import os
 import sys
+import uuid
 from collections import OrderedDict
 from html.parser import HTMLParser
 from threading import Lock
@@ -83,7 +84,8 @@ _MSG_WRONG_PASSWORD = "密码错误，请重试"
 
 def _strip_pdf_encryption(file_path: str, doc: "fitz.Document") -> None:
     """把已认证文档的无加密版本以临时文件落盘后原子替换原文件。"""
-    tmp_path = f"{file_path}.decrypting.{os.getpid()}"
+    # uuid 后缀防并发同文件 decrypt（asyncio.to_thread 线程池）时 tmp 碰撞写坏原件（评审 P2-1）
+    tmp_path = f"{file_path}.decrypting.{os.getpid()}.{uuid.uuid4().hex[:8]}"
     try:
         doc.save(tmp_path, garbage=3, deflate=True, encryption=fitz.PDF_ENCRYPT_NONE)
         os.replace(tmp_path, file_path)

@@ -1971,7 +1971,10 @@ class VisionService:
     ) -> str:
         import fitz
 
-        doc = fitz.open(file_path)
+        # Issue #30：加密卷（含修复前被误判扫描件落库的存量）结构化报错而非 404 英文原文
+        from app.services.file_parser import open_pdf_checked
+
+        doc = open_pdf_checked(file_path)
         try:
             new_doc = fitz.open()
             try:
