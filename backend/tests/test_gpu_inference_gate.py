@@ -65,3 +65,9 @@ def test_validator_clamps():
     settings_cls = type(settings)
     assert settings_cls(HAS_NER_GLOBAL_MAX_INFLIGHT=99).HAS_NER_GLOBAL_MAX_INFLIGHT == 12
     assert settings_cls(HAS_NER_GLOBAL_MAX_INFLIGHT=0).HAS_NER_GLOBAL_MAX_INFLIGHT == 1
+
+
+def test_default_inflight_is_four():
+    """Issue#33 PR-A：默认闸门从 1 放开到 4（多并发是闸门注释明示的预期用法）。"""
+    settings_cls = type(settings)
+    assert settings_cls.model_fields["HAS_NER_GLOBAL_MAX_INFLIGHT"].default == 4
