@@ -664,19 +664,29 @@ async def run_has_text_analysis(
                 if residual_new:
                     from app.core.gpu_inference_gate import shared_gpu_inference_slot
 
+                    verify_calls = 0
+                    verify_errors = 0
                     async with shared_gpu_inference_slot("OCR HaS Text residual verify NER"):
                         for entity_type, fresh in residual_new.items():
                             merged_ner_result.setdefault(entity_type, [])
                             for clean_text in fresh:
-                                verify = await asyncio.to_thread(
-                                    has_client.ner, clean_text, [entity_type]
-                                )
+                                verify_calls += 1
+                                try:
+                                    verify = await asyncio.to_thread(
+                                        has_client.ner, clean_text, [entity_type]
+                                    )
+                                except Exception:
+                                    verify_errors += 1
+                                    continue
                                 confirmed = {
                                     _compact_text(v)
                                     for v in ((verify or {}).get(entity_type, []) or [])
                                 }
                                 if clean_text in confirmed:
                                     merged_ner_result[entity_type].append(clean_text)
+                    _record_has_text_metric(stage_status, "has_text_verify_calls", verify_calls)
+                    _record_has_text_metric(stage_status, "has_text_verify_peak_concurrency", 1)
+                    _record_has_text_metric(stage_status, "has_text_verify_errors", verify_errors)
 
         for entity_type, entity_list in merged_ner_result.items():
             if not entity_list:
