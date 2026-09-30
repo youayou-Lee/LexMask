@@ -39,6 +39,7 @@ export interface PlaygroundDataContextValue {
   totalPages: PlaygroundContextValue['totalPages'];
   recognition: PlaygroundContextValue['recognition'];
   dropzone: PlaygroundContextValue['dropzone'];
+  encryptedPrompt: PlaygroundContextValue['encryptedPrompt'];
   processingMode: PlaygroundContextValue['processingMode'];
   pseudonymMap: PlaygroundContextValue['pseudonymMap'];
   pseudonymMapLoading: PlaygroundContextValue['pseudonymMapLoading'];
@@ -70,6 +71,8 @@ export interface PlaygroundActionsContextValue {
   cancelReset: PlaygroundContextValue['cancelReset'];
   handleDownload: PlaygroundContextValue['handleDownload'];
   handleDownloadPseudonymCsv: PlaygroundContextValue['handleDownloadPseudonymCsv'];
+  handleDecrypted: PlaygroundContextValue['handleDecrypted'];
+  clearEncryptedPrompt: PlaygroundContextValue['clearEncryptedPrompt'];
   setProcessingMode: PlaygroundContextValue['setProcessingMode'];
   setPseudonymReplacement: PlaygroundContextValue['setPseudonymReplacement'];
   retryPseudonymLoad: PlaygroundContextValue['retryPseudonymLoad'];
@@ -129,6 +132,7 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       totalPages: ctx.totalPages,
       recognition: ctx.recognition,
       dropzone: ctx.dropzone,
+      encryptedPrompt: ctx.encryptedPrompt,
       processingMode: ctx.processingMode,
       pseudonymMap: ctx.pseudonymMap,
       pseudonymMapLoading: ctx.pseudonymMapLoading,
@@ -169,6 +173,7 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       ctx.totalPages,
       ctx.recognition,
       ctx.dropzone,
+      ctx.encryptedPrompt,
       ctx.processingMode,
       ctx.pseudonymMap,
       ctx.pseudonymMapLoading,
@@ -202,6 +207,8 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       cancelReset: ctx.cancelReset,
       handleDownload: ctx.handleDownload,
       handleDownloadPseudonymCsv: ctx.handleDownloadPseudonymCsv,
+      handleDecrypted: ctx.handleDecrypted,
+      clearEncryptedPrompt: ctx.clearEncryptedPrompt,
       mergeVisibleBoxes: ctx.mergeVisibleBoxes,
       setCurrentPage: ctx.setCurrentPage,
       openPopout: ctx.openPopout,
@@ -231,6 +238,8 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       ctx.cancelReset,
       ctx.handleDownload,
       ctx.handleDownloadPseudonymCsv,
+      ctx.handleDecrypted,
+      ctx.clearEncryptedPrompt,
       ctx.mergeVisibleBoxes,
       ctx.setCurrentPage,
       ctx.openPopout,

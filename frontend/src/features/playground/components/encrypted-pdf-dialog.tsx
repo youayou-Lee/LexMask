@@ -78,6 +78,7 @@ function EncryptedPdfForm({
         return;
       }
       const data = (await res.json().catch(() => null)) as { error_code?: string } | null;
+      setSubmitting(false);
       if (data?.error_code === 'PDF_WRONG_PASSWORD') {
         setError(t('common.pdfWrongPassword'));
       } else {
@@ -88,7 +89,6 @@ function EncryptedPdfForm({
           ),
           'error',
         );
-        setSubmitting(false);
       }
     } catch {
       showToast(t('common.networkError'), 'error');
