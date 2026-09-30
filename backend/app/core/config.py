@@ -390,7 +390,9 @@ class Settings(BaseSettings):
     # 全进程 HaS NER 并发闸门（shared_gpu_inference_slot 的信号量大小）。
     # 1 = 历史串行行为（单卡小显存部署安全默认）；vLLM 多实例部署可放开
     # （双卡 5090 生产 = 6：双实例 × 每实例 ~3，受 KV cache 预算约束）。
-    HAS_NER_GLOBAL_MAX_INFLIGHT: int = 1
+    # Issue#33: 默认 4——vLLM 服务端 continuous batching 需要看到并发请求；
+    # inflight registry 保证同负载不重复计算。
+    HAS_NER_GLOBAL_MAX_INFLIGHT: int = 4
     # 自洽多趟 NER 采样（R4 leak-safe 并集）。K = 主 payload 的采样趟数。
     # K=1 = 现状：单趟 temp=0 贪心种子，与历史逐字等价。并集只增不减 => 恒 ⊇
     # 种子 = 现状超集；temp>0 趟采出的幻觉值交下游 matcher 网住（不匹配 OCR 块
