@@ -393,6 +393,14 @@ class Settings(BaseSettings):
     # Issue#33: 默认 4——vLLM 服务端 continuous batching 需要看到并发请求；
     # inflight registry 保证同负载不重复计算。
     HAS_NER_GLOBAL_MAX_INFLIGHT: int = 4
+    # residual verify 段的页内并发窗口（Issue#33 PR-B）。独立于闸门的硬界：
+    # 闸门旁路（SERIALIZE_SHARED_GPU_MODELS=False）时防止 N 个值同时砸 vLLM。
+    # 实际并发 = min(CAP, GLOBAL_MAX_INFLIGHT, 待验证值数)。
+    HAS_NER_VERIFY_PARALLEL_CAP: int = 4
+    # 批量自证（第二级杠杆，默认关）。>0 时同类型待验证值按 N 个一批合并问。
+    # 长列表召回稀释正是 residual 机制诞生的原因（0712 实证），开启前必须
+    # 在真实案卷页 A/B 实证。
+    HAS_NER_VERIFY_BATCH_SIZE: int = 0
     # 自洽多趟 NER 采样（R4 leak-safe 并集）。K = 主 payload 的采样趟数。
     # K=1 = 现状：单趟 temp=0 贪心种子，与历史逐字等价。并集只增不减 => 恒 ⊇
     # 种子 = 现状超集；temp>0 趟采出的幻觉值交下游 matcher 网住（不匹配 OCR 块
@@ -634,6 +642,16 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_has_ner_global_max_inflight(cls, v: int) -> int:
         return max(1, min(12, v))
+
+    @field_validator("HAS_NER_VERIFY_PARALLEL_CAP")
+    @classmethod
+    def _validate_has_ner_verify_parallel_cap(cls, v: int) -> int:
+        return max(1, min(12, v))
+
+    @field_validator("HAS_NER_VERIFY_BATCH_SIZE")
+    @classmethod
+    def _validate_has_ner_verify_batch_size(cls, v: int) -> int:
+        return max(0, min(32, v))
 
     @field_validator("HAS_NER_SELF_CONSIST_SAMPLES")
     @classmethod
