@@ -37,12 +37,21 @@ class _ContentKeyedHaS:
 
     base_url = "http://stub:0"
 
-    def __init__(self, rules, hold_sec: float = 0.0, raise_on_text: str | None = None):
+    def __init__(
+        self,
+        rules,
+        hold_sec: float = 0.0,
+        raise_on_text: str | None = None,
+        raise_exact: bool = False,
+    ):
         # rules: list[tuple[str, dict]] —— 子串谓词, 应答。verify 单值规则的
         # 谓词必须排在宽匹配（整页 payload）之前。
+        # raise_exact=True 时 raise_on_text 仅在 text 全等时抛——residual payload
+        # 含同值子串但不触发（只有 verify 单值调用是全等文本）。
         self.rules = rules
         self.hold_sec = hold_sec
         self.raise_on_text = raise_on_text
+        self.raise_exact = raise_exact
         self.calls = 0
         self.peak = 0
         self.seen_texts: list[str] = []
@@ -56,7 +65,14 @@ class _ContentKeyedHaS:
             self.peak = max(self.peak, self._current)
             self.seen_texts.append(text)
         try:
-            if self.raise_on_text and self.raise_on_text in text:
+            hit = False
+            if self.raise_on_text:
+                hit = (
+                    text.strip() == self.raise_on_text
+                    if self.raise_exact
+                    else self.raise_on_text in text
+                )
+            if hit:
                 raise RuntimeError("injected verify failure")
             if self.hold_sec:
                 time.sleep(self.hold_sec)
@@ -130,7 +146,7 @@ def test_fully_recalled_page_has_zero_verify_calls():
     原文才能被 matcher 配回框），与 residual 侧的 already-existing 判断同形态。
     """
     rules = [("发票号", {"金额": ["USD4,700.00", "USD125.00"]})]
-    client = _ContentKeyedHaS(rules)
+    client = _ContentKeyedHaS(rules, raise_on_text="USD3,000.00", raise_exact=True)
     entities, stage = _run_analysis(_dense_blocks(), client)
     assert _verify_entities(entities, "USD 125.00")
     assert "has_text_verify_calls" not in stage or stage["has_text_verify_calls"] == 0
@@ -201,3 +217,19 @@ def test_verify_results_multiset_equal_to_serial():
         return sorted((e["type"], e["text"]) for e in entities)
 
     assert run(1) == run(4)
+
+
+def test_single_verify_failure_does_not_poison_siblings():
+    """第 k 个值 verify 抛异常：其余值确认结果不受污染、异常计数、整页不崩（Review Focus 3）。"""
+    rules = [
+        ("款项 USD 1,000.00", {"金额": ["USD1,000.00"]}),  # 主 payload：只召回首值（锚点）
+        ("USD", {"金额": ["USD2,000.00", "USD3,000.00", "USD4,000.00"]}),  # 残差+verify：正常确认
+    ]  # USD3,000.00 的异常由 raise_exact 注入（仅 verify 单值全等文本触发）
+    client = _ContentKeyedHaS(rules, raise_on_text="USD3,000.00", raise_exact=True)
+    entities, stage = _run_analysis(_many_amount_blocks(4), client)
+    assert stage["has_text_verify_errors"] == 1
+    confirmed = {(e["type"], e["text"]) for e in entities if e["type"] == "AMOUNT"}
+    assert ("AMOUNT", "USD1,000.00") in confirmed  # 主召回不受影响
+    assert ("AMOUNT", "USD3,000.00") not in confirmed  # 异常值未确认丢弃
+    assert ("AMOUNT", "USD2,000.00") in confirmed  # 兄弟值不受污染
+    assert ("AMOUNT", "USD4,000.00") in confirmed
