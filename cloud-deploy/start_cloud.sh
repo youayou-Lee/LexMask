@@ -54,7 +54,7 @@ spawn vllm-ner "cd '$UPSTREAM' && CUDA_VISIBLE_DEVICES=0 '$PY_VLLM' -m vllm.entr
     --host 0.0.0.0 --port 8080 \
     --trust-remote-code --dtype bfloat16 \
     --max-model-len 4096 --max-num-batched-tokens 4096 \
-    --gpu-memory-utilization 0.18 \
+    --gpu-memory-utilization 0.40 \
     --no-enable-prefix-caching --enforce-eager"
 wait_health http://127.0.0.1:8080/v1/models "vLLM HaS" 900
 
