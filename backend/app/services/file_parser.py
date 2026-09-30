@@ -5,6 +5,7 @@
 import logging
 import os
 import sys
+import uuid
 from collections import OrderedDict
 from html.parser import HTMLParser
 from threading import Lock
@@ -55,6 +56,108 @@ def _validate_path(file_path: str) -> None:
     if safe_path_in_dir(resolved, settings.OUTPUT_DIR):
         return
     raise ValueError(f"路径不在允许的目录中: {file_path}")
+
+
+class PdfEncryptedError(Exception):
+    """PDF 处于不可访问的加密态（Issue #30）。
+
+    needs_password=True：设置了打开密码（user password），必须由用户提供密码；
+    needs_password=False：仅权限密码（owner password），可无感自动解除。
+
+    故意不继承 ValueError：task_queue 与各端点的通用 ``except ValueError``
+    会把异常吞成 404 / 英文原文，正是 #30 要修的行为。
+    """
+
+    def __init__(self, message: str, *, error_code: str, needs_password: bool):
+        super().__init__(message)
+        self.user_message = message
+        self.error_code = error_code
+        self.needs_password = needs_password
+
+
+# 结构化错误码与用户文案（前端 localizeError 按码映射，message 作中文兜底）
+CODE_PDF_NEEDS_PASSWORD = "PDF_ENCRYPTED_NEEDS_PASSWORD"
+CODE_PDF_WRONG_PASSWORD = "PDF_WRONG_PASSWORD"
+_MSG_NEEDS_PASSWORD = "该 PDF 已加密（受打开密码保护），请输入密码后继续处理"
+_MSG_WRONG_PASSWORD = "密码错误，请重试"
+
+
+def _strip_pdf_encryption(file_path: str, doc: "fitz.Document") -> None:
+    """把已认证文档的无加密版本以临时文件落盘后原子替换原文件。"""
+    # uuid 后缀防并发同文件 decrypt（asyncio.to_thread 线程池）时 tmp 碰撞写坏原件（评审 P2-1）
+    tmp_path = f"{file_path}.decrypting.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    try:
+        doc.save(tmp_path, garbage=3, deflate=True, encryption=fitz.PDF_ENCRYPT_NONE)
+        os.replace(tmp_path, file_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def _ensure_authenticated(doc: "fitz.Document") -> None:
+    """对已打开文档做加密态检查：需打开密码抛结构化异常，仅权限密码空密码认证。"""
+    if doc.needs_pass:
+        raise PdfEncryptedError(_MSG_NEEDS_PASSWORD, error_code=CODE_PDF_NEEDS_PASSWORD, needs_password=True)
+    if doc.is_encrypted and doc.authenticate("") == 0:
+        # needs_pass=False 却无法空密码认证的罕见态：按需密码引导，避免静默失败
+        raise PdfEncryptedError(_MSG_NEEDS_PASSWORD, error_code=CODE_PDF_NEEDS_PASSWORD, needs_password=True)
+
+
+def ensure_pdf_accessible(file_path: str) -> None:
+    """parse 前置检测（Issue #30）。
+
+    无加密 → 原样返回；仅权限密码 → 空密码认证并把解密版本原子替换落盘
+    （对用户无感知）；设置了打开密码 → 抛 PdfEncryptedError（needs_password=True）。
+    """
+    _validate_path(file_path)
+    doc = fitz.open(file_path)
+    try:
+        if not doc.is_encrypted:
+            return
+        _ensure_authenticated(doc)
+        _strip_pdf_encryption(file_path, doc)
+    finally:
+        doc.close()
+
+
+def open_pdf_checked(file_path: str) -> "fitz.Document":
+    """打开 PDF 并保证可访问（视觉 / 执行链路统一入口）。
+
+    需打开密码 → PdfEncryptedError；仅权限密码 → 空密码认证后返回
+    （不做落盘改写，落盘规范化只在 parse 的 ensure_pdf_accessible 做）。
+    调用方负责 close()。
+    """
+    _validate_path(file_path)
+    doc = fitz.open(file_path)
+    try:
+        _ensure_authenticated(doc)
+    except Exception:
+        doc.close()
+        raise
+    return doc
+
+
+def decrypt_pdf_with_password(file_path: str, password: str) -> bool:
+    """用用户提供的密码解除 PDF 加密并原子替换落盘（Issue #30 decrypt 端点核心）。
+
+    返回 True 表示本次实际发生解密，False 表示文件本就无需解密（幂等）。
+    密码错误抛 PdfEncryptedError（PDF_WRONG_PASSWORD）。密码参数即用即弃，
+    调用方不得记录。
+    """
+    _validate_path(file_path)
+    doc = fitz.open(file_path)
+    try:
+        if not doc.is_encrypted:
+            return False
+        if doc.needs_pass:
+            if not password or doc.authenticate(password) == 0:
+                raise PdfEncryptedError(_MSG_WRONG_PASSWORD, error_code=CODE_PDF_WRONG_PASSWORD, needs_password=True)
+        else:
+            doc.authenticate("")
+        _strip_pdf_encryption(file_path, doc)
+        return True
+    finally:
+        doc.close()
 
 
 class FileParser:
@@ -379,6 +482,9 @@ class FileParser:
     async def _parse_pdf(self, file_path: str) -> ParseResult:
         """解析 PDF 文档"""
         _validate_path(file_path)
+        # 加密 PDF 前置检测（Issue #30）：需打开密码抛结构化异常（不再以
+        # 「页数 0 → is_scanned 误判」进入视觉链路）；仅权限密码自动解密落盘。
+        ensure_pdf_accessible(file_path)
         doc = fitz.open(file_path)
 
         pages = []
@@ -486,7 +592,7 @@ class FileParser:
                     self._pdf_page_scan_cache.move_to_end(cache_key)
                     return cached
 
-        doc = fitz.open(cache_key[0])
+        doc = open_pdf_checked(cache_key[0])
         try:
             if page < 1 or page > len(doc):
                 raise ValueError(f"页码超出范围: {page}")
@@ -530,7 +636,7 @@ class FileParser:
                     self.last_pdf_page_image_cache_hit = True
                     return cached
 
-        doc = fitz.open(resolved)
+        doc = open_pdf_checked(resolved)
 
         if page < 1 or page > len(doc):
             doc.close()
@@ -586,7 +692,7 @@ class FileParser:
                     )
                     return clone_blocks(blocks), page_width, page_height
 
-        doc = fitz.open(resolved)
+        doc = open_pdf_checked(resolved)
         try:
             if page < 1 or page > len(doc):
                 raise ValueError(f"页码超出范围: {page}")

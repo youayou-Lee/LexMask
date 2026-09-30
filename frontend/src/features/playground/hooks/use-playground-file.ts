@@ -30,6 +30,33 @@ async function responseErrorMessage(res: Response, fallbackKey: string) {
   return t(fallbackKey);
 }
 
+/** 读取后端错误信封（响应体只能读一次，务必一次取全 code + message，评审 P1-5）。 */
+async function readErrorEnvelope(
+  res: Response,
+): Promise<{ code: string | null; message: string | null }> {
+  try {
+    const data = await safeJson<{
+      error_code?: unknown;
+      detail?: unknown;
+      message?: unknown;
+      error?: unknown;
+    }>(res);
+    const code =
+      typeof data?.error_code === 'string' && data.error_code ? data.error_code : null;
+    const detail = data?.detail ?? data?.message ?? data?.error;
+    const message = typeof detail === 'string' && detail.trim() ? detail.trim() : null;
+    return { code, message };
+  } catch {
+    return { code: null, message: null };
+  }
+}
+
+/** Issue #30：待输入密码的加密 PDF。 */
+export interface EncryptedPdfPrompt {
+  fileId: string;
+  filename: string;
+}
+
 export interface PendingFile {
   fileId: string;
   fileType: string;
@@ -70,6 +97,8 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
   const [loadingMessage, setLoadingMessage] = useState('');
   const [uploadIssue, setUploadIssue] = useState<string | null>(null);
   const [recognitionIssue, setRecognitionIssue] = useState<string | null>(null);
+  // Issue #30：解析返回 PDF_ENCRYPTED_NEEDS_PASSWORD 时挂起流程，弹密码框
+  const [encryptedPrompt, setEncryptedPrompt] = useState<EncryptedPdfPrompt | null>(null);
 
   const [pendingFile, setPendingFile] = useState<PendingFile | null>(null);
 
@@ -118,6 +147,41 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     [rejectionMessage],
   );
 
+  /** parse 成功后的公共落位：写 fileInfo/pendingFile，触发自动识别 effect。 */
+  const applyParsedFile = useCallback(
+    (fileId: string, filename: string, fileSize: number, parseData: ParseResponse) => {
+      const isScanned = parseData.is_scanned || false;
+      const pageCount = Math.max(1, Number(parseData.page_count || 1));
+      const parsedFileType = parseData.file_type || 'pdf';
+      const parsedContent = parseData.content || '';
+      const parsedPages = Array.isArray(parseData.pages) ? parseData.pages : undefined;
+
+      setFileInfo({
+        file_id: fileId,
+        filename,
+        file_size: fileSize,
+        file_type: parsedFileType,
+        is_scanned: isScanned,
+        page_count: pageCount,
+        pages: parsedPages,
+      });
+      setContent(parsedContent);
+      const opts = optionsRef.current;
+      opts.setBoundingBoxes([]);
+      opts.resetImageHistory();
+      opts.setEntities([]);
+
+      setPendingFile({
+        fileId,
+        fileType: parsedFileType,
+        isScanned,
+        pageCount,
+        content: parsedContent,
+      });
+    },
+    [],
+  );
+
   // --- File upload ---
   const handleFileDrop = useCallback(async (acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return;
@@ -132,7 +196,6 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     setUploadIssue(null);
     setRecognitionIssue(null);
 
-    const opts = optionsRef.current;
     try {
       setLoadingMessage(t('playground.uploading'));
       const formData = new FormData();
@@ -155,38 +218,20 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       const parseRes = await authFetch(`/api/v1/files/${uploadData.file_id}/parse`, { signal });
       if (signal.aborted) return;
       if (!parseRes.ok) {
-        throw new Error(await responseErrorMessage(parseRes, 'playground.parseFailed'));
+        const { code, message } = await readErrorEnvelope(parseRes);
+        // Issue #30：需打开密码的 PDF 不报错，挂起流程弹密码框
+        if (code === 'PDF_ENCRYPTED_NEEDS_PASSWORD') {
+          setEncryptedPrompt({ fileId: uploadData.file_id, filename: uploadData.filename });
+          setIsLoading(false);
+          setLoadingMessage('');
+          return;
+        }
+        throw new Error(message || t('playground.parseFailed'));
       }
       const parseData = await safeJson<ParseResponse>(parseRes);
       if (signal.aborted) return;
 
-      const isScanned = parseData.is_scanned || false;
-      const pageCount = Math.max(1, Number(parseData.page_count || 1));
-      const parsedFileType = parseData.file_type || uploadData.file_type;
-      const parsedContent = parseData.content || '';
-      const parsedPages = Array.isArray(parseData.pages) ? parseData.pages : undefined;
-
-      setFileInfo({
-        file_id: uploadData.file_id,
-        filename: uploadData.filename,
-        file_size: uploadData.file_size,
-        file_type: parsedFileType,
-        is_scanned: isScanned,
-        page_count: pageCount,
-        pages: parsedPages,
-      });
-      setContent(parsedContent);
-      opts.setBoundingBoxes([]);
-      opts.resetImageHistory();
-      opts.setEntities([]);
-
-      setPendingFile({
-        fileId: uploadData.file_id,
-        fileType: parsedFileType,
-        isScanned,
-        pageCount,
-        content: parsedContent,
-      });
+      applyParsedFile(uploadData.file_id, uploadData.filename, uploadData.file_size, parseData);
     } catch (err) {
       if (signal.aborted) return;
       showToast(localizeErrorMessage(err, 'playground.processFailed'), 'error');
@@ -197,7 +242,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         abortRef.current = null;
       }
     }
-  }, []);
+  }, [applyParsedFile]);
 
   // 从服务端按 file_id 重建会话（历史页「回到现场」且无草稿时的 R2 路径）：
   // 后端识别成功后会把 entities + 当时的识别配置写进文件记录，先取缓存直接
@@ -222,8 +267,21 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       ]);
       if (signal.aborted) return;
       if (!infoRes.ok) throw new Error(await responseErrorMessage(infoRes, 'playground.parseFailed'));
-      if (!parseRes.ok) throw new Error(await responseErrorMessage(parseRes, 'playground.parseFailed'));
       const info = await safeJson<Record<string, unknown>>(infoRes);
+      if (!parseRes.ok) {
+        const { code, message } = await readErrorEnvelope(parseRes);
+        // Issue #30：历史会话里的加密 PDF 同样挂起弹密码框
+        if (code === 'PDF_ENCRYPTED_NEEDS_PASSWORD') {
+          setEncryptedPrompt({
+            fileId,
+            filename: (info.original_filename as string | undefined) || fileId,
+          });
+          setIsLoading(false);
+          setLoadingMessage('');
+          return;
+        }
+        throw new Error(message || t('playground.parseFailed'));
+      }
       const parseData = await safeJson<ParseResponse>(parseRes);
       if (signal.aborted) return;
 
@@ -407,6 +465,47 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     doRecognition();
   }, [pendingFile]);
 
+  // --- Issue #30：密码解密成功后重跑 parse → 自动识别 ---
+  const handleDecrypted = useCallback(
+    async (fileId: string, filename: string) => {
+      setEncryptedPrompt(null);
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const { signal } = controller;
+
+      setIsLoading(true);
+      setStage('upload');
+      setUploadIssue(null);
+      setRecognitionIssue(null);
+      try {
+        setLoadingMessage(t('playground.parsing'));
+        const parseRes = await authFetch(`/api/v1/files/${fileId}/parse`, { signal });
+        if (signal.aborted) return;
+        if (!parseRes.ok) {
+          throw new Error(await responseErrorMessage(parseRes, 'playground.parseFailed'));
+        }
+        const parseData = await safeJson<ParseResponse>(parseRes);
+        if (signal.aborted) return;
+        applyParsedFile(fileId, filename, 0, parseData);
+      } catch (err) {
+        if (signal.aborted) return;
+        showToast(localizeErrorMessage(err, 'playground.processFailed'), 'error');
+        setIsLoading(false);
+        setLoadingMessage('');
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+        }
+      }
+    },
+    [applyParsedFile],
+  );
+
+  const clearEncryptedPrompt = useCallback(() => {
+    setEncryptedPrompt(null);
+  }, []);
+
   // --- Dropzone ---
   const dropzone = useDropzone({
     onDrop: handleFileDrop,
@@ -435,5 +534,8 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     setRecognitionIssue,
     isImageMode,
     dropzone,
+    encryptedPrompt,
+    handleDecrypted,
+    clearEncryptedPrompt,
   };
 }

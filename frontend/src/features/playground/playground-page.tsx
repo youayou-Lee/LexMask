@@ -8,6 +8,7 @@ import { ConfirmDialog } from '@/components/ConfirmDialog';
 import ImageBBoxEditor from '@/components/ImageBBoxEditor';
 import { PaginationRail } from '@/components/PaginationRail';
 import { Button } from '@/components/ui/button';
+import { EncryptedPdfDialog } from './components/encrypted-pdf-dialog';
 import { PlaygroundUpload } from './components/playground-upload';
 import { PlaygroundToolbar } from './components/playground-toolbar';
 import { PlaygroundEntityPanel } from './components/playground-entity-panel';
@@ -82,6 +83,9 @@ const PlaygroundInner: FC = () => {
     handleRedact,
     cancelProcessing,
     resumeFromFile,
+    encryptedPrompt,
+    handleDecrypted,
+    clearEncryptedPrompt,
     handleReset,
     confirmReset,
     cancelReset,
@@ -527,6 +531,12 @@ const PlaygroundInner: FC = () => {
         danger
         onConfirm={confirmReset}
         onCancel={cancelReset}
+      />
+
+      <EncryptedPdfDialog
+        prompt={encryptedPrompt}
+        onDecrypted={handleDecrypted}
+        onCancel={clearEncryptedPrompt}
       />
 
       <ConfirmDialog

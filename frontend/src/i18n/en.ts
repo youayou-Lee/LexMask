@@ -1146,6 +1146,12 @@ const enOverrides: Record<string, string> = {
   'playground.uploadFailed': 'File upload failed.',
   'playground.parseFailed': 'File parsing failed.',
   'playground.processFailed': 'File processing failed.',
+  'playground.encryptedPdf.title': 'Encrypted PDF',
+  'playground.encryptedPdf.description':
+    '"{filename}" is protected by a password. Enter it to decrypt and continue. The password is used only for this decryption and is never stored.',
+  'playground.encryptedPdf.placeholder': 'Enter PDF password',
+  'playground.encryptedPdf.submit': 'Decrypt and continue',
+  'playground.encryptedPdf.decrypting': 'Decrypting...',
   'playground.cancelled': 'Processing cancelled.',
   'playground.recognizeFailed': 'Recognition failed.',
   'playground.recognitionPausedModelServices':
@@ -1391,6 +1397,8 @@ const enOverrides: Record<string, string> = {
   'common.requestFailedWithStatus': 'Request failed ({status}).',
   'common.serverErrorWithStatus': 'Server error ({status}).',
   'common.networkError': 'Network connection failed. Check that the service is running.',
+  'common.pdfEncrypted': 'This PDF is encrypted. Enter its password to continue.',
+  'common.pdfWrongPassword': 'Incorrect password. Please try again.',
   'common.downloadFailed': 'Download failed.',
   'common.downloadFailedWithStatus': 'Download failed ({status}).',
   'common.loadFailed': 'Failed to load the file.',

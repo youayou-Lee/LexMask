@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.services.file_parser import PdfEncryptedError
 from app.services.task_queue_config import (
     _clamp_job_concurrency,
     load_persisted_job_concurrency,
@@ -352,6 +353,22 @@ class SimpleTaskQueue(RecognitionPipelineMixin, StructuredPipelineMixin, Redacti
                     await self._run_structured(task)
                 else:
                     logger.warning("unknown task_type: %s", task.task_type)
+            except PdfEncryptedError as exc:
+                # Issue #30：加密 PDF 的条目失败要给人话——不能落进下面的通用
+                # 元组变成 "worker: ValueError: document closed or encrypted"。
+                logger.error(
+                    "task failed (encrypted pdf): job=%s item=%s",
+                    task.job_id[:8], task.item_id[:8],
+                )
+                try:
+                    from app.services.job_store import JobItemStatus
+                    store = self._get_store()
+                    store.update_item_status(
+                        task.item_id, JobItemStatus.FAILED,
+                        error_message=exc.user_message,
+                    )
+                except Exception:
+                    pass
             except (TimeoutError, OSError, RuntimeError, ValueError, KeyError, json.JSONDecodeError) as exc:
                 logger.error(
                     "task failed: job=%s item=%s: %s: %s",

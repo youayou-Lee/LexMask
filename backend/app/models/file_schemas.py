@@ -15,6 +15,8 @@ __all__ = [
     "FileListItem",
     "FileListResponse",
     "ParseResult",
+    "DecryptRequest",
+    "DecryptResult",
     "NERResult",
     "BatchDownloadRequest",
 ]
@@ -90,6 +92,17 @@ class ParseResult(BaseModel):
     page_count: int = 1
     pages: list[str] = Field(default_factory=list, description="分页文本内容")
     is_scanned: bool = Field(default=False, description="是否为扫描件")
+
+
+class DecryptRequest(BaseModel):
+    """PDF 密码解密请求（Issue #30）。密码仅在请求体出现一次，即用即弃不落盘。"""
+    password: str = Field(default="", description="PDF 打开密码")
+
+
+class DecryptResult(BaseModel):
+    """PDF 密码解密结果"""
+    file_id: str
+    decrypted: bool = Field(..., description="本次是否实际发生解密（False=文件本就无需解密，幂等）")
 
 
 class NERResult(BaseModel):

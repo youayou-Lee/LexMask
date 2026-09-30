@@ -22,6 +22,7 @@ from app.models.schemas import (
     RedactionConfig,
     ReplacementMode,
 )
+from app.services.file_parser import open_pdf_checked
 from app.services.redaction.image_redactor import ImageRedactorMixin
 
 # ---- Re-export 公共符号，保持向后兼容 ----
@@ -275,7 +276,8 @@ class Redactor(TextRedactorMixin, ImageRedactorMixin):
         """
         boxes: list[BoundingBox] = []
         missed: list[str] = []
-        doc = fitz.open(file_path)
+        # Issue #30：需打开密码的 PDF 抛 PdfEncryptedError（端点映射 400+错误码）
+        doc = open_pdf_checked(file_path)
         try:
             unique: list[tuple[str, str]] = []
             seen: set[str] = set()

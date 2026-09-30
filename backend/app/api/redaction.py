@@ -17,6 +17,7 @@ import app.services.file_management_service as _fms
 import app.services.redaction_orchestrator as _orch
 from app.core.audit import audit_log
 from app.core.auth import require_auth
+from app.core.errors import AppError
 from app.core.idempotency import check_idempotency, save_idempotency
 from app.models.schemas import (
     CompareData,
@@ -33,6 +34,7 @@ from app.models.schemas import (
     VisionDetectRequest,
     VisionResult,
 )
+from app.services.file_parser import PdfEncryptedError
 from app.services.redactor import Redactor
 
 router = APIRouter()
@@ -62,6 +64,9 @@ async def execute_redaction(
     try:
         _fms.assert_file_owner(request.file_id, owner_id)
         response = await _orch.execute_redaction(request)
+    except PdfEncryptedError as exc:
+        # Issue #30：加密 PDF 返回结构化错误码，不再 404 英文原文
+        raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -96,6 +101,8 @@ async def preview_image_redaction(
             page=page,
             config=body.config,
         )
+    except PdfEncryptedError as exc:
+        raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -126,7 +133,11 @@ async def locate_entities(
             "ner",
             "ner",  # source：前端据此区分识别框/手拉框（显示与执行同步都靠它）
         )
-    except Exception as exc:  # 加密/损坏 PDF 等，统一 400 供前端提示
+    except PdfEncryptedError as exc:
+        # Issue #30：加密 PDF 返回结构化错误码（旧行为是 except Exception 吞成
+        # 无码 400，中文界面只能显示英文原文）
+        raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
+    except Exception as exc:  # 损坏 PDF 等，统一 400 供前端提示
         raise HTTPException(status_code=400, detail=str(exc))
     return LocateEntitiesResponse(boxes=boxes, missed=missed)
 
@@ -141,6 +152,9 @@ async def get_comparison(file_id: str, owner_id: str = Depends(require_auth)):
     try:
         _fms.assert_file_owner(file_id, owner_id)
         return await _orch.get_comparison(file_id)
+    except PdfEncryptedError as exc:
+        # Issue #30：compare 链路（get_comparison→_extract_pdf_text）遇加密卷 400+错误码，不落 500
+        raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
     except ValueError as exc:
         detail = str(exc)
         if "has not been redacted" in detail:
@@ -185,6 +199,9 @@ async def detect_sensitive_regions(
             include_result_image=include_result_image,
             owner_id=owner_id,
         )
+    except PdfEncryptedError as exc:
+        # Issue #30：加密 PDF 返回结构化错误码，不再 404 "document closed or encrypted"
+        raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 

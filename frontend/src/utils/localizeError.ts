@@ -10,8 +10,25 @@ type ErrorLike = {
     data?: {
       message?: unknown;
       detail?: unknown;
+      error_code?: unknown;
     };
   };
+};
+
+/**
+ * 后端错误信封的机器可读错误码（`app/core/errors.py` error_response）。
+ * #30 起 PDF 加密类错误带码：调用方（如 playground 密码框）按码路由交互，
+ * 文案映射只作 toast 兜底。无码返回 null，调用方回退字符串启发式。
+ */
+export function errorCodeFromError(error: unknown): string | null {
+  const candidate = (error && typeof error === 'object' ? error : null) as ErrorLike | null;
+  const code = candidate?.response?.data?.error_code;
+  return typeof code === 'string' && code ? code : null;
+}
+
+const ERROR_CODE_MESSAGE_KEYS: Record<string, string> = {
+  PDF_ENCRYPTED_NEEDS_PASSWORD: 'common.pdfEncrypted',
+  PDF_WRONG_PASSWORD: 'common.pdfWrongPassword',
 };
 
 function toText(value: unknown): string {
@@ -38,14 +55,22 @@ function isChinese(text: string): boolean {
 /**
  * Best-effort localization of free-form backend error messages.
  *
- * Known tradeoff (NOT a bug — the backend has no error codes): raw Chinese
+ * Backend errors that carry a machine-readable `error_code` (see
+ * `errorCodeFromError`) are mapped by code first. The rest are localized by
+ * string heuristics, with the known tradeoff (NOT a bug): raw Chinese
  * messages are passed through verbatim even under the `en` locale, while raw
  * English messages are shown only under `en` and replaced by the fallback key
- * under `zh`. Don't try to "fix" this without backend error codes.
+ * under `zh`.
  */
 export function localizeErrorMessage(error: unknown, fallbackKey = 'common.error'): string {
   const candidate = (error && typeof error === 'object' ? error : null) as ErrorLike | null;
   const locale = useI18n.getState().locale;
+
+  const errorCode = errorCodeFromError(error);
+  if (errorCode && ERROR_CODE_MESSAGE_KEYS[errorCode]) {
+    return t(ERROR_CODE_MESSAGE_KEYS[errorCode]);
+  }
+
   const raw =
     toText(candidate?.response?.data?.message) ||
     toText(candidate?.response?.data?.detail) ||
