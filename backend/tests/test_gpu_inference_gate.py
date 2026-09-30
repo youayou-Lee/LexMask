@@ -82,3 +82,9 @@ def test_verify_knobs_defaults_and_clamps():
     assert settings_cls(HAS_NER_VERIFY_PARALLEL_CAP=0).HAS_NER_VERIFY_PARALLEL_CAP == 1
     assert settings_cls(HAS_NER_VERIFY_BATCH_SIZE=-3).HAS_NER_VERIFY_BATCH_SIZE == 0
     assert settings_cls(HAS_NER_VERIFY_BATCH_SIZE=99).HAS_NER_VERIFY_BATCH_SIZE == 32
+
+
+def test_incremental_filter_flag_default_off():
+    """Issue#37 WS-1：增量识别默认关——关闭时行为必须与现状逐字节等价。"""
+    settings_cls = type(settings)
+    assert settings_cls.model_fields["HAS_VISION_INCREMENTAL_KNOWN_FILTER"].default is False

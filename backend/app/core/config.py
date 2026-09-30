@@ -433,6 +433,9 @@ class Settings(BaseSettings):
     # Conservative default keeps existing recall; raise only to skip low-signal
     # OCR pages before sending them to HaS Text.
     HAS_VISION_MIN_TEXT_CHARS_FOR_NER: int = 1
+    # WS-1 按文件增量识别（Issue#37）：整块被文件已知实体解释的 OCR 块不再进入
+    # NER 主/bridge payload。默认关——开启前须 A/B（实体分桶 off vs on 相等）。
+    HAS_VISION_INCREMENTAL_KNOWN_FILTER: bool = False
 
     # 兼容旧环境变量 HAS_BASE_URL
     HAS_BASE_URL: str | None = None

@@ -113,7 +113,10 @@ def _vision_signature(
         # grounding wording (or the tile/seal/sampling switches) left the key
         # identical and 重新识别 quietly replayed the OLD boxes — the change looked
         # like it had not deployed at all.
-        "version": 5,
+        # v6: incremental known-entity filter flag joins the signature so flipping
+        # it (off → on) invalidates cached vision results instead of replaying
+        # boxes computed under the other mode (Issue#37 WS-1).
+        "version": 6,
         "page": int(page),
         "ocr_has_types": _vision_type_ids(ocr_has_types),
         "visual_feature_types": _vision_type_ids(visual_feature_types),
@@ -124,6 +127,9 @@ def _vision_signature(
         "visual_flags": [
             int(getattr(settings, "LOCATE_ANYTHING_CONSENSUS_SAMPLES", 1) or 1),
         ],
+        "incremental_known_filter": bool(
+            getattr(settings, "HAS_VISION_INCREMENTAL_KNOWN_FILTER", False)
+        ),
         # Detector-side knobs the backend cannot observe because they live in the
         # LA server's own env (sampling temperature, LOCATE_ANYTHING_VLLM_SAMPLES,
         # generation mode). Bump VISION_DETECTOR_EPOCH whenever one of them
