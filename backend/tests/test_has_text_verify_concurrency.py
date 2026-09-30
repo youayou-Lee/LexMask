@@ -1,0 +1,269 @@
+"""residual verify 段并发化（Issue#33 PR-B）。
+
+fake 契约（评审 M2）：① 按 (text, types) 内容键控路由，不按调用序号——
+并发化后调用顺序不确定；② 计数器带 threading.Lock；③ 延迟用 time.sleep
+在 to_thread 内确定性持槽，峰值断言不依赖真实时序；④ autouse 清 HaSClient
+类级缓存/inflight，防跨测试污染；⑤ 每测 asyncio.run 新 loop，闸门随 loop 重建。
+"""
+import asyncio
+import threading
+import time
+
+import pytest
+
+from app.services.ocr_has_vision_service import OCRTextBlock
+from app.services.vision.has_text_analysis import run_has_text_analysis
+
+
+@pytest.fixture(autouse=True)
+def _clean_shared_client_state():
+    from app.services.has_client import HaSClient
+
+    cache = getattr(HaSClient, "_SHARED_NER_CACHE", None)
+    inflight = getattr(HaSClient, "_SHARED_NER_INFLIGHT", None)
+    if cache is not None:
+        cache.clear()
+    if inflight is not None:
+        inflight.clear()
+    yield
+    if cache is not None:
+        cache.clear()
+    if inflight is not None:
+        inflight.clear()
+
+
+class _ContentKeyedHaS:
+    """按规则表（子串谓词 → 应答）路由，先命中先用；记录峰值/调用数/错误注入。"""
+
+    base_url = "http://stub:0"
+
+    def __init__(
+        self,
+        rules,
+        hold_sec: float = 0.0,
+        raise_on_text: str | None = None,
+        raise_exact: bool = False,
+    ):
+        # rules: list[tuple[str, dict]] —— 子串谓词, 应答。verify 单值规则的
+        # 谓词必须排在宽匹配（整页 payload）之前。
+        # raise_exact=True 时 raise_on_text 仅在 text 全等时抛——residual payload
+        # 含同值子串但不触发（只有 verify 单值调用是全等文本）。
+        self.rules = rules
+        self.hold_sec = hold_sec
+        self.raise_on_text = raise_on_text
+        self.raise_exact = raise_exact
+        self.calls = 0
+        self.peak = 0
+        self.seen_texts: list[str] = []
+        self._current = 0
+        self._lock = threading.Lock()
+
+    def ner(self, text, entity_types=None, **_kwargs):
+        with self._lock:
+            self.calls += 1
+            self._current += 1
+            self.peak = max(self.peak, self._current)
+            self.seen_texts.append(text)
+        try:
+            hit = False
+            if self.raise_on_text:
+                hit = (
+                    text.strip() == self.raise_on_text
+                    if self.raise_exact
+                    else self.raise_on_text in text
+                )
+            if hit:
+                raise RuntimeError("injected verify failure")
+            if self.hold_sec:
+                time.sleep(self.hold_sec)
+            for pattern, answer in self.rules:
+                if pattern in text:
+                    return answer
+            return {}
+        finally:
+            with self._lock:
+                self._current -= 1
+
+
+def _dense_blocks():
+    """复刻 0712 病理（参照 test_residual_reask_pass.py）：同块两金额，主调用只召回一个。
+
+    金额间用 "/" 分隔——compact 后 USD4,700.00/USD125.00 保持 token 可分，
+    residual 的 isolated-token 扣除才能算出未解释墨迹（实案即斜杠分栏样式）。
+    """
+    lines = [
+        "发票号 20260712 付款单位 南宁市宏发贸易有限公司 备注 第A栏",
+        "USD 4,700.00 / USD 125.00 合计两栏",
+        "收款人 张三 联系电话 13800000000 开户行 南宁支行",
+    ]
+    return [
+        OCRTextBlock(
+            text=t,
+            polygon=[[100, 40 * i], [600, 40 * i], [600, 40 * i + 30], [100, 40 * i + 30]],
+            confidence=0.98,
+        )
+        for i, t in enumerate(lines)
+    ]
+
+
+def _run_analysis(blocks, client, stage_status=None):
+    stage = stage_status if stage_status is not None else {}
+    entities = asyncio.run(run_has_text_analysis(blocks, client, vision_types=None, stage_status=stage))
+    return entities, stage
+
+
+def _verify_entities(entities, text):
+    # AMOUNT 实体出管道前经 _compact_text（去空白），期望值同样归一后比较
+    from app.services.vision.has_text_analysis import _compact_text
+
+    return any(e["type"] == "AMOUNT" and e["text"] == _compact_text(text) for e in entities)
+
+
+# 主调用部分召回 → residual 捞回第二个金额 → verify 确认。
+# 谓词顺序即路由：整页原始 payload（带空格）> 残差/verify（compact 无空格形态）。
+# 若断言失败，先打印 client.seen_texts 核对 _build_has_text_payload 的实际
+# 拼接文本，微调谓词。
+_FAKE_RULES = [
+    ("USD 4,700.00 / USD 125.00", {"金额": ["USD 4,700.00"]}),  # 原始整页 payload：部分召回
+    ("USD125.00", {"金额": ["USD125.00"]}),  # 残差段与 verify 单值（compact 形态）
+]
+
+
+def test_residual_verify_recovers_value_and_records_metrics():
+    client = _ContentKeyedHaS(_FAKE_RULES)
+    entities, stage = _run_analysis(_dense_blocks(), client)
+    assert _verify_entities(entities, "USD 4,700.00")
+    assert _verify_entities(entities, "USD 125.00")
+    assert stage.get("has_text_verify_calls", 0) >= 1
+    assert stage["has_text_verify_peak_concurrency"] >= 1
+    assert stage["has_text_verify_errors"] == 0
+
+
+def test_fully_recalled_page_has_zero_verify_calls():
+    """主调用全召回 → residual_new 为空 → verify 零执行、零指标、结果不变（Review Focus 1）。
+
+    主调用应答用 compact 形态（与 OCR 文本一致——真实模型应答必须匹配 OCR
+    原文才能被 matcher 配回框），与 residual 侧的 already-existing 判断同形态。
+    """
+    rules = [("发票号", {"金额": ["USD4,700.00", "USD125.00"]})]
+    client = _ContentKeyedHaS(rules, raise_on_text="USD3,000.00", raise_exact=True)
+    entities, stage = _run_analysis(_dense_blocks(), client)
+    assert _verify_entities(entities, "USD 125.00")
+    assert "has_text_verify_calls" not in stage or stage["has_text_verify_calls"] == 0
+
+
+def _many_amount_blocks(n: int):
+    lines = [f"发票号 {i:04d} 款项 USD {i},000.00 经手人 张三{i}" for i in range(1, n + 1)]
+    return [
+        OCRTextBlock(
+            text=t,
+            polygon=[[100, 40 * i], [600, 40 * i], [600, 40 * i + 30], [100, 40 * i + 30]],
+            confidence=0.98,
+        )
+        for i, t in enumerate(lines)
+    ]
+
+
+def _partial_recall_rules(n: int):
+    """部分召回锚点（residual 触发前提=≥1 已消费值）：主 payload（spaced）只召回
+    第一个值；残差 payload（compact，含末值）全量补召回；verify 单值逐值应答。"""
+    return [
+        ("款项 USD 1,000.00", {"金额": ["USD1,000.00"]}),
+        (f"USD{n},000.00", {"金额": [f"USD{i},000.00" for i in range(1, n + 1)]}),
+    ] + [
+        (f"USD{i},000.00", {"金额": [f"USD{i},000.00"]}) for i in range(1, n)
+    ]
+
+
+def test_verify_concurrency_bounded_by_gate(monkeypatch):
+    """闸门=4 时峰值 >1 且 ≤4（并发生效、被闸门约束）。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "SERIALIZE_SHARED_GPU_MODELS", True, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_GLOBAL_MAX_INFLIGHT", 4, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_VERIFY_PARALLEL_CAP", 4, raising=False)
+    # n 个待验证值：主调用全不召回，residual 捞回 → verify n 次
+    rules = _partial_recall_rules(8)
+    client = _ContentKeyedHaS(rules, hold_sec=0.05)
+    entities, stage = _run_analysis(_many_amount_blocks(8), client)
+    assert stage["has_text_verify_calls"] >= 7  # 主召回 1 个 + 残差补回 7 个
+    assert 2 <= stage["has_text_verify_peak_concurrency"] <= 4
+
+
+def test_verify_bounded_even_when_gate_bypassed(monkeypatch):
+    """闸门旁路（slot 空操作）下窗口独立界仍生效：CAP=3 → 峰值恰为 3（Review Focus 2）。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "SERIALIZE_SHARED_GPU_MODELS", False, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_GLOBAL_MAX_INFLIGHT", 8, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_VERIFY_PARALLEL_CAP", 3, raising=False)
+    rules = _partial_recall_rules(9)
+    client = _ContentKeyedHaS(rules, hold_sec=0.05)
+    entities, stage = _run_analysis(_many_amount_blocks(9), client)
+    assert stage["has_text_verify_calls"] >= 8
+    assert stage["has_text_verify_peak_concurrency"] == 3
+
+
+def test_verify_results_multiset_equal_to_serial():
+    """同一输入下并发版与串行版结果按 (type, text) 多重集相等（Review Focus 4，顺序无语义）。"""
+    def run(gate):
+        from app.core.config import settings
+
+        settings.SERIALIZE_SHARED_GPU_MODELS = True
+        settings.HAS_NER_GLOBAL_MAX_INFLIGHT = gate
+        settings.HAS_NER_VERIFY_PARALLEL_CAP = 4
+        client = _ContentKeyedHaS(_FAKE_RULES)
+        entities, _ = _run_analysis(_dense_blocks(), client)
+        return sorted((e["type"], e["text"]) for e in entities)
+
+    assert run(1) == run(4)
+
+
+def test_single_verify_failure_does_not_poison_siblings():
+    """第 k 个值 verify 抛异常：其余值确认结果不受污染、异常计数、整页不崩（Review Focus 3）。"""
+    rules = [
+        ("款项 USD 1,000.00", {"金额": ["USD1,000.00"]}),  # 主 payload：只召回首值（锚点）
+        ("USD", {"金额": ["USD2,000.00", "USD3,000.00", "USD4,000.00"]}),  # 残差+verify：正常确认
+    ]  # USD3,000.00 的异常由 raise_exact 注入（仅 verify 单值全等文本触发）
+    client = _ContentKeyedHaS(rules, raise_on_text="USD3,000.00", raise_exact=True)
+    entities, stage = _run_analysis(_many_amount_blocks(4), client)
+    assert stage["has_text_verify_errors"] == 1
+    confirmed = {(e["type"], e["text"]) for e in entities if e["type"] == "AMOUNT"}
+    assert ("AMOUNT", "USD1,000.00") in confirmed  # 主召回不受影响
+    assert ("AMOUNT", "USD3,000.00") not in confirmed  # 异常值未确认丢弃
+    assert ("AMOUNT", "USD2,000.00") in confirmed  # 兄弟值不受污染
+    assert ("AMOUNT", "USD4,000.00") in confirmed
+
+
+def test_batch_mode_off_is_default(monkeypatch):
+    """默认 0：单值路径，每个待验证值一次调用。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "HAS_NER_VERIFY_BATCH_SIZE", 0, raising=False)
+    monkeypatch.setattr(settings, "SERIALIZE_SHARED_GPU_MODELS", True, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_GLOBAL_MAX_INFLIGHT", 4, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_VERIFY_PARALLEL_CAP", 4, raising=False)
+    rules = _partial_recall_rules(4)
+    client = _ContentKeyedHaS(rules, hold_sec=0.01)
+    _entities, stage = _run_analysis(_many_amount_blocks(4), client)
+    assert stage["has_text_verify_calls"] == 3  # 主召回 1 个 + 残差补回 3 个
+
+
+def test_batch_mode_groups_same_type_values(monkeypatch):
+    """BATCH_SIZE=2：同类型值合并质询，调用数 < 值数，确认集不小于残差补回集。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "HAS_NER_VERIFY_BATCH_SIZE", 2, raising=False)
+    monkeypatch.setattr(settings, "SERIALIZE_SHARED_GPU_MODELS", True, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_GLOBAL_MAX_INFLIGHT", 4, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_VERIFY_PARALLEL_CAP", 4, raising=False)
+    # 残差/批量质询（compact，含换行连接的多值）→ 全量应答；主 payload（spaced）部分召回
+    rules = [
+        ("款项 USD 1,000.00", {"金额": ["USD1,000.00"]}),
+        ("USD", {"金额": [f"USD{i},000.00" for i in range(1, 5)]}),
+    ]
+    client = _ContentKeyedHaS(rules)
+    entities, stage = _run_analysis(_many_amount_blocks(4), client)
+    assert stage["has_text_verify_calls"] < 3  # 3 个待验证值分 2 批 → 2 次调用
+    confirmed = {(e["type"], e["text"]) for e in entities if e["type"] == "AMOUNT"}
+    assert {("AMOUNT", f"USD{i},000.00") for i in range(1, 5)} <= confirmed
