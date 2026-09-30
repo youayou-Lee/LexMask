@@ -233,3 +233,37 @@ def test_single_verify_failure_does_not_poison_siblings():
     assert ("AMOUNT", "USD3,000.00") not in confirmed  # 异常值未确认丢弃
     assert ("AMOUNT", "USD2,000.00") in confirmed  # 兄弟值不受污染
     assert ("AMOUNT", "USD4,000.00") in confirmed
+
+
+def test_batch_mode_off_is_default(monkeypatch):
+    """默认 0：单值路径，每个待验证值一次调用。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "HAS_NER_VERIFY_BATCH_SIZE", 0, raising=False)
+    monkeypatch.setattr(settings, "SERIALIZE_SHARED_GPU_MODELS", True, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_GLOBAL_MAX_INFLIGHT", 4, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_VERIFY_PARALLEL_CAP", 4, raising=False)
+    rules = _partial_recall_rules(4)
+    client = _ContentKeyedHaS(rules, hold_sec=0.01)
+    _entities, stage = _run_analysis(_many_amount_blocks(4), client)
+    assert stage["has_text_verify_calls"] == 3  # 主召回 1 个 + 残差补回 3 个
+
+
+def test_batch_mode_groups_same_type_values(monkeypatch):
+    """BATCH_SIZE=2：同类型值合并质询，调用数 < 值数，确认集不小于残差补回集。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "HAS_NER_VERIFY_BATCH_SIZE", 2, raising=False)
+    monkeypatch.setattr(settings, "SERIALIZE_SHARED_GPU_MODELS", True, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_GLOBAL_MAX_INFLIGHT", 4, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_VERIFY_PARALLEL_CAP", 4, raising=False)
+    # 残差/批量质询（compact，含换行连接的多值）→ 全量应答；主 payload（spaced）部分召回
+    rules = [
+        ("款项 USD 1,000.00", {"金额": ["USD1,000.00"]}),
+        ("USD", {"金额": [f"USD{i},000.00" for i in range(1, 5)]}),
+    ]
+    client = _ContentKeyedHaS(rules)
+    entities, stage = _run_analysis(_many_amount_blocks(4), client)
+    assert stage["has_text_verify_calls"] < 3  # 3 个待验证值分 2 批 → 2 次调用
+    confirmed = {(e["type"], e["text"]) for e in entities if e["type"] == "AMOUNT"}
+    assert {("AMOUNT", f"USD{i},000.00") for i in range(1, 5)} <= confirmed

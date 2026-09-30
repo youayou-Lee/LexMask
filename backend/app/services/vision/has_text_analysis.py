@@ -705,13 +705,60 @@ async def run_has_text_analysis(
                         }
                         return entity_type, clean_text, clean_text in confirmed
 
-                    outcomes = await asyncio.gather(*(_verify_one(job) for job in verify_jobs))
-                    for entity_type, clean_text, confirmed_ok in outcomes:
-                        if not confirmed_ok:
-                            continue
-                        merged_ner_result.setdefault(entity_type, [])
-                        if clean_text not in merged_ner_result[entity_type]:
-                            merged_ner_result[entity_type].append(clean_text)
+                    batch_size = max(0, int(verify_settings.HAS_NER_VERIFY_BATCH_SIZE))
+                    if batch_size > 0:
+                        # 批量自证（第二级杠杆，默认关）。同类型待验证值按 N 个一批
+                        # 合并质询，确认集 = 模型返回值 ∩ 批内值——逐值语义仍由模型
+                        # 回答唯一决定。长列表召回稀释正是 residual 机制诞生的原因
+                        # （0712 实证），开启前必须在真实案卷页 A/B 实证。
+                        from collections import defaultdict
+
+                        by_type: dict[str, list[str]] = defaultdict(list)
+                        for entity_type, clean_text in verify_jobs:
+                            by_type[entity_type].append(clean_text)
+                        batch_jobs: list[tuple[str, list[str]]] = []
+                        for entity_type, values in by_type.items():
+                            for i in range(0, len(values), batch_size):
+                                batch_jobs.append((entity_type, values[i:i + batch_size]))
+
+                        async def _verify_batch(entity_type: str, values: list[str]) -> list[tuple[str, str, bool]]:
+                            async with verify_sem, shared_gpu_inference_slot("OCR HaS Text residual verify NER"):
+                                verify_state["calls"] += 1
+                                verify_state["current"] += 1
+                                verify_state["peak"] = max(verify_state["peak"], verify_state["current"])
+                                try:
+                                    verify = await asyncio.to_thread(
+                                        has_client.ner, "\n".join(values), [entity_type]
+                                    )
+                                except Exception:
+                                    verify_state["errors"] += 1
+                                    return [(entity_type, v, False) for v in values]
+                                finally:
+                                    verify_state["current"] -= 1
+                            confirmed_batch = {
+                                _compact_text(v)
+                                for v in ((verify or {}).get(entity_type, []) or [])
+                            }
+                            return [(entity_type, v, v in confirmed_batch) for v in values]
+
+                        outcomes = await asyncio.gather(
+                            *(_verify_batch(t, vs) for t, vs in batch_jobs)
+                        )
+                        for batch_outcomes in outcomes:
+                            for entity_type, clean_text, confirmed_ok in batch_outcomes:
+                                if not confirmed_ok:
+                                    continue
+                                merged_ner_result.setdefault(entity_type, [])
+                                if clean_text not in merged_ner_result[entity_type]:
+                                    merged_ner_result[entity_type].append(clean_text)
+                    else:
+                        outcomes = await asyncio.gather(*(_verify_one(job) for job in verify_jobs))
+                        for entity_type, clean_text, confirmed_ok in outcomes:
+                            if not confirmed_ok:
+                                continue
+                            merged_ner_result.setdefault(entity_type, [])
+                            if clean_text not in merged_ner_result[entity_type]:
+                                merged_ner_result[entity_type].append(clean_text)
 
                     _record_has_text_metric(stage_status, "has_text_verify_calls", verify_state["calls"])
                     _record_has_text_metric(stage_status, "has_text_verify_peak_concurrency", verify_state["peak"])
