@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.services.file_parser import PdfEncryptedError
 from app.services.task_queue_config import (
     _clamp_job_concurrency,
     load_persisted_job_concurrency,
@@ -27,7 +28,6 @@ from app.services.task_queue_metrics import (
     _utc_iso,
     _vision_page_concurrency_reason,  # noqa: F401  re-exported for tests/API
 )
-from app.services.file_parser import PdfEncryptedError
 from app.services.task_queue_pipelines import (
     RecognitionPipelineMixin,
     RedactionPipelineMixin,

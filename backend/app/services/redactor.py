@@ -22,6 +22,7 @@ from app.models.schemas import (
     RedactionConfig,
     ReplacementMode,
 )
+from app.services.file_parser import open_pdf_checked
 from app.services.redaction.image_redactor import ImageRedactorMixin
 
 # ---- Re-export 公共符号，保持向后兼容 ----
@@ -30,7 +31,6 @@ from app.services.redaction.replacement_strategy import (  # noqa: F401
     build_preview_entity_map,
 )
 from app.services.redaction.text_redactor import TextRedactorMixin
-from app.services.file_parser import open_pdf_checked
 from app.services.vision_service import VisionService
 
 logger = logging.getLogger(__name__)
