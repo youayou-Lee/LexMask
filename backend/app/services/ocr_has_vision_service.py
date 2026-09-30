@@ -186,6 +186,7 @@ class OcrHasVisionService:
         ocr_blocks: list[OCRTextBlock],
         vision_types: list | None = None,
         stage_status: dict[str, Any] | None = None,
+        known_values: list[dict[str, str]] | None = None,
     ) -> list[dict]:
         # Lazy re-init (service may have started after us)
         if not self._has_client:
@@ -195,27 +196,39 @@ class OcrHasVisionService:
             except Exception:
                 pass
         from app.services.vision.ocr_pipeline import run_has_text_analysis
-        return await run_has_text_analysis(ocr_blocks, self._has_client, vision_types, stage_status=stage_status)
+        return await run_has_text_analysis(
+            ocr_blocks, self._has_client, vision_types, stage_status=stage_status, known_values=known_values
+        )
 
     async def _invoke_has_text_analysis(
         self,
         ocr_blocks: list[OCRTextBlock],
         vision_types: list | None,
         stage_status: dict[str, Any],
+        known_values: list[dict[str, str]] | None = None,
     ) -> list[dict]:
         """Call HaS Text while preserving older test doubles with two args."""
         func = self._run_has_text_analysis
         try:
             signature = inspect.signature(func)
+            sig_params = signature.parameters
             accepts_status = (
-                "stage_status" in signature.parameters
-                or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+                "stage_status" in sig_params
+                or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in sig_params.values())
+            )
+            accepts_known = (
+                "known_values" in sig_params
+                or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in sig_params.values())
             )
         except (TypeError, ValueError):
             accepts_status = True
+            accepts_known = True
+        kwargs: dict[str, Any] = {}
         if accepts_status:
-            return await func(ocr_blocks, vision_types, stage_status=stage_status)
-        return await func(ocr_blocks, vision_types)
+            kwargs["stage_status"] = stage_status
+        if accepts_known:
+            kwargs["known_values"] = known_values
+        return await func(ocr_blocks, vision_types, **kwargs)
 
 
     def _expand_table_blocks(self, ocr_blocks: list[OCRTextBlock]) -> list[OCRTextBlock]:
@@ -335,6 +348,7 @@ class OcrHasVisionService:
         self,
         ocr_blocks: list[OCRTextBlock],
         vision_types: list | None = None,
+        known_values: list[dict[str, str]] | None = None,
     ) -> list[SensitiveRegion]:
         """Run HaS Text over already-positioned text blocks.
 
@@ -367,7 +381,7 @@ class OcrHasVisionService:
         expanded_blocks = self._expand_table_blocks(ocr_blocks)
         if expanded_blocks and _needs_has_text_analysis(entity_type_ids):
             ner_start = time.perf_counter()
-            entities = await self._invoke_has_text_analysis(expanded_blocks, semantic_vision_types, duration_ms)
+            entities = await self._invoke_has_text_analysis(expanded_blocks, semantic_vision_types, duration_ms, known_values=known_values)
             duration_ms["has_ner"] = round((time.perf_counter() - ner_start) * 1000)
             logger.info(
                 "PDF text layer HaS NER finished in %.2fs, entities=%d",
@@ -407,6 +421,7 @@ class OcrHasVisionService:
         vision_types: list | None = None,
         draw_result: bool = True,
         blocks_out: list | None = None,
+        known_values: list[dict[str, str]] | None = None,
     ) -> tuple[list[SensitiveRegion], str | None]:
         """
         检测敏感信息并在图像上绘制
@@ -514,7 +529,7 @@ class OcrHasVisionService:
             entities = []
             if _needs_has_text_analysis(entity_type_ids):
                 ner_start = time.perf_counter()
-                entities = await self._invoke_has_text_analysis(ocr_blocks_for_ner, semantic_vision_types, duration_ms)
+                entities = await self._invoke_has_text_analysis(ocr_blocks_for_ner, semantic_vision_types, duration_ms, known_values=known_values)
                 duration_ms["has_ner"] = round((time.perf_counter() - ner_start) * 1000)
                 logger.info("HaS NER finished in %.2fs, entities=%d", duration_ms["has_ner"] / 1000, len(entities))
             else:

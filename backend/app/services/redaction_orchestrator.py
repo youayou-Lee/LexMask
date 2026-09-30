@@ -139,6 +139,27 @@ def _vision_signature(
     }
 
 
+def _known_entity_values(snapshot: dict) -> list[dict[str, str]]:
+    """全文件已知实体值（Issue#37 WS-1）：来自既有 bounding_boxes，零新存储。
+
+    detect_vision 每次调用捕获快照时刻的集合（局部变量、显式参数穿透，无单例
+    态）——并发页拿到旧集合只是少过滤，方向保守；跨文件无共享可变状态。
+    """
+    known: list[dict[str, str]] = []
+    boxes = snapshot.get("bounding_boxes") or {}
+    for page_boxes in boxes.values() if isinstance(boxes, dict) else []:
+        if not isinstance(page_boxes, list):
+            continue
+        for box in page_boxes:
+            if not isinstance(box, dict):
+                continue
+            btype = str(box.get("type") or "")
+            btext = str(box.get("text") or "")
+            if btype and btext:
+                known.append({"type": btype, "text": btext})
+    return known
+
+
 def _page_value(mapping: Any, page: int) -> Any:
     if not isinstance(mapping, dict):
         return None
@@ -545,6 +566,7 @@ async def detect_vision(
     # 正则兜底需要租户上下文：在文本链路运行前把 owner 设到 OCR/HaS 单例上
     from app.services.ocr_has_vision_service import get_ocr_has_vision_service
     get_ocr_has_vision_service().current_owner_id = owner_id
+    known_values = _known_entity_values(snapshot)
     bounding_boxes, result_image = await vision_service.detect_with_dual_pipeline(
         file_path=snapshot["file_path"],
         file_type=snapshot["file_type"],
@@ -552,6 +574,7 @@ async def detect_vision(
         ocr_has_types=effective_ocr_types,
         visual_feature_types=effective_visual_feature_types,
         include_result_image=include_result_image,
+        known_values=known_values,
     )
     warnings = list(getattr(vision_service, "last_warnings", []) or [])
     pipeline_status = dict(getattr(vision_service, "last_pipeline_status", {}) or {})

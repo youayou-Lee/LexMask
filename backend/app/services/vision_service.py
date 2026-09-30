@@ -208,6 +208,7 @@ class VisionService:
         ocr_has_types: list = None,
         visual_feature_types: list = None,
         include_result_image: bool = True,
+        known_values: list | None = None,
     ) -> tuple[list[BoundingBox], str | None]:
         total_start = time.perf_counter()
         duration_ms: dict[str, int | dict[str, int]] = {"ocr_has": 0, "visual_features": 0}
@@ -308,8 +309,13 @@ class VisionService:
         async def invoke_detector(func, page_no: int, types: list | None):
             kwargs = {}
             try:
-                if "draw_result" in inspect.signature(func).parameters:
+                sig_params = inspect.signature(func).parameters
+                if "draw_result" in sig_params:
                     kwargs["draw_result"] = False
+                # Issue#37 WS-1：known_values 只传给接受它的链路（图像链/文本层链），
+                # 视觉特征链不消费。
+                if "known_values" in sig_params:
+                    kwargs["known_values"] = known_values
             except (TypeError, ValueError):
                 pass
             image = await get_image_data()
@@ -343,7 +349,7 @@ class VisionService:
                         duration_ms["pdf_text_layer_skipped_sparse_file"] = True
                         return None
                     try:
-                        return await self._detect_with_pdf_text_layer(file_path, page, effective_ocr_has_types)
+                        return await self._detect_with_pdf_text_layer(file_path, page, effective_ocr_has_types, known_values=known_values)
                     except ValueError as exc:
                         _record_sparse_pdf_text_layer_probe(
                             file_path,
@@ -1489,6 +1495,7 @@ class VisionService:
         file_path: str,
         page: int,
         pipeline_types: list = None,
+        known_values: list | None = None,
     ) -> tuple[list[BoundingBox], str | None]:
         text_layer_start = time.perf_counter()
         blocks, width, height = await self.file_parser.get_pdf_page_text_blocks(file_path, page)
@@ -1519,7 +1526,7 @@ class VisionService:
                 f"sparse native text layer ({text_chars} chars < {settings.PDF_TEXT_LAYER_MIN_CHARS})"
             )
 
-        regions = await self.ocr_has_service.detect_from_text_blocks(blocks, pipeline_types)
+        regions = await self.ocr_has_service.detect_from_text_blocks(blocks, pipeline_types, known_values=known_values)
         # This page's text blocks (local, off the singleton) for the same per-call
         # hallucinated-card gate the image path feeds.
         self._page_ocr_blocks = list(blocks)
@@ -1561,6 +1568,7 @@ class VisionService:
         page: int,
         pipeline_types: list = None,
         draw_result: bool = True,
+        known_values: list | None = None,
     ) -> tuple[list[BoundingBox], str | None]:
         page_blocks: list = []
         regions, result_image_base64 = await self.ocr_has_service.detect_and_draw(
@@ -1568,6 +1576,7 @@ class VisionService:
             vision_types=pipeline_types,
             draw_result=draw_result,
             blocks_out=page_blocks,
+            known_values=known_values,
         )
         # This call's OCR blocks, captured off the process-wide singleton so the
         # hallucinated-card gate never judges against a concurrent page's blocks.
