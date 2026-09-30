@@ -61,8 +61,8 @@ gh issue list --milestone "v1.1" --state all
 
 ### Step 5 PR
 - [ ] 描述四要素：动机（`Refs #N`）/ 改动（逐模块一句话）/ 验证（数据）/ 风险与回滚
-- [ ] **审核阶段**：调 `requesting-code-review` skill 派发 reviewer 子代理（只给 BASE..HEAD diff + 需求描述，不给会话历史；评审清单含完成性对照验收方案、回归与副作用——其他链路/各部署链/共享模型层、规范符合性）；意见按 `receiving-code-review` 处理：先澄清全部不明项再动手，逐条对照代码库验证，Critical 立即修，Important merge 前修，Minor 记 Issue；reviewer 说错要有依据地反驳
-- [ ] **放行与合并（2026-09-30 起预授权制）**：用户验收通过时即预授权——review 结论无 Critical/Important → 直接 squash 合并，不再等二次放行；出 Critical/Important → 修完重走 ③④⑤⑥ 后回来找用户。GPU 栈改动仍须门禁④云实例验证通过后才可合
+- [ ] **审核阶段**：调 `requesting-code-review` skill 派发 reviewer 子代理（只给 BASE..HEAD diff + Issue 需求描述，不给会话历史；评审清单含完成性对照验收方案、回归与副作用——其他链路/各部署链/共享模型层、规范符合性）；意见按 `receiving-code-review` 处理：先澄清全部不明项再动手，逐条对照代码库验证，Critical 立即修，Important merge 前修，Minor 记 Issue；reviewer 说错要有依据地反驳
+- [ ] **放行与合并（2026-09-30 起预授权制，按验收分级）**：人工验收类——用户验收通过即预授权，review 无 Critical/Important 且用户二次确认后 squash 合并；AI 自验收类——review 无 Critical/Important → 汇报评审结论与证据后即合并（汇报不阻塞）；出 Critical/Important → 修完重走 ③④⑤⑥ 后回来找用户。GPU 栈改动仍须门禁④云实例验证通过后才可合
 - [ ] CI 全绿（base-guard 强制校验分支模型：功能 PR 须 base=preview 且含最新 preview）；merge 前自己通读一遍 diff
 
 ### Step 6 合并收尾（合入 preview）
