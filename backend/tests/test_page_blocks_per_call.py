@@ -29,7 +29,7 @@ class _FakeOCR:
     def __init__(self):
         self.last_ocr_blocks = []
 
-    async def detect_and_draw(self, image_data, vision_types=None, draw_result=True, blocks_out=None):
+    async def detect_and_draw(self, image_data, vision_types=None, draw_result=True, blocks_out=None, known_values=None):
         mine = [_blk("身份证号码：11010119900101461X")]
         self.last_ocr_blocks = list(mine)          # process-wide singleton write
         if blocks_out is not None:
