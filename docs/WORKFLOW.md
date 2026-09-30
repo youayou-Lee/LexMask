@@ -34,8 +34,9 @@ gh issue list --milestone "v1.1" --state all
 
 ## 1. 一个功能的生命周期：七步，每步合格标准
 
-### Step 1 立项 —— 写 Issue
-- [ ] "要解决的问题"讲清场景（痛点，不是"实现 X"）
+### Step 1 立项 —— 构建 Issue（含 ⓪ 需求澄清）
+- [ ] 用户一句话反馈（如"加密 PDF 上传失败"）→ AI 负责扩写成完整 Issue，**不是照抄原话**；构建过程中吸收 ⓪ 需求澄清（结构化提问收敛关键分歧），Issue 定稿 = ⓪ 完成的产物，用户确认后才算立完项
+- [ ] "要解决的问题"讲清**具体场景、触发条件、内容与边界**（痛点，不是"实现 X"；不写"PDF 加密上传失败"一句话完事）
 - [ ] 验收标准 ≥3 条，每条**可测试**（不写"更好用"，写"`curl /health/services` 返回 ocr/ner/visual-features 全 all_online"）
 - [ ] 挂 Milestone；预计 >3 天 → 拆成子 Issue
 
@@ -45,6 +46,7 @@ gh issue list --milestone "v1.1" --state all
 - [ ] 关键决策列 A/B 备选 + 取舍理由
 - [ ] **定验收方案（谁来验收）**：AI 自验收或人工验收，写进设计评论——AI 自验收适用于 AI 能凭浏览器实测 / API 实测 / 页面截图逐条核对、不依赖真实案卷与主观判断的改动（典型：纯 UI 显示/文案/样式、纯接口行为），AI 逐条实测留证后直接进独立 review；涉及真实案卷、业务正确性、主观效果判断或验证环境 AI 触达不了的走人工验收。设计评论未写验收方案 → 按人工验收从严（分级细则见门禁规范 §4）
 - [ ] **定影响面与环境计划**：标注改动范围（前端 / 后端 / 模型服务 NER|LA|OCR / 多者）；worktree 全量拉码，但开发环境只起影响面内的服务（纯前端改动不起后端，除非有真实依赖）；凡需起服务先核对端口占用——生产与开发端口段分离，多分支并行时按分支分配端口段，防串台
+- [ ] **验收方案独立评审（所有 Issue 一律过此门）**：设计+验收方案成稿后、交给用户点头前，调 `reviewing-acceptance-plan` skill 派冷视角子代理评审（只给 Issue 正文 + 验收方案全文，不给设计方案与 diff）——独立起草预期结果、逐条负样本检验（"bug 不修这条必须失败"，答不出即恒真断言，判无效）、补边界攻击面与部署链覆盖；分歧修订后**设计与验收方案一起交给用户确认**，确认后才开工（细则见门禁规范 §1.5）
 
 ### Step 3 开发 —— 分支 + 小步提交
 - [ ] `git switch preview && git pull --ff-only` 后切 `feat/xxx` / `fix/xxx` / `perf/xxx` / `docs/xxx`；一分支一 Issue
@@ -59,7 +61,8 @@ gh issue list --milestone "v1.1" --state all
 
 ### Step 5 PR
 - [ ] 描述四要素：动机（`Refs #N`）/ 改动（逐模块一句话）/ 验证（数据）/ 风险与回滚
-- [ ] **审核阶段**：merge 前派发 reviewer 子代理（只给 BASE..HEAD diff + 需求描述，不给会话历史）；意见按 `receiving-code-review` 处理：Critical 立即修，Important merge 前修，Minor 记 Issue；reviewer 说错要有依据地反驳
+- [ ] **审核阶段**：调 `requesting-code-review` skill 派发 reviewer 子代理（只给 BASE..HEAD diff + Issue 需求描述，不给会话历史；评审清单含完成性对照验收方案、回归与副作用——其他链路/各部署链/共享模型层、规范符合性）；意见按 `receiving-code-review` 处理：先澄清全部不明项再动手，逐条对照代码库验证，Critical 立即修，Important merge 前修，Minor 记 Issue；reviewer 说错要有依据地反驳
+- [ ] **放行与合并（2026-09-30 起预授权制，按验收分级）**：人工验收类——用户验收通过即预授权，review 无 Critical/Important 且用户二次确认后 squash 合并；AI 自验收类——review 无 Critical/Important → 汇报评审结论与证据后即合并（汇报不阻塞）；出 Critical/Important → 修完重走 ③④⑤⑥ 后回来找用户。GPU 栈改动仍须门禁④云实例验证通过后才可合
 - [ ] CI 全绿（base-guard 强制校验分支模型：功能 PR 须 base=preview 且含最新 preview）；merge 前自己通读一遍 diff
 
 ### Step 6 合并收尾（合入 preview）
@@ -104,7 +107,7 @@ gh issue list --milestone "v1.1" --state all
 | 环节 | 一票否决项 |
 |---|---|
 | Issue | 无可测试验收标准 → 不开工 |
-| 设计 | 讲不清数据流动 → 重想 |
+| 设计 | 讲不清数据流动 → 重想；验收方案未经独立评审（①.5）→ 不开工 |
 | 开发 | 测试红 commit → 打回 |
 | PR | CI 不绿 / 描述缺要素 → 不 merge |
 | 收尾 | CHANGELOG 缺条目 / Issue 关错 → 补完算完 |
@@ -152,7 +155,7 @@ git tag vX.Y.Z main && git push --tags
 ## 7. 分支模型（2026-09-29 改回 preview 线，用户拍板 Issue #20 方案 B）
 
 ```
-临时分支（feat|fix|perf|docs，从 preview 切，一分支一 Issue，走完七道门）
+临时分支（feat|fix|perf|docs，从 preview 切，一分支一 Issue，走完八道门）
    └─ squash 合入 preview（PR base=preview；base-guard 强制须含最新 preview）
 preview —— 集成/验收线：验收与演示实例跟踪 preview；云实例共享模型层亦跟踪 preview
    └─ 晋级：squash PR（head=preview，base=main）合入 main
