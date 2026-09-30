@@ -198,9 +198,11 @@ def test_flag_off_is_byte_equivalent():
     )
     assert client_off.seen_payloads == client_none.seen_payloads == client_empty.seen_payloads
     assert entities_off == entities_none == entities_empty
-    for stage in (stage_none, stage_empty):
-        for key in ("has_text_known_filter_blocks_dropped", "has_text_known_filter_chars_saved", "has_text_known_injected"):
-            assert stage.get(key, 0) == 0
+    # 开关关：stage 观测面也与现状等价——known_filter 三键不得出现（终评审 Important#1）
+    for stage in (stage_off, stage_none, stage_empty):
+        for key in ("has_text_known_filter_blocks_dropped", "has_text_known_filter_chars_saved",
+                    "has_text_known_filter_candidate_values", "has_text_known_injected"):
+            assert key not in stage
 
 
 def test_absent_value_cannot_consume_block():

@@ -422,9 +422,11 @@ async def run_has_text_analysis(
                     len(candidate_blocks),
                 )
                 candidate_blocks = kept_blocks
-        _record_has_text_metric(stage_status, "has_text_known_filter_blocks_dropped", dropped_blocks)
-        _record_has_text_metric(stage_status, "has_text_known_filter_chars_saved", saved_chars)
-        _record_has_text_metric(stage_status, "has_text_known_filter_candidate_values", len(known_filter_values))
+        # 指标只在开关开启时记录——关闭时 stage 观测面与现状逐字节等价（终评审 Important#1）
+        if known_values and bool(settings.HAS_VISION_INCREMENTAL_KNOWN_FILTER):
+            _record_has_text_metric(stage_status, "has_text_known_filter_blocks_dropped", dropped_blocks)
+            _record_has_text_metric(stage_status, "has_text_known_filter_chars_saved", saved_chars)
+            _record_has_text_metric(stage_status, "has_text_known_filter_candidate_values", len(known_filter_values))
         _record_has_text_metric(stage_status, "has_text_reconstructed_lines", 0)
         has_payload = _build_has_text_payload(
             candidate_blocks,
