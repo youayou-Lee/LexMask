@@ -30,6 +30,7 @@ from app.services.redaction.replacement_strategy import (  # noqa: F401
     build_preview_entity_map,
 )
 from app.services.redaction.text_redactor import TextRedactorMixin
+from app.services.file_parser import open_pdf_checked
 from app.services.vision_service import VisionService
 
 logger = logging.getLogger(__name__)
@@ -275,7 +276,8 @@ class Redactor(TextRedactorMixin, ImageRedactorMixin):
         """
         boxes: list[BoundingBox] = []
         missed: list[str] = []
-        doc = fitz.open(file_path)
+        # Issue #30：需打开密码的 PDF 抛 PdfEncryptedError（端点映射 400+错误码）
+        doc = open_pdf_checked(file_path)
         try:
             unique: list[tuple[str, str]] = []
             seen: set[str] = set()

@@ -21,6 +21,7 @@ from lxml import etree
 
 from app.core.config import settings
 from app.models.schemas import Entity
+from app.services.file_parser import open_pdf_checked
 from app.services.redaction.replacement_strategy import RedactionContext
 
 logger = logging.getLogger(__name__)
@@ -758,7 +759,8 @@ class TextRedactorMixin:
         context: RedactionContext,
     ) -> int:
         """PDF 文档匿名化（文本型）——原位替换（兜底链路）"""
-        doc = fitz.open(input_path)
+        # Issue #30：需打开密码的 PDF 抛 PdfEncryptedError（端点映射 400+错误码）
+        doc = open_pdf_checked(input_path)
         try:
             redacted_count = 0
 
@@ -865,7 +867,7 @@ class TextRedactorMixin:
 
     def _extract_pdf_text(self, file_path: str) -> str:
         """提取 PDF 文档文本"""
-        doc = fitz.open(file_path)
+        doc = open_pdf_checked(file_path)
         try:
             text = ""
             for page in doc:

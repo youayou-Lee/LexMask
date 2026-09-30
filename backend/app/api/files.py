@@ -5,6 +5,7 @@
 Thin routing layer — business logic lives in
 app.services.file_management_service.
 """
+import asyncio
 import json
 import logging
 import os
@@ -36,11 +37,14 @@ from app.api.jobs import get_job_store
 from app.core.audit import audit_log
 from app.core.auth import require_auth
 from app.core.config import settings
+from app.core.errors import AppError
 from app.core.idempotency import check_idempotency, save_idempotency
 from app.core.rate_limit import RateLimiter, make_user_throttle
 from app.models.schemas import (
     APIResponse,
     BatchDownloadRequest,
+    DecryptRequest,
+    DecryptResult,
     FileListResponse,
     FileUploadResponse,
     HybridNERRequest,
@@ -51,6 +55,7 @@ from app.models.schemas import (
     SftpPullRequest,
     SftpSourceRequest,
 )
+from app.services.file_parser import PdfEncryptedError, decrypt_pdf_with_password
 from app.services.job_store import JobStore
 
 router = APIRouter()
@@ -562,12 +567,43 @@ async def parse_file(file_id: str, owner_id: str = Depends(require_auth)):
     try:
         _fms.assert_file_owner(file_id, owner_id)
         result = await _fms.parse_file(file_id)
+    except PdfEncryptedError as exc:
+        # Issue #30：加密 PDF 不再落 404/误判扫描件，返回结构化错误码供前端弹密码框
+        raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
     except ValueError as exc:
         if "NOT in file_store" in str(exc) or "不存在" in str(exc):
             logger.error("parse_file: %s", exc)
             raise HTTPException(status_code=404, detail="文件不存在")
         raise HTTPException(status_code=400, detail=str(exc))
     return result
+
+
+@router.post("/files/{file_id}/decrypt", response_model=DecryptResult)
+async def decrypt_file(file_id: str, body: DecryptRequest, owner_id: str = Depends(require_auth)):
+    """
+    解除 PDF 打开密码（Issue #30）
+
+    - 密码仅在请求体出现一次、内存即用即弃：不落日志、不落审计、不进错误响应
+    - 成功后存储文件被无密码版本原子替换；文件未加密时幂等返回 decrypted=false
+    - 仅权限密码（无需打开密码）的 PDF 直接解除，不校验密码
+    """
+    snapshot = await _fms.get_file_snapshot(file_id)
+    if not snapshot or _fms.file_owner_id(snapshot) != owner_id:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    file_path = snapshot.get("file_path")
+    if not file_path or str(snapshot.get("file_type", "")).lower() != "pdf":
+        raise HTTPException(status_code=400, detail="仅 PDF 支持密码解密")
+    try:
+        decrypted = await asyncio.to_thread(decrypt_pdf_with_password, file_path, body.password)
+    except PdfEncryptedError as exc:
+        raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
+    audit_log(
+        "decrypt",
+        "file",
+        file_id,
+        detail={"filename": snapshot.get("original_filename"), "decrypted": decrypted},
+    )
+    return DecryptResult(file_id=file_id, decrypted=decrypted)
 
 
 @router.post("/files/{file_id}/ner/hybrid", response_model=NERResult)
