@@ -469,6 +469,7 @@ async def run_has_text_analysis(
                             # K=1 (default) drives exactly one temp=0 pass = current.
                             k_samples = max(1, int(settings.HAS_NER_SELF_CONSIST_SAMPLES))
                             sample_temp = float(settings.HAS_NER_SELF_CONSIST_TEMPERATURE)
+                            ner_stats: dict = {}  # Issue#41：截断/分批观测，经 client.ner 回填
 
                             def _ner_sample(pass_index: int) -> Any:
                                 return has_client.ner(
@@ -476,11 +477,15 @@ async def run_has_text_analysis(
                                     chinese_types,
                                     temperature=(0.0 if pass_index == 0 else sample_temp),
                                     sample_index=pass_index,
+                                    stats=ner_stats,
                                 )
 
                             ner_result, passes_run = await asyncio.to_thread(
                                 aggregate_ner_samples, _ner_sample, k_samples
                             )
+                            for _key in ("ner_finish_reason", "ner_truncated_calls", "ner_truncation_retries", "ner_batches", "ner_budget_unbatchable"):
+                                if _key in ner_stats:
+                                    _record_has_text_metric(stage_status, f"has_text_{_key}", ner_stats[_key])
                             _record_has_text_metric(stage_status, "has_text_cache_status", "model_call")
                             _record_has_text_metric(stage_status, "has_text_self_consist_passes", passes_run)
                             _add_has_text_duration(

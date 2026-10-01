@@ -76,6 +76,30 @@ _NER_REBATCH_TYPE_THRESHOLD = 24
 _TYPE_GUIDANCE_DESC_MAX_CHARS = 96
 # 健康检查结果缓存秒数
 _HEALTH_CHECK_CACHE_SEC = 5.0
+
+
+def _ner_pre_batch_chunk(
+    *,
+    types_count: int,
+    text_chars: int,
+    desired_full: int,
+    configured_batch: int,
+    target_batch: int,
+    hard_cap: int,
+) -> tuple[bool, int]:
+    """预算感知的预分批决策（Issue#41）：(need_batching, chunk_size)。
+
+    单发预算 desired_full > hard_cap 时注定被模型卡 max_new_tokens 截断——
+    按类型轴分批，每批预算 = chunk*72 + text//2 ≤ hard_cap（chunk 由预算容量
+    反推）。文本长到单类型也超帽（capacity < 1）→ chunk=1 尽力分，由既有
+    json_repair + 补救路径兜底；单类型请求无可分。
+    """
+    if types_count <= 1 or desired_full <= hard_cap:
+        return False, 0
+    capacity = (hard_cap - text_chars // _NER_TEXT_CHARS_PER_TOKEN) // _NER_TOKENS_PER_TYPE
+    if capacity < 1:
+        return True, 1
+    return True, max(1, min(configured_batch, target_batch, capacity))
 # 健康检查请求超时秒数
 _HEALTH_CHECK_TIMEOUT_SEC = 5.0
 
@@ -148,6 +172,7 @@ class HaSClient:
         *,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        stats: dict[str, Any] | None = None,
     ) -> str:
         """调用 OpenAI 兼容接口（llama.cpp HaS）。
 
@@ -182,6 +207,10 @@ class HaSClient:
             return ""
         choice = choices[0]
         finish_reason = choice.get("finish_reason")
+        if stats is not None:
+            stats["ner_finish_reason"] = finish_reason
+            if finish_reason == "length":
+                stats["ner_truncated_calls"] = stats.get("ner_truncated_calls", 0) + 1
         if finish_reason == "length":
             logger.warning(
                 "HaS model response was truncated by max_tokens=%s",
@@ -418,6 +447,7 @@ class HaSClient:
         temperature: float | None = None,
         sample_index: int = 0,
         _allow_truncation_retry: bool = True,
+        stats: dict[str, Any] | None = None,
     ) -> dict[str, list[str]]:
         """
         使用NER能力进行敏感实体识别
@@ -429,6 +459,9 @@ class HaSClient:
                 调用方按趟传(第0趟贪心0.0，后续 temp>0)。
             sample_index: 自洽采样趟号，进缓存键。默认 0=贪心种子/现状键；>0 的趟
                 与种子不共享缓存，避免 temp>0 趟被喂种子结果导致并集塌成 1 趟。
+            stats: 可选观测字典（Issue#41）：调用方传入自有 dict，本方法写入
+                ner_finish_reason / ner_truncated_calls / ner_truncation_retries /
+                ner_batches / ner_budget_unbatchable。None=不记录（既有调用点零变化）。
 
         Returns:
             {类型: [实体列表]}
@@ -443,22 +476,34 @@ class HaSClient:
             return cached
 
         from app.core.config import settings
+        hard_cap = max(_MIN_CALL_MAX_TOKENS, int(settings.HAS_NER_COMPLETION_HARD_CAP))
+        desired_full = max(
+            _NER_DESIRED_MAX_TOKENS_FLOOR,
+            min(int(settings.HAS_NER_MAX_TOKENS), len(types) * _NER_TOKENS_PER_TYPE + len(text or "") // _NER_TEXT_CHARS_PER_TOKEN),
+        )
         if type_guidance is None:
             configured_batch = max(1, int(settings.HAS_NER_MAX_TYPES_PER_REQUEST))
             target = max(_NER_TYPE_BATCH_TARGET_TOKENS_FLOOR, int(settings.HAS_NER_TYPE_BATCH_TARGET_TOKENS))
             target_batch = max(_NER_BATCH_MIN_TYPES, min(_NER_BATCH_MAX_TYPES, target // _NER_BATCH_TOKENS_PER_TYPE))
-            batch_size = max(1, min(configured_batch, target_batch))
-            single_pass_max_types = max(batch_size, int(settings.HAS_NER_SINGLE_PASS_MAX_TYPES))
-            single_pass_max_chars = max(_NER_SINGLE_PASS_MIN_CHARS, int(settings.HAS_NER_SINGLE_PASS_MAX_TEXT_CHARS))
-            should_single_pass = (
-                len(types) <= single_pass_max_types
-                and len(str(text or "")) <= single_pass_max_chars
+            need_batch, batch_size = _ner_pre_batch_chunk(
+                types_count=len(types),
+                text_chars=len(text or ""),
+                desired_full=desired_full,
+                configured_batch=configured_batch,
+                target_batch=target_batch,
+                hard_cap=hard_cap,
             )
-            if len(types) > batch_size and not should_single_pass:
+            if need_batch:
+                if stats is not None:
+                    stats["ner_batches"] = (len(types) + batch_size - 1) // batch_size
+                    if batch_size == 1:
+                        # 文本长到单类型也超帽：分批无解，尽力而为，由既有补救兜底
+                        stats["ner_budget_unbatchable"] = 1
                 logger.info(
-                    "HaS NER pre-batching %d types into chunks of %d",
+                    "HaS NER budget-aware pre-batching %d types into chunks of %d (hard_cap=%d)",
                     len(types),
                     batch_size,
+                    hard_cap,
                 )
                 merged: dict[str, list[str]] = {}
                 for start in range(0, len(types), batch_size):
@@ -468,6 +513,7 @@ class HaSClient:
                         None,
                         temperature=temperature,
                         sample_index=sample_index,
+                        stats=stats,
                     )
                     for key, values in (part or {}).items():
                         if not values:
@@ -500,10 +546,7 @@ Never output empty arrays. Do not return requested types with no matches. Do not
 If nothing matches, return {{}}.
 <text>{text}</text>"""
         configured_max_tokens = int(settings.HAS_NER_MAX_TOKENS)
-        desired_max_tokens = max(
-            _NER_DESIRED_MAX_TOKENS_FLOOR,
-            min(configured_max_tokens, len(types) * _NER_TOKENS_PER_TYPE + len(text) // _NER_TEXT_CHARS_PER_TOKEN),
-        )
+        desired_max_tokens = desired_full
         # Keep the completion budget inside the locally served HaS context
         # window. The 16 GB dev profile serves HaS Text with an 8K context so
         # PaddleOCR-VL, PP-StructureV3 and LocateAnything can stay resident
@@ -536,7 +579,7 @@ If nothing matches, return {{}}.
 
         try:
             started = time.perf_counter()
-            response = self._call_model(messages, max_tokens=max_tokens, temperature=temperature)
+            response = self._call_model(messages, max_tokens=max_tokens, temperature=temperature, stats=stats)
             parse_mode, result = self._try_parse_json_object(response)
             if result is None:
                 logger.warning("HaS NER response could not be parsed as JSON: %.200s", response)
@@ -544,6 +587,17 @@ If nothing matches, return {{}}.
                     from app.core.config import settings
                     target = max(_NER_TYPE_BATCH_TARGET_TOKENS_FLOOR, int(settings.HAS_NER_TYPE_BATCH_TARGET_TOKENS))
                     batch_size = max(_NER_BATCH_MIN_TYPES, min(_NER_BATCH_MAX_TYPES, target // _NER_BATCH_TOKENS_PER_TYPE))
+                    # Issue#41：重查批也受完成帽约束——文本贡献的预算份额不变，
+                    # 批大小按剩余容量收缩（文本长到单类型也超帽时收缩到 1）
+                    rebatch_capacity = (hard_cap - len(text) // _NER_TEXT_CHARS_PER_TOKEN) // _NER_TOKENS_PER_TYPE
+                    if rebatch_capacity < 1:
+                        batch_size = 1
+                        if stats is not None:
+                            stats["ner_budget_unbatchable"] = 1
+                    else:
+                        batch_size = max(1, min(batch_size, rebatch_capacity))
+                    if stats is not None:
+                        stats["ner_batches"] = (len(types) + batch_size - 1) // batch_size
                     merged: dict[str, list[str]] = {}
                     for start in range(0, len(types), batch_size):
                         part = self.ner(
@@ -552,6 +606,7 @@ If nothing matches, return {{}}.
                             None,
                             temperature=temperature,
                             sample_index=sample_index,
+                            stats=stats,
                         )
                         for key, values in (part or {}).items():
                             if not values:
@@ -575,6 +630,8 @@ If nothing matches, return {{}}.
                 # ①末桶的截断残值丢弃；②整桶丢失的请求类型补查一次并合并。
                 result = self._trim_truncated_tail_value(result)
                 if _allow_truncation_retry:
+                    if stats is not None:
+                        stats["ner_truncation_retries"] = stats.get("ner_truncation_retries", 0) + 1
                     missing = [t for t in types if t not in result]
                     if missing:
                         logger.warning(

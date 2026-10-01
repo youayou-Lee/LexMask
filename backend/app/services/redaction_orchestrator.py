@@ -113,7 +113,9 @@ def _vision_signature(
         # grounding wording (or the tile/seal/sampling switches) left the key
         # identical and 重新识别 quietly replayed the OLD boxes — the change looked
         # like it had not deployed at all.
-        "version": 5,
+        # v6 (Issue#41): NER 截断治理改变识别语义（预算感知预分批）——bump 使
+        # 旧口径的 vision 结果缓存整体失效，避免重放旧框。
+        "version": 6,
         "page": int(page),
         "ocr_has_types": _vision_type_ids(ocr_has_types),
         "visual_feature_types": _vision_type_ids(visual_feature_types),

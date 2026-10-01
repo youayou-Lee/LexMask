@@ -365,6 +365,10 @@ class Settings(BaseSettings):
     HAS_TIMEOUT: float = 120.0
     HAS_NER_CONTEXT_TOKENS: int = 8192
     HAS_NER_MAX_TOKENS: int = 8192
+    # NER 完成帽（Issue#41）：模型卡 generation_config 的 max_new_tokens 是硬上限，
+    # 预算超过它的调用注定截断。此值必须与模型卡保持一致——上调模型卡时同步上调，
+    # 预算感知预分批据此触发。
+    HAS_NER_COMPLETION_HARD_CAP: int = 2048
     # Second-pass HaS query label that extracts the bare value token from an
     # AMOUNT entity（人民币每亩每年100元 → 100元）. Queried as 金额, HaS keeps
     # the unit context (its training semantics); queried as 数值 it returns
