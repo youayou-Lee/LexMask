@@ -13,6 +13,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from app.services.file_parser import PdfEncryptedError
 from app.services.task_queue_metrics import (
     _duration_breakdown_from_quality,
     _effective_vision_page_concurrency,
@@ -121,6 +122,11 @@ class RecognitionPipelineMixin:
                 store.update_item_status(task.item_id, JobItemStatus.FAILED, error_message=err_msg)
             except (KeyError, ValueError):
                 logger.warning("failed to mark item %s as FAILED (item not found or invalid transition)", task.item_id[:8])
+        except PdfEncryptedError:
+            # Issue #32：不落任何条目状态，原样上抛给 worker 顶层——那里会写入
+            # exc.user_message（友好中文）并标 FAILED。这里若吞掉，顶层 except
+            # PdfEncryptedError 永不可达，中文消息只是 str(exc) 的巧合。
+            raise
         except Exception as e:
             err_msg = str(e)[:_ERROR_MSG_MAX_LEN]
             logger.exception("[queue] item=%s recognition failed (unexpected): %s", task.item_id[:8], err_msg)
@@ -596,6 +602,9 @@ class StructuredPipelineMixin:
                 store.update_item_status(task.item_id, JobItemStatus.FAILED, error_message=err_msg)
             except (KeyError, ValueError):
                 pass
+        except PdfEncryptedError:
+            # Issue #32：结构化导出同样可能触及加密 PDF，上抛保持一致。
+            raise
         except Exception as exc:
             err_msg = str(exc)[:_ERROR_MSG_MAX_LEN]
             logger.exception("[queue] item=%s structured failed (unexpected): %s", task.item_id[:8], err_msg)
@@ -725,6 +734,9 @@ class RedactionPipelineMixin:
                 store.update_item_status(task.item_id, JobItemStatus.FAILED, error_message=err_msg)
             except (KeyError, ValueError):
                 pass
+        except PdfEncryptedError:
+            # Issue #32：同识别流水线——原样上抛给 worker 顶层写友好中文消息。
+            raise
         except Exception as e:
             err_msg = str(e)[:_ERROR_MSG_MAX_LEN]
             logger.exception("[queue] item=%s redaction failed (unexpected): %s", task.item_id[:8], err_msg)
