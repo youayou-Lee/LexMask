@@ -406,3 +406,16 @@ class TestReviewGaps:
         assert secret not in body
         assert "evil" not in body
 
+    def test_decrypt_endpoint_has_user_throttle(self):
+        # Issue #32（P2-5）：decrypt 是密码试错入口，必须与其他敏感端点一致挂限流
+        from app.api import files as files_api
+
+        route = next(
+            r for r in files_api.router.routes
+            if getattr(r, "path", "") == "/files/{file_id}/decrypt"
+        )
+        assert route.dependencies, "decrypt 端点未挂任何限流依赖"
+        assert any(
+            getattr(d.dependency, "__qualname__", "").startswith("make_user_throttle")
+            for d in route.dependencies
+        )
