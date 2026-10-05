@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _SFTP_TIMEOUT = 15.0
+# 落盘前磁盘余量预检阈值，与整包上传/断点续传路径的 507 语义对齐（files.py/files_resumable.py）
+_MIN_DISK_FREE_BYTES = 500 * 1024 * 1024
 
 # 测试注入点：返回具备 listdir_attr(path)/get(remote, local)/close() 的对象
 _client_factory: Callable[..., Any] | None = None
@@ -237,6 +239,9 @@ async def pull_files(
                 failed.append({"name": name, "reason": f"不支持的类型 {ext}"})
                 continue
             remote = posixpath.join(base, name)
+            # 落盘前磁盘余量预检：不足则整批中止并返回 507，不写满磁盘（对齐上传路径语义）
+            if shutil.disk_usage(settings.UPLOAD_DIR).free < _MIN_DISK_FREE_BYTES:
+                raise HTTPException(status_code=507, detail="磁盘空间不足，请清理后重试")
             file_id = str(uuid.uuid4())
             tmp_dest = os.path.join(settings.UPLOAD_DIR, f".pulling_{file_id}{ext}")
             dest = os.path.join(settings.UPLOAD_DIR, f"{file_id}{ext}")

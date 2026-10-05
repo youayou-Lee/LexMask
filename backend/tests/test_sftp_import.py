@@ -20,6 +20,7 @@ class FakeSftpClient:
     def __init__(self, files: dict[str, bytes]):
         self.files = files  # remote path -> bytes
         self.closed = False
+        self.downloaded: list[str] = []
 
     def listdir_attr(self, path):
         entries = []
@@ -42,6 +43,7 @@ class FakeSftpClient:
     def get(self, remote, local):
         if remote not in self.files:
             raise FileNotFoundError(remote)
+        self.downloaded.append(remote)
         with open(local, "wb") as fh:
             fh.write(self.files[remote])
 
@@ -117,3 +119,23 @@ def test_host_allowlist_enforced(sftp_env, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         _mk_source()
     assert exc.value.status_code == 400
+
+
+def test_pull_rejected_when_disk_space_insufficient(sftp_env, monkeypatch):
+    """余量不足：整批 507 中止，不下载落盘、不留 tmp。"""
+    sid = _mk_source()
+
+    def _low_disk(path):
+        return SimpleNamespace(free=100 * 1024 * 1024)  # < 500MB 阈值
+
+    monkeypatch.setattr(sftp_import.shutil, "disk_usage", _low_disk)
+
+    async def flow():
+        with pytest.raises(HTTPException) as exc:
+            await sftp_import.pull_files("alice", sid, ["a.txt"], path="")
+        assert exc.value.status_code == 507
+        assert "磁盘空间不足" in str(exc.value.detail)
+
+    asyncio.run(flow())
+    assert sftp_env.downloaded == []
+    assert not any(f.startswith(".pulling_") for f in os.listdir(settings.UPLOAD_DIR))
