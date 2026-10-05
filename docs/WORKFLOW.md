@@ -165,6 +165,6 @@ hotfix/<主题>：从 main 切，走门禁后合回 main，打 patch tag（vX.Y.
 
 - 功能分支一律 base=preview；误选 main 会被 ci.yml base-guard 拒（目标 main 只收 preview 晋级或 hotfix/*）。
 - 模型服务（NER/LA/OCR）改动 PR 先行合入 preview，消费它的 backend PR 随后——共享模型层跟 preview 更新，backend 分支开发不依赖环境内再起模型服务（多环境槽位细则见部署文档）。
-- **配套（已在 GitHub 设置）**：main 分支保护（禁 force push、禁删除）；base-guard 建议进一步配为 required check（待用户确认）。
+- **配套（已在 GitHub 设置）**：main 分支保护（禁 force push、禁删除）；base-guard 已配为 required check（2026-09-29 生效），未过守卫不可合入。
 
 > 本文件随流程演进更新；改本文件也走 PR（docs/ 前缀）。

@@ -113,7 +113,7 @@ export function EntityTypeList({
           </div>
         </div>
 
-        <div className={cn('page-surface-body flex overflow-y-auto', compact ? 'p-2.5' : 'p-3')}>
+        <div className={cn('page-surface-body flex', compact ? 'p-2.5' : 'p-3')}>
           {types.length === 0 ? (
             <div
               className={cn(
@@ -243,6 +243,11 @@ export function EntityTypeList({
                       </TooltipProvider>
                     )}
 
+                    {/* Issue #9 评审缓修（#21-2）：compact 变体此处盒级裁切存在 tooltip 缺口——
+                        若盒实际高度低于内部 line-clamp-4 的 4 行高度，ClampTooltipText 以 <p> 为
+                        测量目标，scroll==client 判不出截断，字被盒 overflow-hidden 切掉却无提示。
+                        当前该变体无消费方（仅保留布局能力）；接入消费方时须二选一：
+                        ① 改为以本盒为测量目标挂 tooltip；② 给盒定高（如 h-[N 行]）使 clamp 先于盒生效。 */}
                     <div
                       className={cn(
                         'flex-1 rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5',
@@ -286,7 +291,11 @@ export function EntityTypeList({
   );
 }
 
-/** Issue #9：标题/描述/正则被截断时悬浮显示全文；未截断时渲染与原实现一致。 */
+/**
+ * Issue #9：标题/描述/正则被截断时悬浮/聚焦显示全文；未截断时与原实现渲染一致。
+ * Issue #25 A2：Tooltip 包裹与根节点（span/p/code）无条件渲染、仅按 truncated 控制内容与
+ * tabIndex——避免截断状态翻转时根节点类型切换导致 DOM 重建、键盘焦点静默丢失。
+ */
 function ClampTooltipText({
   text,
   kind,
@@ -295,46 +304,54 @@ function ClampTooltipText({
   kind: 'title' | 'description' | 'regex';
 }) {
   const { ref, truncated } = useTruncated(text);
-  const node =
-    kind === 'title' ? (
-      <span
-        ref={ref}
-        tabIndex={truncated ? 0 : undefined}
-        className="line-clamp-2 text-sm font-semibold leading-5 text-foreground"
-      >
-        {text}
-      </span>
-    ) : kind === 'regex' ? (
-      <code
-        ref={ref}
-        tabIndex={truncated ? 0 : undefined}
-        className="mt-1 block line-clamp-3 break-all text-xs leading-4 text-foreground"
-      >
-        {text}
-      </code>
-    ) : (
-      <p
-        ref={ref}
-        tabIndex={truncated ? 0 : undefined}
-        className="mt-1 line-clamp-4 text-xs leading-4 text-foreground"
-      >
-        {text}
-      </p>
-    );
-  if (!truncated) return node;
+  const className =
+    kind === 'title'
+      ? 'line-clamp-2 text-sm font-semibold leading-5 text-foreground'
+      : kind === 'regex'
+        ? 'mt-1 block line-clamp-3 break-all text-xs leading-4 text-foreground'
+        : 'mt-1 line-clamp-4 text-xs leading-4 text-foreground';
   return (
     <TooltipProvider delayDuration={200}>
       <Tooltip>
-        <TooltipTrigger asChild>{node}</TooltipTrigger>
-        <TooltipContent
-          side="top"
-          className={cn(
-            'max-w-[min(24rem,calc(100vw-2rem))] text-xs leading-4',
-            kind === 'regex' && 'break-all',
+        <TooltipTrigger asChild>
+          {kind === 'title' ? (
+            <span
+              ref={ref}
+              tabIndex={truncated ? 0 : undefined}
+              className={className}
+            >
+              {text}
+            </span>
+          ) : kind === 'regex' ? (
+            <code
+              ref={ref}
+              tabIndex={truncated ? 0 : undefined}
+              className={className}
+            >
+              {text}
+            </code>
+          ) : (
+            <p
+              ref={ref}
+              tabIndex={truncated ? 0 : undefined}
+              className={className}
+            >
+              {text}
+            </p>
           )}
-        >
-          {text}
-        </TooltipContent>
+        </TooltipTrigger>
+        {truncated && (
+          <TooltipContent
+            side="top"
+            className={cn(
+              // Issue #9 评审缓修（#21-1）：加高度上限 + 内部滚动，防极长描述撑出近整屏气泡
+              'max-h-[min(20rem,calc(100vh-4rem))] max-w-[min(24rem,calc(100vw-2rem))] overflow-y-auto text-xs leading-4',
+              kind === 'regex' && 'break-all',
+            )}
+          >
+            {text}
+          </TooltipContent>
+        )}
       </Tooltip>
     </TooltipProvider>
   );
