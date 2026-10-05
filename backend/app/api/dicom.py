@@ -50,8 +50,9 @@ from app.services.dicom_jobs import (
 router = APIRouter(prefix="/dicom", tags=["DICOM"])
 
 _CHUNK_SIZE = 1024 * 1024
-# 0 = 不限制（与 MAX_FILE_SIZE=0 语义一致）；DICOM_MAX_UPLOAD_BYTES 显式设置优先
-_MAX_UPLOAD_BYTES = max(0, int(os.environ.get("DICOM_MAX_UPLOAD_BYTES", str(settings.MAX_FILE_SIZE))))
+# 上限解析：DICOM_MAX_UPLOAD_BYTES 显式设置（>0）优先；0 = 跟随 MAX_FILE_SIZE（默认 0=不限制）。
+# 负数由 Settings 的 ge=0 在启动时拒绝，不再被 max(0, ...) 静默夹 0（fail-open，Issue #24）。
+_MAX_UPLOAD_BYTES = settings.DICOM_MAX_UPLOAD_BYTES or settings.MAX_FILE_SIZE
 _MAX_ARCHIVE_EXPANDED_BYTES = max(
     _MAX_UPLOAD_BYTES,
     int(os.environ.get("DICOM_MAX_ARCHIVE_EXPANDED_BYTES", 500 * 1024**2)),
