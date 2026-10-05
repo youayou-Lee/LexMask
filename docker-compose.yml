@@ -56,6 +56,13 @@ services:
       dockerfile: Dockerfile
     ports:
       - "${FRONTEND_PORT:-3000}:8080"
+    # Issue #29：nginx client_max_body_size 与后端 MAX_FILE_SIZE 同源联动。
+    # MAX_FILE_SIZE 传入前端容器后，由镜像内 entrypoint 脚本换算成
+    # client_max_body_size（0=不限；N 字节 → N+8MB multipart 开销，向上取整 MB）。
+    # 需要精细控制时可直接设 NGINX_CLIENT_MAX_BODY_SIZE（nginx 尺寸语法）。
+    environment:
+      - MAX_FILE_SIZE=${MAX_FILE_SIZE:-0}
+      - NGINX_CLIENT_MAX_BODY_SIZE=${NGINX_CLIENT_MAX_BODY_SIZE:-}
     depends_on:
       backend:
         condition: service_healthy

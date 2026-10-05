@@ -55,6 +55,17 @@ server {
     # HSTS - uncomment when serving over HTTPS
     # add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
+    # Issue #29：nginx 自身拒绝（413）时也保持后端 BODY_TOO_LARGE JSON 错误契约，
+    # 而不是默认 HTML 错误页。
+    # 已知局限：nginx 检测到超限后会尽早关闭连接，持续上传中的客户端可能读不到
+    # 该 JSON 响应体（浏览器表现为连接重置）；能读到响应的客户端（如 curl 完整
+    # 上传后）将得到 application/json 的 BODY_TOO_LARGE。
+    error_page 413 = @body_too_large;
+    location @body_too_large {
+        default_type application/json;
+        return 413 '{"error_code":"BODY_TOO_LARGE","message":"Request body is too large.","detail":{}}';
+    }
+
     # 前端路由支持
     location / {
         try_files $uri $uri/ /index.html;
@@ -73,8 +84,15 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
 
-        # 上传文件大小限制
-        client_max_body_size 100M;
+        # 上传文件大小限制（Issue #29）：
+        # 本文件是 envsubst 模板（见 Dockerfile），client_max_body_size 由
+        # /docker-entrypoint.d/15-set-body-size.sh 在容器启动时根据后端
+        # MAX_FILE_SIZE（字节）换算注入：MAX_FILE_SIZE=0 → 0（nginx 0 = 不限）；
+        # MAX_FILE_SIZE=N 字节 → ceil((N + 8MB multipart 封装开销)/1MB) M，
+        # 略大于后端上限以容纳 multipart boundary/头等封装开销，避免
+        # 「文件本身不超限但整包在 nginx 处 413」。
+        # 也可用 NGINX_CLIENT_MAX_BODY_SIZE 显式覆盖（nginx 尺寸语法）。
+        client_max_body_size ${NGINX_CLIENT_MAX_BODY_SIZE};
 
         # 与后端 OCR 超时对齐
         proxy_read_timeout 400s;
