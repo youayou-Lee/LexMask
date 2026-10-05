@@ -6,6 +6,21 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.request_id import request_id_var
 
+# 校验错误回显中禁止出现的字段名：pydantic errors() 会带 input 原值，密码
+# 字段校验失败时绝不能把明文回显进 422 响应（Issue #32，评审 P2-4）。
+_SENSITIVE_INPUT_FIELDS = frozenset({"password"})
+
+
+def _sanitize_validation_errors(errors: list[dict]) -> list[dict]:
+    sanitized: list[dict] = []
+    for err in errors:
+        if isinstance(err, dict) and _SENSITIVE_INPUT_FIELDS.intersection(
+            loc for loc in err.get("loc", ()) if isinstance(loc, str)
+        ):
+            err = {k: ("[REDACTED]" if k == "input" else v) for k, v in err.items()}
+        sanitized.append(err)
+    return sanitized
+
 
 class AppError(Exception):
     """Application error with error code."""
@@ -67,5 +82,5 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         422,
         "VALIDATION_ERROR",
         "请求参数校验失败",
-        {"errors": exc.errors()},
+        {"errors": _sanitize_validation_errors(exc.errors())},
     )
