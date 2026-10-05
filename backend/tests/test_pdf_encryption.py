@@ -382,3 +382,15 @@ class TestReviewGaps:
         resp = client.post(f"/api/v1/files/{file_id}/decrypt", json={"password": "right"})
         assert resp.status_code == 200
         assert not _is_encrypted_on_disk(path)
+
+    def test_zero_entity_docx_path_never_copies_encrypted_original(self):
+        # Issue #32（P2-3）：docx 回转链零实体分支曾直接 copyfile，会把加密原件
+        # 原样当「成品」输出。必须抛结构化异常且不产生输出文件。
+        from app.services.redaction.text_redactor import TextRedactorMixin
+
+        _, path = _register("zero-ent.pdf", user_pw="userpw")
+        out = os.path.join(settings.UPLOAD_DIR, "zero-ent-out.pdf")
+        with pytest.raises(PdfEncryptedError):
+            asyncio.run(TextRedactorMixin._redact_pdf_via_docx(None, path, out, [], context=None))
+        assert not os.path.exists(out)
+

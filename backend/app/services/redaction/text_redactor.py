@@ -568,7 +568,12 @@ class TextRedactorMixin:
         """
         unique_texts = {e.text for e in entities if e.selected and e.text}
         if not unique_texts:
-            # 零实体：直接原样拷贝——跑 docx 回转只会白白重排版面（评审 I3）
+            # 零实体：可访问（含权限密码自动认证）才原样拷贝——跑 docx 回转只
+            # 会白白重排版面（评审 I3）。需打开密码的加密原件绝不能 copyfile 当
+            # 「成品」输出（Issue #32，评审 P2-3）：抛 PdfEncryptedError，端点
+            # 映射 400+错误码，与既有契约一致。
+            doc = open_pdf_checked(input_path)
+            doc.close()
             shutil.copyfile(input_path, output_path)
             return 0
 
