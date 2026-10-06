@@ -319,7 +319,9 @@ def test_build_pool_walks_tree_case_refs_and_mapping(tmp_path):
         assert set(info) == {"path", "sha256", "pages_total", "classifier"}
         assert Path(info["path"]).is_file()
         assert info["sha256"] == hashlib.sha256(Path(info["path"]).read_bytes()).hexdigest()
-        assert info["classifier"] == EXPECTED_CLASSIFIER
+        # 分类器按文件有效性分档：真 PDF → 有 pypdf 记 "pypdf"，否则退化；假字节恒退化
+        expected = EXPECTED_CLASSIFIER if Path(info["path"]).name == "正文材料.pdf" else "hints-only"
+        assert info["classifier"] == expected
 
 
 @pytest.mark.skipif(not HAS_PYPDF, reason="大卷切段需 pypdf 数页数（离线环境跳过）")

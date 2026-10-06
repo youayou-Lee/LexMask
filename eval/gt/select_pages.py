@@ -17,7 +17,8 @@ GT 工作的入口脚本（spec §2）：在真实案卷树上按页型配额选
 - 文件/路径名含 授权|询问|讯问|笔录|照片|回执 → ``seal_handwriting`` 候选
   （文本层在场与否均适用；``--hints`` 可追加正则取并）；
 - **扫描页无文本层一律初判 body**：pypdf 提取文本为空但页面带图像 XObject
-  时按扫描页处理（宁判 body 不误占 edge 格）→ body；
+  时按扫描页处理（宁判 body 不误占 edge 格）→ body（文件名提示命中时先归
+  seal_handwriting，提示优先级高于 body 兜底）；
 - pypdf 缺失 / 开卷失败 / 页越界 → 该页退化为纯文件名提示判定
   （提示命中 → seal_handwriting，否则 body）。
 
@@ -157,7 +158,7 @@ def classify_page(pdf_path: str, page_no: int, text_hint: str = "",
     - ``text_hint`` 非空：直接作为该页文本（调用方已抽取的合法入口，跳过
       pypdf；此时图像信号不可知，按无图处理）；空则 pypdf 现抽；
     - 优先级：表格文本信号 > 空白页 > 文件名提示 > body（详见模块 docstring；
-      扫描页 = 文本空但带图像 XObject → body）；
+      扫描页 = 文本空但带图像 XObject → body，提示命中则先归 seal_handwriting）；
     - pypdf 缺失/开卷失败/页越界 → 纯文件名提示判定（命中 → seal_handwriting，
       否则 body）。
     """
@@ -297,7 +298,8 @@ def select(src_manifest: list[dict], quotas: dict, seed: int) -> list[dict]:
     for cell in sorted(PAGE_TYPES):
         candidates = pool_by_type[cell]
         for entry in rng.sample(candidates, min(quotas[cell], len(candidates))):
-            selected.append({**entry, "reason": f"quota:{cell}"})
+            projected = {k: entry[k] for k in _POOL_KEYS}
+            selected.append({**projected, "reason": f"quota:{cell}"})
     return selected
 
 
