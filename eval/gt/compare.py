@@ -4,9 +4,9 @@ GT 管线比对层：消费 Task 2 归一化产物（``FaceMap.norm``），按�
 比对域裁决 GT 与转录方两侧的一致性，产出 verdict + 结构化争议供下游仲裁
 消费（争议分支编号属 Task 5，本模块不引用）。
 
-页型与分域（有效页型与 Task 6 ``PAGE_TYPES`` 对齐——``body``/``table``/
-``seal_handwriting``/``edge``；Task 6 落地前以本模块常量为事实源，未知页型
-直接 ``ValueError``）：
+页型与分域（有效页型以 Task 6 ``gt_schema.PAGE_TYPES`` 为单一事实源，本模块
+re-export——``body``/``table``/``seal_handwriting``/``edge``；未知页型直接
+``ValueError``）：
 
 - edge / 低密度域：``page_type == "edge"`` **或任一侧** 归一化长度 < 20 字
   （``LOW_DENSITY_CHARS``，内部低密度探测：短文本无结构可比）。该域严格
@@ -42,10 +42,8 @@ from __future__ import annotations
 import re
 
 from gt.entities import extract_regex
+from gt.gt_schema import PAGE_TYPES  # 单一事实源 re-export（收编裁定见模块 docstring）
 from gt.normalize import FaceMap
-
-# 有效页型（与 Task 6 PAGE_TYPES 对齐；Task 6 落地前以本模块为事实源）
-PAGE_TYPES = ("body", "table", "seal_handwriting", "edge")
 
 # 低密度阈值：任一侧归一化长度低于该值 → 按 edge/低密度域处理
 LOW_DENSITY_CHARS = 20
@@ -99,7 +97,7 @@ def compare_transcripts(a_norm: str, b_norm: str, page_type: str,
     ``{"kind": "single_side"|"low_coverage"|"set_mismatch", "detail": str}``。
     """
     if page_type not in PAGE_TYPES:
-        raise ValueError(f"未知页型 {page_type!r}，有效页型：{PAGE_TYPES}")
+        raise ValueError(f"未知页型 {page_type!r}，有效页型：{sorted(PAGE_TYPES)}")
     a_norm = a_norm or ""
     b_norm = b_norm or ""
 

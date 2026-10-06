@@ -245,7 +245,7 @@ def arbitrate_page(cmp: CompareResult, ents_a: list[Entity], ents_b: list[Entity
     模块 docstring；未知 page_type / verdict raise ``ValueError``。
     """
     if page_type not in PAGE_TYPES:
-        raise ValueError(f"未知页型 {page_type!r}，有效页型：{PAGE_TYPES}")
+        raise ValueError(f"未知页型 {page_type!r}，有效页型：{sorted(PAGE_TYPES)}")
     verdict = cmp["verdict"]
     ga, gb = _group(ents_a or []), _group(ents_b or [])
     gm = _group(ents_md or [])

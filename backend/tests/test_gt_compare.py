@@ -11,7 +11,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "eval"))
-from gt import compare  # noqa: E402
+from gt import compare, gt_schema  # noqa: E402
 
 
 # ---- 计划底稿样例（断言值逐字保留；"empty"→"edge" 为页型枚举裁定） ----------
@@ -187,7 +187,10 @@ def test_seal_handwriting_dense_falls_back_to_body_window():
 
 
 def test_page_types_constant_alignment():
-    assert set(compare.PAGE_TYPES) == {"body", "table", "seal_handwriting", "edge"}
+    # T4 评审 Minor#3 收编：PAGE_TYPES 单一事实源在 gt_schema，compare 只 re-export
+    # （不得自带字面量）——对齐断言从「值相等」升级为「同一对象」
+    assert compare.PAGE_TYPES is gt_schema.PAGE_TYPES
+    assert set(gt_schema.PAGE_TYPES) == {"body", "table", "seal_handwriting", "edge"}
 
 
 def test_unknown_page_type_rejected():

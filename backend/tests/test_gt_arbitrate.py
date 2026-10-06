@@ -56,6 +56,19 @@ def test_r2_regex_beats_ner_auto_resolved():
     assert entry["source"] == "a"  # 胜者实例取 a 侧
 
 
+def test_r2_winner_regex_entity_only_on_side_b():
+    # T5 评审 Minor#3 加固：胜出正则类型实体仅 b 侧在场（a 侧同键异型为 NER）
+    # → 仍正则胜，auto_resolved 且 source=="b"（胜者侧在案，不默认记 a）
+    a = [_ent("13800138000", "姓名", 0, 11, origin="ner")]
+    b = [_ent("13800138000", "电话", 0, 11, origin="regex")]
+    arb = arbitrate.arbitrate_page(_cmp("consistent"), a, b, None, "body")
+    assert arb["consistent"] == [] and arb["disputed"] == []
+    assert len(arb["auto_resolved"]) == 1
+    entry = arb["auto_resolved"][0]
+    assert entry["rule"] == "R2" and entry["source"] == "b"
+    assert entry["entity"]["type"] == "电话" and entry["entity"]["text"] == "13800138000"
+
+
 def test_r2_ner_vs_ner_conflict_disputed():
     # 同键异型、无正则类型名在场（人名 vs 机构名）→ NER 间冲突 disputed
     a = [_ent("钱明涛", "姓名", 0, 3, origin="ner")]
@@ -191,6 +204,21 @@ def test_r6_set_mismatch_all_readings_disputed_no_arbitration():
     arb = arbitrate.arbitrate_page(_cmp("dispute", "set_mismatch", page_type="table"),
                                    [dict(x)], [dict(y)], None, "table")
     assert arb["auto_resolved"] == []
+    entries = [d for d in arb["disputed"] if "entity" in d]
+    assert {d["entity"]["text"] for d in entries} == {
+        "110122198110227771", "110122198110229999"}
+    assert all(d["rule"] == "R6" for d in arb["disputed"])
+    assert any("gap" in d for d in arb["disputed"])
+
+
+def test_r6_md_backing_one_side_still_zero_auto_resolved():
+    # T5 评审 Minor#3 加固：R6 整页升级不吃 md 佐证——md 在场且佐证 a 侧读数，
+    # 仍零采信（auto_resolved 恒空）、全部条目 rule==R6
+    x = _ent("110122198110227771", "身份证号", 2, 20)
+    y = _ent("110122198110229999", "身份证号", 2, 20)
+    arb = arbitrate.arbitrate_page(_cmp("dispute", "set_mismatch", page_type="table"),
+                                   [dict(x)], [dict(y)], [dict(x)], "table")
+    assert arb["consistent"] == [] and arb["auto_resolved"] == []
     entries = [d for d in arb["disputed"] if "entity" in d]
     assert {d["entity"]["text"] for d in entries} == {
         "110122198110227771", "110122198110229999"}
