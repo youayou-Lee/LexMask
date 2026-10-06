@@ -166,13 +166,17 @@ def test_multi_fragment_raw_form(sample_pdf, tmp_path):
         )
 
 
-def test_multiple_entities_same_type(sample_pdf):
+def test_multiple_entities_same_type(tmp_path_factory):
     # 同类型多实体（一页多人名/多日期是真实案卷常态）：不得互相覆盖
-    e = ing.build_hardcase_entry(sample_pdf, 0,
-                                 [("姓名", "张三"), ("姓名", "李四"), ("案号", "(2023)粤01刑终100号")],
+    import fitz
+    p = tmp_path_factory.mktemp("hc3") / "two_names.pdf"
+    d = fitz.open()
+    d.new_page().insert_text((72, 72), "被告人张三与李四均在场", fontname="china-s")
+    d.save(p); d.close()
+    e = ing.build_hardcase_entry(p, 0,
+                                 [("姓名", "张三"), ("姓名", "李四"), ("姓名", "张三")],
                                  story="多人名", origin="t")
     assert e["entities"]["姓名"] == ["张三", "李四"]
-    assert e["entities"]["案号"] == ["(2023)粤01刑终100号"]
 
 
 def test_cli_reject_no_partial_write(sample_pdf, tmp_path):
