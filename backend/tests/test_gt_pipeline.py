@@ -425,6 +425,9 @@ def test_cli_clients_require_both_clouds(tmp_path, monkeypatch):
 # ---- CLI：批量模式（synthetic manifest） -----------------------------------------
 
 def _write_manifest(tmp_path: Path, entries: list[dict]) -> Path:
+    # levels 缺省补 ["e2e"]（与真实 manifest 形状一致；T7 评审 rider 后非 e2e 条目被批处理跳过）
+    for entry in entries:
+        entry.setdefault("levels", ["e2e"])
     manifest = {"version": 1, "files": entries}
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
@@ -512,3 +515,69 @@ def test_batch_missing_manifest_file_is_error(tmp_path, capsys):
 def test_cli_batch_requires_manifest(tmp_path):
     with pytest.raises(SystemExit):
         run_pipeline.main(["--suite", "synthetic", "--work", str(tmp_path)])
+
+
+# ---- T7 评审 rider：levels 过滤与 R2 跨面类型覆盖 --------------------------------
+
+def test_cli_batch_skips_non_e2e_levels(tmp_path, monkeypatch, capsys):
+    # levels 不含 e2e 的条目（如 ner_corpus_10p，levels=["ner"]）绝不送云：
+    # 其"path"是 JSONL 语料、不可转录——若被误处理会以失败页显性化，这里断言直接跳过
+    _make_sample(tmp_path, name="e2e.pdf")
+    manifest = _write_manifest(tmp_path, [
+        {"id": "e2e_ok", "path": "e2e.pdf", "carrier": "scanned_pdf",
+         "doc_type": "contract", "density": "mid", "pages": 1, "levels": ["e2e"]},
+        {"id": "ner_corpus_10p", "path": "synthetic/ner_corpus_10p.jsonl",
+         "gt": "synthetic/ner_corpus_10p.jsonl", "carrier": "txt", "doc_type": "mixed",
+         "density": "mid", "pages": 10, "levels": ["ner"]},
+    ])
+    _patch_cloud_build(monkeypatch, ["甲"], ["甲"])
+    work = tmp_path / "work"
+    rc = run_pipeline.main(["--suite", "synthetic", "--manifest", str(manifest),
+                            "--clients", f"{_CLOUD_A},{_CLOUD_B}", "--ner", "off",
+                            "--work", str(work)])
+    assert rc == 0
+    assert (work / "pages" / "e2e-p000" / "pack.json").exists()      # e2e 条目正常处理（page_id 取文件 stem）
+    assert not (work / "pages" / "ner_corpus_10p-p000").exists()     # ner 条目被跳过
+    err = capsys.readouterr().err
+    assert "总 1 页" in err and "成功 1" in err and "失败 0" in err   # 对账只含 e2e 页
+
+
+class _SideNER:
+    """NER 夹具：仅第 side 次调用把目标串标成指定类型。
+
+    run_page 对 a 面（v6）先于 b 面（VL）调 extract_ner——side=2 即"只在 b 面
+    误标"，构造纯跨面的同读异型（R2）场景。
+    """
+
+    def __init__(self, target: str, etype: str, side: int = 2):
+        self._target, self._etype, self._side, self._calls = target, etype, side, 0
+
+    def ner(self, text: str) -> dict[str, list[str]]:
+        self._calls += 1
+        if self._calls == self._side and self._target in text:
+            return {self._etype: [self._target]}
+        return {}
+
+
+def test_run_page_r2_cross_side_regex_wins(tmp_path):
+    # R2 跨面类型覆盖回归（T7 评审 rider）：同一串在 a 面由正则判为身份证号、
+    # 在 b 面被 NER 误标为机构名称（同 norm span 同串异型）→ R2「正则胜」，
+    # pack 实体取 a 面实例的 span、类型为胜者正则类型、verify=arbitrated。
+    a_raw = "证件号码 110122198110227771，请核对。"   # a 面多一个空格 → 原文面起点 +1
+    b_raw = "证件号码110122198110227771，请核对。"
+    sample = _make_sample(tmp_path)
+    pack = pagepack.run_page(str(sample), 0, "body", _fake_clients([a_raw], [b_raw]),
+                             _SideNER("110122198110227771", "机构名称"), tmp_path / "w")
+    assert gt_schema.validate_pagepack(pack) == []
+    assert len(pack["entities"]) == 1
+    ent = pack["entities"][0]
+    assert (ent["type"], ent["text"]) == ("身份证号", "110122198110227771")  # 胜者正则类型
+    assert ent["verify"] == "arbitrated" and ent["arbitration"] == "R2"
+    # span 落在采信面（a 面）："证件号码 " 后数字起点为 5（b 面无空格应为 4）
+    text = pack["transcript_gt"]["text"]
+    o0, o1 = ent["span_original"]
+    assert o0 == 5 and text[o0:o1] == "110122198110227771"
+    n0, n1 = ent["span_normalized"]
+    assert pack["transcript_gt"]["normalized_text"][n0:n1] == ent["text"]
+    assert any(adj["rule"] == "R2" and adj["verdict"] == "auto:a"
+               for adj in pack["adjudications"])

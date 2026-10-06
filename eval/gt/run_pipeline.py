@@ -17,6 +17,9 @@
 
 批量语义：
 - 遍历 manifest ``files``，逐文件逐页（``pages`` 字段，缺省 1）调 run_page；
+- **levels 过滤**（T7 评审 rider）：``levels`` 不含 ``"e2e"`` 的条目一律跳过
+  （现 manifest 的 ``ner_corpus_10p`` levels=["ner"] 是 NER 引擎层语料，
+  JSONL 不是可转录原件，绝不能送云）；
 - 页型映射：edge 样本 → ``edge``（edge 旗标 / id 含 edge / generator 含
   edge=True 三种写法都认，兼容现 manifest 把 edge 藏在 generator 串里的现状）；
   ``doc_type == "bank_statement"`` → ``table``；其余 → ``body``；
@@ -126,6 +129,7 @@ def _run_batch(args: argparse.Namespace, clients: dict, ner) -> int:
     manifest_path = Path(args.manifest)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     entries = manifest.get("files") or []
+    entries = [e for e in entries if "e2e" in (e.get("levels") or [])]  # T7 评审 rider：非 e2e 条目不送云
     base_dir = manifest_path.parent
     work = Path(args.work)
     total = ok = failed = 0
