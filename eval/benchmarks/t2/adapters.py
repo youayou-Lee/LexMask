@@ -1,4 +1,4 @@
-"""公开集适配器：原格式 -> T2 内部条目。数据本体在云/本地私有目录，本模块只做转换。Ref #93"""
+"""公开集适配器：原格式 -> T2 内部条目。数据本体在云/本地私有目录，本模块只做转换。Ref #51"""
 import json
 import random
 from pathlib import Path

@@ -521,6 +521,8 @@ class Settings(BaseSettings):
     # ≈4 文件/秒，留足余量），导出 20/min。0 不可取——validator 夹下限。
     UPLOAD_RATE_PER_MIN: int = 240
     EXPORT_RATE_PER_MIN: int = 20
+    # 解密是敏感端点且单文件可重复尝试密码，按导出同一保守档位限流（Issue #32 P2-5）。
+    DECRYPT_RATE_PER_MIN: int = 20
 
     @field_validator("UPLOAD_RATE_PER_MIN")
     @classmethod
@@ -530,6 +532,11 @@ class Settings(BaseSettings):
     @field_validator("EXPORT_RATE_PER_MIN")
     @classmethod
     def _validate_export_rate(cls, v: int) -> int:
+        return max(2, min(10000, v))
+
+    @field_validator("DECRYPT_RATE_PER_MIN")
+    @classmethod
+    def _validate_decrypt_rate(cls, v: int) -> int:
         return max(2, min(10000, v))
 
     @field_validator("BACKUP_INTERVAL_SEC")

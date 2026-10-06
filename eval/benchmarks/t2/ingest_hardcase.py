@@ -1,7 +1,7 @@
 """T2 难例沉淀 ingest 脚本：从真实 PDF 页面人工登记难例，自检拒收非法输入。
 
 仓库零数据原则：脚本只在调用方显式 --out-dir 时写盘，测试 fixture 用 fitz 现造临时 PDF。
-Issue #93 子任务 A（Task 5）。
+Issue #51 子任务 A（Task 5）。
 """
 from __future__ import annotations
 

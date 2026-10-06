@@ -44,8 +44,19 @@ jobs:
           if [ "$BASE" = "main" ]; then
             # main 只收晋级（head=preview，须本仓库分支）与 hotfix（事故教训：
             # PR #58 曾误选 base=main 把功能直接合进 main），其余一律拒绝
-            if { [ "$HEAD_REF" = "preview" ] && [ "$HEAD_REPO" = "$REPO" ]; } || [[ "$HEAD_REF" == hotfix/* ]]; then
-              echo "main 晋级/hotfix PR：放行"
+            if [ "$HEAD_REF" = "preview" ] && [ "$HEAD_REPO" = "$REPO" ]; then
+              # 晋级须含最新 main（Issue #25 B4）：main 被直接合入后若 preview 未同步，
+              # 晋级会把 main 已发布改动回退掉
+              git fetch origin main --quiet
+              if git merge-base --is-ancestor origin/main HEAD; then
+                echo "main 晋级 PR：已包含最新 main，放行"
+                exit 0
+              fi
+              echo "::error::晋级 PR 落后 main：先把 main 合入 preview（或 rebase）再晋级，防止回退 main 已发布改动"
+              exit 1
+            fi
+            if [[ "$HEAD_REF" == hotfix/* ]]; then
+              echo "hotfix PR：放行"
               exit 0
             fi
             echo "::error::目标 main 的 PR 只允许 preview 晋级或 hotfix/* 分支（当前 head=$HEAD_REF）。功能分支应以 preview 为 base"

@@ -20,7 +20,7 @@ import type { EncryptedPdfPrompt } from '../hooks/use-playground-file';
 interface Props {
   prompt: EncryptedPdfPrompt | null;
   /** 密码解密成功，续跑 parse → 自动识别 */
-  onDecrypted: (fileId: string, filename: string) => void;
+  onDecrypted: (fileId: string, filename: string, fileSize?: number) => void;
   onCancel: () => void;
 }
 
@@ -48,7 +48,7 @@ function EncryptedPdfForm({
   onCancel,
 }: {
   prompt: EncryptedPdfPrompt;
-  onDecrypted: (fileId: string, filename: string) => void;
+  onDecrypted: (fileId: string, filename: string, fileSize?: number) => void;
   onCancel: () => void;
 }) {
   const t = useT();
@@ -74,7 +74,7 @@ function EncryptedPdfForm({
         body: JSON.stringify({ password }),
       });
       if (res.ok) {
-        onDecrypted(prompt.fileId, prompt.filename);
+        onDecrypted(prompt.fileId, prompt.filename, prompt.fileSize);
         return;
       }
       const data = (await res.json().catch(() => null)) as { error_code?: string } | null;

@@ -53,6 +53,8 @@ _CHUNK_SIZE = 1024 * 1024
 # 上限解析：DICOM_MAX_UPLOAD_BYTES 显式设置（>0）优先；0 = 跟随 MAX_FILE_SIZE（默认 0=不限制）。
 # 负数由 Settings 的 ge=0 在启动时拒绝，不再被 max(0, ...) 静默夹 0（fail-open，Issue #24）。
 _MAX_UPLOAD_BYTES = settings.DICOM_MAX_UPLOAD_BYTES or settings.MAX_FILE_SIZE
+# staging 落盘前磁盘余量预检阈值，与整包上传/断点续传路径的 507 语义对齐（files.py/files_resumable.py）
+_MIN_DISK_FREE_BYTES = 500 * 1024 * 1024
 _MAX_ARCHIVE_EXPANDED_BYTES = max(
     _MAX_UPLOAD_BYTES,
     int(os.environ.get("DICOM_MAX_ARCHIVE_EXPANDED_BYTES", 500 * 1024**2)),
@@ -116,6 +118,9 @@ def _archive_relative_name(name: str) -> str:
 
 
 async def _save_upload(upload: UploadFile, destination: str, remaining: int | None) -> tuple[int, str]:
+    # 落盘前磁盘余量预检：不足则 507，不落盘、不影响已有文件
+    if shutil.disk_usage(os.path.dirname(destination)).free < _MIN_DISK_FREE_BYTES:
+        raise DicomWorkflowError(507, "DICOM_DISK_SPACE_INSUFFICIENT", "磁盘空间不足，请清理后重试")
     size = 0
     digest = hashlib.sha256()
     try:

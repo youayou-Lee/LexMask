@@ -70,6 +70,11 @@ _export_throttle = make_user_throttle(
     RateLimiter(max_requests=settings.EXPORT_RATE_PER_MIN, window_seconds=60),
     "export",
 )
+# Issue #32 P2-5：解密属敏感端点（密码试错入口），与其他敏感端点一致挂按用户限流。
+_decrypt_throttle = make_user_throttle(
+    RateLimiter(max_requests=settings.DECRYPT_RATE_PER_MIN, window_seconds=60),
+    "decrypt",
+)
 
 
 def validate_file(file: UploadFile) -> None:
@@ -578,7 +583,7 @@ async def parse_file(file_id: str, owner_id: str = Depends(require_auth)):
     return result
 
 
-@router.post("/files/{file_id}/decrypt", response_model=DecryptResult)
+@router.post("/files/{file_id}/decrypt", response_model=DecryptResult, dependencies=[Depends(_decrypt_throttle)])
 async def decrypt_file(file_id: str, body: DecryptRequest, owner_id: str = Depends(require_auth)):
     """
     解除 PDF 打开密码（Issue #30）

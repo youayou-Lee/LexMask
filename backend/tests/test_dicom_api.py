@@ -650,3 +650,29 @@ def test_real_core_multi_study_batch_export(tmp_path, monkeypatch):
                         assert str(dataset.PatientIdentityRemoved) == "YES"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_ingest_rejected_when_disk_space_insufficient(dicom_api_client, monkeypatch):
+    """余量不足：staging 落盘前 507 拒绝，不写文件、不影响已有内容。"""
+    from types import SimpleNamespace
+
+    client, _app, _service, _core = dicom_api_client
+    real_disk_usage = dicom_api.shutil.disk_usage
+    calls: list[str] = []
+
+    def _low_disk(path):
+        calls.append(str(path))
+        return SimpleNamespace(free=100 * 1024 * 1024)  # < 500MB 阈值
+
+    monkeypatch.setattr(dicom_api.shutil, "disk_usage", _low_disk)
+    response = _ingest(client)
+    assert response.status_code == 507, response.text
+    payload = response.json()
+    assert payload["error_code"] == "DICOM_DISK_SPACE_INSUFFICIENT"
+    assert calls, "预检必须发生在落盘之前"
+    # 未留下任何 staging 残留
+    assert os.listdir(dicom_api.settings.UPLOAD_DIR) == []
+    # 恢复后同请求正常（余量充足路径行为不变）
+    monkeypatch.setattr(dicom_api.shutil, "disk_usage", real_disk_usage)
+    ok = _ingest(client)
+    assert ok.status_code == 201, ok.text

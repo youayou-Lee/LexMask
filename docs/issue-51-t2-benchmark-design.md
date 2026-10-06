@@ -1,14 +1,14 @@
-# Issue #93 子任务 A — T2 实体识别 Benchmark 设计文档
+# Issue #51 子任务 A — T2 实体识别 Benchmark 设计文档
 
-> 2026-09-18 brainstorming 定稿（四决策+方案 A），父 Issue：fork #93（按任务边界的环节级 Benchmark 体系 T1–T4）。
-> 定位：**调优/选型基准**，首要消费者 = #73（小 LLM 替代 HaS_Text）的 E1–E4 质量矩阵。
+> 2026-09-18 brainstorming 定稿（四决策+方案 A），父 Issue：#51（eval: 环节级 Benchmark 体系 T1–T4；2026-10-06 自旧仓平移重立）。
+> 定位：**调优/选型基准**，首要消费者 = #55（通用 LLM 替代 HaS_Text）的质量矩阵。
 
 ## 0. 已拍板决策（brainstorming 四问）
 
 | # | 决策 | 结论 |
 |---|---|---|
 | D1 | 实体类型口径 | **映射到我们的类型体系**（`preset_entity_types.json`），映射表人工核对锁定版本，映射不到的类型丢弃并计数 |
-| D2 | 司法桶数据来源 | **LEVEN 映射当司法桶主力 + 合成补公开集没有的失败模式桶（数字串混淆等）+ 难例沉淀**；零人工标注，不阻塞 #73 E1 |
+| D2 | 司法桶数据来源 | **LEVEN 映射当司法桶主力 + 合成补公开集没有的失败模式桶（数字串混淆等）+ 难例沉淀**；零人工标注，不阻塞 #55 E1 |
 | D3 | 数据存储 | **benchmark 数据一律不入 GitHub**；正本放云实例持久卷（仅用户可访问），本地 `test-data/` 同步副本；仓库只放代码+规格+manifest 模板 |
 | D4 | 输入通道 | **本期只做文本通道**，条目保留 `input_modality: text\|image` 字段、桶目录预留 image 位，VLM 来了加 runner 即可 |
 
@@ -28,13 +28,13 @@
   manifest.private.json   # 数据源 URL+版本+许可证、映射表版本、桶清单、条目索引
 ```
 
-- 本地 `test-data/benchmarks/t2/` 为同步副本（eval37-real 同款双份模式）。
+- 本地 `test-data/benchmarks/t2/` 为同步副本（与真实案卷私有评测子集同款双份模式）。
 - 仓库内：`eval/benchmarks/t2/`（代码）+ 桶规格 README + `manifest.private.example.json`，**零数据**。
 - 可复现机制：子采样固定 seed，适配器从 `raw/` 现场重建 `buckets/`；manifest 记录 raw 版本戳防上游漂移。
 
 ## 2. 内部 GT 格式与类型映射
 
-条目格式（与 #37 口径同构，直接喂 `eval_ner_quality` 的指标计算）：
+条目格式（与 e2e 评测口径同构，直接喂 `eval_ner_quality` 的指标计算）：
 
 ```json
 {"id": "leven_defendant_0007", "bucket": "leven-judicial-person",
@@ -58,7 +58,7 @@
 | resume-person / -native-place | Resume NER 映射 | 各 200 句 |
 | digit-confusion（身份证/案号/车牌/银行卡同现互扰） | 合成 | 50 条 |
 | quoted-entity / long-entity / lowfreq-type / context-distractor | 合成 | 各 50 条 |
-| hardcase（首批：真实卷A数字串、#60 表格跨行机构名） | 难例转录 | 存量难例全收 |
+| hardcase（首批：真实卷数字串难例、表格跨行机构名难例） | 难例转录 | 存量难例全收 |
 
 数字实体公开集没有，**数字保真只在合成桶 + hardcase 桶上评**——这两桶专为 HaS 痛处（数字串互扰）设计。
 
@@ -66,10 +66,10 @@
 
 `eval/benchmarks/t2/benchmark_t2.py`：
 
-- 引擎注册表：`--engine has`（复用 `eval_ner_quality` 直连与生产 prompt 对齐）｜`--engine llm=<OpenAI 兼容端点>`（vLLM/llama-server，#73 E1 直接可用）｜将来 `--engine vlm=<…>`（图像通道占位，本期 N/A）。
+- 引擎注册表：`--engine has`（复用 `eval_ner_quality` 直连与生产 prompt 对齐）｜`--engine llm=<OpenAI 兼容端点>`（vLLM/llama-server，#55 E1 直接可用）｜将来 `--engine vlm=<…>`（图像通道占位，本期 N/A）。
 - 引擎申报制：引擎不支持的桶记 **N/A 不记零分**。
 - `--buckets` 选桶、`--baseline <json>` 出 Δ 列、多引擎同跑出对比表。
-- 输出：桶×引擎 P/R/F1 明细 + 数字保真桶级三级分级（exact/near_miss/miss）+ N/A 标注，json+md 报告入 `eval/reports/`（Obsidian 简版，沿用 `indicator_meta`）。（deferred：`--baseline` Δ 列与 `indicator_meta` 版式延期至 #73 E2 阶段按需实现。）
+- 输出：桶×引擎 P/R/F1 明细 + 数字保真桶级三级分级（exact/near_miss/miss）+ N/A 标注，json+md 报告入 `eval/reports/`（Obsidian 简版，沿用 `indicator_meta`）。（deferred：`--baseline` Δ 列与 `indicator_meta` 版式延期至 #55 质量矩阵阶段按需实现。）
 - **无闸门**：不 exit 1，结论写进报告（与 run_eval 三闸门语义分工）。
 
 ## 5. 难例沉淀 skill（hardcase-ingest）
@@ -97,6 +97,6 @@
 
 - 不做图像通道（D4，接口留位）；
 - 不做 T1/T3 benchmark（子任务 B/C 另行设计）；
-- 不改 #37 run_eval 与三闸门；
+- 不改 run_eval 与三闸门；
 - 不做化名管线/leak_check 入库门（数据不上 GitHub，D3）；
 - 不设闸门 exit code（选型工具）。

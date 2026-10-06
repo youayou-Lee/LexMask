@@ -13,7 +13,7 @@ raw 目录约定（缺失时打印下载指引后以非零码退出，不静默�
                             resume.train/.dev jsonl 或 dev.char.bmes 亦接受，自动合并）
   leven/…                   当前无需（映射为空，桶 BLOCKED）
 
-Ref #93（Task 7）
+Ref #51（Task 7）
 """
 from __future__ import annotations
 

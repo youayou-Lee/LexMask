@@ -1,4 +1,4 @@
-"""T2 桶构建测试：mini raw 目录（fixture 现造）驱动 build_buckets 全链路。零数据入库。Ref #93"""
+"""T2 桶构建测试：mini raw 目录（fixture 现造）驱动 build_buckets 全链路。零数据入库。Ref #51"""
 import json
 import sys
 from pathlib import Path

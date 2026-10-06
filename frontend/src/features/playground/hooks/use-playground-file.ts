@@ -55,6 +55,8 @@ async function readErrorEnvelope(
 export interface EncryptedPdfPrompt {
   fileId: string;
   filename: string;
+  /** 原始文件字节数：解密成功续跑时回填 fileInfo，避免草稿快照尺寸显示 0（Issue #32 P2-6）。 */
+  fileSize?: number;
 }
 
 export interface PendingFile {
@@ -221,7 +223,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         const { code, message } = await readErrorEnvelope(parseRes);
         // Issue #30：需打开密码的 PDF 不报错，挂起流程弹密码框
         if (code === 'PDF_ENCRYPTED_NEEDS_PASSWORD') {
-          setEncryptedPrompt({ fileId: uploadData.file_id, filename: uploadData.filename });
+          setEncryptedPrompt({ fileId: uploadData.file_id, filename: uploadData.filename, fileSize: file.size });
           setIsLoading(false);
           setLoadingMessage('');
           return;
@@ -275,6 +277,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
           setEncryptedPrompt({
             fileId,
             filename: (info.original_filename as string | undefined) || fileId,
+            fileSize: (info.file_size as number | undefined) || undefined,
           });
           setIsLoading(false);
           setLoadingMessage('');
@@ -467,7 +470,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
 
   // --- Issue #30：密码解密成功后重跑 parse → 自动识别 ---
   const handleDecrypted = useCallback(
-    async (fileId: string, filename: string) => {
+    async (fileId: string, filename: string, fileSize?: number) => {
       setEncryptedPrompt(null);
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -487,7 +490,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         }
         const parseData = await safeJson<ParseResponse>(parseRes);
         if (signal.aborted) return;
-        applyParsedFile(fileId, filename, 0, parseData);
+        applyParsedFile(fileId, filename, fileSize ?? 0, parseData);
       } catch (err) {
         if (signal.aborted) return;
         showToast(localizeErrorMessage(err, 'playground.processFailed'), 'error');

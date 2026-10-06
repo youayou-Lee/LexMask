@@ -382,3 +382,40 @@ class TestReviewGaps:
         resp = client.post(f"/api/v1/files/{file_id}/decrypt", json={"password": "right"})
         assert resp.status_code == 200
         assert not _is_encrypted_on_disk(path)
+
+    def test_zero_entity_docx_path_never_copies_encrypted_original(self):
+        # Issue #32（P2-3）：docx 回转链零实体分支曾直接 copyfile，会把加密原件
+        # 原样当「成品」输出。必须抛结构化异常且不产生输出文件。
+        from app.services.redaction.text_redactor import TextRedactorMixin
+
+        _, path = _register("zero-ent.pdf", user_pw="userpw")
+        out = os.path.join(settings.UPLOAD_DIR, "zero-ent-out.pdf")
+        with pytest.raises(PdfEncryptedError):
+            asyncio.run(TextRedactorMixin._redact_pdf_via_docx(None, path, out, [], context=None))
+        assert not os.path.exists(out)
+
+    def test_decrypt_422_never_echoes_password_value(self):
+        # Issue #32（P2-4）：password 非字符串时 422 回显不得带 input 原值
+        file_id, _ = _register("pw422.pdf", user_pw="userpw")
+        secret = "超机密密码9o0i"
+        resp = client.post(
+            f"/api/v1/files/{file_id}/decrypt", json={"password": {"evil": secret}}
+        )
+        assert resp.status_code == 422
+        body = resp.text
+        assert secret not in body
+        assert "evil" not in body
+
+    def test_decrypt_endpoint_has_user_throttle(self):
+        # Issue #32（P2-5）：decrypt 是密码试错入口，必须与其他敏感端点一致挂限流
+        from app.api import files as files_api
+
+        route = next(
+            r for r in files_api.router.routes
+            if getattr(r, "path", "") == "/files/{file_id}/decrypt"
+        )
+        assert route.dependencies, "decrypt 端点未挂任何限流依赖"
+        assert any(
+            getattr(d.dependency, "__qualname__", "").startswith("make_user_throttle")
+            for d in route.dependencies
+        )
