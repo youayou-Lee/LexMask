@@ -166,6 +166,15 @@ def test_multi_fragment_raw_form(sample_pdf, tmp_path):
         )
 
 
+def test_multiple_entities_same_type(sample_pdf):
+    # 同类型多实体（一页多人名/多日期是真实案卷常态）：不得互相覆盖
+    e = ing.build_hardcase_entry(sample_pdf, 0,
+                                 [("姓名", "张三"), ("姓名", "李四"), ("案号", "(2023)粤01刑终100号")],
+                                 story="多人名", origin="t")
+    assert e["entities"]["姓名"] == ["张三", "李四"]
+    assert e["entities"]["案号"] == ["(2023)粤01刑终100号"]
+
+
 def test_cli_reject_no_partial_write(sample_pdf, tmp_path):
     out_dir = tmp_path / "hardcase"
     rc = ing.main([

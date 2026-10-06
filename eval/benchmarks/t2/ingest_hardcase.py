@@ -66,7 +66,9 @@ def build_hardcase_entry(
             raise ValueError(f"实体 {val} 不在文本中（缺失片段 {missing!r}）")
         if typ == "身份证号" and not _id_check(val):
             raise ValueError(f"身份证格式非法 {val}")
-        entities.setdefault(typ, []).append(val)
+        entities.setdefault(typ, [])
+        if val not in entities[typ]:
+            entities[typ].append(val)
 
     entry = {
         "id": "",  # 由 main 按时间戳+序号分配
@@ -143,7 +145,13 @@ def main(argv: list[str] | None = None) -> int:
         print("错误：至少提供一个 --entity", file=sys.stderr)
         return 2
     try:
-        spans = list(_parse_pairs(args.entity, ":", "--entity").items())
+        # --entity 同类型可多条（真实案卷一页多人名/多日期常态），保序不覆盖
+        spans = []
+        for it in args.entity:
+            if ":" not in it:
+                raise ValueError(f"--entity 格式非法（应为 '类型:实体串'）: {it}")
+            k, v = it.split(":", 1)
+            spans.append((k, v))
         raw_forms = _parse_pairs(args.raw_form, ":", "--raw-form")
         entry = build_hardcase_entry(Path(args.file), args.page, spans,
                                      story=args.story, origin=args.origin, raw_forms=raw_forms,
