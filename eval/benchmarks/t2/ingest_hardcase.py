@@ -38,14 +38,21 @@ def build_hardcase_entry(
     story: str,
     origin: str,
     raw_forms: dict[str, str] | None = None,
+    text_file: Path | None = None,
+    source_ref: str | None = None,
+    verify: str | None = None,
 ) -> dict:
-    """构建 hardcase 条目；类型不在 preset / 实体不在文本 / 身份证格式非法均抛 ValueError 拒收。"""
+    """构建 hardcase 条目；类型不在 preset / 实体不在文本 / 身份证格式非法均抛 ValueError 拒收。
+
+    text_file：扫描件无文字层时的 OCR 转写文本（条目 text 与实体校验均以转写为准，PDF 仅做页码溯源）。
+    source_ref：私有路径+页码溯源指针；verify：GT 互验结论。二者留痕进条目与 manifest。
+    """
     raw_forms = raw_forms or {}
     preset_names = load_preset_names()
     with fitz.open(file_path) as doc:
         if page >= doc.page_count:
             raise ValueError(f"页码 {page} 越界（共 {doc.page_count} 页）")
-        text = doc[page].get_text()
+        text = doc[page].get_text() if text_file is None else Path(text_file).read_text(encoding="utf-8")
 
     entities: dict[str, list[str]] = {}
     for typ, val in spans:
@@ -70,6 +77,10 @@ def build_hardcase_entry(
         "story": story,
         "raw_forms": raw_forms,
     }
+    if source_ref:
+        entry["source_ref"] = source_ref
+    if verify:
+        entry["verify"] = verify
     assert ENTRY_SCHEMA_KEYS <= set(entry)
     return entry
 
@@ -93,7 +104,9 @@ def _write_entry(entry: dict, out_dir: Path) -> None:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest.setdefault("entries", []).append(
         {"id": entry["id"], "origin": entry["origin"], "story": entry["story"],
-         "ts": datetime.now().isoformat(timespec="seconds")}
+         "ts": datetime.now().isoformat(timespec="seconds"),
+         **({"source_ref": entry["source_ref"]} if "source_ref" in entry else {}),
+         **({"verify": entry["verify"]} if "verify" in entry else {})}
     )
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -113,8 +126,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--file", required=True)
     ap.add_argument("--page", type=int, default=0)
     ap.add_argument("--entity", action="append", default=[], metavar="类型:实体串")
+    ap.add_argument("--text-file", default=None,
+                    help="扫描件无文字层时的 OCR 转写文本文件（作为条目 text，实体校验以此为准）")
     ap.add_argument("--story", required=True)
     ap.add_argument("--origin", required=True)
+    ap.add_argument("--source-ref", default=None, help="私有路径+页码溯源指针（只进私有区）")
+    ap.add_argument("--verify", default=None, help="GT 互验结论（如 dual-ai-agree / adjudicated）")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
     ap.add_argument("--raw-form", action="append", default=[], metavar="GT串:文中实际形态")
     args = ap.parse_args(argv)
@@ -126,7 +143,9 @@ def main(argv: list[str] | None = None) -> int:
         spans = list(_parse_pairs(args.entity, ":", "--entity").items())
         raw_forms = _parse_pairs(args.raw_form, ":", "--raw-form")
         entry = build_hardcase_entry(Path(args.file), args.page, spans,
-                                     story=args.story, origin=args.origin, raw_forms=raw_forms)
+                                     story=args.story, origin=args.origin, raw_forms=raw_forms,
+                                     text_file=Path(args.text_file) if args.text_file else None,
+                                     source_ref=args.source_ref, verify=args.verify)
         entry["id"] = _next_id(Path(args.out_dir))
         _write_entry(entry, Path(args.out_dir))
     except (ValueError, FileNotFoundError) as e:

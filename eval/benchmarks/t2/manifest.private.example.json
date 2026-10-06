@@ -35,6 +35,6 @@
   },
   "notes": ["hardcase: 跳过（ingest 管理，不覆盖已有文件）"],
   "entries": [
-    {"id": "hardcase_20260918_120000_001", "origin": "https://github.com/…/issues/60", "story": "表格跨行机构名漏检", "ts": "2026-09-18T12:00:00"}
+    {"id": "hardcase_20260918_120000_001", "origin": "https://github.com/…/issues/60", "story": "表格跨行机构名漏检", "ts": "2026-09-18T12:00:00", "source_ref": "testdata/eval37-real/xxx.pdf#p3", "verify": "dual-ai-agree"}
   ]
 }

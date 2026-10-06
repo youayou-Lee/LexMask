@@ -86,6 +86,67 @@ def test_cli_writes_jsonl_and_manifest(sample_pdf, tmp_path, monkeypatch, capsys
     assert len(m["entries"]) == 2
 
 
+def test_text_file_mode_uses_transcript_as_text(sample_pdf, tmp_path):
+    # 扫描件无文字层：OCR 转写文件作为条目 text，实体校验以转写为准（PDF 只做页码溯源）
+    transcript = tmp_path / "p3.txt"
+    transcript.write_text("受案登记表 案号：粤公粤(交警)受案字(2023)00680号 车牌粤R12345", encoding="utf-8")
+    e = ing.build_hardcase_entry(
+        sample_pdf, 0, [("案号", "粤公粤(交警)受案字(2023)00680号"), ("车牌号", "粤R12345")],
+        story="案号整串漏检", origin="issue#51",
+        text_file=transcript,
+    )
+    assert e["text"] == transcript.read_text(encoding="utf-8")
+    assert e["entities"]["案号"] == ["粤公粤(交警)受案字(2023)00680号"]
+
+
+def test_text_file_mode_rejects_entity_absent_from_transcript(sample_pdf, tmp_path):
+    transcript = tmp_path / "p3.txt"
+    transcript.write_text("转写里没有这个实体", encoding="utf-8")
+    with pytest.raises(ValueError, match="不在文本中"):
+        ing.build_hardcase_entry(sample_pdf, 0, [("姓名", "张三")], story="x", origin="t",
+                                 text_file=transcript)
+
+
+def test_text_file_mode_still_validates_page(sample_pdf, tmp_path):
+    transcript = tmp_path / "p9.txt"
+    transcript.write_text("随便", encoding="utf-8")
+    with pytest.raises(ValueError, match="越界"):
+        ing.build_hardcase_entry(sample_pdf, 9, [("姓名", "张三")], story="x", origin="t",
+                                 text_file=transcript)
+
+
+def test_source_ref_and_verify_stored_in_entry_and_manifest(sample_pdf, tmp_path):
+    e = ing.build_hardcase_entry(sample_pdf, 0, [("姓名", "张三")], story="x", origin="t",
+                                 source_ref="testdata/eval37-real/real_zqc_wenshu_p1-5.pdf#p3",
+                                 verify="dual-ai-agree")
+    assert e["source_ref"] == "testdata/eval37-real/real_zqc_wenshu_p1-5.pdf#p3"
+    assert e["verify"] == "dual-ai-agree"
+    out_dir = tmp_path / "hardcase"
+    e["id"] = ing._next_id(out_dir)
+    ing._write_entry(e, out_dir)
+    m = json.loads((out_dir.parent / "manifest.private.json").read_text(encoding="utf-8"))
+    assert m["entries"][0]["source_ref"] == e["source_ref"]
+    assert m["entries"][0]["verify"] == "dual-ai-agree"
+
+
+def test_cli_passes_text_file_source_ref_verify(sample_pdf, tmp_path, capsys):
+    out_dir = tmp_path / "hardcase"
+    transcript = tmp_path / "p1.txt"
+    transcript.write_text("被告人张三", encoding="utf-8")
+    rc = ing.main([
+        "--file", str(sample_pdf), "--page", "0",
+        "--text-file", str(transcript),
+        "--entity", "姓名:张三",
+        "--story", "x", "--origin", "issue#51",
+        "--source-ref", "testdata/x.pdf#p1", "--verify", "adjudicated",
+        "--out-dir", str(out_dir),
+    ])
+    assert rc == 0
+    lines = [json.loads(l) for l in (out_dir / "hardcase.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert lines[0]["text"] == "被告人张三"
+    assert lines[0]["source_ref"] == "testdata/x.pdf#p1" and lines[0]["verify"] == "adjudicated"
+
+
 def test_cli_reject_no_partial_write(sample_pdf, tmp_path):
     out_dir = tmp_path / "hardcase"
     rc = ing.main([

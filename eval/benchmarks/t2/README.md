@@ -43,6 +43,8 @@
 | origin | （hardcase）来源 issue 链接，必填 |
 | story | （hardcase）一句话失败故事 |
 | raw_forms | （hardcase，可选）GT 串 -> 文中实际形态 |
+| source_ref | （hardcase，可选）私有路径+页码溯源指针（如 `testdata/eval37-real/xxx.pdf#p3`，只进私有区） |
+| verify | （hardcase，可选）GT 互验结论（如 dual-ai-agree / adjudicated） |
 
 ## 数据目录约定（仓库零数据红线）
 
@@ -74,4 +76,4 @@ PYTHONPATH=$PWD .venv-eval/bin/python eval/benchmarks/t2/benchmark_t2.py \
 
 ## 难例沉淀
 
-真实难例入库走工作区 `hardcase-ingest` skill（引导解析实体、确认 preset 类型、调 ingest CLI、拒收即转述原因）。
+真实难例入库走工作区 `hardcase-ingest` skill（引导解析实体、确认 preset 类型、调 ingest CLI、拒收即转述原因）。扫描件无文字层时，先取 OCR 转写文本，用 `--text-file` 喂入（条目 text 与实体校验均以转写为准，`--file` 的 PDF 仅做页码溯源）；`--source-ref` / `--verify` 留溯源指针与 GT 互验结论。
