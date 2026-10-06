@@ -9,6 +9,8 @@ GT 管线的归一化层：后续实体/比对阶段只面向归一化文本（n
 - 剥离 Markdown 标记：行首 ``#+`` 标题、``<table>``/``</table>``/``<br>``
   内联标签、``|`` 单元格竖线、HTML 注释 ``<!-- ... -->``（未闭合则吞到串尾）；
   行首判定为「行的第一个字符」（前导空白即失去行首资格），行中 ``#`` 存活。
+  注释剥离后的行首态：单行注释行内透明（继承注释前状态）；注释体含换行时
+  该换行被一并吞掉，其后文本视为新行行首（T2 评审 rider Minor#1）。
 
 映射语义：
 - 存活字符逐一记录 ``map[i] = 原文下标``（严格递增）；被剥离的字符不产生映射位；
@@ -65,8 +67,12 @@ def _scan(raw: str) -> tuple[str, list[int]]:
             continue
         if ch == "<" and raw.startswith(_COMMENT_BEGIN, i):
             end = raw.find(_COMMENT_END, i + len(_COMMENT_BEGIN))
-            i = n if end < 0 else end + len(_COMMENT_END)
-            at_line_start = False
+            nxt = n if end < 0 else end + len(_COMMENT_END)
+            # 行首态（T2 评审 rider Minor#1）：单行注释是行内透明剥离，不改变行首态
+            #（继承注释前状态，行中注释后的 '#' 仍存活）；注释体含换行时该换行被一并
+            # 吞掉，其后文本视为新行行首（"<!--a\nb--># 甲" 的 '#' 按行首标题剥离）。
+            at_line_start = at_line_start or "\n" in raw[i:nxt]
+            i = nxt
             continue
         if ch == "<":
             tag = _match_tag(raw, i)
