@@ -9,7 +9,7 @@ from app.services.vl_parse_client import VlParseClient, VlParseError
 def _client(handler) -> VlParseClient:
     return VlParseClient(
         base_url="http://127.0.0.1:8095/", timeout=5,
-        transport=httpx.MockTransport(handler),
+        transport=httpx.MockTransport(handler), max_retries=0,
     )
 
 
@@ -80,3 +80,42 @@ async def test_is_available_true_and_false():
         raise httpx.ConnectError("refused")
 
     assert await _client(down).is_available() is False
+
+
+@pytest.mark.asyncio
+async def test_parse_retries_on_5xx_then_succeeds(monkeypatch):
+    calls = {"n": 0}
+    sleeps = []
+
+    async def fake_sleep(sec):
+        sleeps.append(sec)
+
+    monkeypatch.setattr("app.services.vl_parse_client.asyncio.sleep", fake_sleep)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(502, text="bad gateway")
+        return httpx.Response(200, json={"markdown": "ok", "elapsed_s": 1.0})
+
+    client = VlParseClient(base_url="http://127.0.0.1:8095", timeout=5,
+                           transport=httpx.MockTransport(handler))
+    result = await client.parse("/tmp/page.png")
+    assert result.markdown == "ok"
+    assert calls["n"] == 2 and sleeps == [15.0]
+
+
+@pytest.mark.asyncio
+async def test_parse_retries_on_connect_error_then_raises():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ConnectError("refused")
+
+    client = VlParseClient(base_url="http://127.0.0.1:8095", timeout=5,
+                           transport=httpx.MockTransport(handler), max_retries=1,
+                           retry_backoff=0.0)
+    with pytest.raises(VlParseError, match="不可达"):
+        await client.parse("/tmp/page.png")
+    assert calls["n"] == 2
