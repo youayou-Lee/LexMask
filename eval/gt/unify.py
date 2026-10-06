@@ -152,7 +152,12 @@ class CloudVLClient:
             wait = min(max(wait * 1.5, POLL_INTERVAL_START), POLL_INTERVAL_CAP)
 
     def _download_parse(self, json_url: str) -> list[TranscriptionPage]:
-        resp = requests.get(json_url, timeout=HTTP_TIMEOUT)
+        try:
+            resp = requests.get(json_url, timeout=HTTP_TIMEOUT)
+        except requests.RequestException as e:
+            # 连接级异常的消息会内嵌完整签名 URL（urllib3 "Max retries exceeded with url: ..."），
+            # 违反 resultUrl 红线——转抛的异常文本只留打码后的 host/path。
+            raise RuntimeError(f"结果 JSONL 下载失败 url={_mask(json_url)} err={type(e).__name__}") from e
         if resp.status_code != 200:
             raise RuntimeError(
                 f"结果 JSONL 下载失败 status={resp.status_code} url={_mask(json_url)}")

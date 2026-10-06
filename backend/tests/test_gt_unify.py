@@ -7,6 +7,7 @@
 import json, sys
 from pathlib import Path
 import pytest
+import requests
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "eval"))
@@ -69,3 +70,25 @@ def test_build_clients_spec():
     monkey_token = "t"
     c = unify.build_clients("cloud:PP-OCRv6", _token=monkey_token)
     assert c.model == "PP-OCRv6"
+
+def test_download_conn_error_masks_url(monkeypatch, tmp_path):
+    # 评审 Fix#1：连接级失败（requests.ConnectionError）的消息会内嵌完整签名 URL
+    # （urllib3 "Max retries exceeded with url: /r.json?authorization=..."）——
+    # 转抛的异常文本必须过 _mask，不含 authorization/SECRET/任何 URL query。
+    def fake_post(url, headers=None, data=None, files=None, timeout=None):
+        return FakeResp({"data": {"jobId": "J"}})
+    json_url = "https://x.bj.bcebos.com/r.json?authorization=SECRET"
+    def fake_get(url, headers=None, timeout=None):
+        if "bcebos" in url:
+            raise requests.ConnectionError("Connection aborted. Max retries exceeded with url: /r.json?authorization=SECRET")
+        return FakeResp({"data": {"state": "done", "resultUrl": {"jsonUrl": json_url}}})
+    monkeypatch.setattr(unify.requests, "post", fake_post)
+    monkeypatch.setattr(unify.requests, "get", fake_get)
+    monkeypatch.setattr(unify.time, "sleep", lambda s: None)
+    pdf = tmp_path / "f.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    with pytest.raises(RuntimeError) as ei:
+        unify.CloudVLClient("PP-OCRv6", token="t").transcribe(str(pdf))
+    msg = str(ei.value)
+    assert "authorization" not in msg and "SECRET" not in msg and "?" not in msg
+    assert "x.bj.bcebos.com/r.json" in msg  # host/path 允许保留（打码只去 ? 之后）
