@@ -137,15 +137,15 @@ deploy/offline/
 frontend/node_modules
 node_modules
 
-# Issue #37 真实案卷私有评测子集：数据与清单含真实 PII/案名，永不入库（铁律）
+# 真实案卷私有评测子集（旧仓立案，未在新仓重立）：数据与清单含真实 PII/案名，永不入库（铁律）
 eval/datasets/manifest.private.json
 eval/.obsidian/
 
-# Issue #46 格式矩阵运行时产物（成品下载/异常样件）
+# 格式矩阵运行时产物（成品下载/异常样件；旧仓立案，未在新仓重立）
 eval/.format-matrix-tmp/
 
 # git worktree 本地工作区（不在库内）
 .worktrees/
 
-# Issue #93 T2 benchmark 本地数据（raw/桶/manifest 含真实语料，不入库）
+# Issue #51 T2 benchmark 本地数据（raw/桶/manifest 含真实语料，不入库）
 test-data/

@@ -20,10 +20,10 @@ def sample_pdf(tmp_path_factory):
 
 
 def test_build_entry_ok(sample_pdf):
-    e = ing.build_hardcase_entry(sample_pdf, 0, [("姓名", "张三")], story="姓名漏检", origin="issue#40")
+    e = ing.build_hardcase_entry(sample_pdf, 0, [("姓名", "张三")], story="姓名漏检", origin="issue#53")
     assert e["bucket"] == "hardcase" and e["bucket_kind"] == "hardcase"
     assert e["entities"]["姓名"] == ["张三"]
-    assert e["origin"] == "issue#40" and "张三" in e["text"]
+    assert e["origin"] == "issue#53" and "张三" in e["text"]
     assert ing.ENTRY_SCHEMA_KEYS <= set(e)
 
 
@@ -63,7 +63,7 @@ def test_cli_writes_jsonl_and_manifest(sample_pdf, tmp_path, monkeypatch, capsys
     rc = ing.main([
         "--file", str(sample_pdf), "--page", "0",
         "--entity", "姓名:张三",
-        "--story", "姓名漏检", "--origin", "issue#40",
+        "--story", "姓名漏检", "--origin", "issue#53",
         "--out-dir", str(out_dir),
     ])
     assert rc == 0
@@ -75,9 +75,9 @@ def test_cli_writes_jsonl_and_manifest(sample_pdf, tmp_path, monkeypatch, capsys
     assert manifest.exists()
     m = json.loads(manifest.read_text(encoding="utf-8"))
     assert m["entries"][0]["id"] == lines[0]["id"]
-    assert m["entries"][0]["origin"] == "issue#40"
+    assert m["entries"][0]["origin"] == "issue#53"
     out = capsys.readouterr().out
-    assert "hardcase" in out and "issue#40" in out
+    assert "hardcase" in out and "issue#53" in out
     # 追加第二条
     ing.main(["--file", str(sample_pdf), "--page", "0", "--entity", "姓名:张三",
               "--story", "y", "--origin", "t2", "--out-dir", str(out_dir)])
