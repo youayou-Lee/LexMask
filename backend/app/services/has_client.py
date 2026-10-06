@@ -539,12 +539,13 @@ class HaSClient:
 
         from app.core.config import settings
 
-        # ----- Issue#41 按密度主动分批（帽驱动，guidance 路径也生效） -----
-        # 生产的 ocr_has 链路带 type_guidance，既有预分批/整批重查都被
-        # `type_guidance is None` 门控跳过 → 密集页"先打一次注定截断的整页
-        # 调用再补救"。这里在预算>有效帽时前置沿类型轴分批（每批自带
-        # guidance 子集），跳过注定截断的整页调用。豁免：单类型独占一批
-        # 仍超帽的页（分批无解），照常单发、走既有截断补救。
+        # ----- Issue#41 按密度主动分批（帽驱动，无论是否带 guidance 都生效） -----
+        # 生产主 NER 调用（run_has_text_analysis）不带 type_guidance：既有预分批
+        # 只按类型数/目标 token 估批大小，不看完成帽——文本较长时每批预算仍超帽，
+        # 落得"先打一次注定截断的调用再补救"（S1 实测：12 型批预算 2032 被截断后
+        # 11 类型重查 1960 再次截断）。这里在预算>有效帽时**前置**按帽容量反推
+        # 批大小，跳过注定截断的调用。豁免：单类型独占一批仍超帽的页（分批无解），
+        # 照常单发、走既有截断补救。
         hard_cap = self._effective_completion_hard_cap(settings)
         if hard_cap > 0:
             text_budget = len(str(text or "")) // _NER_TEXT_CHARS_PER_TOKEN

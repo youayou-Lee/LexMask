@@ -273,3 +273,29 @@ def test_stage_wiring_writes_metrics_into_stage_status(monkeypatch):
     assert result and result[0]["type"]
     assert stage_status.get("has_text_ner_finish_reason") == "stop"
     assert "has_text_ner_truncation_retries" not in stage_status
+
+
+def test_budget_over_cap_batches_also_with_type_guidance(monkeypatch):
+    """guidance 路径同样前置分批（生产 guidance=None，此用例钉住不回归）。"""
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
+
+    def respond(messages, *, max_tokens=None, temperature=None):
+        batch = _prompt_types(messages[0]["content"])
+        return json.dumps({t: [f"值-{t}"] for t in batch}, ensure_ascii=False)
+
+    client = HaSClient()
+    calls = []
+
+    def respond_count(messages, *, max_tokens=None, temperature=None):
+        calls.append(_prompt_types(messages[0]["content"]))
+        return respond(messages, max_tokens=max_tokens, temperature=temperature)
+
+    client._call_model = respond_count
+    guidance = [{"type": t, "description": "测试引导"} for t in _TYPES_38]
+    with ner_metrics_scope() as scope:
+        result = client.ner(_LONG_TEXT + " with-guidance", _TYPES_38, guidance)
+    full = set(_TYPES_38)
+    assert not any(set(c) == full for c in calls), "guidance 路径整页 payload 被发出"
+    assert set(result) == full
+    metrics = drain_ner_metrics(scope)
+    assert metrics.get("has_text_ner_rebatch_batches", 0) >= 2
