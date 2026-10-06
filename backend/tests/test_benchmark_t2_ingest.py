@@ -86,6 +86,99 @@ def test_cli_writes_jsonl_and_manifest(sample_pdf, tmp_path, monkeypatch, capsys
     assert len(m["entries"]) == 2
 
 
+def test_text_file_mode_uses_transcript_as_text(sample_pdf, tmp_path):
+    # 扫描件无文字层：OCR 转写文件作为条目 text，实体校验以转写为准（PDF 只做页码溯源）
+    transcript = tmp_path / "p3.txt"
+    transcript.write_text("受案登记表 案号：粤公粤(交警)受案字(2023)00680号 车牌粤R12345", encoding="utf-8")
+    e = ing.build_hardcase_entry(
+        sample_pdf, 0, [("案号", "粤公粤(交警)受案字(2023)00680号"), ("车牌号", "粤R12345")],
+        story="案号整串漏检", origin="issue#51",
+        text_file=transcript,
+    )
+    assert e["text"] == transcript.read_text(encoding="utf-8")
+    assert e["entities"]["案号"] == ["粤公粤(交警)受案字(2023)00680号"]
+
+
+def test_text_file_mode_rejects_entity_absent_from_transcript(sample_pdf, tmp_path):
+    transcript = tmp_path / "p3.txt"
+    transcript.write_text("转写里没有这个实体", encoding="utf-8")
+    with pytest.raises(ValueError, match="不在文本中"):
+        ing.build_hardcase_entry(sample_pdf, 0, [("姓名", "张三")], story="x", origin="t",
+                                 text_file=transcript)
+
+
+def test_text_file_mode_still_validates_page(sample_pdf, tmp_path):
+    transcript = tmp_path / "p9.txt"
+    transcript.write_text("随便", encoding="utf-8")
+    with pytest.raises(ValueError, match="越界"):
+        ing.build_hardcase_entry(sample_pdf, 9, [("姓名", "张三")], story="x", origin="t",
+                                 text_file=transcript)
+
+
+def test_source_ref_and_verify_stored_in_entry_and_manifest(sample_pdf, tmp_path):
+    e = ing.build_hardcase_entry(sample_pdf, 0, [("姓名", "张三")], story="x", origin="t",
+                                 source_ref="testdata/eval37-real/xxx.pdf#p3",
+                                 verify="dual-ai-agree")
+    assert e["source_ref"] == "testdata/eval37-real/xxx.pdf#p3"
+    assert e["verify"] == "dual-ai-agree"
+    out_dir = tmp_path / "hardcase"
+    e["id"] = ing._next_id(out_dir)
+    ing._write_entry(e, out_dir)
+    m = json.loads((out_dir.parent / "manifest.private.json").read_text(encoding="utf-8"))
+    assert m["entries"][0]["source_ref"] == e["source_ref"]
+    assert m["entries"][0]["verify"] == "dual-ai-agree"
+
+
+def test_cli_passes_text_file_source_ref_verify(sample_pdf, tmp_path, capsys):
+    out_dir = tmp_path / "hardcase"
+    transcript = tmp_path / "p1.txt"
+    transcript.write_text("被告人张三", encoding="utf-8")
+    rc = ing.main([
+        "--file", str(sample_pdf), "--page", "0",
+        "--text-file", str(transcript),
+        "--entity", "姓名:张三",
+        "--story", "x", "--origin", "issue#51",
+        "--source-ref", "testdata/x.pdf#p1", "--verify", "adjudicated",
+        "--out-dir", str(out_dir),
+    ])
+    assert rc == 0
+    lines = [json.loads(l) for l in (out_dir / "hardcase.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert lines[0]["text"] == "被告人张三"
+    assert lines[0]["source_ref"] == "testdata/x.pdf#p1" and lines[0]["verify"] == "adjudicated"
+
+
+def test_multi_fragment_raw_form(sample_pdf, tmp_path):
+    # 跨行/跨框碎片：raw_forms 支持 ｜ 分隔多片段，逐片段命中即收；任一片段缺失拒收
+    transcript = tmp_path / "p1.txt"
+    transcript.write_text("公安局道\n交通警察大队\n落款", encoding="utf-8")
+    e = ing.build_hardcase_entry(
+        sample_pdf, 0, [("机关单位", "清远市公安局交通警察大队")],
+        story="跨行机构名", origin="t",
+        text_file=transcript,
+        raw_forms={"清远市公安局交通警察大队": "公安局道｜交通警察大队"},
+    )
+    assert e["raw_forms"]["清远市公安局交通警察大队"] == "公安局道｜交通警察大队"
+    with pytest.raises(ValueError, match="不在文本中"):
+        ing.build_hardcase_entry(
+            sample_pdf, 0, [("机关单位", "某单位")], story="x", origin="t",
+            text_file=transcript,
+            raw_forms={"某单位": "公安局道｜缺失片段"},
+        )
+
+
+def test_multiple_entities_same_type(tmp_path_factory):
+    # 同类型多实体（一页多人名/多日期是真实案卷常态）：不得互相覆盖
+    import fitz
+    p = tmp_path_factory.mktemp("hc3") / "two_names.pdf"
+    d = fitz.open()
+    d.new_page().insert_text((72, 72), "被告人张三与李四均在场", fontname="china-s")
+    d.save(p); d.close()
+    e = ing.build_hardcase_entry(p, 0,
+                                 [("姓名", "张三"), ("姓名", "李四"), ("姓名", "张三")],
+                                 story="多人名", origin="t")
+    assert e["entities"]["姓名"] == ["张三", "李四"]
+
+
 def test_cli_reject_no_partial_write(sample_pdf, tmp_path):
     out_dir = tmp_path / "hardcase"
     rc = ing.main([
