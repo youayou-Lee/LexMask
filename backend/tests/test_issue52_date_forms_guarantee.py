@@ -132,4 +132,4 @@ def test_large_document_extraction_performance():
     entities = svc._custom_regex_extract(text, [_type("DATE")])
     elapsed = time.perf_counter() - t0
     assert len(entities) == 5200 * 2, "每段应命中 2 个日期、相对词与「2022版」不框"
-    assert elapsed < 20, f"1MB 抽取耗时 {elapsed:.1f}s，疑似回溯爆炸"
+    assert elapsed < 2, f"1MB 抽取耗时 {elapsed:.1f}s，超出生产 2.0s 预算量级（评审 Important#3）"

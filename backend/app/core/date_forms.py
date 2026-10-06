@@ -60,7 +60,7 @@ DATE_FORMS_REGEX = (
 # 出生语境：前缀（出生日期：/生于/生日…）或后缀（「……出生」），
 # 两组同 named-group 机制下每个 match 只有一组参与，实体=日期部分，
 # 语境词不入实体——保证「仅出生日期开」时不误框裸事件日期。
-_BIRTH_LEAD = r"(?:出生(?:日期|时间|年月)?[于为是系:：]*\s*|生日[于:：]*\s*|生于\s*)"
+_BIRTH_LEAD = r"(?:出生(?:日期|时间|年月日?)?[于为是系在:：]*\s*|生日[于:：]*\s*|生于\s*)"
 BIRTH_DATE_FORMS_REGEX = (
     rf"(?:{_BIRTH_LEAD}(?P<birth_date>{_FULL})|(?P<birth_date2>{_FULL}){_GAP}出生)"
 )
