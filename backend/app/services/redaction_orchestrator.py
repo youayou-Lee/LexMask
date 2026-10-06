@@ -108,12 +108,15 @@ def _vision_signature(
     from app.core.config import settings
 
     return {
+        # v6 (Issue#41): has-text NER 截断治理动了识别链路的预算与分批行为
+        # （HAS_NER_COMPLETION_HARD_CAP / 主动分批），bump 让既有页缓存失效、
+        # 首跑 cache miss 重建，避免旧 key 回放治理前的框。
         # v5: the signature now covers WHAT the detector was told, not just which
         # types were ticked. It used to key on the type ids alone, so changing the
         # grounding wording (or the tile/seal/sampling switches) left the key
         # identical and 重新识别 quietly replayed the OLD boxes — the change looked
         # like it had not deployed at all.
-        "version": 5,
+        "version": 6,
         "page": int(page),
         "ocr_has_types": _vision_type_ids(ocr_has_types),
         "visual_feature_types": _vision_type_ids(visual_feature_types),

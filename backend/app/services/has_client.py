@@ -19,6 +19,8 @@ import re
 import threading
 import time
 from collections import OrderedDict
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import httpx
 
@@ -78,6 +80,78 @@ _TYPE_GUIDANCE_DESC_MAX_CHARS = 96
 _HEALTH_CHECK_CACHE_SEC = 5.0
 # 健康检查请求超时秒数
 _HEALTH_CHECK_TIMEOUT_SEC = 5.0
+
+
+# ---------------------------------------------------------------------------
+# 截断风暴观测（Issue#41）
+# ---------------------------------------------------------------------------
+# _call_model 把 finish_reason 写入当前上下文；ner() 读取后记入激活的
+# NerMetricsScope。scope 栈用 ContextVar：异步任务内（含 to_thread 拷贝的
+# 上下文）嵌套叠加、跨线程/跨任务天然隔离，并发页互不串。
+
+LAST_FINISH_REASON: ContextVar[str | None] = ContextVar(
+    "has_ner_last_finish_reason", default=None
+)
+_METRIC_SCOPES: ContextVar[tuple] = ContextVar("has_ner_metric_scopes", default=())
+
+
+class NerMetricsScope:
+    """一段 NER 调用区间的观测累积器（stage 层开一个，finally 时 drain）。"""
+
+    __slots__ = ("finish_reasons", "truncation_retries", "rebatch_batches")
+
+    def __init__(self) -> None:
+        self.finish_reasons: list[str] = []
+        self.truncation_retries = 0
+        self.rebatch_batches = 0
+
+
+def _record_ner_metrics(
+    *,
+    finish_reason: str | None = None,
+    truncation_retries: int = 0,
+    rebatch_batches: int = 0,
+) -> None:
+    scopes = _METRIC_SCOPES.get()
+    if not scopes:
+        return
+    for scope in scopes:
+        if finish_reason:
+            scope.finish_reasons.append(finish_reason)
+        scope.truncation_retries += int(truncation_retries)
+        scope.rebatch_batches += int(rebatch_batches)
+
+
+@contextmanager
+def ner_metrics_scope():
+    """Open a NER metrics scope; drain with drain_ner_metrics() on exit."""
+    scope = NerMetricsScope()
+    token = _METRIC_SCOPES.set(_METRIC_SCOPES.get() + (scope,))
+    try:
+        yield scope
+    finally:
+        _METRIC_SCOPES.reset(token)
+
+
+def drain_ner_metrics(scope: NerMetricsScope) -> dict[str, Any]:
+    """Scope → stage 指标键。新键仅新路径产出：无截断/分批时不写对应键。
+
+    - has_text_ner_finish_reason: "length"（任一调用被截断）/ "stop"（发生过
+      模型调用且无一截断）。e2e 判定"治理口径所有请求 finish_reason≠length"
+      依赖此键缺报=FAIL 的双向语义，故只要有模型调用就写。
+    - has_text_ner_truncation_retries: json_repair 路径缺失类型补查次数（>0 才写）。
+    - has_text_ner_rebatch_batches: 帽驱动的主动分批批数（>0 才写）。
+    """
+    metrics: dict[str, Any] = {}
+    if scope.finish_reasons:
+        metrics["has_text_ner_finish_reason"] = (
+            "length" if "length" in scope.finish_reasons else "stop"
+        )
+    if scope.truncation_retries > 0:
+        metrics["has_text_ner_truncation_retries"] = scope.truncation_retries
+    if scope.rebatch_batches > 0:
+        metrics["has_text_ner_rebatch_batches"] = scope.rebatch_batches
+    return metrics
 
 
 @dataclass
@@ -182,6 +256,7 @@ class HaSClient:
             return ""
         choice = choices[0]
         finish_reason = choice.get("finish_reason")
+        LAST_FINISH_REASON.set(finish_reason)
         if finish_reason == "length":
             logger.warning(
                 "HaS model response was truncated by max_tokens=%s",
@@ -279,6 +354,26 @@ class HaSClient:
             return canonical_type_id(value.upper())
 
         return value
+
+    @staticmethod
+    def _ner_completion_budget(types_count: int, text: str) -> int:
+        """期望完成 token 预算（与下方 desired_max_tokens 同口径）。
+
+        Issue#41 主动分批的密度判据：该预算超过有效完成帽的整页调用必然
+        finish=length，须前置沿类型轴分批，而不是打出去再补救。
+        """
+        return max(
+            _NER_DESIRED_MAX_TOKENS_FLOOR,
+            types_count * _NER_TOKENS_PER_TYPE + len(str(text or "")) // _NER_TEXT_CHARS_PER_TOKEN,
+        )
+
+    @staticmethod
+    def _effective_completion_hard_cap(settings: Any) -> int:
+        """有效完成帽。≤0 = 关闭（退回现状：预算照算、帽不约束）。"""
+        try:
+            return max(0, int(getattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
 
     @staticmethod
     def _estimate_prompt_tokens(text: str) -> int:
@@ -443,6 +538,44 @@ class HaSClient:
             return cached
 
         from app.core.config import settings
+
+        # ----- Issue#41 按密度主动分批（帽驱动，guidance 路径也生效） -----
+        # 生产的 ocr_has 链路带 type_guidance，既有预分批/整批重查都被
+        # `type_guidance is None` 门控跳过 → 密集页"先打一次注定截断的整页
+        # 调用再补救"。这里在预算>有效帽时前置沿类型轴分批（每批自带
+        # guidance 子集），跳过注定截断的整页调用。豁免：单类型独占一批
+        # 仍超帽的页（分批无解），照常单发、走既有截断补救。
+        hard_cap = self._effective_completion_hard_cap(settings)
+        if hard_cap > 0:
+            text_budget = len(str(text or "")) // _NER_TEXT_CHARS_PER_TOKEN
+            desired_budget = self._ner_completion_budget(len(types), text)
+            chunk_types = max(1, (hard_cap - text_budget) // _NER_TOKENS_PER_TYPE)
+            if desired_budget > hard_cap and len(types) > chunk_types:
+                batches = [types[i : i + chunk_types] for i in range(0, len(types), chunk_types)]
+                guidance_by_type = {str(item.get("type") or ""): item for item in (type_guidance or [])}
+                merged: dict[str, list[str]] = {}
+                for batch in batches:
+                    batch_guidance = (
+                        [guidance_by_type[t] for t in batch if t in guidance_by_type] or None
+                    )
+                    part = self.ner(
+                        text,
+                        batch,
+                        batch_guidance,
+                        temperature=temperature,
+                        sample_index=sample_index,
+                    )
+                    for key, values in (part or {}).items():
+                        if not values:
+                            continue
+                        bucket = merged.setdefault(key, [])
+                        for value in values:
+                            if value not in bucket:
+                                bucket.append(value)
+                _record_ner_metrics(rebatch_batches=len(batches))
+                self._set_cached_ner(cache_key, merged)
+                return merged
+
         if type_guidance is None:
             configured_batch = max(1, int(settings.HAS_NER_MAX_TYPES_PER_REQUEST))
             target = max(_NER_TYPE_BATCH_TARGET_TOKENS_FLOOR, int(settings.HAS_NER_TYPE_BATCH_TARGET_TOKENS))
@@ -500,10 +633,7 @@ Never output empty arrays. Do not return requested types with no matches. Do not
 If nothing matches, return {{}}.
 <text>{text}</text>"""
         configured_max_tokens = int(settings.HAS_NER_MAX_TOKENS)
-        desired_max_tokens = max(
-            _NER_DESIRED_MAX_TOKENS_FLOOR,
-            min(configured_max_tokens, len(types) * _NER_TOKENS_PER_TYPE + len(text) // _NER_TEXT_CHARS_PER_TOKEN),
-        )
+        desired_max_tokens = self._ner_completion_budget(len(types), text)
         # Keep the completion budget inside the locally served HaS context
         # window. The 16 GB dev profile serves HaS Text with an 8K context so
         # PaddleOCR-VL, PP-StructureV3 and LocateAnything can stay resident
@@ -518,6 +648,10 @@ If nothing matches, return {{}}.
             completion_cap,
             max(_NER_MAX_TOKENS_FLOOR, context_room),
         )
+        if hard_cap > 0:
+            # 帽进预算：对齐模型卡 max_new_tokens，避免生产预算超帽的调用
+            # 被 vLLM 端静默腰斩后触发 json_repair→整类型重查风暴（Issue#41）。
+            max_tokens = min(max_tokens, hard_cap)
         logger.info(
             "HaS NER budget prompt_est=%d context=%d max_tokens=%d types=%d text_chars=%d",
             prompt_token_estimate,
@@ -536,7 +670,14 @@ If nothing matches, return {{}}.
 
         try:
             started = time.perf_counter()
-            response = self._call_model(messages, max_tokens=max_tokens, temperature=temperature)
+            reason_token = LAST_FINISH_REASON.set(None)
+            try:
+                response = self._call_model(messages, max_tokens=max_tokens, temperature=temperature)
+                finish_reason = LAST_FINISH_REASON.get()
+            finally:
+                LAST_FINISH_REASON.reset(reason_token)
+            if finish_reason:
+                _record_ner_metrics(finish_reason=str(finish_reason))
             parse_mode, result = self._try_parse_json_object(response)
             if result is None:
                 logger.warning("HaS NER response could not be parsed as JSON: %.200s", response)
@@ -577,6 +718,7 @@ If nothing matches, return {{}}.
                 if _allow_truncation_retry:
                     missing = [t for t in types if t not in result]
                     if missing:
+                        _record_ner_metrics(truncation_retries=1)
                         logger.warning(
                             "HaS NER output recovered via %s; re-querying %d missing types: %s",
                             parse_mode,

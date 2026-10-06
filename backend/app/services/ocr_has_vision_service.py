@@ -194,8 +194,17 @@ class OcrHasVisionService:
                 self._has_client = HaSClient()
             except Exception:
                 pass
+        from app.services.has_client import drain_ner_metrics, ner_metrics_scope
         from app.services.vision.ocr_pipeline import run_has_text_analysis
-        return await run_has_text_analysis(ocr_blocks, self._has_client, vision_types, stage_status=stage_status)
+        # Issue#41：整段 has-text NER（主调用 + residual verify + amount narrow，
+        # 同一异步任务上下文）开一个观测 scope，结束后把截断/分批指标写进
+        # stage_status，供 S1 量化与 e2e"治理后整页截断调用数=0"判定。
+        with ner_metrics_scope() as ner_scope:
+            result = await run_has_text_analysis(ocr_blocks, self._has_client, vision_types, stage_status=stage_status)
+        if stage_status is not None:
+            for key, value in drain_ner_metrics(ner_scope).items():
+                stage_status[key] = value
+        return result
 
     async def _invoke_has_text_analysis(
         self,

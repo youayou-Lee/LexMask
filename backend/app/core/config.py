@@ -405,6 +405,12 @@ class Settings(BaseSettings):
     # 长列表召回稀释正是 residual 机制诞生的原因（0712 实证），开启前必须
     # 在真实案卷页 A/B 实证。
     HAS_NER_VERIFY_BATCH_SIZE: int = 0
+    # NER 完成帽（Issue#41 截断风暴治理）。对齐模型卡 generation_config.json
+    # 写死的 max_new_tokens=2048：生产预算公式（类型数×72 + 文本字符/2）超帽
+    # 的整页调用必然 finish=length → json_repair→整类型重查。>0 时帽参与
+    # max_tokens 预算，且预算>帽的调用**前置**沿类型轴主动分批（跳过注定
+    # 截断的整页调用）；≤0 = 关闭（退回现状）。上调前先核对模型卡帽。
+    HAS_NER_COMPLETION_HARD_CAP: int = 2048
     # 自洽多趟 NER 采样（R4 leak-safe 并集）。K = 主 payload 的采样趟数。
     # K=1 = 现状：单趟 temp=0 贪心种子，与历史逐字等价。并集只增不减 => 恒 ⊇
     # 种子 = 现状超集；temp>0 趟采出的幻觉值交下游 matcher 网住（不匹配 OCR 块
