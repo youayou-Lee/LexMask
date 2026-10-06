@@ -1,7 +1,7 @@
 # Issue #51 子任务 A — T2 实体识别 Benchmark 设计文档
 
 > 2026-09-18 brainstorming 定稿（四决策+方案 A），父 Issue：#51（eval: 环节级 Benchmark 体系 T1–T4；2026-10-06 自旧仓平移重立）。
-> 定位：**调优/选型基准**，首要消费者 = #55（通用 LLM 替代 HaS_Text）的 E1–E4 质量矩阵。
+> 定位：**调优/选型基准**，首要消费者 = #55（通用 LLM 替代 HaS_Text）的质量矩阵。
 
 ## 0. 已拍板决策（brainstorming 四问）
 
@@ -28,7 +28,7 @@
   manifest.private.json   # 数据源 URL+版本+许可证、映射表版本、桶清单、条目索引
 ```
 
-- 本地 `test-data/benchmarks/t2/` 为同步副本（eval37-real 同款双份模式）。
+- 本地 `test-data/benchmarks/t2/` 为同步副本（与真实案卷私有评测子集同款双份模式）。
 - 仓库内：`eval/benchmarks/t2/`（代码）+ 桶规格 README + `manifest.private.example.json`，**零数据**。
 - 可复现机制：子采样固定 seed，适配器从 `raw/` 现场重建 `buckets/`；manifest 记录 raw 版本戳防上游漂移。
 
@@ -69,7 +69,7 @@
 - 引擎注册表：`--engine has`（复用 `eval_ner_quality` 直连与生产 prompt 对齐）｜`--engine llm=<OpenAI 兼容端点>`（vLLM/llama-server，#55 E1 直接可用）｜将来 `--engine vlm=<…>`（图像通道占位，本期 N/A）。
 - 引擎申报制：引擎不支持的桶记 **N/A 不记零分**。
 - `--buckets` 选桶、`--baseline <json>` 出 Δ 列、多引擎同跑出对比表。
-- 输出：桶×引擎 P/R/F1 明细 + 数字保真桶级三级分级（exact/near_miss/miss）+ N/A 标注，json+md 报告入 `eval/reports/`（Obsidian 简版，沿用 `indicator_meta`）。（deferred：`--baseline` Δ 列与 `indicator_meta` 版式延期至 #55 E2 阶段按需实现。）
+- 输出：桶×引擎 P/R/F1 明细 + 数字保真桶级三级分级（exact/near_miss/miss）+ N/A 标注，json+md 报告入 `eval/reports/`（Obsidian 简版，沿用 `indicator_meta`）。（deferred：`--baseline` Δ 列与 `indicator_meta` 版式延期至 #55 质量矩阵阶段按需实现。）
 - **无闸门**：不 exit 1，结论写进报告（与 run_eval 三闸门语义分工）。
 
 ## 5. 难例沉淀 skill（hardcase-ingest）
