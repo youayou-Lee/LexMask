@@ -58,8 +58,9 @@ _NER_BATCH_MAX_TYPES = 24
 _NER_SINGLE_PASS_MIN_CHARS = 128
 # NER 期望 max_tokens 下限
 _NER_DESIRED_MAX_TOKENS_FLOOR = 640
-# NER 期望 max_tokens：每个类型预算 token 数
-_NER_TOKENS_PER_TYPE = 72
+# NER 期望 max_tokens：每个类型预算 token 数（模块默认；生效值读
+# settings.HAS_NER_TOKENS_PER_TYPE，S1 校准默认 160，见 config.py 注释）
+_NER_TOKENS_PER_TYPE = 160
 # NER 期望 max_tokens：文本字符折算除数
 _NER_TEXT_CHARS_PER_TOKEN = 2
 # NER 上下文窗口 token 数下限
@@ -362,9 +363,12 @@ class HaSClient:
         Issue#41 主动分批的密度判据：该预算超过有效完成帽的整页调用必然
         finish=length，须前置沿类型轴分批，而不是打出去再补救。
         """
+        from app.core.config import settings
+
+        per_type = max(_NER_TOKENS_PER_TYPE, int(getattr(settings, "HAS_NER_TOKENS_PER_TYPE", _NER_TOKENS_PER_TYPE) or _NER_TOKENS_PER_TYPE))
         return max(
             _NER_DESIRED_MAX_TOKENS_FLOOR,
-            types_count * _NER_TOKENS_PER_TYPE + len(str(text or "")) // _NER_TEXT_CHARS_PER_TOKEN,
+            types_count * per_type + len(str(text or "")) // _NER_TEXT_CHARS_PER_TOKEN,
         )
 
     @staticmethod

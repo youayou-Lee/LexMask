@@ -55,7 +55,7 @@ def _prompt_types(content: str) -> list[str]:
 def test_budget_over_cap_prebatches_without_doomed_full_call(monkeypatch):
     """预算>帽 → 主动分批：不发整页 payload，逐批预算≤帽，结果合并。"""
     monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
-    # 38 类型 × text_budget 600：整页 desired = 38*72+600 = 3336 > 2048
+    # 38 类型 × text_budget 600：整页 desired = 38*160+600 = 6680 > 2048
     client, calls = make_client([])
 
     def respond(messages, *, max_tokens=None, temperature=None):
@@ -72,9 +72,9 @@ def test_budget_over_cap_prebatches_without_doomed_full_call(monkeypatch):
     assert calls, "expected batched calls"
     assert not any(set(c["types"]) == full for c in calls), "整页 payload 被发出（注定截断）"
     assert len(calls) >= 2, "密集场景应分 ≥2 批"
-    # 每批预算 ≤ 帽：desired(batch) = len(batch)*72 + 600 ≤ 2048
+    # 每批预算 ≤ 帽：desired(batch) = len(batch)*160 + 600 ≤ 2048（容量 9 型/批）
     for c in calls:
-        assert len(c["types"]) * 72 + 600 <= 2048
+        assert len(c["types"]) * 160 + 600 <= 2048
         assert c["max_tokens"] <= 2048
     # 全部类型与值都在合并结果里
     assert set(result) == full
@@ -103,9 +103,9 @@ def test_budget_within_cap_is_semantically_equivalent(monkeypatch):
 
 
 def test_budget_equals_cap_keeps_single_call(monkeypatch):
-    """预算=帽 → 不分批（边界）。desired = n*72+600 = 2048 → n=20.11 → 20 类型时=2040。"""
+    """预算=帽 → 不分批（边界）。desired = n*160+600 ≤ 2048 → n=9（2040）。"""
     monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
-    types = _TYPES_38[:20]
+    types = _TYPES_38[:9]
     clean = json.dumps({t: [f"值-{t}"] for t in types}, ensure_ascii=False)
     client, calls = make_client([clean])
     client.ner(_LONG_TEXT + " eq-cap", types)
@@ -114,7 +114,7 @@ def test_budget_equals_cap_keeps_single_call(monkeypatch):
 
 def test_budget_one_over_cap_splits(monkeypatch):
     monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
-    types = _TYPES_38[:21]  # 21*72+600 = 2112 > 2048
+    types = _TYPES_38[:10]  # 10*160+600 = 2200 > 2048（9 型=2040 恰在帽内）
     payload = {t: [f"值-{t}"] for t in types}
 
     def respond(messages, *, max_tokens=None, temperature=None):
