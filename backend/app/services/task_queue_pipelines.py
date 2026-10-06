@@ -540,7 +540,6 @@ class RecognitionPipelineMixin:
 
     async def _run_vl_md(self, task: TaskItem, cfg: dict) -> None:
         """VL-MD 脱敏管线(Issue #66/#50 T1):识别+替换+产物落盘一步到位,条目直达 COMPLETED。"""
-        from app.services.file_management_service import file_store
         from app.services.job_models import JobItemStatus
         from app.services.vl_md_pipeline_service import get_vl_md_pipeline_service
 
