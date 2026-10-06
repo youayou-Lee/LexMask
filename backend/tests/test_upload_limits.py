@@ -66,9 +66,22 @@ def test_negative_max_file_size_rejected_at_startup():
         Settings(MAX_FILE_SIZE=-1)
 
 
+def test_negative_dicom_max_upload_bytes_rejected_at_startup():
+    # Issue #24：DICOM 专用旁路 knob 同样 ge=0——负数启动即 ValidationError，
+    # 不再被 dicom.py 的 max(0, ...) 静默夹成 0=不限（fail-open）
+    with pytest.raises(ValidationError):
+        Settings(DICOM_MAX_UPLOAD_BYTES=-1)
+
+
 def test_zero_and_positive_max_file_size_accepted():
     assert Settings(MAX_FILE_SIZE=0).MAX_FILE_SIZE == 0
     assert Settings(MAX_FILE_SIZE=52428800).MAX_FILE_SIZE == 52428800
+
+
+def test_dicom_max_upload_bytes_zero_default_and_positive_accepted():
+    # 默认 0 = 跟随 MAX_FILE_SIZE（其默认也是 0=不限制），语义不变；只拒绝负数
+    assert Settings().DICOM_MAX_UPLOAD_BYTES == 0
+    assert Settings(DICOM_MAX_UPLOAD_BYTES=104857600).DICOM_MAX_UPLOAD_BYTES == 104857600
 
 
 # ---------------------------------------------------------------------------
