@@ -1,0 +1,45 @@
+# Issue #29：nginx client_max_body_size 与后端 MAX_FILE_SIZE 同源联动。
+# 本文件由 nginx 官方镜像的 docker-entrypoint **source**（*.envsh，区别于子进程
+# 执行的 *.sh），因此 export 的变量对后续的 20-envsubst-on-templates.sh 可见，
+# 最终渲染进 nginx.conf.template 的 client_max_body_size。
+#
+# 优先级：
+#   1. 显式 NGINX_CLIENT_MAX_BODY_SIZE（nginx 尺寸语法，如 100M / 1G / 0）
+#   2. 由 MAX_FILE_SIZE（字节，0 = 不限）换算：
+#        MAX_FILE_SIZE=0          → 0（nginx 中 0 = off，不限）
+#        MAX_FILE_SIZE=N（>0）    → ceil((N + 8MB)/1MB) M
+#      8MB 为 multipart 封装开销余量（boundary、各 part 的头与
+#      Content-Disposition 等），确保「文件本身不超后端上限」的整包
+#      multipart 请求不会被 nginx 提前 413。
+#   3. 两者都没有 → 默认 0（不限），与后端 MAX_FILE_SIZE 默认值一致。
+# 注意：本文件被 source，不要用 set -e / exit。
+
+if [ -n "${NGINX_CLIENT_MAX_BODY_SIZE:-}" ]; then
+    echo "$0: using explicit NGINX_CLIENT_MAX_BODY_SIZE=${NGINX_CLIENT_MAX_BODY_SIZE}"
+else
+    _MAX_FILE_SIZE="${MAX_FILE_SIZE:-0}"
+    case "$_MAX_FILE_SIZE" in
+        *[!0-9]*|''|0[0-9]*)
+            # 非负整数字节以外的值（50MB、-1）、空值、以及前导零写法
+            # （POSIX 算术会把 0100 当八进制=64 误算）不参与换算：
+            # 要么晦涩报错（entrypoint 顶层 set -e 下会让容器 crash-loop）、
+            # 要么八进制误算。兜底 0（不限），后端 pydantic 侧仍会对
+            # 非法值给出清晰启动报错。
+            echo "$0: MAX_FILE_SIZE='$_MAX_FILE_SIZE' is not a plain non-negative integer, falling back to NGINX_CLIENT_MAX_BODY_SIZE=0 (unlimited)" >&2
+            export NGINX_CLIENT_MAX_BODY_SIZE=0
+            unset _MAX_FILE_SIZE
+            return 0 2>/dev/null || true
+            ;;
+    esac
+    if [ "$_MAX_FILE_SIZE" -le 0 ]; then
+        export NGINX_CLIENT_MAX_BODY_SIZE=0
+        echo "$0: MAX_FILE_SIZE=$_MAX_FILE_SIZE -> NGINX_CLIENT_MAX_BODY_SIZE=0 (unlimited)"
+    else
+        _OVERHEAD_BYTES=$((8 * 1024 * 1024))
+        _TOTAL_BYTES=$((_MAX_FILE_SIZE + _OVERHEAD_BYTES))
+        _MB=$(( (_TOTAL_BYTES + 1024 * 1024 - 1) / (1024 * 1024) ))
+        export NGINX_CLIENT_MAX_BODY_SIZE="${_MB}M"
+        echo "$0: MAX_FILE_SIZE=$_MAX_FILE_SIZE -> NGINX_CLIENT_MAX_BODY_SIZE=${_MB}M"
+    fi
+    unset _MAX_FILE_SIZE _OVERHEAD_BYTES _TOTAL_BYTES _MB
+fi
