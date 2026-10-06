@@ -18,7 +18,20 @@ if [ -n "${NGINX_CLIENT_MAX_BODY_SIZE:-}" ]; then
     echo "$0: using explicit NGINX_CLIENT_MAX_BODY_SIZE=${NGINX_CLIENT_MAX_BODY_SIZE}"
 else
     _MAX_FILE_SIZE="${MAX_FILE_SIZE:-0}"
-    if [ "$_MAX_FILE_SIZE" -le 0 ] 2>/dev/null; then
+    case "$_MAX_FILE_SIZE" in
+        *[!0-9]*|''|0[0-9]*)
+            # 非负整数字节以外的值（50MB、-1）、空值、以及前导零写法
+            # （POSIX 算术会把 0100 当八进制=64 误算）不参与换算：
+            # 要么晦涩报错（entrypoint 顶层 set -e 下会让容器 crash-loop）、
+            # 要么八进制误算。兜底 0（不限），后端 pydantic 侧仍会对
+            # 非法值给出清晰启动报错。
+            echo "$0: MAX_FILE_SIZE='$_MAX_FILE_SIZE' is not a plain non-negative integer, falling back to NGINX_CLIENT_MAX_BODY_SIZE=0 (unlimited)" >&2
+            export NGINX_CLIENT_MAX_BODY_SIZE=0
+            unset _MAX_FILE_SIZE
+            return 0 2>/dev/null || true
+            ;;
+    esac
+    if [ "$_MAX_FILE_SIZE" -le 0 ]; then
         export NGINX_CLIENT_MAX_BODY_SIZE=0
         echo "$0: MAX_FILE_SIZE=$_MAX_FILE_SIZE -> NGINX_CLIENT_MAX_BODY_SIZE=0 (unlimited)"
     else

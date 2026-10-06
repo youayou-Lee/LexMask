@@ -86,7 +86,7 @@ server {
 
         # 上传文件大小限制（Issue #29）：
         # 本文件是 envsubst 模板（见 Dockerfile），client_max_body_size 由
-        # /docker-entrypoint.d/15-set-body-size.sh 在容器启动时根据后端
+        # /docker-entrypoint.d/15-set-body-size.envsh 在容器启动时根据后端
         # MAX_FILE_SIZE（字节）换算注入：MAX_FILE_SIZE=0 → 0（nginx 0 = 不限）；
         # MAX_FILE_SIZE=N 字节 → ceil((N + 8MB multipart 封装开销)/1MB) M，
         # 略大于后端上限以容纳 multipart boundary/头等封装开销，避免
