@@ -260,8 +260,8 @@ def _make_stub_api():
             return _R(200, {})
 
         def post(self, url, json=None):
-            if "/files/upload" in url:  # 异常例：结构化 400
-                return _R(400, {}, text='{"message":"文件过大，最大支持 50MB"}')
+            if "/files/upload" in url:  # 异常例：结构化 413（超出当前配置的上传上限）
+                return _R(413, {}, text='{"message":"文件过大，超出当前配置的上传上限"}')
             if "/ner/hybrid" in url:
                 ents = [{"id": f"e{i}", "text": t, "type": "PERSON", "start": 0, "end": 1}
                         for i, t in enumerate(GT_FLAT)]
