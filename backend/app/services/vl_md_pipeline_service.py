@@ -67,6 +67,9 @@ class VlMdPipelineService:
         self._vl_client = vl_client
         self._ner_service = ner_service
         self._file_parser = file_parser
+        # job 级映射上下文:同 job 跨文件共享一张映射表(同一实体同一占位符,#50 验收 A4)。
+        # 队列 worker 单进程串行,内存态即可;进程重启丢表 → 各文件重新编号(不泄漏,仅一致性降级)。
+        self._job_contexts: dict = {}
 
     def _vl(self):
         if self._vl_client is None:
@@ -198,11 +201,22 @@ class VlMdPipelineService:
 
     # ---------- 主流程 ----------
 
+    def context_for_job(self, job_id: str | None, word_pools: dict | None) -> RedactionContext:
+        """同 job 复用同一映射上下文(跨文件一致);无 job_id(直连调用)则独立建表。"""
+        if not job_id:
+            return RedactionContext(ReplacementMode.PLACEHOLDER, word_pools=word_pools)
+        ctx = self._job_contexts.get(job_id)
+        if ctx is None:
+            ctx = RedactionContext(ReplacementMode.PLACEHOLDER, word_pools=word_pools)
+            self._job_contexts[job_id] = ctx
+        return ctx
+
     async def process(self, *, pages: list[str], raw_texts: list[list[str]], types,
-                      word_pools: dict | None = None) -> VlMdResult:
+                      word_pools: dict | None = None,
+                      context: RedactionContext | None = None) -> VlMdResult:
         md = "\n\n".join(pages)
         entities = await self.collect_entities(md, types)
-        context = RedactionContext(ReplacementMode.PLACEHOLDER, word_pools=word_pools)
+        context = context or RedactionContext(ReplacementMode.PLACEHOLDER, word_pools=word_pools)
         desens = self.apply_entities(md, entities, context)
         md_entity_texts = {e.text for e in entities}
 
@@ -261,7 +275,7 @@ class VlMdPipelineService:
 
     # ---------- 文件级入口(产物落盘) ----------
 
-    async def process_file(self, file_info: dict, cfg: dict) -> dict:
+    async def process_file(self, file_info: dict, cfg: dict, job_id: str | None = None) -> dict:
         from app.core.config import settings
         from app.services.file_management_service import file_store
         from app.services.word_pool_service import load_word_pools
@@ -269,9 +283,9 @@ class VlMdPipelineService:
         owner_id = str(file_info.get("owner_id") or "local_user")
         types = self.resolve_types(cfg, owner_id)
         pages, raw_texts, sources = await self.build_markdown(file_info)
+        context = self.context_for_job(job_id, load_word_pools(owner_id))
         result = await self.process(
-            pages=pages, raw_texts=raw_texts, types=types,
-            word_pools=load_word_pools(owner_id),
+            pages=pages, raw_texts=raw_texts, types=types, context=context,
         )
         result.page_sources = sources
 

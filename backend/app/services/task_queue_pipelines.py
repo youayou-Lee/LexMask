@@ -552,7 +552,7 @@ class RecognitionPipelineMixin:
         fi = get_file_info(task.file_id)
         if not fi:
             raise ValueError(f"file_id={task.file_id} not in file_store")
-        summary = await get_vl_md_pipeline_service().process_file(fi, cfg)
+        summary = await get_vl_md_pipeline_service().process_file(fi, cfg, job_id=task.job_id)
         store.update_item_progress(
             task.item_id, stage="vl_md", current=1, total=1,
             message=f"vl_md_done entities={summary['entity_count']} {summary['verdict']}",

@@ -294,3 +294,58 @@ async def test_process_file_raises_on_leak(monkeypatch, tmp_path):
     from app.services.vl_md_pipeline_service import VlMdLeakError
     with pytest.raises(VlMdLeakError, match="零泄漏自检未通过"):
         await svc.process_file(file_info, {"entity_type_ids": ["PERSON"]})
+
+
+# ---------- A4 跨文件一致映射 ----------
+
+@pytest.mark.asyncio
+async def test_same_job_cross_file_mapping_consistent(monkeypatch, tmp_path):
+    from app.core.config import settings
+    from app.services import file_management_service as fms
+
+    captured = {}
+
+    class FakeStore:
+        def update_fields(self, file_id, updates):
+            captured[file_id] = updates
+
+    monkeypatch.setattr(fms, "file_store", FakeStore())
+    monkeypatch.setattr(settings, "OUTPUT_DIR", str(tmp_path))
+
+    svc = VlMdPipelineService(ner_service=StubNER([
+        {"type": "PERSON", "name": "张三"},
+    ]))
+    cfg = {"entity_type_ids": ["PERSON"]}
+    for fid, content in (("f1", "被告人张三,男。"), ("f2", "证人张三陈述。另有人名李四。")):
+        await svc.process_file({"id": fid, "file_path": "x.txt", "file_type": "txt",
+                                "content": content, "owner_id": "local_user"}, cfg, job_id="jobA")
+    m1 = captured["f1"]["entity_map"]
+    m2 = captured["f2"]["entity_map"]
+    # 同一实体跨文件同占位符
+    ph = [k for k, v in m1.items() if v["text"] == "张三"][0]
+    assert m2[ph]["text"] == "张三"
+    md2 = open(captured["f2"]["output_path"], encoding="utf-8").read()
+    assert ph in md2 and "张三" not in md2
+
+
+@pytest.mark.asyncio
+async def test_different_jobs_get_independent_mappings(monkeypatch, tmp_path):
+    from app.core.config import settings
+    from app.services import file_management_service as fms
+
+    class FakeStore:
+        def update_fields(self, file_id, updates):
+            self.last = (file_id, updates)
+
+    store = FakeStore()
+    monkeypatch.setattr(fms, "file_store", store)
+    monkeypatch.setattr(settings, "OUTPUT_DIR", str(tmp_path))
+
+    svc = VlMdPipelineService(ner_service=StubNER([{"type": "PERSON", "name": "张三"}]))
+    info = {"id": "f1", "file_path": "x.txt", "file_type": "txt",
+            "content": "被告人张三,男。", "owner_id": "local_user"}
+    await svc.process_file(info, {"entity_type_ids": ["PERSON"]}, job_id="jobA")
+    ph_a = [k for k, v in store.last[1]["entity_map"].items() if v["text"] == "张三"][0]
+    await svc.process_file(info, {"entity_type_ids": ["PERSON"]}, job_id="jobB")
+    ph_b = [k for k, v in store.last[1]["entity_map"].items() if v["text"] == "张三"][0]
+    assert ph_a == ph_b  # 编号从 1 开始,不同 job 同实体同号互不冲突即可
