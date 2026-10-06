@@ -301,20 +301,144 @@ def test_budget_over_cap_batches_also_with_type_guidance(monkeypatch):
     assert metrics.get("has_text_ner_rebatch_batches", 0) >= 2
 
 
-def test_budget_fits_cap_single_full_call_suppresses_legacy_prebatch(monkeypatch):
-    """帽>0 且预算装得下 → 整页单次调用（S1/arm5 实证：拆批越细人均产出越臃肿，
-    整页一次问又快又全）；legacy 预分批仅在帽=0 的现状模式下生效。"""
-    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 8192, raising=False)
-    types = _TYPES_38[:30]  # 30×160+50 = 4850 ≤ 8192；legacy 规则会拆（30>12）
+def test_cap_takes_over_legacy_prebatch_when_budget_fits(monkeypatch):
+    """帽>0 且预算装得下 → 整页单发，legacy 预分批（12 型/1600 字符规则）被接管。
 
+    区分性入参：15 型 × 2000 字符——legacy 规则会拆（>12 型且>1600 字符），
+    帽规则单发（15×160+1000=3400 ≤ 8192）。帽=0 时同样入参走 legacy 拆批。"""
+    text = "字" * 2000
+    types = _TYPES_38[:15]
+
+    def make(calls):
+        def respond(messages, *, max_tokens=None, temperature=None):
+            batch = _prompt_types(messages[0]["content"])
+            calls.append(batch)
+            return json.dumps({t: [f"值-{t}"] for t in batch}, ensure_ascii=False)
+        return respond
+
+    client_on = HaSClient()
+    calls_on = []
+    client_on._call_model = make(calls_on)
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 8192, raising=False)
+    result_on = client_on.ner(text + " on", types)
+    assert len(calls_on) == 1 and set(calls_on[0]) == set(types), "帽>0 预算装得下必须整页单发"
+    assert set(result_on) == set(types)
+
+    client_off = HaSClient()
+    calls_off = []
+    client_off._call_model = make(calls_off)
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 0, raising=False)
+    client_off.ner(text + " off", types)
+    assert len(calls_off) >= 2, "帽=0 同入参应走 legacy 拆批（对照）"
+
+
+def test_page_level_exempt_when_single_type_over_cap_by_text_length(monkeypatch):
+    """页长到单类型都超帽（capacity<1）→ 页面级豁免整页单发，不拆 N 个仍截断的串行调用。"""
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
+    huge = "字" * 5000  # text_budget=2500 > 2048 → capacity<1
+    types = _TYPES_38[:10]
     calls = []
 
     def respond(messages, *, max_tokens=None, temperature=None):
         calls.append(_prompt_types(messages[0]["content"]))
-        return json.dumps({t: [f"值-{t}"] for t in (calls[-1])}, ensure_ascii=False)
+        return json.dumps({t: [f"值-{t}"] for t in calls[-1]}, ensure_ascii=False)
 
     client = HaSClient()
     client._call_model = respond
-    result = client.ner("短文本 " + "字" * 50, types)
-    assert len(calls) == 1 and set(calls[0]) == set(types), "预算装得下必须整页单发"
+    result = client.ner(huge + " cliff", types)
+    assert len(calls) == 1 and set(calls[0]) == set(types), "capacity<1 必须整页单发豁免"
     assert set(result) == set(types)
+
+
+def test_explicit_tokens_per_type_respected_everywhere(monkeypatch):
+    """显式 HAS_NER_TOKENS_PER_TYPE 一律尊重（评审 Important-2/3）：预算与容量同源。"""
+    monkeypatch.setattr(settings, "HAS_NER_TOKENS_PER_TYPE", 72, raising=False)
+    client = HaSClient()
+    budget = client._ner_completion_budget(12, "字" * 90, client._effective_tokens_per_type(settings))
+    assert budget == 12 * 72 + 45, "显式 72 必须生效（≈preview 预算）"
+    # 容量反推同源：settings=320 时容量按 320 反推，批预算必 ≤ 帽
+    monkeypatch.setattr(settings, "HAS_NER_TOKENS_PER_TYPE", 320, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
+    text = "字" * 1200  # text_budget=600
+    calls = []
+
+    def respond(messages, *, max_tokens=None, temperature=None):
+        batch = _prompt_types(messages[0]["content"])
+        calls.append(batch)
+        return json.dumps({t: [f"值-{t}"] for t in batch}, ensure_ascii=False)
+
+    client2 = HaSClient()
+    client2._call_model = respond
+    client2.ner(text + " eff", _TYPES_38[:20])
+    for batch in calls:
+        assert len(batch) * 320 + 600 <= 2048, f"批 {len(batch)} 型按 320 反推超帽"
+
+
+def test_empty_text_and_zero_entity_and_many_entities_single_type(monkeypatch):
+    """边界三件套（评审 Important-5）：空文本页 / 零实体页 / 单类型超多实体页。"""
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
+    clean = json.dumps({"姓名": []}, ensure_ascii=False)
+
+    # 空文本：不炸、单发
+    client, calls = make_client([clean])
+    r = client.ner("", ["姓名", "电话"])
+    assert len(calls) == 1 and r == {"姓名": []}
+
+    # 零实体页（模型返回 {}）：单发、结果空
+    client2, calls2 = make_client(["{}"])
+    r2 = client2.ner("普通文本", ["姓名"])
+    assert calls2 and r2 == {}
+
+    # 单类型超多实体：guidance=None 下多类型批不受影响；单类型照样单发
+    big = json.dumps({"姓名": [f"人名{i}" for i in range(200)]}, ensure_ascii=False)
+    client3, calls3 = make_client([big])
+    r3 = client3.ner("一页超多人名 " + "字" * 300, ["姓名"])
+    assert len(calls3) == 1 and len(r3.get("姓名", [])) == 200
+
+
+def test_batch_path_requery_capped_once(monkeypatch):
+    """分批路径下补查仍封顶 1 次/批（v2⑤）：每批截断修复后至多 1 次重查。
+
+    首答=可修复损坏 JSON（只含批首类型）→ json_repair 恢复 → 缺其余类型 →
+    重查 1 次（响应干净全量）。重查自身再截断也不会二次重查
+    （_allow_truncation_retry=False）。"""
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
+
+    def respond(messages, *, max_tokens=None, temperature=None):
+        batch = _prompt_types(messages[0]["content"])
+        if len(batch) >= 2:
+            # 损坏但可修复：只含批首类型 → 触发一次补查
+            return '{"' + batch[0] + '":["值-' + batch[0] + '","截断残'
+        return json.dumps({t: [f"值-{t}"] for t in batch}, ensure_ascii=False)
+
+    client = HaSClient()
+    calls = []
+
+    def counting(messages, *, max_tokens=None, temperature=None):
+        calls.append(_prompt_types(messages[0]["content"]))
+        return respond(messages, max_tokens=max_tokens, temperature=temperature)
+
+    client._call_model = counting
+    with ner_metrics_scope() as scope:
+        result = client.ner(_LONG_TEXT + " batchcap", _TYPES_38[:20], type_guidance=[])
+    # 20 型 → 容量 9 → 3 批；每批 1 主调用 + 1 补查 = 6 次
+    assert len(calls) == 6, f"期望 3 批×(1 主+1 补查)=6，实际 {len(calls)}"
+    assert len(result) >= 3
+    assert drain_ner_metrics(scope).get("has_text_ner_truncation_retries") == 3
+
+
+def test_recovered_result_lacking_all_types_skips_self_retry(monkeypatch):
+    """修复结果不含任何请求类型 → 跳过自重查（防 inflight 自连接死等 120s×N）。"""
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
+    import time as _t
+
+    # 返回"完全不含请求类型"的可修复 JSON（姓名 不在请求清单里）
+    bad = '{"姓名":["焦先生"],"日期":["2016.04"],"截'
+    client, calls = make_client([bad])
+    t0 = _t.perf_counter()
+    with ner_metrics_scope() as scope:
+        client.ner("文本 " + "字" * 100, ["薪酬", "年龄（岁）"], type_guidance=[])
+    dt = _t.perf_counter() - t0
+    assert len(calls) == 1, "不得自重查（同 key 自连接）"
+    assert dt < 10, f"自连接死等复现：{dt:.0f}s"
+    assert "has_text_ner_truncation_retries" not in drain_ner_metrics(scope)
