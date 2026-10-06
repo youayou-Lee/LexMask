@@ -275,11 +275,13 @@ def inject_disputes(transcript: str, n: int, seed: int) -> tuple[str, list[dict]
         s, e = plan["orig_start"], plan["orig_end"]
         dis = dis[:s] + plan["repl"] + dis[e:]
 
-    # 病变域坐标 = 原域坐标 + 其前方全部病灶的长度增量
+    # 病变域坐标 = 原域坐标 + 其前方全部病灶的长度增量（不含自身——零宽插入的
+    # 自身增量不得计入自身位移，否则坐标右移一个插入长度、检出区间相交失准）
     lesions: list[dict] = []
-    for plan in plans:
+    for idx, plan in enumerate(plans):
         shift = sum(len(q["repl"]) - (q["orig_end"] - q["orig_start"])
-                    for q in plans if q["orig_end"] <= plan["orig_start"])
+                    for j, q in enumerate(plans)
+                    if j != idx and q["orig_end"] <= plan["orig_start"])
         lesions.append({
             "kind": plan["kind"],
             "start": plan["orig_start"] + shift,

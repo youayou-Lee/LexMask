@@ -140,6 +140,14 @@ def test_inject_type_flip_breaks_original_type():
     assert not re.fullmatch(REGEX_CHANNELS[etype], flip["a_text"])
 
 
+def test_inject_insert_coords_point_at_inserted_text():
+    # 回归：零宽插入（extra）病灶的病变域坐标必须正好框住插入文本
+    #（曾犯自身增量计入自身位移的错——坐标右移一个插入长度、检出区间相交失准）
+    dis, lesions = verify.inject_disputes(_ENTITY_TEXT, n=5, seed=7)
+    extra = next(l for l in lesions if l["kind"] == "extra")
+    assert dis[extra["start"]:extra["end"]] == extra["a_text"]
+
+
 def test_inject_disputes_deterministic():
     d1, l1 = verify.inject_disputes(_ENTITY_TEXT, n=5, seed=7)
     d2, l2 = verify.inject_disputes(_ENTITY_TEXT, n=5, seed=7)
