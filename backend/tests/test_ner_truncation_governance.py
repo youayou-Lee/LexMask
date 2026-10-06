@@ -299,3 +299,22 @@ def test_budget_over_cap_batches_also_with_type_guidance(monkeypatch):
     assert set(result) == full
     metrics = drain_ner_metrics(scope)
     assert metrics.get("has_text_ner_rebatch_batches", 0) >= 2
+
+
+def test_budget_fits_cap_single_full_call_suppresses_legacy_prebatch(monkeypatch):
+    """帽>0 且预算装得下 → 整页单次调用（S1/arm5 实证：拆批越细人均产出越臃肿，
+    整页一次问又快又全）；legacy 预分批仅在帽=0 的现状模式下生效。"""
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 8192, raising=False)
+    types = _TYPES_38[:30]  # 30×160+50 = 4850 ≤ 8192；legacy 规则会拆（30>12）
+
+    calls = []
+
+    def respond(messages, *, max_tokens=None, temperature=None):
+        calls.append(_prompt_types(messages[0]["content"]))
+        return json.dumps({t: [f"值-{t}"] for t in (calls[-1])}, ensure_ascii=False)
+
+    client = HaSClient()
+    client._call_model = respond
+    result = client.ner("短文本 " + "字" * 50, types)
+    assert len(calls) == 1 and set(calls[0]) == set(types), "预算装得下必须整页单发"
+    assert set(result) == set(types)

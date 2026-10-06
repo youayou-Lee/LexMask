@@ -543,19 +543,25 @@ class HaSClient:
 
         from app.core.config import settings
 
-        # ----- Issue#41 按密度主动分批（帽驱动，无论是否带 guidance 都生效） -----
-        # 生产主 NER 调用（run_has_text_analysis）不带 type_guidance：既有预分批
-        # 只按类型数/目标 token 估批大小，不看完成帽——文本较长时每批预算仍超帽，
-        # 落得"先打一次注定截断的调用再补救"（S1 实测：12 型批预算 2032 被截断后
-        # 11 类型重查 1960 再次截断）。这里在预算>有效帽时**前置**按帽容量反推
-        # 批大小，跳过注定截断的调用。豁免：单类型独占一批仍超帽的页（分批无解），
-        # 照常单发、走既有截断补救。
+        # ----- Issue#41 完成帽治理（帽驱动，无论是否带 guidance 都生效） -----
+        # S1 实测（2026-10-06，DCU 实例）两件事：
+        # ① 原公式 72 token/型对密集 CJK 页低估 ~2.4 倍，批被自己的 max_tokens
+        #   腰斩（12 型批 2032 截断、重查 1960/1528 仍截断）——与模型卡帽无关；
+        # ② 拆批越细模型每类型产出越臃肿（38 型整页人均 ~103 token，拆 5 型/批
+        #   人均 ~394）——整页一次问又快又全（spike+arm5 实证），预分批在该类
+        #   payload 上从根上就是反效果。
+        # 因此：帽 >0 时由帽接管分批决策——预算 ≤ 帽 → 整页单次调用（跳过 legacy
+        # 预分批）；预算 > 帽 → 按帽容量反推批大小前置分批；单类型仍超帽的页豁免
+        # （分批无解，单发走既有截断补救）。帽 =0 → 完整退回现状（legacy 预分批）。
         hard_cap = self._effective_completion_hard_cap(settings)
         if hard_cap > 0:
             text_budget = len(str(text or "")) // _NER_TEXT_CHARS_PER_TOKEN
             desired_budget = self._ner_completion_budget(len(types), text)
             chunk_types = max(1, (hard_cap - text_budget) // _NER_TOKENS_PER_TYPE)
-            if desired_budget > hard_cap and len(types) > chunk_types:
+            if desired_budget <= hard_cap or len(types) <= 1:
+                # 预算装得下：整页单次（这是又快又全的形态，arm6 实证）
+                pass
+            elif len(types) > chunk_types:
                 batches = [types[i : i + chunk_types] for i in range(0, len(types), chunk_types)]
                 guidance_by_type = {str(item.get("type") or ""): item for item in (type_guidance or [])}
                 merged: dict[str, list[str]] = {}
@@ -580,8 +586,9 @@ class HaSClient:
                 _record_ner_metrics(rebatch_batches=len(batches))
                 self._set_cached_ner(cache_key, merged)
                 return merged
+            # desired ≤ 帽（或单类型）→ 整页单次：不落入 legacy 预分批
 
-        if type_guidance is None:
+        if hard_cap <= 0 and type_guidance is None:
             configured_batch = max(1, int(settings.HAS_NER_MAX_TYPES_PER_REQUEST))
             target = max(_NER_TYPE_BATCH_TARGET_TOKENS_FLOOR, int(settings.HAS_NER_TYPE_BATCH_TARGET_TOKENS))
             target_batch = max(_NER_BATCH_MIN_TYPES, min(_NER_BATCH_MAX_TYPES, target // _NER_BATCH_TOKENS_PER_TYPE))
