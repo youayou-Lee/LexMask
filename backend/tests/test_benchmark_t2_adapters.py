@@ -1,4 +1,4 @@
-"""T2 公开集适配器测试：CLUENER / Resume / LEVEN。数据零入库，fixture 内嵌。Ref #93"""
+"""T2 公开集适配器测试：CLUENER / Resume / LEVEN。数据零入库，fixture 内嵌。Ref #51"""
 import json
 import sys
 from pathlib import Path
