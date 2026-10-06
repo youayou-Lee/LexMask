@@ -388,6 +388,8 @@ def test_cli_ner_base_builds_http_client(tmp_path, monkeypatch):
     sample = _make_sample(tmp_path, name="n.pdf")
     _patch_cloud_build(monkeypatch, ["甲行乙行"], ["甲行乙行"])
     assert isinstance(run_pipeline.build_ner("http://127.0.0.1:9999", None),
+                      pagepack.OpenAINERClient)  # 默认形状=openai（2026-10-06 实测真实端点）
+    assert isinstance(run_pipeline.build_ner("http://127.0.0.1:9999", None, ner_shape="entities"),
                       pagepack.HTTPNERClient)
     assert isinstance(run_pipeline.build_ner(None, "off"), NEROff)
     assert isinstance(run_pipeline.build_ner(None, None), NEROff)  # 缺省即关闭（零网络）
@@ -581,3 +583,53 @@ def test_run_page_r2_cross_side_regex_wins(tmp_path):
     assert pack["transcript_gt"]["normalized_text"][n0:n1] == ent["text"]
     assert any(adj["rule"] == "R2" and adj["verdict"] == "auto:a"
                for adj in pack["adjudications"])
+
+
+# ---- OpenAINERClient（真实端点形状，2026-10-06 对齐 eval_ner_quality.call_ner） ----
+
+def test_openai_ner_client_payload_and_parse(monkeypatch):
+    from gt.pagepack import OpenAINERClient
+    import requests as _rq
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        text = ""
+        def json(self):
+            return {"choices": [{"message": {"content": '```json\n{"姓名": ["钱明涛"]}\n```'}}]}
+
+    def fake_post(url, json=None, timeout=None):
+        captured["url"], captured["json"] = url, json
+        return _Resp()
+
+    monkeypatch.setattr(_rq, "post", fake_post)
+    c = OpenAINERClient("http://127.0.0.1:8080/v1/", model="HaS_Text_0209_0.6B")
+    got = c.ner("委托人钱明涛")
+    assert got == {"姓名": ["钱明涛"]}
+    assert captured["url"] == "http://127.0.0.1:8080/v1/chat/completions"
+    body = captured["json"]
+    assert body["temperature"] == 0.0 and body["top_p"] == 0.6 and body["stream"] is False
+    assert body["model"] == "HaS_Text_0209_0.6B" and body["max_tokens"] == 1024
+    assert "钱明涛" in body["messages"][0]["content"] and "姓名" in body["messages"][0]["content"]
+
+def test_openai_ner_client_http_error(monkeypatch):
+    from gt.pagepack import OpenAINERClient
+    import pytest
+    import requests as _rq
+
+    class _Resp:
+        status_code, text = 500, "boom"
+        def json(self): return {}
+
+    monkeypatch.setattr(_rq, "post", lambda *a, **k: _Resp())
+    with pytest.raises(RuntimeError, match="NER 调用失败"):
+        OpenAINERClient("http://h:1/v1").ner("文本")
+
+def test_build_ner_shape_dispatch():
+    from gt.entities import NEROff
+    from gt.pagepack import HTTPNERClient, OpenAINERClient
+    from gt.run_pipeline import build_ner
+    assert isinstance(build_ner(None, None), NEROff)
+    assert isinstance(build_ner(None, "off"), NEROff)
+    assert isinstance(build_ner("http://h:1/v1", None), OpenAINERClient)  # 默认 openai
+    assert isinstance(build_ner("http://h:1", None, ner_shape="entities"), HTTPNERClient)

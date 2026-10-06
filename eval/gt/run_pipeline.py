@@ -49,6 +49,7 @@ if __package__ in (None, ""):  # 直接脚本执行（python eval/gt/run_pipelin
 from gt.entities import NEROff  # noqa: E402
 from gt.gt_schema import PAGE_TYPES  # noqa: E402
 from gt.pagepack import (  # noqa: E402
+    OpenAINERClient,
     CachedTranscriptionClient,
     HTTPNERClient,
     run_page,
@@ -92,10 +93,14 @@ def parse_clients(spec: str) -> dict[str, object]:
     return clients
 
 
-def build_ner(ner_base: str | None, ner_flag: str | None):
-    """NER 参数 → NERClient：``--ner-base URL`` → HTTPNERClient；off/缺省 → NEROff。"""
+def build_ner(ner_base: str | None, ner_flag: str | None,
+              ner_shape: str = "openai", ner_model: str | None = None):
+    """NER 参数 → NERClient：``--ner-base URL`` → OpenAINERClient（openai，实测真实形状）
+    或 HTTPNERClient（entities，直连 REST 假定形状）；off/缺省 → NEROff。"""
     if ner_base:
-        return HTTPNERClient(ner_base)
+        if ner_shape == "entities":
+            return HTTPNERClient(ner_base)
+        return OpenAINERClient(ner_base, model=ner_model)
     return NEROff()
 
 
@@ -174,6 +179,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     ner_group = parser.add_mutually_exclusive_group()
     ner_group.add_argument("--ner-base", default=None,
                            help="NER 端点 URL（启用 NER 通道；端点形状待 T8 对齐）")
+    ner_group.add_argument("--ner-shape", choices=["openai", "entities"], default="openai",
+                           help="NER 端点形状：openai=vLLM /chat/completions（实测真实形状，默认）；entities=直连 REST 假定形状")
+    ner_group.add_argument("--ner-model", default=None, help="NER 模型名（vLLM 单模型可省）")
     ner_group.add_argument("--ner", choices=["off"], default=None,
                            help="--ner off 关闭 NER 通道（缺省即关闭）")
     parser.add_argument("--work", required=True, help="GT 工作目录（pack 落盘根）")
@@ -198,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
         clients = parse_clients(args.clients)
-        ner = build_ner(args.ner_base, args.ner)
+        ner = build_ner(args.ner_base, args.ner, ner_shape=args.ner_shape, ner_model=args.ner_model)
         if args.suite:
             return _run_batch(args, clients, ner)
         return _run_single(args, clients, ner)

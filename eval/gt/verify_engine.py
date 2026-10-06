@@ -488,7 +488,7 @@ def _run(args: argparse.Namespace) -> int:
     synthetic_dir = Path(args.synthetic_dir)
     work = Path(args.work)
     clients = parse_clients(args.clients)
-    ner = build_ner(args.ner_base, args.ner)
+    ner = build_ner(args.ner_base, args.ner, ner_shape=args.ner_shape, ner_model=args.ner_model)
 
     # ---- A1：逐文件逐页 run_page（转录缓存按文件复用，A2 零额外云调用） ----------
     packs_by_entry: dict[str, list[dict]] = {}
@@ -685,6 +685,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     ner_group = parser.add_mutually_exclusive_group()
     ner_group.add_argument("--ner-base", default=None, help="NER 端点 URL（启用 NER 通道）")
     ner_group.add_argument("--ner", choices=["off"], default=None, help="--ner off 关闭 NER 通道")
+    ner_group.add_argument("--ner-shape", choices=["openai", "entities"], default="openai",
+                           help="NER 端点形状：openai=vLLM /chat/completions（实测真实形状，默认）；entities=直连 REST 假定形状")
+    ner_group.add_argument("--ner-model", default=None, help="NER 模型名（vLLM 单模型可省）")
     parser.add_argument("--segment", default="first", help="卷内段位（默认 first）")
     parser.add_argument("--seed", type=int, default=56, help="A2 注毒随机种子（默认 56，确定性）")
     parser.add_argument("--report", action="store_true",

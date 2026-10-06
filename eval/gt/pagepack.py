@@ -60,6 +60,8 @@ from gt.gt_schema import PAGE_TYPES, PRESET_TYPE_NAMES, validate_pagepack
 from gt.normalize import FaceMap
 from gt.unify import TranscriptionClient  # noqa: F401（协议再导出）
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 logger = logging.getLogger(__name__)
 
 # 每页 pack 的落盘子目录布局：{work_dir}/pages/{page_id}/pack.json
@@ -67,6 +69,60 @@ _PACK_RELPATH = Path("pages")
 
 
 # ---- 客户端侧附件 ----------------------------------------------------------------
+
+_NERQ_CACHE: dict = {}
+
+
+def _load_ner_quality():
+    """按路径加载 backend/scripts/eval/eval_ner_quality.py（P/R 与提示词唯一口径）。"""
+    if not _NERQ_CACHE:
+        import importlib.util
+        path = _REPO_ROOT / "backend" / "scripts" / "eval" / "eval_ner_quality.py"
+        spec = importlib.util.spec_from_file_location("eval_ner_quality", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _NERQ_CACHE["m"] = mod
+    return _NERQ_CACHE["m"]
+
+
+class OpenAINERClient:
+    """vLLM/OpenAI 兼容 NER 客户端（NERClient 协议）——**实测真实形状**。
+
+    对齐 ``backend/scripts/eval/eval_ner_quality.py::call_ner``：POST
+    ``{base}/chat/completions``，体 = build_ner_prompt(text, preset 类型全集)
+    + temperature 0.0 / top_p 0.6 / max_tokens；解析用 parse_model_json
+    （围栏剥离+子串提取，与 has_client 同序）。``base`` 以 ``/v1`` 结尾
+    （如 ``http://127.0.0.1:8080/v1``），``model`` 可省（单模型 vLLM 忽略）。
+    2026-10-06 已对实例 8080（HaS_Text_0209_0.6B）实测。
+    """
+
+    def __init__(self, base_url: str, model: str | None = None, types: list[str] | None = None,
+                 max_tokens: int = 1024, timeout: float = 120.0):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.types = sorted(types) if types is not None else sorted(PRESET_TYPE_NAMES)
+        self.max_tokens = max_tokens
+        self.timeout = timeout
+        nerq = _load_ner_quality()
+        self._build_prompt = nerq.build_ner_prompt
+        self._parse = nerq.parse_model_json
+        self._temperature = nerq._MODEL_TEMPERATURE
+        self._top_p = nerq._MODEL_TOP_P
+
+    def ner(self, text: str) -> dict[str, list[str]]:
+        payload = {
+            "messages": [{"role": "user", "content": self._build_prompt(text, self.types)}],
+            "temperature": self._temperature, "top_p": self._top_p,
+            "stream": False, "max_tokens": self.max_tokens,
+        }
+        if self.model:
+            payload["model"] = self.model
+        r = requests.post(f"{self.base_url}/chat/completions", json=payload, timeout=self.timeout)
+        if r.status_code != 200:
+            raise RuntimeError(f"NER 调用失败 status={r.status_code} body[:300]={r.text[:300]}")
+        content = r.json()["choices"][0]["message"]["content"]
+        return self._parse(content) or {}
+
 
 class HTTPNERClient:
     """backend NER 端点的 HTTP 适配（NERClient 协议）。
