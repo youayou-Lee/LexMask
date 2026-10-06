@@ -117,9 +117,9 @@ def test_text_file_mode_still_validates_page(sample_pdf, tmp_path):
 
 def test_source_ref_and_verify_stored_in_entry_and_manifest(sample_pdf, tmp_path):
     e = ing.build_hardcase_entry(sample_pdf, 0, [("姓名", "张三")], story="x", origin="t",
-                                 source_ref="testdata/eval37-real/real_zqc_wenshu_p1-5.pdf#p3",
+                                 source_ref="testdata/eval37-real/xxx.pdf#p3",
                                  verify="dual-ai-agree")
-    assert e["source_ref"] == "testdata/eval37-real/real_zqc_wenshu_p1-5.pdf#p3"
+    assert e["source_ref"] == "testdata/eval37-real/xxx.pdf#p3"
     assert e["verify"] == "dual-ai-agree"
     out_dir = tmp_path / "hardcase"
     e["id"] = ing._next_id(out_dir)

@@ -51,7 +51,7 @@
 - 仓库内**不落任何数据本体**；jsonl 与 PDF 只存在私有目录。
 - 云端：`/root/private_data/benchmarks/t2/`（dcu-main，`/root/redaction` 仓库同构执行）。
 - 本地：`<仓库根>/test-data/benchmarks/t2/`（git 忽略，仅本机调试）。
-- hardcase 同目录上级维护 `manifest.private.json` 私有索引模板（id/origin/story/ts），由 `ingest_hardcase.py` 自动追加。
+- hardcase 同目录上级维护 `manifest.private.json` 私有索引模板（id/origin/story/ts，可选 source_ref/verify），由 `ingest_hardcase.py` 自动追加。
 
 ## 快速用法
 

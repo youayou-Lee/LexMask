@@ -60,7 +60,9 @@ def build_hardcase_entry(
             raise ValueError(f"类型 {typ} 不在 preset")
         effective = raw_forms.get(val, val)
         # raw_forms 实际形态支持 ｜ 分隔多片段（跨行/跨框碎片），逐片段命中即收
-        fragments = re.split(r"[｜|]", effective)
+        fragments = [f for f in (s.strip() for s in re.split(r"[｜|]", effective)) if f]
+        if not fragments:
+            raise ValueError(f"实体 {val} 的实际形态为空")
         missing = next((f for f in fragments if f not in text), None)
         if missing is not None:
             raise ValueError(f"实体 {val} 不在文本中（缺失片段 {missing!r}）")
