@@ -52,6 +52,7 @@ import argparse
 import json
 import random
 import re
+import socket
 import sys
 from datetime import date
 from pathlib import Path
@@ -514,6 +515,18 @@ def _run(args: argparse.Namespace) -> int:
         packs = []
         for page_no in range(n_pages):
             label = f"{entry_id}-p{page_no:03d}"
+            existing = work / "pages" / label / "pack.json"
+            if args.skip_existing and existing.is_file():
+                try:
+                    pack = json.loads(existing.read_text(encoding="utf-8"))
+                    errors = validate_pagepack(pack)
+                    if not errors:
+                        packs.append(pack)
+                        row["ok"] += 1
+                        continue
+                    print(f"[verify] 续跑丢弃非法包 {label}: {errors[:2]}", file=sys.stderr)
+                except Exception:
+                    pass  # 损坏包走重跑
             try:
                 packs.append(run_page(str(fpath), page_no, page_type, wrapped, ner, work,
                                       carrier=str(entry.get("carrier") or "scanned"),
@@ -682,12 +695,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--work", required=True, help="GT 工作目录（pack 与报告落盘根）")
     parser.add_argument("--clients", default="cloud:PP-OCRv6,cloud:PaddleOCR-VL",
                         help="转录客户端 spec（同 run_pipeline，双云必选）")
+    parser.add_argument("--skip-existing", action="store_true",
+                        help="断点续跑：工作目录中已存在合法 pack 的页直接复用（两次跑批连挂后的恢复路径）")
+    parser.add_argument("--ner-shape", choices=["openai", "entities"], default="openai",
+                        help="NER 端点形状：openai=vLLM /chat/completions（实测真实形状，默认）；entities=直连 REST 假定形状")
+    parser.add_argument("--ner-model", default=None, help="NER 模型名（vLLM 单模型可省）")
     ner_group = parser.add_mutually_exclusive_group()
     ner_group.add_argument("--ner-base", default=None, help="NER 端点 URL（启用 NER 通道）")
     ner_group.add_argument("--ner", choices=["off"], default=None, help="--ner off 关闭 NER 通道")
-    ner_group.add_argument("--ner-shape", choices=["openai", "entities"], default="openai",
-                           help="NER 端点形状：openai=vLLM /chat/completions（实测真实形状，默认）；entities=直连 REST 假定形状")
-    ner_group.add_argument("--ner-model", default=None, help="NER 模型名（vLLM 单模型可省）")
     parser.add_argument("--segment", default="first", help="卷内段位（默认 first）")
     parser.add_argument("--seed", type=int, default=56, help="A2 注毒随机种子（默认 56，确定性）")
     parser.add_argument("--report", action="store_true",
@@ -698,6 +713,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     """CLI 入口：单行判定打印 stdout；exit 0 = A1、A2 双过，1 = 任一未过/出错。"""
     args = _parse_args(argv)
+    socket.setdefaulttimeout(300)  # 黑洞连接兜底：requests 各级超时之外的最后防线（挂起→异常→逐页隔离）
     try:
         return _run(args)
     except Exception as e:  # CLI 边界：错误进 stderr、非零退出

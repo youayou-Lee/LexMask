@@ -176,12 +176,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--clients", default="cloud:PP-OCRv6,cloud:PaddleOCR-VL",
                         help="转录客户端 spec，逗号分隔：cloud:PP-OCRv6,cloud:PaddleOCR-VL"
                              "[,vlmd:URL]（双云必选，vlmd 可选）")
+    parser.add_argument("--ner-shape", choices=["openai", "entities"], default="openai",
+                        help="NER 端点形状：openai=vLLM /chat/completions（实测真实形状，默认）；entities=直连 REST 假定形状")
+    parser.add_argument("--ner-model", default=None, help="NER 模型名（vLLM 单模型可省）")
     ner_group = parser.add_mutually_exclusive_group()
     ner_group.add_argument("--ner-base", default=None,
                            help="NER 端点 URL（启用 NER 通道；端点形状待 T8 对齐）")
-    ner_group.add_argument("--ner-shape", choices=["openai", "entities"], default="openai",
-                           help="NER 端点形状：openai=vLLM /chat/completions（实测真实形状，默认）；entities=直连 REST 假定形状")
-    ner_group.add_argument("--ner-model", default=None, help="NER 模型名（vLLM 单模型可省）")
     ner_group.add_argument("--ner", choices=["off"], default=None,
                            help="--ner off 关闭 NER 通道（缺省即关闭）")
     parser.add_argument("--work", required=True, help="GT 工作目录（pack 落盘根）")
