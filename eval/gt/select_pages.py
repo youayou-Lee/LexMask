@@ -41,7 +41,8 @@ GT 工作的入口脚本（spec §2）：在真实案卷树上按页型配额选
   不透明顺序编号——清单可以拿出私有体系过目签字；
 - 真实路径只进 **sidecar 映射**（``<清单名>.mapping.json``，与清单同目录
   旁挂），case_ref ↔ {path, sha256, pages_total, classifier}；
-- 两文件均经 ``--out`` 落在仓库外私有目录，本脚本不读不写仓内任何路径。
+- 两文件均经 ``--out`` 落在仓库外私有目录（``ensure_outside_repo`` 守卫强制：
+  ``--out`` 解析后落在仓根内直接拒绝），本脚本不读不写仓内任何路径。
 
 清单形状：``{kind, version, classifier, seed, quotas, reconciliation,
 mapping_file, selection}``；``classifier`` = ``"pypdf"``（pypdf 在场）或
@@ -53,7 +54,8 @@ CLI（``python eval/gt/select_pages.py``）::
     --src 案卷根 --out 私有清单.json --seed N [--hints 追加提示正则]
 
 错误处理：``--src`` 不是目录 / ``--hints`` 正则非法 / 写盘失败 → stderr
-报错、退出码 1、不落盘；argparse 参数错误按惯例直接 SystemExit。
+报错、退出码 1、不落盘；``--out`` 落在仓根内 → argparse error（退出码 2，
+sidecar 载真实案名不得入仓）；其余 argparse 参数错误按惯例直接 SystemExit。
 """
 from __future__ import annotations
 
@@ -325,6 +327,21 @@ def reconcile(src_manifest: list[dict], quotas: dict, selection: list[dict]) -> 
 
 # ---- 落盘 -------------------------------------------------------------------------
 
+def ensure_outside_repo(out_path: Path, repo_root: Path | None = None) -> Path:
+    """输出路径防入仓守卫：``--out`` 解析后落在仓根（含子目录）内即 ValueError。
+
+    sidecar 案名映射载真实案名/路径（铁律 1），清单与其必须落仓外私有目录；
+    仓根 = 本文件上溯两级（worktree 根）。``repo_root`` 供测试注入假仓根
+    （tmp_path 在真仓外，直接测真仓根亦可）。返回解析后的绝对路径。
+    """
+    root = Path(__file__).resolve().parents[2] if repo_root is None else Path(repo_root)
+    resolved = Path(out_path).resolve()
+    if resolved.is_relative_to(root):
+        raise ValueError(f"--out 不得落在仓库内（sidecar 载真实案名，铁律 1）: "
+                         f"{resolved} ⊂ 仓根 {root}")
+    return resolved
+
+
 def write_outputs(out_path: Path, *, selection: list[dict], reconciliation: dict,
                   mapping: dict, seed: int, classifier: str) -> None:
     """写私有清单与 sidecar 案名映射（同目录旁挂；父目录不存在则创建）。"""
@@ -361,7 +378,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="选样随机种子（落盘清单；同 seed 可复现）")
     parser.add_argument("--hints", default=None,
                         help="追加 seal_handwriting 文件名/路径提示正则（与内置提示取并）")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    try:
+        ensure_outside_repo(Path(args.out))
+    except ValueError as e:
+        parser.error(str(e))  # 防入仓：argparse error 惯例退出码 2，不落盘
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:

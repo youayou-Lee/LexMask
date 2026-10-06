@@ -44,14 +44,19 @@ pack 契约（Task 7 按此组装）::
 允许同 span 异型共存）。
 
 ``write_gt_jsonl``：一页一行 JSONL，每行注入 ``"gt_version": version``（写入
-副本，入参 pack 不被修改）；任一 pack 校验失败即 raise ``ValueError``（错误
-清单带 ``packs[i]`` 定位），文件不落盘。中文按 ``ensure_ascii=False`` 原文
-写出（GT 底稿可读性优先）。
+副本，入参 pack 不被修改）；每个 adjudication 条目同时注入 ``"at"`` = 定稿日
+（写入当日 ISO 日期，spec §4——pack 定稿前不落任何日期）；任一 pack 校验失败
+即 raise ``ValueError``（错误清单带 ``packs[i]`` 定位），文件不落盘。中文按
+``ensure_ascii=False`` 原文写出（GT 底稿可读性优先）。
+
+依赖注记：本模块经 common_api 间接依赖 httpx 与 backend/config/
+preset_entity_types.json（import 时读取）——精简环境运行需先安装。
 """
 from __future__ import annotations
 
 import importlib.util
 import json
+from datetime import date
 from pathlib import Path
 
 # ---- 常量（单一事实源） ---------------------------------------------------------
@@ -183,14 +188,20 @@ def write_gt_jsonl(packs: list[dict], out_path: Path, version: str) -> None:
     """逐页校验并写 GT JSONL（一页一行，每行注入 ``"gt_version": version``）。
 
     先校验后写出：任一 pack 不合法即 raise ``ValueError``（错误清单带
-    ``packs[i]`` 定位），文件不落盘。入参 pack 不被修改（注入在写出副本上）。
+    ``packs[i]`` 定位），文件不落盘。入参 pack 不被修改（``gt_version`` 与
+    adjudications 的 ``"at"`` 定稿日均注入在写出副本上；``at`` = 写出当日
+    ISO 日期，spec §4——``validate_pagepack`` 不要求该字段，pack 定稿前
+    不落任何日期）。
     """
     problems: list[str] = []
     for idx, pack in enumerate(packs):
         problems.extend(f"packs[{idx}]: {err}" for err in validate_pagepack(pack))
     if problems:
         raise ValueError("GT pagepack 校验失败（未写出文件）：\n" + "\n".join(problems))
+    at = date.today().isoformat()  # 定稿日：一次定稿一个日期（整批一致）
     with Path(out_path).open("w", encoding="utf-8") as f:
         for pack in packs:
-            f.write(json.dumps({**pack, "gt_version": version},
+            adjs = [{**adj, "at": at} for adj in pack["adjudications"]]
+            f.write(json.dumps({**pack, "gt_version": version,
+                                "adjudications": adjs},
                                ensure_ascii=False) + "\n")

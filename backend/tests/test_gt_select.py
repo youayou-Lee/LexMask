@@ -351,6 +351,37 @@ def test_build_hint_re_merges_and_validates():
         select_pages.build_hint_re("([)")  # 非法正则显性报错（CLI 退非零码）
 
 
+# ---- --out 防入仓守卫（铁律 1：sidecar 载真实案名，不得落仓内） --------------------
+
+def test_ensure_outside_repo_allows_path_outside_fake_repo(tmp_path):
+    fake_repo = tmp_path / "repo"  # 假仓根（不要求真实存在，仅作边界）
+    out = tmp_path / "私有" / "清单.json"
+    got = select_pages.ensure_outside_repo(out, repo_root=fake_repo)
+    assert got == out.resolve()  # 返回解析后绝对路径
+    assert fake_repo not in got.parents
+
+
+def test_ensure_outside_repo_rejects_paths_inside_fake_repo(tmp_path):
+    fake_repo = tmp_path / "repo"
+    fake_repo.mkdir()
+    for inside in (fake_repo,                             # 恰为仓根本身
+                   fake_repo / "清单.json",               # 仓根直下
+                   fake_repo / "子目录" / "m.mapping.json"):  # 仓内深层
+        with pytest.raises(ValueError, match="不得落在仓库内"):
+            select_pages.ensure_outside_repo(inside, repo_root=fake_repo)
+
+
+def test_cli_rejects_out_inside_real_repo_root(tmp_path):
+    # 端到端：--out 指向真仓根内路径 → argparse error（SystemExit 2），不落盘
+    src = tmp_path / "src"
+    src.mkdir()
+    inside = REPO / "gt-select-守卫不许落盘.json"
+    with pytest.raises(SystemExit) as ei:
+        select_pages.main(["--src", str(src), "--out", str(inside), "--seed", "1"])
+    assert ei.value.code == 2
+    assert not inside.exists()  # 守卫先于一切写盘动作
+
+
 # ---- CLI main：端到端（tmp 合成树 → 私有清单 + sidecar 映射 + 对账表） -----------
 
 def _e2e_tree(src: Path) -> None:

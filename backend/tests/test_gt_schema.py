@@ -11,7 +11,9 @@
 #   残留，去除。
 import importlib.util
 import json
+import re
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -267,6 +269,23 @@ def test_write_gt_jsonl_keeps_chinese_unescaped(tmp_path):
     out = tmp_path / "gt.jsonl"
     gt_schema.write_gt_jsonl([_min_pack()], out, VERSION)
     assert "身份证号" in out.read_text(encoding="utf-8")  # ensure_ascii=False
+
+
+def test_write_gt_jsonl_stamps_adjudications_at(tmp_path):
+    # spec §4：adjudications 携带 "at" = 定稿日；pack 定稿前不落日期（校验不要求，
+    # 注入只发生在写出副本上），写出后每条仲裁条目带写入当日 ISO 日期
+    pack = _min_pack()
+    pack["adjudications"] = [{"rule": "R2", "entity": {}, "candidates": {}}]
+    assert all("at" not in adj for adj in pack["adjudications"])  # 定稿前无 at
+    assert gt_schema.validate_pagepack(pack) == []                # 校验不要求 at
+    out = tmp_path / "gt.jsonl"
+    gt_schema.write_gt_jsonl([pack], out, VERSION)
+    row = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
+    assert len(row["adjudications"]) == 1
+    at = row["adjudications"][0]["at"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", at)      # ISO 日期
+    assert at == date.today().isoformat()              # = 写出（定稿）当日
+    assert all("at" not in adj for adj in pack["adjudications"])  # 入参不被修改
 
 
 def test_write_gt_jsonl_refuses_invalid_pack(tmp_path):

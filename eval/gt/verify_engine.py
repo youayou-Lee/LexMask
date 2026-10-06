@@ -71,7 +71,7 @@ from gt.arbitrate import arbitrate_page  # noqa: E402
 from gt.compare import compare_transcripts  # noqa: E402
 from gt.entities import REGEX_CHANNELS, extract_ner, extract_regex, merge_entities  # noqa: E402
 from gt.normalize import FaceMap, normalize_text  # noqa: E402
-from gt.pagepack import CachedTranscriptionClient, _pick_page, run_page  # noqa: E402
+from gt.pagepack import CachedTranscriptionClient, pick_page, run_page  # noqa: E402
 from gt.run_pipeline import build_ner, map_page_type, parse_clients  # noqa: E402
 
 # ---- 门槛常量（brief 逐字值） ------------------------------------------------------
@@ -567,7 +567,7 @@ def _run(args: argparse.Namespace) -> int:
         for page_no in range(int(entry.get("pages") or 1)):
             if page_no >= len(pages_a):
                 break  # 转录页数不足（页数对账在报告披露），可切片页之外无从注毒
-            v6_text = _pick_page(pages_a, page_no, "a(v6)").get("text_raw") or ""
+            v6_text = pick_page(pages_a, page_no, "a(v6)").get("text_raw") or ""
             if not v6_text:
                 continue
             face = FaceMap.from_raw(v6_text)

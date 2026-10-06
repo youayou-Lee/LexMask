@@ -133,7 +133,7 @@ def _sha256_hex(path: str) -> str:
     return h.hexdigest()
 
 
-def _pick_page(pages: list, page_no: int, label: str) -> dict:
+def pick_page(pages: list, page_no: int, label: str) -> dict:
     """按页号取转录页：多页结果取 pages[page_no]；单页结果恒取 pages[0]。
 
     多页 JSONL 的页粒度是 T8 待实测假设（T1），此处只做切片与越界防护。
@@ -240,10 +240,10 @@ def run_page(file_path: str, page_no: int, page_type: str,
         raise ValueError("clients 需含 'a'（云 v6）与 'b'（云 VL）两键，'md' 可选")
 
     # -- 三通道转录（md 可选），按页号切片 -------------------------------
-    page_a = _pick_page(clients["a"].transcribe(file_path), page_no, "a(v6)")
-    page_b = _pick_page(clients["b"].transcribe(file_path), page_no, "b(VL)")
+    page_a = pick_page(clients["a"].transcribe(file_path), page_no, "a(v6)")
+    page_b = pick_page(clients["b"].transcribe(file_path), page_no, "b(VL)")
     md = clients.get("md")
-    page_md = _pick_page(md.transcribe(file_path), page_no, "md(vl-md)") if md is not None else None
+    page_md = pick_page(md.transcribe(file_path), page_no, "md(vl-md)") if md is not None else None
 
     text_a = page_a.get("text_raw") or ""
     text_b = page_b.get("text_raw") or ""
