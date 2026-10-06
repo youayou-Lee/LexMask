@@ -59,8 +59,11 @@ def build_hardcase_entry(
         if typ not in preset_names:
             raise ValueError(f"类型 {typ} 不在 preset")
         effective = raw_forms.get(val, val)
-        if effective not in text:
-            raise ValueError(f"实体 {val} 不在文本中")
+        # raw_forms 实际形态支持 ｜ 分隔多片段（跨行/跨框碎片），逐片段命中即收
+        fragments = re.split(r"[｜|]", effective)
+        missing = next((f for f in fragments if f not in text), None)
+        if missing is not None:
+            raise ValueError(f"实体 {val} 不在文本中（缺失片段 {missing!r}）")
         if typ == "身份证号" and not _id_check(val):
             raise ValueError(f"身份证格式非法 {val}")
         entities.setdefault(typ, []).append(val)

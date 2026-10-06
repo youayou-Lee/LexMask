@@ -42,7 +42,7 @@
 | entities | `{类型中文名: [实体串]}`，类型必须在 preset（`backend/config/preset_entity_types.json`） |
 | origin | （hardcase）来源 issue 链接，必填 |
 | story | （hardcase）一句话失败故事 |
-| raw_forms | （hardcase，可选）GT 串 -> 文中实际形态 |
+| raw_forms | （hardcase，可选）GT 串 -> 文中实际形态；碎片化实际形态用 `｜` 分隔多片段（逐片段须在文中） |
 | source_ref | （hardcase，可选）私有路径+页码溯源指针（如 `testdata/eval37-real/xxx.pdf#p3`，只进私有区） |
 | verify | （hardcase，可选）GT 互验结论（如 dual-ai-agree / adjudicated） |
 

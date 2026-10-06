@@ -147,6 +147,25 @@ def test_cli_passes_text_file_source_ref_verify(sample_pdf, tmp_path, capsys):
     assert lines[0]["source_ref"] == "testdata/x.pdf#p1" and lines[0]["verify"] == "adjudicated"
 
 
+def test_multi_fragment_raw_form(sample_pdf, tmp_path):
+    # 跨行/跨框碎片：raw_forms 支持 ｜ 分隔多片段，逐片段命中即收；任一片段缺失拒收
+    transcript = tmp_path / "p1.txt"
+    transcript.write_text("公安局道\n交通警察大队\n落款", encoding="utf-8")
+    e = ing.build_hardcase_entry(
+        sample_pdf, 0, [("机关单位", "清远市公安局交通警察大队")],
+        story="跨行机构名", origin="t",
+        text_file=transcript,
+        raw_forms={"清远市公安局交通警察大队": "公安局道｜交通警察大队"},
+    )
+    assert e["raw_forms"]["清远市公安局交通警察大队"] == "公安局道｜交通警察大队"
+    with pytest.raises(ValueError, match="不在文本中"):
+        ing.build_hardcase_entry(
+            sample_pdf, 0, [("机关单位", "某单位")], story="x", origin="t",
+            text_file=transcript,
+            raw_forms={"某单位": "公安局道｜缺失片段"},
+        )
+
+
 def test_cli_reject_no_partial_write(sample_pdf, tmp_path):
     out_dir = tmp_path / "hardcase"
     rc = ing.main([
