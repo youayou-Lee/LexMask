@@ -115,6 +115,7 @@ class ReplacementMode(str, Enum):
     CUSTOM = "custom"    # 自定义替换
     STRUCTURED = "structured"  # 结构化语义标签
     PSEUDONYM = "pseudonym"  # 化名替换：同类型虚构词（词池可配置）
+    PLACEHOLDER = "placeholder"  # 占位替换 [TYPE_N]：VL-MD 喂云端 Agent 线（Issue #66/#50），Agent 侧凭映射表还原
 
 
 # ============ 通用响应 ============

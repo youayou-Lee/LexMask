@@ -87,7 +87,17 @@ class RecognitionPipelineMixin:
                 parse_ms / 1000,
             )
 
-            # 2) NER 鎴?Vision
+            # 2) VL-MD 管线(Issue #66/#50):识别+替换+产物一步完成,不走审阅/回写链路
+            if str(cfg.get("pipeline_mode") or "") == "vl_md":
+                stage_started = time.perf_counter()
+                await self._run_vl_md(task, cfg)
+                self._record_item_performance(
+                    store, task.item_id,
+                    {"recognition": {"model_ms": _elapsed_ms(stage_started), "mode": "vl_md"}},
+                )
+                return
+
+            # 2) NER/Vision
             stage_started = time.perf_counter()
             await self._run_ner_or_vision(task, cfg)
             recognition_stage_ms = _elapsed_ms(stage_started)
@@ -527,6 +537,33 @@ class RecognitionPipelineMixin:
         else:
             entity_type_ids = list(cfg.get("entity_type_ids") or [])
             await self._run_ner(task, entity_type_ids)
+
+    async def _run_vl_md(self, task: TaskItem, cfg: dict) -> None:
+        """VL-MD 脱敏管线(Issue #66/#50 T1):识别+替换+产物落盘一步到位,条目直达 COMPLETED。"""
+        from app.services.file_management_service import file_store
+        from app.services.job_models import JobItemStatus
+        from app.services.vl_md_pipeline_service import get_vl_md_pipeline_service
+
+        store = self._get_store()
+        store.update_item_progress(
+            task.item_id, stage="vl_md", current=0, total=1, message="vl_md_running",
+        )
+        from app.services.file_operations import get_file_info
+
+        fi = get_file_info(task.file_id)
+        if not fi:
+            raise ValueError(f"file_id={task.file_id} not in file_store")
+        summary = await get_vl_md_pipeline_service().process_file(fi, cfg)
+        store.update_item_progress(
+            task.item_id, stage="vl_md", current=1, total=1,
+            message=f"vl_md_done entities={summary['entity_count']} {summary['verdict']}",
+        )
+        # 直达 COMPLETED:产物已落盘(file_store output_* 字段),无审阅/回写阶段
+        store.update_item_status(task.item_id, JobItemStatus.COMPLETED)
+        logger.info(
+            "[queue] item=%s vl-md done entities=%d rounds=%d %s",
+            task.item_id[:8], summary["entity_count"], summary["rounds"], summary["verdict"],
+        )
 
     def _mark_recognition_complete(self, task: TaskItem, job: dict, store: JobStore) -> None:
         """Mark recognition complete and optionally enqueue redaction."""

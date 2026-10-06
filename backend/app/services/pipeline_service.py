@@ -24,6 +24,9 @@ from app.core.visual_feature_categories import normalize_visual_slug
 class PipelineMode(str, Enum):
     OCR_HAS = "ocr_has"
     VISUAL_FEATURES = "visual_features"
+    # VL-MD 喂云端 Agent 线(Issue #66/#50 T1):cfg.pipeline_mode="vl_md" 分派,
+    # 识别+PLACEHOLDER 替换+产物落盘一步完成;预设类型清单见 config/preset_pipeline_types.json
+    VL_MD = "vl_md"
 
 
 class VisualFeatureChecklistItem(BaseModel):
