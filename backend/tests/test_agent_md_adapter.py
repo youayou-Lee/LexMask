@@ -38,7 +38,15 @@ def test_image_block_becomes_placeholder_pending_enrich():
     cl = [_block(type="image", img_path="images/a.jpg", text="")]
     segs, warns = clean_segments(cl)
     assert segs[0].source == "img_ocr" and segs[0].text == ""
+    assert segs[0].img_path == "images/a.jpg"
     assert any("images/a.jpg" in w for w in warns)
+
+
+def test_unhandled_block_type_warns():
+    cl = [_block(type="equation", text="E=mc^2")]
+    segs, warns = clean_segments(cl)
+    assert segs == []
+    assert any("unhandled block type: equation" in w for w in warns)
 
 
 def test_strip_inline_markdown_and_latex():
@@ -47,6 +55,12 @@ def test_strip_inline_markdown_and_latex():
     assert strip_inline("$1 3 4 . 3 7$") == "1 3 4 . 3 7"
     assert strip_inline(r"\[ 1 3 4 . 3 7 \]") == "1 3 4 . 3 7"
     assert strip_inline(r"如\;下所述") == "如下所述"
+
+
+def test_strip_inline_preserves_bare_parens_and_dollar():
+    assert strip_inline("(2023)京01民终123号") == "(2023)京01民终123号"
+    assert strip_inline("(一)") == "(一)"
+    assert strip_inline("金额$100元") == "金额$100元"
 
 
 def test_text_blocks_keep_reading_order_and_page():
