@@ -224,6 +224,42 @@ def test_finalize_after_full_resolution(client, work):
     assert all(row["gt_version"] == "v1" for row in rows)
 
 
+def test_finalize_invalid_pack_400_not_500(client, work):
+    """定稿前从未被触过的页此时才首次校验：非法 pack → 400 带中文错误（非 500）。"""
+    pack = _pack_p2()
+    pack["entities"][0]["type"] = "不存在的类型"
+    (work / "pages/p2/pack.json").write_text(json.dumps(pack, ensure_ascii=False),
+                                             encoding="utf-8")
+    for idx in (0, 1):
+        assert client.post("/api/resolve", json={
+            "page_id": "p1", "entity_index": idx, "verdict": "对",
+            "correct": None, "note": None}).status_code == 200
+    sample = client.post("/api/sample", json={"ratio": 1.0, "seed": 42}).json()
+    for pid, idx in sample["selected"]:
+        if pid == "p1":
+            client.post("/api/sample-verdict", json={
+                "page_id": pid, "entity_index": idx, "ok": True, "correct": None})
+    r = client.post("/api/finalize")
+    assert r.status_code == 400
+    assert "校验失败" in r.json()["error"] or "PRESET" in r.json()["error"] \
+        or "type" in r.json()["error"]
+
+
+def test_img_bad_sha_404(work):
+    """source.file_sha256 非 64 位十六进制 → 404（不构造路径）。"""
+    pdf_root = work / "pdfs"
+    pdf_root.mkdir()
+    pack = _pack_p1()
+    pack["source"]["file_sha256"] = "../escape"
+    d = work / "pages" / "p1"
+    (d / "pack.json").write_text(json.dumps(pack, ensure_ascii=False),
+                                 encoding="utf-8")
+    client = TestClient(workbench_server.create_app(work, pdf_root=pdf_root))
+    r = client.get("/img/p1")
+    assert r.status_code == 404
+    assert "file_sha256" in r.json()["error"]
+
+
 # ---- 静态首页 --------------------------------------------------------------------
 
 def test_index_served(client):
@@ -250,9 +286,9 @@ def test_img_missing_pdf_file_404(work):
     assert "error" in r.json()
 
 
-def test_img_renders_png(work):
-    """pdf_root 下放一份「假 PDF」不可行——真渲染走 skipif 用例；
-    这里只验证 pack 定位与缓存目录逻辑：pypdfium2 缺失时也 404 + 原因。"""
+def test_img_bad_pdf_404_both_envs(work):
+    """两环境通用（Important#1 根治）：垃圾字节 PDF 无论有无 pypdfium2 都打不开
+    → render False → 404 + 原因（200 真渲染路径走下方 skipif 门控用例）。"""
     pdf_root = work / "pdfs"
     pdf_root.mkdir()
     fake = pdf_root / f"{'0' * 64}.pdf"
@@ -260,14 +296,26 @@ def test_img_renders_png(work):
     app = workbench_server.create_app(work, pdf_root=pdf_root)
     client = TestClient(app)
     r = client.get("/img/p1")
-    if HAS_PYPDFIUM2:
-        assert r.status_code == 200
-        assert r.headers["content-type"] == "image/png"
-        cache = pdf_root / "render_cache"
-        assert (cache / f"{'0' * 64}-p000.png").is_file()
-    else:
-        assert r.status_code == 404
-        assert "error" in r.json()
+    assert r.status_code == 404
+    assert "error" in r.json()
+
+
+@pytest.mark.skipif(not HAS_PYPDFIUM2,
+                    reason="pypdfium2 可选依赖未安装（离线环境跳过真渲染 200 路径）")
+def test_img_renders_png_with_dep(work):
+    """有 pypdfium2 的环境：真 PDF（pypdfium2 自建）→ 200 + PNG + 缓存文件。"""
+    import pypdfium2 as pdfium
+    pdf_root = work / "pdfs"
+    pdf_root.mkdir()
+    doc = pdfium.PdfDocument.new()
+    doc.new_page(100, 100)
+    doc.save(str(pdf_root / f"{'0' * 64}.pdf"))
+    app = workbench_server.create_app(work, pdf_root=pdf_root)
+    client = TestClient(app)
+    r = client.get("/img/p1")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    assert (pdf_root / "render_cache" / f"{'0' * 64}-p000.png").is_file()
 
 
 # ---- Task 4: render_page_png 单测 --------------------------------------------------

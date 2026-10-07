@@ -21,6 +21,7 @@ pypdfium2 为可选依赖（缺失时 /img 降级 404，前端回落转录高亮
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -51,8 +52,6 @@ def create_app(work: Path, pdf_root: Path | None = None) -> FastAPI:
             return fn(*args, **kwargs)
         except ValueError as exc:
             return JSONResponse(status_code=400, content={"error": str(exc)})
-
-    # ---- 只读端点 -----------------------------------------------------------
 
     def _404(reason: str):
         return JSONResponse(status_code=404, content={"error": reason})
@@ -130,10 +129,11 @@ def create_app(work: Path, pdf_root: Path | None = None) -> FastAPI:
                 missing.append(f"抽检未完成（已检 {trust['checked']} 条 / 共 {total} 条）")
         if missing:
             return JSONResponse(status_code=409, content={"missing": missing})
-        packs = list(ws.pages.values())
-        out = work / "gt_v1.jsonl"
-        gt_schema.write_gt_jsonl(packs, out, "v1")
-        return {"ok": True, "out": str(out), "pages": len(packs)}
+        try:
+            gt_schema.write_gt_jsonl(list(ws.pages.values()), work / "gt_v1.jsonl", "v1")
+        except ValueError as exc:  # 未被触过的页定稿前才首次校验：非法 → 400 非 500
+            return JSONResponse(status_code=400, content={"error": str(exc)})
+        return {"ok": True, "out": str(work / "gt_v1.jsonl"), "pages": len(ws.pages)}
 
     # ---- 页面渲染（Task 4 可选依赖；任何不可用 → 404 {"error": 原因}） ---------
 
@@ -147,6 +147,8 @@ def create_app(work: Path, pdf_root: Path | None = None) -> FastAPI:
             return _404(f"页 {page_id!r} 缺 source：{exc}")
         sha = source.get("file_sha256", "")
         page_no = source.get("page", 0)
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            return _404(f"source.file_sha256 {sha!r} 非 64 位小写十六进制")
         pdf = state["pdf_root"] / f"{sha}.pdf"
         if not pdf.is_file():
             return _404(f"源 PDF 缺失（{pdf}）")
