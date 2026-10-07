@@ -230,3 +230,84 @@ def test_index_served(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+
+
+# ---- Task 4: /img/{page_id}（渲染不可用 → 404 + 原因） -----------------------------
+
+def test_img_without_pdf_root_404(client):
+    r = client.get("/img/p1")
+    assert r.status_code == 404
+    assert "error" in r.json()
+
+
+def test_img_missing_pdf_file_404(work):
+    pdf_root = work / "pdfs"
+    pdf_root.mkdir()
+    app = workbench_server.create_app(work, pdf_root=pdf_root)
+    client = TestClient(app)
+    r = client.get("/img/p1")
+    assert r.status_code == 404
+    assert "error" in r.json()
+
+
+def test_img_renders_png(work):
+    """pdf_root 下放一份「假 PDF」不可行——真渲染走 skipif 用例；
+    这里只验证 pack 定位与缓存目录逻辑：pypdfium2 缺失时也 404 + 原因。"""
+    pdf_root = work / "pdfs"
+    pdf_root.mkdir()
+    fake = pdf_root / f"{'0' * 64}.pdf"
+    fake.write_bytes(b"not a pdf")
+    app = workbench_server.create_app(work, pdf_root=pdf_root)
+    client = TestClient(app)
+    r = client.get("/img/p1")
+    if HAS_PYPDFIUM2:
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/png"
+        cache = pdf_root / "render_cache"
+        assert (cache / f"{'0' * 64}-p000.png").is_file()
+    else:
+        assert r.status_code == 404
+        assert "error" in r.json()
+
+
+# ---- Task 4: render_page_png 单测 --------------------------------------------------
+
+def test_render_page_png_absent_dep_returns_false(tmp_path):
+    """无 pypdfium2 环境：任何输入都优雅返回 False（不抛异常）。"""
+    pdf = tmp_path / "x.pdf"
+    pdf.write_bytes(b"not a pdf")
+    assert render.render_page_png(str(pdf), 0, tmp_path / "out.png") is False
+
+
+def test_render_page_png_missing_file_returns_false(tmp_path):
+    assert render.render_page_png(str(tmp_path / "ghost.pdf"), 0,
+                                  tmp_path / "out.png") is False
+
+
+@pytest.mark.skipif(not HAS_PYPDFIUM2,
+                    reason="pypdfium2 可选依赖未安装（离线环境跳过真渲染）")
+def test_render_page_png_true_render(tmp_path):
+    import pypdfium2 as pdfium  # noqa: F401  真渲染用例
+    # 用 pypdfium2 自建一页最小 PDF 再渲染回来
+    doc = pdfium.PdfDocument.new()
+    doc.new_page(100, 100)
+    pdf = tmp_path / "real.pdf"
+    doc.save(str(pdf))
+    out = tmp_path / "render_cache" / "real-p000.png"
+    assert render.render_page_png(str(pdf), 0, out) is True
+    assert out.is_file() and out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+@pytest.mark.skipif(not HAS_PYPDFIUM2,
+                    reason="pypdfium2 可选依赖未安装（离线环境跳过）")
+def test_render_page_png_render_error_returns_false(tmp_path):
+    import pypdfium2
+    pdf = tmp_path / "bad.pdf"
+    pdf.write_bytes(b"%PDF-1.4 garbage")
+    try:
+        pypdfium2.PdfDocument(str(pdf))
+        can_open = True
+    except Exception:
+        can_open = False
+    if not can_open:
+        assert render.render_page_png(str(pdf), 0, tmp_path / "o.png") is False
