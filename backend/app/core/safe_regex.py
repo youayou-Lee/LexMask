@@ -33,12 +33,24 @@ def _compile_and_probe(pattern: str) -> re.Pattern:
 
 def _finditer_in_process(
     pattern_str: str, flags: int, text: str
-) -> list[tuple[str, int, int]]:
-    """Run finditer in a subprocess and return serialisable tuples."""
+) -> list[tuple[str, int, int, list[tuple[str, int, int, str]]]]:
+    """Run finditer in a subprocess and return serialisable tuples.
+
+    Per match: whole-match text/start/end plus the participating named
+    groups as ``(name, start, end, text)`` with absolute offsets (Issue#52:
+    interval / birth-context patterns emit per-group entities).
+    """
     compiled = re.compile(pattern_str, flags)
-    return [
-        (m.group(), m.start(), m.end()) for m in compiled.finditer(text)
-    ]
+    group_order = sorted(compiled.groupindex, key=compiled.groupindex.get)
+    out = []
+    for m in compiled.finditer(text):
+        named = [
+            (name, m.start(name), m.end(name), m.group(name))
+            for name in group_order
+            if m.start(name) != -1
+        ]
+        out.append((m.group(), m.start(), m.end(), named))
+    return out
 
 
 # Reusable process pool (spawned once, avoids per-call fork overhead).
@@ -83,12 +95,19 @@ def safe_compile(pattern: str, timeout: float = 2.0) -> re.Pattern:
 
 class _MatchProxy:
     """Lightweight stand-in for ``re.Match`` returned from subprocess results."""
-    __slots__ = ("_text", "_start", "_end")
+    __slots__ = ("_text", "_start", "_end", "_named_groups")
 
-    def __init__(self, text: str, start: int, end: int):
+    def __init__(
+        self,
+        text: str,
+        start: int,
+        end: int,
+        named_groups: list[tuple[str, int, int, str]] | None = None,
+    ):
         self._text = text
         self._start = start
         self._end = end
+        self._named_groups = list(named_groups or [])
 
     def group(self, *args: int) -> str:
         return self._text
@@ -98,6 +117,10 @@ class _MatchProxy:
 
     def end(self) -> int:
         return self._end
+
+    def named_groups(self) -> list[tuple[str, int, int, str]]:
+        """参与匹配的命名组 ``(name, start, end, text)``，未参与的组不出现。"""
+        return list(self._named_groups)
 
 
 def safe_finditer(
@@ -121,7 +144,7 @@ def safe_finditer(
             f"Regex finditer timed out after {timeout}s — "
             f"pattern may cause catastrophic backtracking (ReDoS)"
         )
-    return [_MatchProxy(t, s, e) for t, s, e in raw]
+    return [_MatchProxy(t, s, e, named) for t, s, e, named in raw]
 
 
 def _kill_and_replace_pool() -> None:

@@ -303,7 +303,26 @@ class HybridNERService:
             except (re.error, RegexTimeoutError) as exc:
                 logger.warning("Custom regex skipped for %s: %s", raw_type_id, exc)
                 continue
+            # 命名捕获组（Issue#52）：每个参与匹配的组各出一个实体——
+            # 区间 pattern 用 seg_a/seg_b 拆首尾（分隔符不入实体），
+            # 出生语境 pattern 用 birth_date* 只出日期（语境词不入实体）。
+            # 无命名组或组未参与的 pattern 维持整 match 一个实体的既有语义。
             for index, match in enumerate(matches):
+                named_groups = match.named_groups()
+                if named_groups:
+                    for sub_index, (_name, group_start, group_end, group_text) in enumerate(named_groups):
+                        if not group_text:
+                            continue
+                        entities.append(Entity(
+                            id=f"regex_{raw_type_id}_{index}_{sub_index}",
+                            text=group_text,
+                            type=raw_type_id,
+                            start=group_start,
+                            end=group_end,
+                            page=1,
+                            source="regex",
+                        ))
+                    continue
                 matched_text = match.group()
                 if not matched_text:
                     continue
