@@ -74,6 +74,9 @@ const PlaygroundImagePopout = React.lazy(() =>
 const ConsolePage = React.lazy(() =>
   import('./features/console/console-page').then((m) => ({ default: m.ConsolePage })),
 );
+const AgentMd = React.lazy(() =>
+  import('./features/agent-md').then((m) => ({ default: m.AgentMd })),
+);
 
 function DelayedSpinner() {
   const [show, setShow] = React.useState(false);
@@ -277,6 +280,14 @@ export const router = createBrowserRouter([
         ),
       },
       { path: 'batch/:batchMode', element: <BatchRoute /> },
+      {
+        path: 'agent-md',
+        element: (
+          <LazyPage>
+            <AgentMd />
+          </LazyPage>
+        ),
+      },
       {
         path: 'structured',
         element: (

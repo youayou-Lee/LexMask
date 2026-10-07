@@ -9,6 +9,7 @@ import {
   RefreshCw,
   ScanLine,
   Server,
+  Sparkles,
   TableProperties,
 } from 'lucide-react';
 import { useT } from '@/i18n';
@@ -69,6 +70,13 @@ export function AppSidebar() {
       end: true,
     },
     { path: '/batch', label: t('nav.batch'), sublabel: t('nav.batch.sub'), icon: BatchIcon },
+    {
+      path: '/agent-md',
+      label: t('nav.agentMd'),
+      sublabel: t('nav.agentMd.sub'),
+      icon: Sparkles,
+      end: true,
+    },
     {
       path: '/structured',
       label: t('nav.structured'),
