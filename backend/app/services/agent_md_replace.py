@@ -40,7 +40,14 @@ def render_outputs(
     - excluded 项：原文保留并记入 retained_fields（不替换）；
     - 全局偏移按段拆回（段 i 占 [cursor, cursor+len(text))，过后 cursor+=len+2），
       段内替换按起始偏移**倒序**执行避免位移；
-    - (text, type) 不在 mapping 中的实体静默跳过。
+    - (text, type) 不在 mapping 中的实体静默跳过；
+    - 全文兜底替换（E4 零残留）：span 替换只覆盖 NER 标注处，同一原文在文档
+      其他位置未标注出现时由兜底补齐——对每个未 excluded 的映射项在拼装后的
+      全文上执行 text.replace(original, replacement)，按 original_text 长度
+      **降序**执行：若被替换的长文本内部包含某 excluded 项文本，长文本优先
+      整体替换（excluded 项不单独生效，不产生嵌套损坏）；替换完成后 excluded
+      文本仍可能独立出现，按定义允许保留。占位符含 ``[`` ``]`` 而映射原文不含
+      该形态，普通 replace 不会二次命中已插入的占位符。
     """
     key = {(m.original_text, m.entity_type): m for m in mapping}
     spans: list[tuple[int, int, str | None]] = []
@@ -73,6 +80,17 @@ def render_outputs(
         cursor = seg_end + len(_SEP)
 
     md = _SEP.join(pieces)
+
+    # 全文兜底：NER 只标注了部分出现处，同值其余出现处也要替换（E4 零残留）。
+    # 长文本优先（len 降序）避免子串嵌套损坏；excluded 项跳过（保留原文）；
+    # 占位符含 [] 而原文不含，不会误伤已插入的占位符；空原文跳过防误插。
+    for m in sorted(
+        (m for m in mapping if not m.excluded and m.original_text),
+        key=lambda m: len(m.original_text),
+        reverse=True,
+    ):
+        md = md.replace(m.original_text, m.replacement)
+
     mapping_json = {
         "items": [
             {
