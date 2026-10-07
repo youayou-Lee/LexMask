@@ -29,11 +29,75 @@ def test_normalize_legacy_structure():
     assert m.entries["[PERSON_1]"].texts == ["张三"]
 
 
-def test_normalize_degenerate_string_value():
-    # T1 结构的退化写法:{替换词: 原文字符串}
-    m = normalize_mapping({"张三": "[PERSON_1]", "某人民法院1": "广东省清远市清城区人民法院"})
-    assert m.entries["张三"].texts == ["[PERSON_1]"]
+def test_normalize_string_value_dual_direction():
+    # 字符串值双向(评审 I2 定稿):value 是占位符/化名形态=反查 {原文: 替换词};
+    # 否则=T1 退化 {替换词: 原文}
+    m = normalize_mapping({
+        "张三": "[PERSON_1]",                                   # 反查方向(preview entity_map)
+        "某人民法院1": "广东省清远市清城区人民法院",              # T1 退化方向
+    })
+    assert m.entries["[PERSON_1]"].texts == ["张三"]
     assert m.entries["某人民法院1"].texts == ["广东省清远市清城区人民法院"]
+
+
+def test_preview_entity_map_roundtrip_direction():
+    # build_preview_entity_map 产物 {原文: 替换词} 喂入可正确还原(评审 I2 实测面)
+    from app.services.restore_service import restore as _r
+    m = normalize_mapping({"陈文清": "[PERSON_1]"})
+    r = _r("委托人[PERSON_1]到案。", m)
+    assert r.restored_text == "委托人陈文清到案。"
+
+
+def test_digit_ended_key_partial_swallow_exposed():
+    # 评审 I1:某公司12 中的 某公司1 不部分吞吃;该形态进 unknown 显式暴露
+    m = normalize_mapping({"某公司1": {"texts": ["甲公司"]}})
+    r = restore("涉案某公司12与某公司13。", m)
+    assert "甲公司2" not in r.restored_text and "甲公司3" not in r.restored_text
+    assert "某公司12" in r.restored_text  # 原样保留(不猜)
+    assert set(r.unknown) == {"某公司1"}
+
+
+def test_year_era_suffix_boundary():
+    # 评审 C1:「1990年代」「2023年初」是高频法律文书形态,不得静默损坏
+    m = normalize_mapping({"2023年": {"texts": ["2023年7月13日"]}, "1990年": {"texts": ["1990年5月1日"]}})
+    r = restore("上世纪1990年代出生,2023年初案发,2023年年底宣判。", m)
+    assert r.restored_text == "上世纪1990年代出生,2023年初案发,2023年年底宣判。"
+    assert {a["key"] for a in r.ambiguous} == {"1990年", "2023年"}
+    assert r.hits["skipped_boundary"] == 3
+
+
+def test_year_legit_continuation_restores():
+    # C1 对照面:「起/以来/前后/起诉」合法续接,正常还原
+    m = normalize_mapping({"2023年": {"texts": ["2023年7月13日"]}})
+    r = restore("自2023年起诉后,2023年以来行骗三次。", m)
+    assert r.restored_text.count("2023年7月13日") == 2
+    assert r.ambiguous == []
+
+
+def test_used_first_reported():
+    # 评审 I3:policy=first 取首条须在报告中标注
+    m = normalize_mapping({"[PERSON_1]": {"texts": ["甲一", "甲二"]}})
+    r = restore("嫌疑人[PERSON_1]。", m, policy="first")
+    assert "甲一" in r.restored_text
+    assert r.used_first == ["[PERSON_1]"]
+    r_safe = restore("嫌疑人[PERSON_1]。", m)
+    assert r_safe.used_first == []
+
+
+def test_native_someword_not_unknown():
+    # 评审 M1:原生「某甲」「某些」不报 unknown;只认带数字后缀合成形态
+    m = normalize_mapping({"[PERSON_1]": {"texts": ["张三"]}})
+    r = restore("某甲与某些证人指认[PERSON_1]。", m)
+    assert r.unknown == []
+    assert r.restored_text == "某甲与某些证人指认张三。"
+
+
+def test_ambiguous_dedup_with_occurrences():
+    # 评审 M2:同 key 多次碰撞去重附 occurrences
+    m = normalize_mapping({"2023年": {"texts": ["2023年7月13日"]}})
+    r = restore("2023年3月、2023年5月、2023年7月各一次。", m)
+    amb = [a for a in r.ambiguous if a["key"] == "2023年"]
+    assert len(amb) == 1 and amb[0]["occurrences"] == 3
 
 
 def test_normalize_mixed_and_warnings():
@@ -61,6 +125,7 @@ def test_placeholder_multi_safe_keeps_and_candidates():
     assert "[BIRTH_DATE_1]" in r.restored_text  # 默认不猜
     amb = [a for a in r.ambiguous if a["key"] == "[BIRTH_DATE_1]"]
     assert amb and amb[0]["candidates"] == ["1976年3月2日", "1976年11月8日"]
+    assert amb[0]["occurrences"] == 1
 
 
 def test_placeholder_multi_first_policy():
@@ -156,8 +221,7 @@ def test_nested_replacement_not_cascaded():
 
 # ---------- T05 API(T05 用 TestClient,鉴权见 T08) ----------
 
-@pytest.mark.asyncio
-async def test_restore_service_empty_and_plain():
+def test_restore_service_empty_and_plain():
     m = normalize_mapping({"[PERSON_1]": {"texts": ["张三"]}})
     r0 = restore("", m)
     assert r0.restored_text == "" and r0.restored_count == 0
@@ -166,3 +230,11 @@ async def test_restore_service_empty_and_plain():
     # 空映射:占位符进 unknown
     r2 = restore("[PERSON_1]。", normalize_mapping({}))
     assert r2.unknown == ["[PERSON_1]"]
+
+
+def test_idempotent_second_pass_unknown_stable():
+    # 评审 M1 连带:二次还原报告级也幂等(unknown 不新增)
+    m = normalize_mapping({"[PERSON_1]": {"texts": ["张三"]}, "某公司1": {"texts": ["某科技有限公司"]}})
+    r1 = restore("[PERSON_1]任职于某公司1。", m)
+    r2 = restore(r1.restored_text, m)
+    assert r2.unknown == []

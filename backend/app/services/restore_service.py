@@ -20,7 +20,9 @@ PLACEHOLDER_RE = re.compile(r"\[[A-Za-z][A-Za-z0-9_]*_\d+\]")
 # 化名词:替换引擎生成的合成词形态(某+名词+可选序号)
 PSEUDONYM_RE = re.compile(r"某[\u4e00-\u9fff]{1,6}\d{0,3}")
 # 泛化词后界续接字符(日期/区划):命中即视为子串碰撞
-_BOUNDARY_CONT_RE = re.compile(r"[0-9〇一二三四五六七八九十月日时分秒号区县市省旗镇乡村路街巷道屯清新]")
+# 后界续接字符:日期(月日年时分秒号代初末底中旬)+ 区划(区县市省旗镇乡村路街巷道屯清新)。
+# 注意:「起/以来/前后/起诉」是合法还原续接,不得加入(「2023年起诉」还原后语义正确)。
+_BOUNDARY_CONT_RE = re.compile(r"[0-9〇一二三四五六七八九十月日年时分秒号代初末底中旬区县市省旗镇乡村路街巷道屯清新]")
 
 VALID_POLICIES = ("safe", "first")
 
@@ -41,9 +43,10 @@ class Mapping:
 class RestoreResult:
     restored_text: str
     restored_count: int = 0
-    ambiguous: list = field(default_factory=list)   # [{key, candidates}]
+    ambiguous: list = field(default_factory=list)   # [{key, candidates, reason?}]
     unknown: list[str] = field(default_factory=list)
-    hits: dict = field(default_factory=dict)        # {placeholder: n, pseudonym: n, generalized: n, skipped_boundary: n}
+    hits: dict = field(default_factory=dict)        # {placeholder, pseudonym, generalized, skipped_boundary}
+    used_first: list[str] = field(default_factory=list)  # policy=first 时取首条还原的 key(评审 I3)
 
 
 def normalize_mapping(raw: object) -> Mapping:
@@ -58,11 +61,15 @@ def normalize_mapping(raw: object) -> Mapping:
             continue
         # 扁平反查:{原文: 替换词};若键本身是占位符形态则按旧格式 {text} 语义
         if isinstance(value, str):
-            # 字符串值 = T1 退化格式 {替换词: 原文};等价于 {text: 原文}
-            if value.strip():
-                mapping.entries[key] = MappingEntry(texts=[value.strip()])
-            else:
+            v = value.strip()
+            if not v:
                 mapping.parse_warnings.append(f"条目 {key!r} 原文为空,已跳过")
+            elif PLACEHOLDER_RE.fullmatch(v) or PSEUDONYM_RE.fullmatch(v):
+                # 反查方向 {原文: 替换词}(如 build_preview_entity_map 的 entity_map)
+                mapping.entries[v] = MappingEntry(texts=[key])
+            else:
+                # T1 退化格式 {替换词: 原文}
+                mapping.entries[key] = MappingEntry(texts=[v])
             continue
         if isinstance(value, dict):
             texts: list[str] | None = None
@@ -120,10 +127,11 @@ def restore(text: str, mapping: Mapping, policy: str = "safe") -> RestoreResult:
     def overlapped(s: int, e: int) -> bool:
         return any(s < ce and cs < e for cs, ce in consumed_spans)
 
-    def resolve(entry: MappingEntry) -> str | None:
+    def resolve(entry: MappingEntry, key: str) -> str | None:
         if len(entry.texts) == 1:
             return entry.texts[0]
         if policy == "first":
+            result.used_first.append(key)
             return entry.texts[0]
         return None  # safe:一对多不猜
 
@@ -134,7 +142,7 @@ def restore(text: str, mapping: Mapping, policy: str = "safe") -> RestoreResult:
         if entry is None:
             result.unknown.append(key)
             continue
-        repl = resolve(entry)
+        repl = resolve(entry, key)
         if repl is None:
             result.ambiguous.append({"key": key, "candidates": list(entry.texts)})
             continue
@@ -159,14 +167,21 @@ def restore(text: str, mapping: Mapping, policy: str = "safe") -> RestoreResult:
             if overlapped(i, j):
                 start = j
                 continue
-            if generalized and j < len(text) and _BOUNDARY_CONT_RE.match(text[j]):
+            digit_ended = key[-1].isdigit()
+            if (generalized or digit_ended) and j < len(text) and _BOUNDARY_CONT_RE.match(text[j]):
+                # 带序号 key 后接数字(某公司12 中的 某公司1)= 部分吞吃,跳过;
+                # 该次出现按 unknown 暴露(存在更长的映射外形态)
                 # 子串碰撞(如「2023年3月7日」中的「2023年」):跳过进 ambiguous
-                result.ambiguous.append({"key": key, "candidates": list(entry.texts),
-                                         "reason": "boundary"})
+                if digit_ended:
+                    if key not in result.unknown:
+                        result.unknown.append(key)
+                else:
+                    result.ambiguous.append({"key": key, "candidates": list(entry.texts),
+                                             "reason": "boundary"})
                 hits["skipped_boundary"] += 1
                 start = j
                 continue
-            repl = resolve(entry)
+            repl = resolve(entry, key)
             if repl is None:
                 result.ambiguous.append({"key": key, "candidates": list(entry.texts)})
                 start = j
@@ -176,13 +191,14 @@ def restore(text: str, mapping: Mapping, policy: str = "safe") -> RestoreResult:
             hits["pseudonym" if not generalized else "generalized"] += 1
             start = j
 
-    # unknown 化名词:文本里的化名形态词,若不被任何映射 key 覆盖则报 unknown
-    for m in PSEUDONYM_RE.finditer(text):
+    # unknown 化名词:只认带数字后缀的合成形态(某公司99);原生「某甲」「某些」非产物,不报
+    for m in re.finditer(r"某[\u4e00-\u9fff]{1,6}\d{1,3}", text):
         w = m.group(0)
         if w in mapping.entries:
             continue
-        if any(w in k or k in w for k in mapping.entries):
-            continue  # 是某 key 的子串/超串(如「某公司」是「某公司1」前缀形态),不误报
+        if any(w == k or w in k or k in w for k in mapping.entries):
+            continue  # 与某 key 完全相等/互为子串(如「某公司1」是「某公司12」前缀态)不报;
+            # 纯前缀重叠(「某公司」⊂「某公司1」且前者非 key)由 I1 数字后界断言负责
         if any(ws <= text.find(w) < we for ws, we in consumed_spans):
             continue  # 位于将被替换的区间内(原文形态),非幻觉
         if w not in result.unknown:
@@ -191,5 +207,15 @@ def restore(text: str, mapping: Mapping, policy: str = "safe") -> RestoreResult:
     result.restored_text = _replace_spans(text, spans)
     result.restored_count = len(spans)
     result.unknown = sorted(set(result.unknown))
+    # ambiguous 按 key 去重,occurrences 计数(评审 M2)
+    deduped: list = []
+    for a in result.ambiguous:
+        for d in deduped:
+            if d["key"] == a["key"]:
+                d["occurrences"] = d.get("occurrences", 1) + 1
+                break
+        else:
+            deduped.append({**a, "occurrences": 1})
+    result.ambiguous = deduped
     result.hits = hits
     return result

@@ -21,7 +21,7 @@ from app.services.restore_service import normalize_mapping, restore  # noqa: E40
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="脱敏文本还原(占位符/化名 → 原文)")
-    parser.add_argument("input", help="脱敏文本文件(.md/.txt);省略则读 stdin")
+    parser.add_argument("input", nargs="?", default=None, help="脱敏文本文件(.md/.txt);省略则读 stdin")
     parser.add_argument("--mapping", required=True, help="映射表 JSON(#66 产物)")
     parser.add_argument("--policy", choices=["safe", "first"], default="safe",
                         help="一对多策略:safe=保留占位符+候选(默认);first=取首条")

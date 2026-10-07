@@ -3,6 +3,9 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 import pytest
 from fastapi.testclient import TestClient
@@ -71,7 +74,7 @@ def test_restore_cli_matches_api(tmp_path):
     out = subprocess.run(
         [sys.executable, "scripts/restore_md.py", str(md), "--mapping", str(mp)],
         capture_output=True, text=True, check=True,
-        cwd=".",
+        cwd=str(BACKEND_DIR),
     )
     assert out.stdout.strip() == api.json()["restored_text"]
 
@@ -85,7 +88,7 @@ def test_restore_cli_report(tmp_path):
     out = subprocess.run(
         [sys.executable, "scripts/restore_md.py", str(md), "--mapping", str(mp),
          "--report", str(report)],
-        capture_output=True, text=True, check=True, cwd=".",
+        capture_output=True, text=True, check=True, cwd=str(BACKEND_DIR),
     )
     rep = json.loads(report.read_text(encoding="utf-8"))
     assert rep["unknown"] == ["[PERSON_999]"]
@@ -96,3 +99,14 @@ def test_restore_requires_auth_when_enabled(monkeypatch):
     monkeypatch.setattr(settings, "AUTH_ENABLED", True)
     resp = client.post("/api/v1/vlmd/restore", json={"text": "x", "mapping": MAPPING})
     assert resp.status_code in (401, 403), resp.status_code
+
+
+def test_restore_cli_stdin(tmp_path):
+    mp = tmp_path / "mapping.json"
+    mp.write_text(json.dumps(MAPPING, ensure_ascii=False), encoding="utf-8")
+    out = subprocess.run(
+        [sys.executable, "scripts/restore_md.py", "--mapping", str(mp)],
+        input="[PERSON_1]到庭。", capture_output=True, text=True, check=True,
+        cwd=str(BACKEND_DIR),
+    )
+    assert out.stdout == "张三到庭。"
