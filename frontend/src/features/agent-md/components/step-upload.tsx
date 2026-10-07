@@ -33,11 +33,13 @@ async function readUploadEnvelope(
 
 interface StepUploadProps {
   onUploaded: (taskId: string) => void;
-  onError: (message: string) => void;
 }
 
-/** 四步动线第一步：PDF 投递 + 加密 PDF 条件密码分支（Issue#75）。 */
-export function StepUpload({ onUploaded, onError }: StepUploadProps) {
+/**
+ * 四步动线第一步：PDF 投递 + 加密 PDF 条件密码分支（Issue#75）。
+ * 上传失败只走本步内的 issue 框展示（不喂页面横幅，评审 R1 去重——横幅留给后续步骤的错误）。
+ */
+export function StepUpload({ onUploaded }: StepUploadProps) {
   const t = useT();
   // file 留在组件态以便带密码重传；密码只存这里，不打日志、不进任何全局状态
   const [file, setFile] = useState<File | null>(null);
@@ -76,12 +78,11 @@ export function StepUpload({ onUploaded, onError }: StepUploadProps) {
       } catch (err) {
         const message = err instanceof Error && err.message ? err.message : t('agentMd.uploadFailed');
         setIssue(message);
-        onError(message);
       } finally {
         setBusy(false);
       }
     },
-    [onUploaded, onError, t],
+    [onUploaded, t],
   );
 
   const onDrop = useCallback(

@@ -24,6 +24,8 @@ export function StepResult({ taskId }: StepResultProps) {
   const t = useT();
   const [md, setMd] = useState<string | null>(null);
   const [retained, setRetained] = useState<RetainedField[] | null>(null);
+  // retained 拉不到 ≠ 空清单：区分展示（评审 R1），失败不打断结果页主内容
+  const [retainedError, setRetainedError] = useState(false);
   const [copied, setCopied] = useState(false);
   const [issue, setIssue] = useState<string | null>(null);
 
@@ -38,11 +40,12 @@ export function StepResult({ taskId }: StepResultProps) {
         if (!alive) return;
         if (!mdRes.ok) throw new Error(t('agentMd.artifactFailed'));
         setMd(await mdRes.text());
-        // retained 拉不到不挡结果页（清单是附带审计信息）
+        // retained 拉不到走失败提示（不与空清单混淆），仍不挡结果页主内容
         if (retainedRes.ok) {
           const data = (await retainedRes.json()) as { retained_fields?: RetainedField[] };
           setRetained(Array.isArray(data.retained_fields) ? data.retained_fields : []);
         } else {
+          setRetainedError(true);
           setRetained([]);
         }
       } catch (err) {
@@ -126,7 +129,11 @@ export function StepResult({ taskId }: StepResultProps) {
 
       <div className="rounded-2xl border border-border bg-card p-4" data-testid="agent-md-retained">
         <p className="text-sm font-medium text-foreground">{t('agentMd.retainedNote')}</p>
-        {retained == null ? null : retained.length === 0 ? (
+        {retainedError ? (
+          <p className="mt-2 text-sm text-destructive" data-testid="agent-md-retained-error">
+            {t('agentMd.artifactFailed')}
+          </p>
+        ) : retained == null ? null : retained.length === 0 ? (
           <p className="mt-2 text-sm text-muted-foreground">{t('agentMd.retainedEmpty')}</p>
         ) : (
           <ul className="mt-2 grid gap-1.5">

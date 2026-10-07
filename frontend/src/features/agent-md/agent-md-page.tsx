@@ -24,7 +24,9 @@ export function AgentMd() {
   const [items, setItems] = useState<MappingItemDto[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // 错误横幅只承载「当前步骤不可见」的瞬时错误，步骤推进即清（评审 R1：防陈旧横幅跟随全流程）
   const onUploaded = useCallback((id: string) => {
+    setError(null);
     setTaskId(id);
     setStep('processing');
   }, []);
@@ -39,6 +41,7 @@ export function AgentMd() {
       const m = await agentMdApi.mapping(taskId);
       setItems(m.items);
     }
+    if (next !== 'processing') setError(null); // 轮询成功推进（评审/出稿）即清横幅
     setStep(next);
     return st;
   }, [taskId]);
@@ -51,15 +54,16 @@ export function AgentMd() {
           {error}
         </div>
       )}
-      {step === 'upload' && <StepUpload onUploaded={onUploaded} onError={setError} />}
+      {step === 'upload' && <StepUpload onUploaded={onUploaded} />}
       {step === 'processing' && (
         <StepProcessing
           status={status}
           pollOnce={pollOnce}
           onError={setError}
           onFail={() => {
-            // 清掉上一个任务的终态，避免重传后首轮轮询前闪现旧 failed 面板
+            // 清掉上一任务的终态与横幅，避免重传后首轮轮询前闪现旧 failed 面板/错误
             setStatus(null);
+            setError(null);
             setStep('upload');
           }}
         />

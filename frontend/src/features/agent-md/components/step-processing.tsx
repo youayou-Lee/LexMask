@@ -35,9 +35,10 @@ export function StepProcessing({ status, pollOnce, onError, onFail }: StepProces
     return () => window.clearInterval(timer);
   }, []);
 
-  // 状态轮询：出错即停（避免错误刷屏），展示失败态与重传入口
+  // 状态轮询：出错即停（避免错误刷屏）；state=failed 为终态，同样停表直到重传（评审 R1）
+  const failed = pollIssue !== null || status?.state === 'failed';
   useEffect(() => {
-    if (pollIssue) return;
+    if (failed) return;
     const poll = window.setInterval(() => {
       void pollOnce().catch((err: unknown) => {
         const message =
@@ -47,9 +48,8 @@ export function StepProcessing({ status, pollOnce, onError, onFail }: StepProces
       });
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(poll);
-  }, [pollOnce, pollIssue, onError, t]);
+  }, [failed, pollOnce, onError, t]);
 
-  const failed = pollIssue !== null || status?.state === 'failed';
   const failMessage = pollIssue ?? status?.message ?? '';
   const queued = (status?.pages_total ?? 0) === 0;
 
