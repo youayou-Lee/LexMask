@@ -287,3 +287,183 @@ def test_apply_sample_verdict_wrong_requires_correct(work):
     pid, idx = s["selected"][0]
     with pytest.raises(ValueError):
         workbench.apply_sample_verdict(work, pid, idx, ok=False, correct=None)
+
+
+# ---- 终审修复波（2026-10-07）：真实引擎形状（结构抄 arbitrate.py/pagepack.py，
+#      合成占位值）——R6 gap 条目/0 实体页、R3 被否读数不在 entities ---------------
+
+def _pack_gap():  # R6 整页升级真实形状：0 实体 + gap 条目（candidates=detail 字符串）
+    return {
+        "page_id": "pg", "page_type": "body",
+        "source": {"file_sha256": "3" * 64, "page": 3,
+                   "carrier": "scanned", "segment": "first"},
+        "transcript_gt": {"text": "甲乙丙丁", "normalized_text": "甲乙丙丁",
+                          "fidelity": "machine"},
+        "entities": [],
+        "adjudications": [
+            {"models": ["v6", "vl"], "rule": "R6", "verdict": "disputed",
+             "candidates": {"detail": ["单侧多出：v6 面读数「戊」、VL 面无"]},
+             "gap": "单方多字/集合不合，整页升级（R6）"},
+            {"models": ["v6", "vl"], "rule": "R6", "verdict": "disputed",
+             "candidates": {"a": [{"text": "戊", "type": "姓名",
+                                   "span_original": [3, 4]}],
+                            "b": [], "md": []}}]}
+
+
+def _pack_r3():  # R3 采 VL 面真实形状：采信读数入库，被否 a 读数留痕、不在 entities
+    return {
+        "page_id": "pr", "page_type": "table",
+        "source": {"file_sha256": "4" * 64, "page": 4,
+                   "carrier": "text_pdf", "segment": "first"},
+        "transcript_gt": {"text": "甲乙丙丁", "normalized_text": "甲乙丙丁",
+                          "fidelity": "machine"},
+        "entities": [
+            {"text": "甲乙", "type": "姓名",
+             "span_original": [0, 2], "span_normalized": [0, 2],
+             "origin": "regex", "verify": "consistent", "note": None},
+            {"text": "丙", "type": "姓名",
+             "span_original": [2, 3], "span_normalized": [2, 3],
+             "origin": "regex", "verify": "arbitrated", "arbitration": "R3",
+             "note": None}],
+        "adjudications": [
+            {"models": ["v6", "vl"], "rule": "R1", "verdict": "consistent"},
+            {"models": ["v6", "vl", "vl-md"], "rule": "R3", "verdict": "auto:b"},
+            {"models": ["v6", "vl", "vl-md"], "rule": "R3", "verdict": "disputed",
+             "candidates": {"a": [{"text": "戊", "type": "姓名",
+                                   "span_original": [3, 4]}],
+                            "b": [], "md": []}}]}
+
+
+@pytest.fixture()
+def work_real(tmp_path):
+    for pid, pack in (("pg", _pack_gap()), ("pr", _pack_r3())):
+        d = tmp_path / "pages" / pid
+        d.mkdir(parents=True)
+        (d / "pack.json").write_text(json.dumps(pack, ensure_ascii=False),
+                                     encoding="utf-8")
+    return tmp_path
+
+
+def test_resolve_ack_closes_gap_dispute_without_touching_entities(work_real):
+    out = workbench.resolve_dispute(work_real, "pg", None, "ack", None, None,
+                                    adjudication_index=0)
+    assert out["verdict"] == "ack"
+    assert out["verify"] is None  # ack 不碰实体 → 无 verify 语义
+    assert out["adjudication_index"] == 0
+    pack = _read_pack(work_real, "pg")
+    assert pack["entities"] == []  # 一根毫毛都没动
+    assert pack["adjudications"][0]["verdict"] == "user:ack"
+    assert pack["adjudications"][1]["verdict"] == "disputed"  # 其余条目不受牵连
+
+
+def test_resolve_ack_requires_explicit_adjudication_index(work_real):
+    before = copy.deepcopy(_read_pack(work_real, "pg"))
+    with pytest.raises(ValueError):
+        workbench.resolve_dispute(work_real, "pg", None, "ack", None, None)
+    assert _read_pack(work_real, "pg") == before
+    assert not (work_real / "journal.jsonl").exists()
+
+
+def test_resolve_ack_on_rejected_r3_reading(work_real):
+    out = workbench.resolve_dispute(work_real, "pr", None, "ack", None, None,
+                                    adjudication_index=2)
+    pack = _read_pack(work_real, "pr")
+    assert pack["adjudications"][2]["verdict"] == "user:ack"
+    assert len(pack["entities"]) == 2  # 无新实体
+    assert [e["verify"] for e in pack["entities"]] == ["consistent", "arbitrated"]
+
+
+def test_resolve_miss_on_zero_entity_page_closes_dispute(work_real):
+    correct = {"text": "戊", "type": "姓名",
+               "span_original": [3, 4], "span_normalized": [3, 4]}
+    out = workbench.resolve_dispute(work_real, "pg", None, "漏", correct, None,
+                                    adjudication_index=1)
+    assert out["verify"] == "user-confirmed"  # M1：返回追加实体的 verify
+    assert out["entity_index"] is None
+    assert out["adjudication_index"] == 1
+    pack = _read_pack(work_real, "pg")
+    assert len(pack["entities"]) == 1
+    assert pack["entities"][0]["origin"] == "user"
+    assert pack["entities"][0]["verify"] == "user-confirmed"
+    assert pack["adjudications"][1]["verdict"] == "user:漏"
+
+
+def test_resolve_miss_without_index_keeps_disputes_disputed(work_real):
+    # 旧客户端兼容路径：漏不带 adjudication_index → 只补录、不关单（旧行为）
+    correct = {"text": "戊", "type": "姓名",
+               "span_original": [3, 4], "span_normalized": [3, 4]}
+    workbench.resolve_dispute(work_real, "pr", None, "漏", correct, None)
+    pack = _read_pack(work_real, "pr")
+    assert len(pack["entities"]) == 3
+    assert [a["verdict"] for a in pack["adjudications"]] == \
+        ["consistent", "auto:b", "disputed"]
+
+
+def test_resolve_correct_creates_entity_when_none_exists(work_real):
+    # 采纳被否读数：错 + entity_index=null → 新实体 user-corrected + 显式关单
+    correct = {"text": "戊", "type": "姓名",
+               "span_original": [3, 4], "span_normalized": [3, 4]}
+    out = workbench.resolve_dispute(work_real, "pr", None, "错", correct, "采信 a 读数",
+                                    adjudication_index=2)
+    assert out["verify"] == "user-corrected"
+    assert out["entity_index"] is None
+    pack = _read_pack(work_real, "pr")
+    assert len(pack["entities"]) == 3
+    new = pack["entities"][-1]
+    assert new["text"] == "戊" and new["origin"] == "user"
+    assert new["verify"] == "user-corrected" and new["note"] == "采信 a 读数"
+    assert pack["adjudications"][2]["verdict"] == "user:错"
+
+
+def test_resolve_explicit_index_skips_candidate_matching(work_real):
+    # 显式关单不做候选匹配：pr#2 的候选（戊）与实体0（甲乙）毫无交集，仍照关
+    out = workbench.resolve_dispute(work_real, "pr", 0, "对", None, None,
+                                    adjudication_index=2)
+    assert out["adjudication_index"] == 2
+    pack = _read_pack(work_real, "pr")
+    assert pack["entities"][0]["verify"] == "user-confirmed"
+    assert pack["adjudications"][2]["verdict"] == "user:对"
+
+
+def test_resolve_explicit_index_rejects_bad_target(work_real):
+    with pytest.raises(ValueError):  # 越界
+        workbench.resolve_dispute(work_real, "pr", 0, "对", None, None,
+                                  adjudication_index=9)
+    with pytest.raises(ValueError):  # 非 disputed 条目不可重裁
+        workbench.resolve_dispute(work_real, "pr", 0, "对", None, None,
+                                  adjudication_index=0)
+    assert not (work_real / "journal.jsonl").exists()
+
+
+def test_resolve_ack_undo_restores_dispute(work_real):
+    workbench.resolve_dispute(work_real, "pg", None, "ack", None, None,
+                              adjudication_index=0)
+    assert _read_pack(work_real, "pg")["adjudications"][0]["verdict"] == "user:ack"
+    workbench.undo_last(work_real)
+    pack = _read_pack(work_real, "pg")
+    assert pack["adjudications"][0]["verdict"] == "disputed"
+    assert pack["entities"] == []
+
+
+def test_resolve_warns_on_span_transcript_mismatch(work_real):
+    # I2：span 切出的转录文本 ≠ 提交原文（OCR 变体修正合法）→ 非致命 warnings
+    correct = {"text": "戊", "type": "姓名",
+               "span_original": [3, 4], "span_normalized": [3, 4]}  # 转录该处为「丁」
+    out = workbench.resolve_dispute(work_real, "pg", None, "漏", correct, None,
+                                    adjudication_index=1)
+    assert any("不一致" in w for w in out.get("warnings", []))
+    # 定位命中时无 warnings 键（错改 pr#0：文本未变、span 切出即原文）
+    out2 = workbench.resolve_dispute(
+        work_real, "pr", 0, "错",
+        {"text": "甲乙", "type": "姓名",
+         "span_original": [0, 2], "span_normalized": [0, 2]}, None)
+    assert "warnings" not in out2
+
+
+def test_resolve_miss_ignores_stale_entity_index(work_real):
+    # 漏不使用 entity_index：旧客户端兜底值（0）在 0 实体页不再炸越界
+    correct = {"text": "戊", "type": "姓名",
+               "span_original": [3, 4], "span_normalized": [3, 4]}
+    out = workbench.resolve_dispute(work_real, "pg", 0, "漏", correct, None)
+    assert out["entity_index"] is None
+    assert len(_read_pack(work_real, "pg")["entities"]) == 1

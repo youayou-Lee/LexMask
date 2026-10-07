@@ -1,5 +1,12 @@
 """GT 工作台 HTTP 服务（Issue#56 M3 / Task 3）。
 
+启动器（终审修复波 I4）::
+
+    python3 -m gt.workbench_server --work ~/gt-work [--pdf-root PATH] [--port N]
+
+（在 eval/ 目录下运行，或 PYTHONPATH 含 eval；host 固定 127.0.0.1 本机回环，
+端口默认 8600。这是用户与门禁⑤在真实 ``--work`` 目录上启动本工具的方式。）
+
 FastAPI 薄封装：端点 = ``workbench.py`` 数据层函数的直通包装 + 少量状态
 （``pdf_root``，供 ``/img/{page_id}`` 定位源 PDF）。零网络（TestClient 离线
 自测）、不碰任何 git 仓（铁律 1：GT 原文不进仓）。
@@ -37,6 +44,8 @@ from gt import gt_schema, render, workbench  # noqa: E402
 
 _STATIC = Path(__file__).resolve().parent / "workbench_static"
 
+_DEFAULT_PORT = 8600
+
 
 def create_app(work: Path, pdf_root: Path | None = None) -> FastAPI:
     """构造工作台应用；``work`` = 数据层工作目录，``pdf_root`` = 源 PDF 根。"""
@@ -69,7 +78,8 @@ def create_app(work: Path, pdf_root: Path | None = None) -> FastAPI:
 
     @app.get("/api/journal")
     def journal(n: int = 20):
-        return workbench.journal_tail(work, n)
+        # M4 终审修复：n 钳到 >= 0（负值在 [-n:] 切片下语义漂移）
+        return workbench.journal_tail(work, max(0, n))
 
     @app.get("/api/trust")
     def trust():
@@ -108,9 +118,12 @@ def create_app(work: Path, pdf_root: Path | None = None) -> FastAPI:
 
     @app.post("/api/resolve")
     def resolve(body: dict):
+        # 终审修复波 C1：透传显式 adjudication_index（前端恒传；缺省 = None 时
+        # 数据层走旧 span/text 关联兜底，兼容旧 journal/API 用户）
         return _run(workbench.resolve_dispute,
                     work, body.get("page_id"), body.get("entity_index"),
-                    body.get("verdict"), body.get("correct"), body.get("note"))
+                    body.get("verdict"), body.get("correct"), body.get("note"),
+                    body.get("adjudication_index"))
 
     @app.post("/api/undo")
     def undo():
@@ -144,10 +157,14 @@ def create_app(work: Path, pdf_root: Path | None = None) -> FastAPI:
         if not (work / "sample_seed.json").is_file():
             missing.append("抽检未完成（尚无抽样，先在抽检视图点「开始抽检」）")
         else:
+            # I1 终审修复（硬门禁）：确认+改判须覆盖全部抽样——旧口径用
+            # checked（含未复审的 consistent 条目）比对总数，门禁恒空转。
             trust = workbench.trust_rate(work)
             total = _selected_count()
-            if trust["checked"] < total:
-                missing.append(f"抽检未完成（已检 {trust['checked']} 条 / 共 {total} 条）")
+            reviewed = trust["confirmed"] + trust["corrected"]
+            if reviewed < total:
+                missing.append(f"抽检未完成（未复审 {total - reviewed} 条"
+                               f" / 共 {total} 条）")
         if missing:
             return JSONResponse(status_code=409, content={"missing": missing})
         try:
@@ -189,3 +206,35 @@ def create_app(work: Path, pdf_root: Path | None = None) -> FastAPI:
         return HTMLResponse(index_html.read_text(encoding="utf-8"))
 
     return app
+
+
+def _main(argv: list[str] | None = None) -> int:
+    """启动器（I4 终审修复）：``python3 -m gt.workbench_server --work ~/gt-work``。
+
+    host 固定 127.0.0.1（本机回环，工作台不对外网暴露）；``--work`` 必填，
+    ``--pdf-root`` 缺省不渲染页面图（前端回落转录高亮）。
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python3 -m gt.workbench_server",
+        description="GT 工作台服务（Issue#56 M3）——在真实引擎工作目录上启动")
+    parser.add_argument("--work", required=True,
+                        help="工作目录（{work}/pages/*/pack.json 布局，M1 引擎产出）")
+    parser.add_argument("--pdf-root", default=None,
+                        help="源 PDF 根目录（按 {file_sha256}.pdf 定位；缺省不渲染页面图）")
+    parser.add_argument("--port", type=int, default=_DEFAULT_PORT,
+                        help=f"监听端口（默认 {_DEFAULT_PORT}）")
+    args = parser.parse_args(argv)
+
+    import uvicorn
+
+    work = Path(args.work).expanduser()
+    pdf_root = Path(args.pdf_root).expanduser() if args.pdf_root else None
+    app = create_app(work, pdf_root)
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main())

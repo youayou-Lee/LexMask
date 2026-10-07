@@ -225,24 +225,26 @@ def test_finalize_after_full_resolution(client, work):
 
 
 def test_finalize_invalid_pack_400_not_500(client, work):
-    """定稿前从未被触过的页此时才首次校验：非法 pack → 400 带中文错误（非 500）。"""
+    """定稿前从未被触过的页此时才首次校验：非法 pack → 400 带中文错误（非 500）。
+
+    非法页须避开抽检硬门禁（I1 终审修复：sample-verdict 写回即触发 pack 校验，
+    抽中的非法页会先死在抽检）——故用 0 实体 + 非法仲裁 rule 的页（无一致集
+    实体、永不入样），校验错误只在 finalize 的 write_gt_jsonl 首次暴露。
+    """
     pack = _pack_p2()
-    pack["entities"][0]["type"] = "不存在的类型"
+    pack["entities"] = []
+    pack["adjudications"] = [{"models": ["v6", "vl"], "rule": "R99",
+                              "verdict": "consistent"}]
     (work / "pages/p2/pack.json").write_text(json.dumps(pack, ensure_ascii=False),
                                              encoding="utf-8")
     for idx in (0, 1):
         assert client.post("/api/resolve", json={
             "page_id": "p1", "entity_index": idx, "verdict": "对",
             "correct": None, "note": None}).status_code == 200
-    sample = client.post("/api/sample", json={"ratio": 1.0, "seed": 42}).json()
-    for pid, idx in sample["selected"]:
-        if pid == "p1":
-            client.post("/api/sample-verdict", json={
-                "page_id": pid, "entity_index": idx, "ok": True, "correct": None})
+    assert client.post("/api/sample", json={"ratio": 1.0, "seed": 42}).status_code == 200
     r = client.post("/api/finalize")
     assert r.status_code == 400
-    assert "校验失败" in r.json()["error"] or "PRESET" in r.json()["error"] \
-        or "type" in r.json()["error"]
+    assert "校验失败" in r.json()["error"] or "R99" in r.json()["error"]
 
 
 def test_img_bad_sha_404(work):
@@ -258,6 +260,172 @@ def test_img_bad_sha_404(work):
     r = client.get("/img/p1")
     assert r.status_code == 404
     assert "file_sha256" in r.json()["error"]
+
+
+# ---- 终审修复波（2026-10-07）：真实引擎形状契约 + finalize 硬门禁 ------------------
+
+def _pack_gap():  # R6 整页升级真实形状：0 实体 + gap 条目（candidates=detail 字符串）
+    return {
+        "page_id": "pg", "page_type": "body",
+        "source": {"file_sha256": "3" * 64, "page": 3,
+                   "carrier": "scanned", "segment": "first"},
+        "transcript_gt": {"text": "甲乙丙丁", "normalized_text": "甲乙丙丁",
+                          "fidelity": "machine"},
+        "entities": [],
+        "adjudications": [
+            {"models": ["v6", "vl"], "rule": "R6", "verdict": "disputed",
+             "candidates": {"detail": ["单侧多出：v6 面读数「戊」、VL 面无"]},
+             "gap": "单方多字/集合不合，整页升级（R6）"},
+            {"models": ["v6", "vl"], "rule": "R6", "verdict": "disputed",
+             "candidates": {"a": [{"text": "戊", "type": "姓名",
+                                   "span_original": [3, 4]}],
+                            "b": [], "md": []}}]}
+
+
+def _pack_r3():  # R3 采 VL 面真实形状：被否 a 读数留痕、不在 entities
+    return {
+        "page_id": "pr", "page_type": "table",
+        "source": {"file_sha256": "4" * 64, "page": 4,
+                   "carrier": "text_pdf", "segment": "first"},
+        "transcript_gt": {"text": "甲乙丙丁", "normalized_text": "甲乙丙丁",
+                          "fidelity": "machine"},
+        "entities": [
+            {"text": "甲乙", "type": "姓名",
+             "span_original": [0, 2], "span_normalized": [0, 2],
+             "origin": "regex", "verify": "consistent", "note": None},
+            {"text": "丙", "type": "姓名",
+             "span_original": [2, 3], "span_normalized": [2, 3],
+             "origin": "regex", "verify": "arbitrated", "arbitration": "R3",
+             "note": None}],
+        "adjudications": [
+            {"models": ["v6", "vl"], "rule": "R1", "verdict": "consistent"},
+            {"models": ["v6", "vl", "vl-md"], "rule": "R3", "verdict": "auto:b"},
+            {"models": ["v6", "vl", "vl-md"], "rule": "R3", "verdict": "disputed",
+             "candidates": {"a": [{"text": "戊", "type": "姓名",
+                                   "span_original": [3, 4]}],
+                            "b": [], "md": []}}]}
+
+
+@pytest.fixture()
+def work_real(tmp_path):
+    for pid, pack in (("pg", _pack_gap()), ("pr", _pack_r3())):
+        d = tmp_path / "pages" / pid
+        d.mkdir(parents=True)
+        (d / "pack.json").write_text(json.dumps(pack, ensure_ascii=False),
+                                     encoding="utf-8")
+    return tmp_path
+
+
+@pytest.fixture()
+def client_real(work_real):
+    return TestClient(workbench_server.create_app(work_real))
+
+
+def test_api_accepts_ack_and_miss_on_real_shapes(client_real, work_real):
+    """C1#5 服务端契约钉：gap 卡与 0 实体页的「机器正确」「漏」API 全收。"""
+    r = client_real.post("/api/resolve", json={
+        "page_id": "pg", "entity_index": None, "adjudication_index": 0,
+        "verdict": "ack", "correct": None, "note": None})
+    assert r.status_code == 200, r.text
+    assert r.json()["verify"] is None
+    r = client_real.post("/api/resolve", json={
+        "page_id": "pg", "entity_index": None, "adjudication_index": 1,
+        "verdict": "漏",
+        "correct": {"text": "戊", "type": "姓名",
+                    "span_original": [3, 4], "span_normalized": [3, 4]},
+        "note": None})
+    assert r.status_code == 200, r.text
+    assert r.json()["verify"] == "user-confirmed"
+    pack = json.loads((work_real / "pages/pg/pack.json").read_text(encoding="utf-8"))
+    assert len(pack["entities"]) == 1 and pack["entities"][0]["origin"] == "user"
+    assert [a["verdict"] for a in pack["adjudications"]] == ["user:ack", "user:漏"]
+    ds = client_real.get("/api/disputes").json()
+    assert list(ds) == ["pr"] and len(ds["pr"]) == 1  # 仅剩被否 R3 条目
+    # 被否 R3 读数同样 ack 可关
+    r = client_real.post("/api/resolve", json={
+        "page_id": "pr", "entity_index": None, "adjudication_index": 2,
+        "verdict": "ack", "correct": None, "note": None})
+    assert r.status_code == 200, r.text
+    assert client_real.get("/api/disputes").json() == {}
+
+
+def test_finalize_gate_requires_full_review(client_real, work_real):
+    """I1：抽检硬门禁——0 复审 → 409 报未复审计数；全部复审后放行。
+
+    分歧只用 ack/漏 关（回归钉：仅 ack/漏 关单即可走到抽检与定稿）。
+    """
+    for body in (
+        {"page_id": "pg", "entity_index": None, "adjudication_index": 0,
+         "verdict": "ack", "correct": None, "note": None},
+        {"page_id": "pg", "entity_index": None, "adjudication_index": 1,
+         "verdict": "漏",
+         "correct": {"text": "戊", "type": "姓名",
+                     "span_original": [3, 4], "span_normalized": [3, 4]},
+         "note": None},
+        {"page_id": "pr", "entity_index": None, "adjudication_index": 2,
+         "verdict": "ack", "correct": None, "note": None},
+    ):
+        assert client_real.post("/api/resolve", json=body).status_code == 200, body
+    sample = client_real.post("/api/sample", json={"ratio": 1.0, "seed": 42}).json()
+    total = len(sample["selected"])
+    assert total >= 1
+    r = client_real.post("/api/finalize")
+    assert r.status_code == 409
+    missing = r.json()["missing"]
+    assert any(f"未复审 {total}" in m and f"共 {total} 条" in m for m in missing), missing
+    # 复审一条后计数递减
+    pid, idx = sample["selected"][0]
+    client_real.post("/api/sample-verdict", json={
+        "page_id": pid, "entity_index": idx, "ok": True, "correct": None})
+    r = client_real.post("/api/finalize")
+    if total > 1:
+        assert r.status_code == 409
+        assert any(f"未复审 {total - 1}" in m for m in r.json()["missing"]), r.text
+    for pid, idx in sample["selected"][1:]:
+        r = client_real.post("/api/sample-verdict", json={
+            "page_id": pid, "entity_index": idx, "ok": True, "correct": None})
+        assert r.status_code == 200, r.text
+    r = client_real.post("/api/finalize")
+    assert r.status_code == 200, r.text
+    # 落盘内容抽钉：仅 ack/漏 关单的页定稿在案（gt_v1.jsonl 5 行 → 2 页）
+    out = work_real / "gt_v1.jsonl"
+    assert out.is_file()
+    rows = [json.loads(ln) for ln in
+            out.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    by_pid = {row["page_id"]: row for row in rows}
+    assert [a["verdict"] for a in by_pid["pg"]["adjudications"]] == ["user:ack", "user:漏"]
+    assert by_pid["pr"]["adjudications"][2]["verdict"] == "user:ack"
+
+
+def test_journal_negative_n_clamped(client):
+    """M4：/api/journal n 钳非负——负值不再触发 [-n:] 漂移语义。"""
+    client.post("/api/resolve", json={"page_id": "p1", "entity_index": 0,
+                                      "verdict": "对", "correct": None,
+                                      "note": None})
+    r = client.get("/api/journal?n=-5")
+    assert r.status_code == 200 and r.json() == []
+    r = client.get("/api/journal?n=0")
+    assert r.status_code == 200 and r.json() == []
+    r = client.get("/api/journal?n=5")
+    assert r.status_code == 200 and len(r.json()) == 1
+
+
+def test_launcher_argparse_wiring(monkeypatch, tmp_path):
+    """I4：`python3 -m gt.workbench_server --work ...` 启动器——host 固定回环。"""
+    calls = {}
+
+    class FakeUvicorn:
+        @staticmethod
+        def run(app, host, port, log_level):
+            calls["host"], calls["port"] = host, port
+
+    monkeypatch.setitem(sys.modules, "uvicorn", FakeUvicorn)
+    rc = workbench_server._main(["--work", str(tmp_path), "--port", "1234"])
+    assert rc == 0
+    assert calls == {"host": "127.0.0.1", "port": 1234}
+    with pytest.raises(SystemExit):
+        workbench_server._main(["--work", str(tmp_path), "--pdf-root", "x",
+                                "--port", "0", "--bogus"])
 
 
 # ---- 静态首页 --------------------------------------------------------------------

@@ -86,6 +86,14 @@
   .fix-form label{display:block;font-size:13px;color:var(--muted);margin:6px 0}
   .fix-form input{display:block;width:100%;max-width:420px;margin-top:3px;padding:7px 10px;
                   border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink);background:#fff}
+  .manual-span{border:1px dashed #fec84b;border-radius:8px;background:var(--warn-bg);
+               padding:8px 10px;margin:8px 0}
+  .manual-span.hidden{display:none}
+  .manual-span .form-title{color:var(--warn)}
+  .span-pair{display:flex;gap:6px;align-items:center}
+  .span-pair input{width:110px;max-width:110px}
+  .confirm-line{display:flex!important;align-items:center;gap:8px;font-weight:600;color:var(--warn)}
+  .confirm-line input{display:inline-block;width:auto;max-width:none;margin:0}
   .form-btns{display:flex;gap:8px;margin-top:8px}
   .form-msg{font-size:13px;color:var(--bad);white-space:pre-wrap;margin-top:6px}
   .form-msg:empty{display:none}
@@ -312,17 +320,25 @@ function buildDisputeCard(pid, adj, pack) {
   card.dataset.pid = pid;
   card.dataset.adj = adj.adjudication_index;
   card.dataset.entityIndex = idx;
+  // M2 终审修复：gap 条目的 candidates={"detail": [字符串...]}——字符串直出，
+  // 旧逻辑只取 c.text 导致整行空白；对象候选照旧渲染 text+type。
+  const candItem = (c) => (c && typeof c === "object")
+    ? `<div class="cand-item"><b>${esc(c.text)}</b> ${chip(c.type)}</div>`
+    : `<div class="cand-item">${esc(c)}</div>`;
   const candsHtml = candOrder(adj.candidates).map((k) => {
     const lst = (adj.candidates && adj.candidates[k]) || [];
     const items = lst.length
-      ? lst.map((c) => `<div class="cand-item"><b>${esc(c.text)}</b> ${chip(c.type)}</div>`).join("")
+      ? lst.map(candItem).join("")
       : '<div class="cand-empty">（无候选）</div>';
     return `<div class="cand"><div class="cand-label">${esc(k)}</div>${items}</div>`;
   }).join("");
   const entHtml = ent
     ? `<div class="entity-line">实体原文 <b class="entity-text">${esc(ent.text)}</b>
        &nbsp;类型 ${chip(ent.type)}</div>`
-    : `<div class="entity-line warn-text">未找到与该分歧关联的实体——「对/错」不可用，仅可补漏</div>`;
+    : `<div class="entity-line warn-text">未找到与该分歧关联的实体——「对/错」不可用；
+       可用「机器正确」采信机器判断，或「漏」补录实体</div>`;
+  const gapHtml = adj.gap
+    ? `<div class="entity-line warn-text">页级分歧：${esc(adj.gap)}</div>` : "";
   card.innerHTML = `
     <div class="card-head">
       <span class="pid">页 ${esc(pid)}</span>
@@ -333,6 +349,7 @@ function buildDisputeCard(pid, adj, pack) {
       <div class="page-panel"><div class="panel-loading">页面图加载中…</div></div>
       <div class="info-panel">
         ${entHtml}
+        ${gapHtml}
         <div class="cands-title">各模型读数</div>
         <div class="cands">${candsHtml}</div>
         <div class="actions">
@@ -341,13 +358,16 @@ function buildDisputeCard(pid, adj, pack) {
           <button type="button" class="btn btn-bad" data-act="cuo"
                   title="有误，需改判" ${ent ? "" : "disabled"}>错</button>
           <button type="button" class="btn btn-add" data-act="lou"
-                  title="本页还漏了实体，需补充">漏</button>
+                  title="补录被漏掉的实体，并关闭本条分歧">漏</button>
+          <button type="button" class="btn" data-act="ack"
+                  title="机器判断成立（gap 条目/被否读数等），不改动实体，直接关单">机器正确</button>
         </div>
         <form class="fix-form hidden" data-form="cuo">
           <div class="form-title">改判（错）——修正该实体的原文与类型</div>
           <label>新原文 <input name="text" required value="${escAttr(ent ? ent.text : "")}"></label>
           <label>类型 <input name="type" required list="type-options" value="${escAttr(ent ? ent.type : "")}"></label>
           <label>备注（可空） <input name="note" placeholder="选填"></label>
+          ${MANUAL_SPAN_HTML}
           <div class="form-btns">
             <button type="submit" class="btn btn-bad">提交改判</button>
             <button type="button" class="btn btn-ghost" data-act="cancel">取消</button>
@@ -356,10 +376,11 @@ function buildDisputeCard(pid, adj, pack) {
         </form>
         <form class="fix-form hidden" data-form="lou">
           <div class="form-title">补漏——补充各方都漏掉的实体</div>
-          <p class="form-hint">补漏只新增实体，不会关闭本条分歧；补漏后仍需对本条分歧按「对/错」定论。</p>
+          <p class="form-hint">补漏会新增实体并关闭本条分歧（判：漏）。若机器判断本就正确、无需补录，请用「机器正确」。</p>
           <label>原文 <input name="text" required placeholder="转录中被漏掉的原文"></label>
           <label>类型 <input name="type" required list="type-options" placeholder="选择或输入类型"></label>
           <label>备注（可空） <input name="note" placeholder="选填"></label>
+          ${MANUAL_SPAN_HTML}
           <div class="form-btns">
             <button type="submit" class="btn btn-add">提交补漏</button>
             <button type="button" class="btn btn-ghost" data-act="cancel">取消</button>
@@ -455,27 +476,66 @@ function highlightTranscript(pack, currentIdx) {
 }
 
 // 改判/补漏的 span 计算：文本未改沿用原 span（避免同文重定位）；改了则在转录
-// 文本中重定位（original / normalized 两面各自独立找）；找不到回退原 span 并
-// 收紧到转录边界（最终合法性由后端 validate 兜底，失败时 400 中文错误原样示人）
+// 文本中重定位（original / normalized 两面各自独立找）。
+// I2 终审修复：找不到**不再静默回退 [0,len]**（旧兜底会指向无关内容）——
+// 返回 located=false，由 settleSpans 弹出手工定位区（span 预填回退值）+
+// 强制勾选「位置确认」后才能提交；最终合法性由后端 validate 兜底。
 function computeSpans(text, ent, pack) {
   const tg = (pack && pack.transcript_gt) || {};
   const prevOf = (face) => (ent && Array.isArray(ent[face])) ? ent[face] : null;
   const face = (hay, prev) => {
     hay = typeof hay === "string" ? hay : "";
-    if (!text) return [0, Math.min(0, hay.length)];
-    if (prev && ent && text === ent.text) return prev.slice();
+    if (!text) return { span: [0, Math.min(0, hay.length)], ok: true };
+    if (prev && ent && text === ent.text) return { span: prev.slice(), ok: true };
     const pos = hay.indexOf(text);
-    if (pos >= 0) return [pos, pos + text.length];
+    if (pos >= 0) return { span: [pos, pos + text.length], ok: true };
     if (prev) {
       const s = Math.max(0, Math.min(prev[0], hay.length));
-      return [s, Math.max(s, Math.min(prev[1], hay.length))];
+      return { span: [s, Math.max(s, Math.min(prev[1], hay.length))], ok: false };
     }
-    return [0, Math.min(text.length, hay.length)];
+    return { span: [0, Math.min(text.length, hay.length)], ok: false };
   };
-  return {
-    span_original: face(tg.text, prevOf("span_original")),
-    span_normalized: face(tg.normalized_text, prevOf("span_normalized")),
-  };
+  const o = face(tg.text, prevOf("span_original"));
+  const n = face(tg.normalized_text, prevOf("span_normalized"));
+  return { span_original: o.span, span_normalized: n.span, located: o.ok && n.ok };
+}
+
+// 手工定位区（三处表单共用）：原文未自动定位时展开，span 预填回退值，
+// 必须勾选「位置确认」才放行提交（I2 终审修复）
+const MANUAL_SPAN_HTML = `
+  <div class="manual-span hidden">
+    <div class="form-title">手工定位——原文未能自动定位到转录文本</div>
+    <p class="form-hint">可能为 OCR 变体或改写。请核对下列 span 是否指向正确位置（可直接修改），并勾选「位置确认」后再提交。</p>
+    <label>span_original（start / end）
+      <span class="span-pair"><input type="number" name="span-os" min="0" step="1"> / <input type="number" name="span-oe" min="0" step="1"></span></label>
+    <label>span_normalized（start / end）
+      <span class="span-pair"><input type="number" name="span-ns" min="0" step="1"> / <input type="number" name="span-ne" min="0" step="1"></span></label>
+    <label class="confirm-line"><input type="checkbox" name="span-confirm"> 位置确认</label>
+  </div>`;
+
+// 提交前的 span 终裁：自动定位成功 → 直接返回；失败 → 展开手工区（预填回退
+// span），未勾「位置确认」时返回 null 并提示。返回值仅含两 span 键（并入
+// correct 提交，located 标志不外泄）。
+function settleSpans(form, text, ent, pack) {
+  const spans = computeSpans(text, ent, pack);
+  const box = form.querySelector(".manual-span");
+  if (spans.located) {
+    box.classList.add("hidden");
+    return { span_original: spans.span_original, span_normalized: spans.span_normalized };
+  }
+  box.classList.remove("hidden");
+  const prefill = [["span-os", spans.span_original[0]], ["span-oe", spans.span_original[1]],
+                   ["span-ns", spans.span_normalized[0]], ["span-ne", spans.span_normalized[1]]];
+  for (const [name, val] of prefill) {
+    if (form.elements[name].value === "") form.elements[name].value = val;
+  }
+  if (!form.elements["span-confirm"].checked) {
+    formMsg(form, "原文未能在转录文本中定位——请核对/修改 span，勾选「位置确认」后再提交");
+    return null;
+  }
+  const num = (name) => Math.max(0, Math.trunc(Number(form.elements[name].value) || 0));
+  return { span_original: [num("span-os"), num("span-oe")],
+           span_normalized: [num("span-ns"), num("span-ne")] };
 }
 
 // ---- 抽检视图 -----------------------------------------------------------------
@@ -491,7 +551,8 @@ function renderTrust() {
     <div class="trust-rate">${rate}%</div>
     <div>
       <div class="trust-line">可信率（抽检中维持原判的比例）</div>
-      <div class="trust-sub">已检 ${t.checked} 条 · 维持原判 ${t.confirmed} 条 · 改判 ${t.corrected} 条</div>
+      <div class="trust-sub">已检 ${t.checked} 条 · 维持原判 ${t.confirmed} 条 · 改判 ${t.corrected} 条` +
+    ` · <b class="${t.unreviewed ? "warn-text" : ""}">未复审 ${t.unreviewed ?? 0} 条</b>（定稿前须全部复审）</div>
     </div>`;
 }
 
@@ -537,6 +598,7 @@ function buildSampleRow(pid, idx) {
       <div class="form-title">抽检改判——修正该实体的原文与类型</div>
       <label>新原文 <input name="text" required value="${escAttr(ent ? ent.text : "")}"></label>
       <label>类型 <input name="type" required list="type-options" value="${escAttr(ent ? ent.type : "")}"></label>
+      ${MANUAL_SPAN_HTML}
       <div class="form-btns">
         <button type="submit" class="btn btn-bad">提交抽检改判</button>
         <button type="button" class="btn btn-ghost" data-act="cancel">取消</button>
@@ -555,7 +617,11 @@ function renderJournal() {
         const t = esc(String(ln.ts || "").slice(0, 19).replace("T", " "));
         const what = ln.op === "undo"
           ? `撤销（回退第 ${esc(ln.undo_of)} 行：${OP[ln.undo_of_op] || esc(ln.undo_of_op) || "操作"}）`
-          : `${OP[ln.op] || esc(ln.op)}　页 ${esc(ln.page_id || "")} 实体#${esc(ln.entity_index)}` +
+          : `${OP[ln.op] || esc(ln.op)}　页 ${esc(ln.page_id || "")}` +
+            (ln.entity_index === null || ln.entity_index === undefined
+              ? "" : ` 实体#${esc(ln.entity_index)}`) +
+            (ln.adjudication_index === null || ln.adjudication_index === undefined
+              ? "" : ` 分歧#${esc(ln.adjudication_index)}`) +
             `${ln.verdict ? `　判：${esc(ln.verdict)}` : ""}`;
         return `<li><span class="j-ts">${t}</span>${what}</li>`;
       }).join("")
@@ -608,7 +674,7 @@ function wireEvents() {
     } else flashMsg(`抽样失败：${errText(r)}`, true);
   });
 
-  // 裁决卡片：三键 / 取消
+  // 裁决卡片：四键 / 取消（每键恒传 adjudication_index——显式关单，控制器终审裁定）
   el("dispute-list").addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-act]");
     if (!btn) return;
@@ -618,13 +684,26 @@ function wireEvents() {
       card.querySelectorAll(".fix-form").forEach((f) => f.classList.add("hidden"));
       return;
     }
+    const adjIdx = +card.dataset.adj;
     if (act === "dui") {
       btn.disabled = true;
       const r = await jsonPost("/api/resolve", {
         page_id: card.dataset.pid, entity_index: +card.dataset.entityIndex,
+        adjudication_index: adjIdx,
         verdict: "对", correct: null, note: null });
       btn.disabled = false;
       if (r.ok) { flashMsg("已确认（对）"); await refreshAll(); }
+      else flashMsg(`裁决失败：${errText(r)}`, true);
+      return;
+    }
+    if (act === "ack") {
+      btn.disabled = true;
+      const r = await jsonPost("/api/resolve", {
+        page_id: card.dataset.pid, entity_index: null,
+        adjudication_index: adjIdx,
+        verdict: "ack", correct: null, note: null });
+      btn.disabled = false;
+      if (r.ok) { flashMsg("已采信机器判断（机器正确），本条分歧已关单"); await refreshAll(); }
       else flashMsg(`裁决失败：${errText(r)}`, true);
       return;
     }
@@ -652,12 +731,16 @@ function wireEvents() {
     const entIdx = +card.dataset.entityIndex;
     // 错：correct 覆盖被裁决实体本身；漏：correct 为新增实体（不带原实体语义）
     const ent = verdict === "错" && entIdx >= 0 ? (pack.entities[entIdx] || null) : null;
-    const correct = { text, type, ...computeSpans(text, ent, pack) };
+    const spans = settleSpans(form, text, ent, pack);
+    if (!spans) return;  // 未定位且未勾「位置确认」——已提示，等人工确认
+    const correct = { text, type, ...spans };
     const r = await jsonPost("/api/resolve", {
-      page_id: pid, entity_index: verdict === "漏" ? Math.max(entIdx, 0) : entIdx,
+      page_id: pid,
+      entity_index: verdict === "漏" ? null : entIdx,
+      adjudication_index: +card.dataset.adj,
       verdict, correct, note });
     if (r.ok) {
-      flashMsg(verdict === "错" ? "已改判（错）" : "已补漏（漏）。本条分歧仍需按「对/错」定论");
+      flashMsg(verdict === "错" ? "已改判（错）" : "已补漏（漏），本条分歧已关单");
       await refreshAll();
     } else formMsg(form, errText(r));
   });
@@ -697,7 +780,9 @@ function wireEvents() {
     const row = form.closest(".sample-row");
     const pack = state.packs.get(row.dataset.pid);
     const ent = (pack && pack.entities && pack.entities[+row.dataset.idx]) || null;
-    const correct = { text, type, ...computeSpans(text, ent, pack) };
+    const spans = settleSpans(form, text, ent, pack);
+    if (!spans) return;  // 未定位且未勾「位置确认」——已提示，等人工确认
+    const correct = { text, type, ...spans };
     const r = await jsonPost("/api/sample-verdict", {
       page_id: row.dataset.pid, entity_index: +row.dataset.idx, ok: false, correct });
     if (r.ok) { flashMsg("抽检：已改判"); await refreshAll(); }

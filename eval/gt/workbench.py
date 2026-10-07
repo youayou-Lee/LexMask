@@ -7,17 +7,22 @@ GT 原文不进仓）。工作目录布局::
     {work}/journal.jsonl               追加式操作日志（只追加不删除）
     {work}/sample_seed.json            抽样 seed + 选中清单（同 seed 同抽样）
 
-三键裁决（对/错/漏）写回状态机只用 ``gt_schema.VERIFY_STATES``：
+四键裁决（对/错/漏/机器正确）写回状态机只用 ``gt_schema.VERIFY_STATES``：
 
 - 对 → 该实体 ``verify="user-confirmed"``；
 - 错 → ``correct`` 覆盖 text/type/span_* 且 ``verify="user-corrected"``；
+  实体不存在时（被否 R3/R4 读数不在 entities，真实引擎常态）``correct``
+  为新实体（``origin="user"``、``verify="user-corrected"``）追加；
 - 漏 → ``correct`` 为新实体（``origin="user"``、``verify="user-confirmed"``）
-  追加进 entities。
+  追加进 entities（``entity_index`` 可为 null——R6 整页升级页 0 实体也能补）；
+- 机器正确（``verdict="ack"``）→ 机器判断成立（gap 条目 / 被否读数等），
+  **不碰任何实体**，仅关单。
 
-对应页上**与被裁决实体关联的**仲裁条目改 ``user:{对|错|漏}``——关联 = 该
-disputed 条目的 candidates（a/b/...）里存在候选其 ``span_original`` 与实体相同
-（退而求其次 ``text`` 相同）；无关联 disputed 条目时不碰任何仲裁（典型如漏：
-被漏实体本无条目），其余 disputed 条目保持 disputed 等待各自裁决。
+**显式关单（终审修复波，控制器裁定）**：``resolve_dispute`` 增
+``adjudication_index``——提供时**该条**仲裁直接改 ``user:{verdict}`` 关单
+（不做任何候选匹配；ack 必须显式指定）；未提供时保留旧 span/text 关联
+兜底（对/错按被裁决实体关联，漏不关单），兼容旧 journal/API 用户。
+前端恒传 ``adjudication_index``。
 
 撤销（控制器裁定 1）：**快照还原，不算逆**——每条 journal 行内嵌被触 pack 的
 ``entities``+``adjudications`` 操作前深拷贝快照，``undo_last`` 直接从快照恢复
@@ -42,8 +47,11 @@ from pathlib import Path
 
 from gt.gt_schema import validate_pagepack
 
-# 三键 verdict 值域（UI/HTTP 层透传）
-VERDICTS = ("对", "错", "漏")
+# 四键 verdict 值域（UI/HTTP 层透传；ack=「机器正确」，见 resolve_dispute）
+VERDICTS = ("对", "错", "漏", "ack")
+
+# 错（改判）correct 必备字段
+_CORRECT_KEYS = ("text", "type", "span_original", "span_normalized")
 
 _JOURNAL = "journal.jsonl"
 _SAMPLE = "sample_seed.json"
@@ -154,65 +162,139 @@ def _linked_disputed_index(pack: dict, ent: dict) -> int | None:
     return None
 
 
-def resolve_dispute(work: Path, page_id: str, entity_index: int,
+def resolve_dispute(work: Path, page_id: str, entity_index: int | None,
                     verdict: str, correct: dict | None,
-                    note: str | None) -> dict:
-    """三键裁决写回（对/错/漏），返回操作摘要。
+                    note: str | None,
+                    adjudication_index: int | None = None) -> dict:
+    """四键裁决写回（对/错/漏/ack），返回操作摘要。
 
-    - 对：实体 verify→user-confirmed；
-    - 错：correct 全量覆盖 text/type/span_original/span_normalized（缺一即拒），
-      verify→user-corrected；
-    - 漏：correct 为新实体（origin="user"、verify="user-confirmed"）追加。
-    只关单与被裁决实体关联的那条 disputed 仲裁（candidates 候选 span 优先、
-    text 兜底匹配）为 ``user:{verdict}``；无关联 disputed（典型如漏）不碰任何
-    仲裁，其余 disputed 条目保持原状等待各自裁决。写前过 validate_pagepack，
-    非法 raise ValueError 不落盘；成功后追加 journal 行（含操作前快照）。
+    实体语义：
+    - 对：实体 verify→user-confirmed（须给 ``entity_index``）；
+    - 错：``correct`` 全量覆盖 text/type/span_original/span_normalized（缺一
+      即拒），verify→user-corrected；``entity_index`` 为 null 时 ``correct``
+      作为**新实体**（origin="user"）追加——被否 R3/R4 读数本不在 entities
+      （真实引擎形状），采纳即由此入库；
+    - 漏：``correct`` 为新实体（origin="user"、verify="user-confirmed"）追加；
+      ``entity_index`` 可为 null（R6 整页升级页 0 实体也能补），给了也不用于
+      定位（漏不改既有实体）；
+    - ack（机器正确）：机器判断成立，**不碰任何实体**。
+
+    关单语义（显式优先，控制器终审裁定）：
+    - ``adjudication_index`` 提供时：**该条**仲裁直接改 ``user:{verdict}``，
+      不做任何候选匹配（目标必须是 disputed 条目）；ack 必须显式指定；
+    - 未提供时：对/错保留旧兜底——关与被裁决实体（更新后的或新建的）关联
+      的那条 disputed（candidates 候选 span 优先、text 兜底匹配）；漏不关单
+      （旧行为）；ack 无实体可比 → 拒绝。
+
+    写前过 validate_pagepack，非法 raise ValueError 不落盘；成功后追加
+    journal 行（含操作前快照）。``correct`` 的 span 与转录面不一致（OCR 变体
+    修正等）不拒绝，仅在返回值 ``warnings`` 里留非致命提醒。
     """
     if verdict not in VERDICTS:
         raise ValueError(f"verdict {verdict!r} 非法（须为 {'/'.join(VERDICTS)}）")
     work = Path(work)
     pack = _read_pack(work, page_id)
     entities = pack.get("entities", [])
-    if not isinstance(entity_index, int) or not 0 <= entity_index < len(entities):
-        raise ValueError(f"entity_index {entity_index!r} 越界"
-                         f"（页 {page_id!r} 共 {len(entities)} 条实体）")
+    adjs = pack.get("adjudications", [])
+    if verdict == "ack" and adjudication_index is None:
+        raise ValueError("verdict=ack（机器正确）不碰实体，须显式给 "
+                         "adjudication_index 指定要关单的仲裁条目")
+    if verdict == "对" and entity_index is None:
+        raise ValueError("verdict=对 需要 entity_index（确认某条既有实体）")
     if verdict in ("错", "漏") and not isinstance(correct, dict):
         raise ValueError(f"verdict={verdict!r} 需要 correct 实体字段（text/type/span）")
     if verdict == "错":
-        missing = [k for k in ("text", "type", "span_original", "span_normalized")
-                   if k not in correct]
+        missing = [k for k in _CORRECT_KEYS if k not in correct]
         if missing:
             raise ValueError(f"verdict=错 的 correct 缺字段：{missing}"
                              "（text/type/span_original/span_normalized 全必填）")
+    # entity_index 只对 对/错 有意义：漏/ack 不碰既有实体，给了也忽略
+    # （旧客户端在 0 实体页发 Math.max(idx,0) 的兜底值不再炸越界）
+    if verdict in ("对", "错") and entity_index is not None and (
+            not isinstance(entity_index, int) or isinstance(entity_index, bool)
+            or not 0 <= entity_index < len(entities)):
+        raise ValueError(f"entity_index {entity_index!r} 越界"
+                         f"（页 {page_id!r} 共 {len(entities)} 条实体）")
+
+    # 显式关单目标：adjudication_index 提供时校验在案且必须是 disputed（防误关已结条目）
+    if adjudication_index is not None:
+        if (not isinstance(adjudication_index, int) or isinstance(adjudication_index, bool)
+                or not 0 <= adjudication_index < len(adjs)):
+            raise ValueError(f"adjudication_index {adjudication_index!r} 越界"
+                             f"（页 {page_id!r} 共 {len(adjs)} 条仲裁）")
+        if adjs[adjudication_index].get("verdict") != "disputed":
+            raise ValueError(
+                f"adjudication_index {adjudication_index} 非 disputed 条目"
+                f"（verdict={adjs[adjudication_index].get('verdict')!r}，已结单不可重裁）")
 
     snapshot = _snapshot(pack)
-    ent = entities[entity_index]
+    ent = None      # 被更新的既有实体（对 / 错带 index）
+    new_ent = None  # 追加的新实体（错不带 index / 漏）
     if verdict == "对":
+        ent = entities[entity_index]
         ent["verify"] = "user-confirmed"
     elif verdict == "错":
-        for key in ("text", "type", "span_original", "span_normalized"):
-            ent[key] = copy.deepcopy(correct[key])
-        ent["verify"] = "user-corrected"
-    else:  # 漏
+        if entity_index is not None:
+            ent = entities[entity_index]
+            for key in _CORRECT_KEYS:
+                ent[key] = copy.deepcopy(correct[key])
+            ent["verify"] = "user-corrected"
+        else:
+            new_ent = copy.deepcopy(correct)
+            new_ent["origin"] = "user"
+            new_ent["verify"] = "user-corrected"
+            new_ent.setdefault("note", note)
+            entities.append(new_ent)
+    elif verdict == "漏":
         new_ent = copy.deepcopy(correct)
         new_ent["origin"] = "user"
         new_ent["verify"] = "user-confirmed"
         new_ent.setdefault("note", note)
         entities.append(new_ent)
-    if note is not None and verdict != "漏":
+    # ack：不碰任何实体（控制器裁定 2——机器判断成立，schema 只校验仲裁 rule）
+    if note is not None and ent is not None:
         ent["note"] = note
-    # 定向关单（评审 Important#1）：只关与被裁决实体关联的那条 disputed
-    adj_idx = None if verdict == "漏" else _linked_disputed_index(pack, ent)
-    if adj_idx is not None:
-        pack["adjudications"][adj_idx]["verdict"] = f"user:{verdict}"
+
+    # 关单：显式优先；未给 index 时对/错走旧 span/text 兜底（漏/ack 不兜底）
+    if adjudication_index is not None:
+        closed_idx = adjudication_index
+        adjs[closed_idx]["verdict"] = f"user:{verdict}"
+    elif verdict in ("对", "错"):
+        subject = ent if ent is not None else new_ent
+        closed_idx = _linked_disputed_index(pack, subject)
+        if closed_idx is not None:
+            adjs[closed_idx]["verdict"] = f"user:{verdict}"
+    else:
+        closed_idx = None
 
     _write_pack(work, page_id, pack)  # 校验失败在此 raise，不落任何盘
+    out = {"page_id": page_id,
+           "entity_index": entity_index if ent is not None else None,
+           "verdict": verdict,
+           "verify": (ent if ent is not None else new_ent)["verify"]
+           if (ent is not None or new_ent is not None) else None,
+           "adjudication_index": closed_idx}
+    # 非致命提醒（I2）：提交 span 切出的转录文本与提交原文不一致（OCR 变体
+    # 修正合法，不拒绝），留痕供律师复核位置。
+    warnings: list[str] = []
+    subject = ent if ent is not None else new_ent
+    if subject is not None:
+        text = (pack.get("transcript_gt") or {}).get("text")
+        span = subject.get("span_original")
+        if (isinstance(text, str) and isinstance(span, (list, tuple))
+                and len(span) == 2 and all(isinstance(x, int) for x in span)
+                and 0 <= span[0] <= span[1] <= len(text)
+                and text[span[0]:span[1]] != subject.get("text")):
+            warnings.append(
+                f"span_original {list(span)} 处转录文本 {text[span[0]:span[1]]!r} "
+                f"与提交原文 {subject.get('text')!r} 不一致（OCR 变体？请核对位置）")
+    if warnings:
+        out["warnings"] = warnings
     line = {"ts": _now(), "op": "resolve", "page_id": page_id,
-            "entity_index": entity_index, "verdict": verdict,
-            "note": note, "snapshot": snapshot}
+            "entity_index": out["entity_index"], "verdict": verdict,
+            "adjudication_index": closed_idx, "note": note, "snapshot": snapshot}
     _append_journal(work, line)
-    return {"page_id": page_id, "entity_index": entity_index,
-            "verdict": verdict, "verify": ent["verify"]}
+    return out
 
 
 def undo_last(work: Path) -> dict:
@@ -246,7 +328,9 @@ def undo_last(work: Path) -> dict:
 
 
 def journal_tail(work: Path, n: int = 20) -> list[dict]:
-    """journal 末 n 行（时间正序）。"""
+    """journal 末 n 行（时间正序；``n <= 0`` → 空列表，防御 ``[-0:]`` 全量陷阱）。"""
+    if not isinstance(n, int) or n <= 0:
+        return []
     return _read_journal(Path(work))[-n:]
 
 
@@ -317,7 +401,10 @@ def trust_rate(work: Path) -> dict:
     """一致集抽检可信率 = 抽检中保持原判（user-confirmed）的比例。
 
     以 ``{work}/sample_seed.json`` 选中清单为口径逐条读当前 verify 状态计数；
-    未抽检（checked=0）时 rate=0.0。返回 ``{checked, confirmed, corrected, rate}``。
+    未抽检（checked=0）时 rate=0.0。返回 ``{checked, confirmed, corrected,
+    unreviewed, rate}``——``unreviewed`` = 尚未人工复审（仍 consistent）的
+    条数，是 finalize 硬门禁（I1 终审修复：checked 含未复审条目，旧口径下
+    门禁恒空转）的计数来源。
     """
     sample = _load_sample(work)
     checked = confirmed = corrected = 0
@@ -333,4 +420,5 @@ def trust_rate(work: Path) -> dict:
             corrected += 1
     rate = confirmed / checked if checked else 0.0
     return {"checked": checked, "confirmed": confirmed,
-            "corrected": corrected, "rate": rate}
+            "corrected": corrected, "unreviewed": checked - confirmed - corrected,
+            "rate": rate}
