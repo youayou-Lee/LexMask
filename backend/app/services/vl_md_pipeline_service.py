@@ -47,6 +47,19 @@ PLACEHOLDER_RE = re.compile(r"\[[A-Za-z][A-Za-z0-9_]*_\d+\]")
 CONVERGENCE_MAX_ROUNDS = 3
 
 
+def residual_input(text: str, context: RedactionContext) -> str:
+    """零泄漏复检的输入:剥占位符 + 剥已生成的化名合成词。
+
+    化名替换词(某人民法院1/某派出所1)不是占位符,留在文本里会被 NER 当成
+    新实体再次替换(真实冒烟实证:法院→某人民法院1→某公司8 套娃)。保留原文
+    的公共机构不在此剥(value==key 判定),它们是设计内保留,仍在复检面里。
+    """
+    replaced_words = {v for k, v in context.entity_map.items() if v != k}
+    for v in sorted(replaced_words, key=len, reverse=True):
+        text = text.replace(v, "")
+    return PLACEHOLDER_RE.sub("", text)
+
+
 class VlMdLeakError(RuntimeError):
     """终态零泄漏自检未通过。产物照常落盘(供审计),但任务按失败处理。"""
 
@@ -242,7 +255,7 @@ class VlMdPipelineService:
         # 多轮收敛零泄漏自检
         rounds = 0
         for _ in range(CONVERGENCE_MAX_ROUNDS):
-            stripped = PLACEHOLDER_RE.sub("", desens)
+            stripped = residual_input(desens, context)
             residual = [
                 e for e in await self.collect_entities(stripped, types)
                 if e.text not in context.entity_map and e.text in desens
@@ -253,7 +266,7 @@ class VlMdPipelineService:
             for e in sorted(residual, key=lambda x: len(x.text), reverse=True):
                 desens = desens.replace(e.text, context.get_replacement(e))
 
-        final_stripped = PLACEHOLDER_RE.sub("", desens)
+        final_stripped = residual_input(desens, context)
         leaks = sorted({
             e.text for e in await self.collect_entities(final_stripped, types)
             if e.text not in context.entity_map

@@ -349,3 +349,26 @@ async def test_different_jobs_get_independent_mappings(monkeypatch, tmp_path):
     await svc.process_file(info, {"entity_type_ids": ["PERSON"]}, job_id="jobB")
     ph_b = [k for k, v in store.last[1]["entity_map"].items() if v["text"] == "张三"][0]
     assert ph_a == ph_b  # 编号从 1 开始,不同 job 同实体同号互不冲突即可
+
+
+# ---------- 化名词二次识别套娃修复(真实冒烟实证) ----------
+
+@pytest.mark.asyncio
+async def test_pseudonym_words_not_re_collected():
+    # 法院全名与「人民法院」碎片都被 NER 上报;「人民法院」化名为「某人民法院1」后,
+    # 收敛自检不得把化名词再次当实体替换(冒烟实证:法院→某人民法院1→某公司8)
+    md = "广东省清远市清城区人民法院刑事判决书。经广东省清远市清城区人民法院审理。"
+    svc = VlMdPipelineService(ner_service=StubNER([
+        {"type": "ORG", "name": "广东省清远市清城区人民法院"},
+        {"type": "ORG", "name": "人民法院", "only_call": 0},
+    ]))
+    result = await svc.process(pages=[md], raw_texts=[], types=_types("ORG"))
+    texts = {v["text"] for v in result.mapping.values()}
+    # 不得出现「化名词再进映射」的链式条目
+    chained = [t for t in texts if t.startswith("某") and any(t == x for x in texts)]
+    assert not chained, f"化名词被二次收集: {texts}"
+    # 原文法院名不残留
+    assert "清城区人民法院" not in result.desens_md
+    # 映射里法院的替换词是派生化名而非某公司
+    vals = [v["text"] for v in result.mapping.values() if "人民法院" in v["text"]]
+    assert vals and all(v.startswith("某人民法院") for v in vals)
