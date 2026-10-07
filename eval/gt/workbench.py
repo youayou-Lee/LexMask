@@ -14,8 +14,10 @@ GT 原文不进仓）。工作目录布局::
 - 漏 → ``correct`` 为新实体（``origin="user"``、``verify="user-confirmed"``）
   追加进 entities。
 
-对应页上全部 ``verdict=="disputed"`` 的仲裁条目改 ``user:{对|错|漏}``（同一页
-的 disputed 仲裁由这次人工决定一并收口）。
+对应页上**与被裁决实体关联的**仲裁条目改 ``user:{对|错|漏}``——关联 = 该
+disputed 条目的 candidates（a/b/...）里存在候选其 ``span_original`` 与实体相同
+（退而求其次 ``text`` 相同）；无关联 disputed 条目时不碰任何仲裁（典型如漏：
+被漏实体本无条目），其余 disputed 条目保持 disputed 等待各自裁决。
 
 撤销（控制器裁定 1）：**快照还原，不算逆**——每条 journal 行内嵌被触 pack 的
 ``entities``+``adjudications`` 操作前深拷贝快照，``undo_last`` 直接从快照恢复
@@ -135,15 +137,35 @@ def load_workspace(work: Path) -> Workspace:
     return Workspace(work, pages)
 
 
+def _linked_disputed_index(pack: dict, ent: dict) -> int | None:
+    """找与实体关联的 disputed 仲裁条目下标（candidates 候选 span 优先、text 次之）。
+
+    无匹配（实体没有挂 disputed 条目，典型如漏）返回 None——不碰任何仲裁。
+    """
+    for i, adj in enumerate(pack.get("adjudications", [])):
+        if not (isinstance(adj, dict) and adj.get("verdict") == "disputed"):
+            continue
+        cands = adj.get("candidates") or {}
+        entries = [e for c in cands.values() if isinstance(c, list)
+                   for e in c if isinstance(e, dict)]
+        for key in ("span_original", "text"):  # span 精确匹配优先，text 兜底
+            if any(e.get(key) == ent.get(key) for e in entries):
+                return i
+    return None
+
+
 def resolve_dispute(work: Path, page_id: str, entity_index: int,
                     verdict: str, correct: dict | None,
                     note: str | None) -> dict:
     """三键裁决写回（对/错/漏），返回操作摘要。
 
     - 对：实体 verify→user-confirmed；
-    - 错：correct 覆盖 text/type/span_original/span_normalized，verify→user-corrected；
+    - 错：correct 全量覆盖 text/type/span_original/span_normalized（缺一即拒），
+      verify→user-corrected；
     - 漏：correct 为新实体（origin="user"、verify="user-confirmed"）追加。
-    页上全部 disputed 仲裁改 ``user:{verdict}``。写前过 validate_pagepack，
+    只关单与被裁决实体关联的那条 disputed 仲裁（candidates 候选 span 优先、
+    text 兜底匹配）为 ``user:{verdict}``；无关联 disputed（典型如漏）不碰任何
+    仲裁，其余 disputed 条目保持原状等待各自裁决。写前过 validate_pagepack，
     非法 raise ValueError 不落盘；成功后追加 journal 行（含操作前快照）。
     """
     if verdict not in VERDICTS:
@@ -156,6 +178,12 @@ def resolve_dispute(work: Path, page_id: str, entity_index: int,
                          f"（页 {page_id!r} 共 {len(entities)} 条实体）")
     if verdict in ("错", "漏") and not isinstance(correct, dict):
         raise ValueError(f"verdict={verdict!r} 需要 correct 实体字段（text/type/span）")
+    if verdict == "错":
+        missing = [k for k in ("text", "type", "span_original", "span_normalized")
+                   if k not in correct]
+        if missing:
+            raise ValueError(f"verdict=错 的 correct 缺字段：{missing}"
+                             "（text/type/span_original/span_normalized 全必填）")
 
     snapshot = _snapshot(pack)
     ent = entities[entity_index]
@@ -163,8 +191,7 @@ def resolve_dispute(work: Path, page_id: str, entity_index: int,
         ent["verify"] = "user-confirmed"
     elif verdict == "错":
         for key in ("text", "type", "span_original", "span_normalized"):
-            if key in correct:
-                ent[key] = copy.deepcopy(correct[key])
+            ent[key] = copy.deepcopy(correct[key])
         ent["verify"] = "user-corrected"
     else:  # 漏
         new_ent = copy.deepcopy(correct)
@@ -174,9 +201,10 @@ def resolve_dispute(work: Path, page_id: str, entity_index: int,
         entities.append(new_ent)
     if note is not None and verdict != "漏":
         ent["note"] = note
-    for adj in pack.get("adjudications", []):
-        if isinstance(adj, dict) and adj.get("verdict") == "disputed":
-            adj["verdict"] = f"user:{verdict}"
+    # 定向关单（评审 Important#1）：只关与被裁决实体关联的那条 disputed
+    adj_idx = None if verdict == "漏" else _linked_disputed_index(pack, ent)
+    if adj_idx is not None:
+        pack["adjudications"][adj_idx]["verdict"] = f"user:{verdict}"
 
     _write_pack(work, page_id, pack)  # 校验失败在此 raise，不落任何盘
     line = {"ts": _now(), "op": "resolve", "page_id": page_id,

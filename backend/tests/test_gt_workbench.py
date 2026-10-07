@@ -16,7 +16,7 @@ from gt import gt_schema, workbench  # noqa: E402
 
 # ---- 夹具：两条最小合法 pack（合成占位符，同 test_gt_schema 模式） ----------------
 
-def _pack_p1():  # body 页：1 个 consistent 实体 + 1 条 disputed 仲裁
+def _pack_p1():  # body 页：2 个 consistent 实体 + 2 条 disputed 仲裁（各挂一条）
     return {
         "page_id": "p1", "page_type": "body",
         "source": {"file_sha256": "0" * 64, "page": 0,
@@ -24,14 +24,23 @@ def _pack_p1():  # body 页：1 个 consistent 实体 + 1 条 disputed 仲裁
         "transcript_gt": {"text": "张三号码110122198110227771",
                           "normalized_text": "张三号码110122198110227771",
                           "fidelity": "machine"},
-        "entities": [{"text": "张三", "type": "姓名",
-                      "span_original": [0, 2], "span_normalized": [0, 2],
-                      "origin": "regex", "verify": "consistent", "note": None}],
-        "adjudications": [{"models": ["a", "b"], "rule": "R6",
-                           "verdict": "disputed",
-                           "candidates": {"a": [{"text": "张三", "type": "姓名",
-                                                 "span_original": [0, 2]}],
-                                          "b": []}}]}
+        "entities": [
+            {"text": "张三", "type": "姓名",
+             "span_original": [0, 2], "span_normalized": [0, 2],
+             "origin": "regex", "verify": "consistent", "note": None},
+            {"text": "110122198110227771", "type": "身份证号",
+             "span_original": [4, 22], "span_normalized": [4, 22],
+             "origin": "regex", "verify": "consistent", "note": None}],
+        "adjudications": [
+            {"models": ["a", "b"], "rule": "R6", "verdict": "disputed",
+             "candidates": {"a": [{"text": "张三", "type": "姓名",
+                                   "span_original": [0, 2]}],
+                            "b": []}},
+            {"models": ["a", "b"], "rule": "R5", "verdict": "disputed",
+             "candidates": {"a": [{"text": "110122198110227771", "type": "身份证号",
+                                   "span_original": [4, 22]}],
+                            "b": [{"text": "110122198110227771", "type": "手机号",
+                                   "span_original": [4, 22]}]}}]}
 
 
 def _pack_p2():  # table 页：3 个同型 consistent 实体（分层抽样用）
@@ -70,7 +79,7 @@ def test_load_workspace_and_stats(work):
     ws = workbench.load_workspace(work)
     assert set(ws.pages) == {"p1", "p2"}
     stats = ws.stats()
-    assert stats["consistent"] == 4  # p1 一条 + p2 三条
+    assert stats["consistent"] == 5  # p1 两条 + p2 三条
     assert stats["arbitrated"] == 0
 
 
@@ -78,6 +87,7 @@ def test_disputes_listing(work):
     ws = workbench.load_workspace(work)
     ds = ws.disputes()
     assert list(ds) == ["p1"]
+    assert len(ds["p1"]) == 2
     assert ds["p1"][0]["verdict"] == "disputed"
     assert "candidates" in ds["p1"][0]
 
@@ -114,7 +124,27 @@ def test_resolve_miss_appends_entity(work):
     assert new["origin"] == "user"
     assert new["verify"] == "user-confirmed"
     assert new["text"] == "王五"
-    assert pack["adjudications"][0]["verdict"] == "user:漏"
+    # 漏：无关联 disputed 条目，任何仲裁都不被触碰（评审 Important#1）
+    assert all(a["verdict"] == "disputed" for a in pack["adjudications"])
+
+
+def test_resolve_closes_only_linked_disputed(work):
+    # 页上有两条 disputed（各挂一实体）：只裁 A（实体0），B 必须保持 disputed
+    workbench.resolve_dispute(work, "p1", 0, "对", None, None)
+    adjs = _read_pack(work, "p1")["adjudications"]
+    assert adjs[0]["verdict"] == "user:对"  # span 匹配实体 0 → A 关单
+    assert adjs[1]["verdict"] == "disputed"  # B 未被人工裁决，不得静默关单
+    ds = workbench.load_workspace(work).disputes()
+    assert "p1" in ds and len(ds["p1"]) == 1  # disputes() 仍列出 B
+    assert ds["p1"][0]["rule"] == "R5"
+    # 再裁 B（实体1，text 兜底路径同样只关自己那条）
+    workbench.resolve_dispute(work, "p1", 1, "错",
+                              {"text": "110122198110227771", "type": "身份证号",
+                               "span_original": [4, 22], "span_normalized": [4, 22]},
+                              None)
+    adjs = _read_pack(work, "p1")["adjudications"]
+    assert [a["verdict"] for a in adjs] == ["user:对", "user:错"]
+    assert workbench.load_workspace(work).disputes() == {}
 
 
 def test_resolve_rejects_invalid_and_writes_nothing(work):
@@ -126,6 +156,16 @@ def test_resolve_rejects_invalid_and_writes_nothing(work):
         workbench.resolve_dispute(work, "p1", 0, "错", bad, None)
     assert _read_pack(work, "p1") == before  # pack 未被改动
     assert not journal.exists()  # 无 journal 落盘
+
+
+def test_resolve_correct_requires_full_fields(work):
+    # 键=错：correct 四字段（text/type/span_original/span_normalized）全必填（评审 Minor#3）
+    before = copy.deepcopy(_read_pack(work, "p1"))
+    partial = {"text": "李四", "type": "姓名"}  # 缺两个 span 字段
+    with pytest.raises(ValueError):
+        workbench.resolve_dispute(work, "p1", 0, "错", partial, None)
+    assert _read_pack(work, "p1") == before
+    assert not (work / "journal.jsonl").exists()
 
 
 def test_resolve_bad_args_raise(work):
@@ -192,14 +232,16 @@ def test_make_sample_deterministic_and_persisted(work):
 
 
 def test_make_sample_ratio_ge_one_per_stratum(work):
-    # 两层：body×姓名 与 table×姓名，各至少 1 条
+    # 三层：body×姓名、body×身份证号、table×姓名，各至少 1 条
     s = workbench.make_sample(work, ratio=0.1, seed=7)
     keys = set()
     for pid, idx in s["selected"]:
         pack = _read_pack(work, pid)
         ent = pack["entities"][idx]
         keys.add((pack["page_type"], ent["type"], ent["verify"]))
-    assert keys == {("body", "姓名", "consistent"), ("table", "姓名", "consistent")}
+    assert keys == {("body", "姓名", "consistent"),
+                    ("body", "身份证号", "consistent"),
+                    ("table", "姓名", "consistent")}
 
 
 def test_apply_sample_verdict_and_trust_rate(work):
@@ -229,8 +271,7 @@ def test_apply_sample_verdict_and_trust_rate(work):
     assert tr2["checked"] == tr["checked"]
     assert tr2["confirmed"] == 1
     assert tr2["corrected"] == 1
-    assert tr2["rate"] == pytest.approx(1 / tr2["checked"])
-    assert tr2["rate"] < tr["rate"] or tr2["corrected"] > 0  # 修正后重算
+    assert tr2["rate"] == pytest.approx(1 / tr2["checked"])  # 修正后重算（评审 Minor#5）
 
 
 def test_apply_sample_verdict_rejects_unsampled(work):
