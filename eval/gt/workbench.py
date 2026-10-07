@@ -1,4 +1,4 @@
-"""GT 标注工作台数据层（Issue#56 M3 / Task 1）。
+"""GT 标注工作台数据层（Issue#56 M3 / Task 1+2）。
 
 纯本地、零网络、只读写工作目录（``--work``），不碰任何 git 仓（铁律 1：
 GT 原文不进仓）。工作目录布局::
@@ -220,3 +220,89 @@ def undo_last(work: Path) -> dict:
 def journal_tail(work: Path, n: int = 20) -> list[dict]:
     """journal 末 n 行（时间正序）。"""
     return _read_journal(Path(work))[-n:]
+
+
+# ---- Task 2: 分层抽样 / 抽检三键 / 可信率 ----------------------------------------
+
+def make_sample(work: Path, ratio: float = 0.1, seed: int | None = None) -> dict:
+    """从 verify=="consistent" 实体按 (页型, 类型, verify) 分层抽 ratio。
+
+    每个非空层至少抽 1（层内条数 × ratio 向下取整，<1 则取 1）；层按排序序
+    遍历、``random.Random(seed)`` 层内抽样 → 同 seed 同抽样（确定性）。seed 与
+    选中清单落盘 ``{work}/sample_seed.json`` 并随返回值给出。selected 元素 =
+    ``[page_id, entity_index]``。
+    """
+    if not 0 < ratio <= 1:
+        raise ValueError(f"ratio {ratio!r} 非法（须 0 < ratio <= 1）")
+    if seed is None:
+        seed = random.SystemRandom().randrange(2 ** 32)
+    work = Path(work)
+    strata: dict[tuple, list[list]] = {}
+    for pid, pack in sorted(load_workspace(work).pages.items()):
+        for idx, ent in enumerate(pack.get("entities", [])):
+            if ent.get("verify") != "consistent":
+                continue
+            key = (pack["page_type"], ent.get("type"), ent["verify"])
+            strata.setdefault(key, []).append([pid, idx])
+    rng = random.Random(seed)
+    selected: list[list] = []
+    for key in sorted(strata):
+        pool = sorted(strata[key])  # 层内确定性顺序
+        k = max(1, math.floor(len(pool) * ratio))
+        selected.extend(rng.sample(pool, k))
+    result = {"seed": seed, "ratio": ratio,
+              "strata": {"×".join(map(str, k)): len(v) for k, v in sorted(strata.items())},
+              "selected": selected}
+    (work / _SAMPLE).write_text(json.dumps(result, ensure_ascii=False, indent=1) + "\n",
+                                encoding="utf-8")
+    return result
+
+
+def _load_sample(work: Path) -> dict:
+    path = Path(work) / _SAMPLE
+    if not path.is_file():
+        raise ValueError("尚无抽样（先 make_sample）")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def apply_sample_verdict(work: Path, page_id: str, entity_index: int,
+                         ok: bool, correct: dict | None) -> dict:
+    """抽检三键：对（ok=True）→ user-confirmed；错 → corrected（同 Task 1 键）。
+
+    仅对已抽样实体可用（不在 sample_seed.json 选中清单即拒绝）；抽检修正后
+    返回值携带重算后的 ``trust``。
+    """
+    sample = _load_sample(work)
+    if [page_id, entity_index] not in sample["selected"]:
+        raise ValueError(f"实体 ({page_id!r}, {entity_index}) 不在抽样清单中")
+    if not ok and not isinstance(correct, dict):
+        raise ValueError("ok=False（抽检判错）需要 correct 修正字段")
+    verdict = "对" if ok else "错"
+    out = resolve_dispute(work, page_id, entity_index, verdict, correct, None)
+    out["op"] = "sample-verdict"
+    out["ok"] = ok
+    out["trust"] = trust_rate(work)  # 抽检修正后重算可信率
+    return out
+
+
+def trust_rate(work: Path) -> dict:
+    """一致集抽检可信率 = 抽检中保持原判（user-confirmed）的比例。
+
+    以 ``{work}/sample_seed.json`` 选中清单为口径逐条读当前 verify 状态计数；
+    未抽检（checked=0）时 rate=0.0。返回 ``{checked, confirmed, corrected, rate}``。
+    """
+    sample = _load_sample(work)
+    checked = confirmed = corrected = 0
+    for pid, idx in sample["selected"]:
+        entities = _read_pack(Path(work), pid).get("entities", [])
+        if not isinstance(idx, int) or not 0 <= idx < len(entities):
+            continue  # 抽样后实体被增删漂移：不计入（漏/撤回场景）
+        verify = entities[idx].get("verify")
+        checked += 1
+        if verify == "user-confirmed":
+            confirmed += 1
+        elif verify == "user-corrected":
+            corrected += 1
+    rate = confirmed / checked if checked else 0.0
+    return {"checked": checked, "confirmed": confirmed,
+            "corrected": corrected, "rate": rate}

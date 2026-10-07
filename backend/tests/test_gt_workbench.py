@@ -173,3 +173,76 @@ def test_undo_consecutive(work):
     assert _read_pack(work, "p2") == _pack_p2()
     with pytest.raises(ValueError):
         workbench.undo_last(work)  # 无可撤销
+
+
+# ---- Task 2: 分层抽样 / 抽检三键 / 可信率 ----------------------------------------
+
+def test_make_sample_deterministic_and_persisted(work):
+    s1 = workbench.make_sample(work, ratio=0.1, seed=42)
+    s2 = workbench.make_sample(work, ratio=0.1, seed=42)
+    assert s1["selected"] == s2["selected"]  # 同 seed 同抽样
+    assert s1["seed"] == 42
+    assert len(s1["selected"]) >= 1  # 每个非空层至少 1 条
+    saved = json.loads((work / "sample_seed.json").read_text(encoding="utf-8"))
+    assert saved["seed"] == 42
+    assert saved["selected"] == s1["selected"]
+    # 只抽 consistent 实体
+    for pid, idx in s1["selected"]:
+        assert _read_pack(work, pid)["entities"][idx]["verify"] == "consistent"
+
+
+def test_make_sample_ratio_ge_one_per_stratum(work):
+    # 两层：body×姓名 与 table×姓名，各至少 1 条
+    s = workbench.make_sample(work, ratio=0.1, seed=7)
+    keys = set()
+    for pid, idx in s["selected"]:
+        pack = _read_pack(work, pid)
+        ent = pack["entities"][idx]
+        keys.add((pack["page_type"], ent["type"], ent["verify"]))
+    assert keys == {("body", "姓名", "consistent"), ("table", "姓名", "consistent")}
+
+
+def test_apply_sample_verdict_and_trust_rate(work):
+    s = workbench.make_sample(work, ratio=0.1, seed=42)
+    pid, idx = s["selected"][0]
+    workbench.apply_sample_verdict(work, pid, idx, ok=True, correct=None)
+    ent = _read_pack(work, pid)["entities"][idx]
+    assert ent["verify"] == "user-confirmed"
+
+    tr = workbench.trust_rate(work)
+    assert tr["checked"] == len(s["selected"])
+    assert tr["confirmed"] == 1
+    assert tr["corrected"] == 0
+    assert tr["rate"] == pytest.approx(1 / tr["checked"])
+
+    # 抽检错 → corrected + 可信率重算
+    pid2, idx2 = s["selected"][-1]
+    if (pid2, idx2) == (pid, idx):
+        pytest.skip("样本只有一条，无法构造第二键")
+    correct = {"text": "改", "type": "姓名",
+               "span_original": _read_pack(work, pid2)["entities"][idx2]["span_original"],
+               "span_normalized": _read_pack(work, pid2)["entities"][idx2]["span_normalized"]}
+    workbench.apply_sample_verdict(work, pid2, idx2, ok=False, correct=correct)
+    ent2 = _read_pack(work, pid2)["entities"][idx2]
+    assert ent2["verify"] == "user-corrected"
+    tr2 = workbench.trust_rate(work)
+    assert tr2["checked"] == tr["checked"]
+    assert tr2["confirmed"] == 1
+    assert tr2["corrected"] == 1
+    assert tr2["rate"] == pytest.approx(1 / tr2["checked"])
+    assert tr2["rate"] < tr["rate"] or tr2["corrected"] > 0  # 修正后重算
+
+
+def test_apply_sample_verdict_rejects_unsampled(work):
+    saved = workbench.make_sample(work, ratio=0.1, seed=42)
+    selected = {tuple(x) for x in saved["selected"]}
+    unsampled = ("p2", 2) if ("p2", 2) not in selected else ("p2", 99)
+    with pytest.raises(ValueError):
+        workbench.apply_sample_verdict(work, *unsampled, ok=True, correct=None)
+
+
+def test_apply_sample_verdict_wrong_requires_correct(work):
+    s = workbench.make_sample(work, ratio=0.1, seed=42)
+    pid, idx = s["selected"][0]
+    with pytest.raises(ValueError):
+        workbench.apply_sample_verdict(work, pid, idx, ok=False, correct=None)
