@@ -74,6 +74,9 @@ const PlaygroundImagePopout = React.lazy(() =>
 const ConsolePage = React.lazy(() =>
   import('./features/console/console-page').then((m) => ({ default: m.ConsolePage })),
 );
+const Restore = React.lazy(() =>
+  import('./features/restore').then((m) => ({ default: m.RestorePage })),
+);
 
 function DelayedSpinner() {
   const [show, setShow] = React.useState(false);
@@ -326,6 +329,14 @@ export const router = createBrowserRouter([
         element: (
           <LazyPage>
             <DicomWorkspace />
+          </LazyPage>
+        ),
+      },
+      {
+        path: 'restore',
+        element: (
+          <LazyPage>
+            <Restore />
           </LazyPage>
         ),
       },
