@@ -367,3 +367,34 @@ def test_type_alias_alignment():
     assert r["机构名称"]["tp"] == 1 and r["机构名称"]["fn"] == 0
     assert r["机构名称"]["fp"] == 1  # 公司名称无对应 GT 串
     assert "开户行" in r and r["开户行"]["fp"] == 1  # 不映射，独立计 FP
+
+
+# ---- 跑批单实例守卫（2026-10-07 实战缺陷：两进程同 work 目录竞态） ----
+
+def test_work_lock_acquire_and_release(tmp_path):
+    from gt.lock import acquire_work_lock, release_work_lock
+    acquire_work_lock(tmp_path)
+    assert (tmp_path / ".lock").read_text(encoding="utf-8") == str(__import__("os").getpid())
+    release_work_lock(tmp_path)
+    assert not (tmp_path / ".lock").exists()
+
+def test_work_lock_blocks_while_holder_alive(tmp_path):
+    import os
+    from gt.lock import acquire_work_lock
+    acquire_work_lock(tmp_path)  # 本测试进程持锁且存活
+    with pytest.raises(RuntimeError, match="占用"):
+        acquire_work_lock(tmp_path)
+
+def test_work_lock_stale_holder_cleaned(tmp_path):
+    from gt.lock import acquire_work_lock
+    (tmp_path / ".lock").write_text("999999999", encoding="utf-8")  # 不存在的 pid
+    acquire_work_lock(tmp_path)  # 陈旧锁应被清掉、本进程成功上锁
+    import os
+    assert (tmp_path / ".lock").read_text(encoding="utf-8") == str(os.getpid())
+
+def test_work_lock_garbage_content_treated_stale(tmp_path):
+    from gt.lock import acquire_work_lock
+    (tmp_path / ".lock").write_text("not-a-pid", encoding="utf-8")
+    acquire_work_lock(tmp_path)
+    import os
+    assert (tmp_path / ".lock").read_text(encoding="utf-8") == str(os.getpid())

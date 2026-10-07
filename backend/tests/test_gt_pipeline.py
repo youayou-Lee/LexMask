@@ -11,6 +11,7 @@
 import hashlib
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -624,6 +625,24 @@ def test_openai_ner_client_http_error(monkeypatch):
     monkeypatch.setattr(_rq, "post", lambda *a, **k: _Resp())
     with pytest.raises(RuntimeError, match="NER 调用失败"):
         OpenAINERClient("http://h:1/v1").ner("文本")
+
+def test_openai_ner_client_hard_wall_clock(monkeypatch):
+    # 2026-10-07 黑洞连接事件回归：requests read timeout 对半开 TCP 不生效，
+    # ner() 必须自带硬墙钟——POST 睡过 deadline 时主线程到点抛错、快速返回。
+    from gt.pagepack import OpenAINERClient
+    import time as _time
+    import requests as _rq
+
+    def fake_post(url, json=None, timeout=None):
+        _time.sleep(1.0)  # 远超 0.2s deadline 的"黑洞"请求
+        raise AssertionError("硬墙钟应先于请求完成触发")
+
+    monkeypatch.setattr(_rq, "post", fake_post)
+    c = OpenAINERClient("http://h:1/v1", timeout=0.2)
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError, match="硬墙钟"):
+        c.ner("文本")
+    assert time.monotonic() - t0 < 5.0
 
 def test_build_ner_shape_dispatch():
     from gt.entities import NEROff

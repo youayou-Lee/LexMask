@@ -69,11 +69,21 @@ class TranscriptionClient(Protocol):
 
 
 class CloudVLClient:
-    """PaddleOCR AI Studio 云作业客户端（异步：提交 → 轮询 → 下载 JSONL）。"""
+    """PaddleOCR AI Studio 云作业客户端（异步：提交 → 轮询 → 下载 JSONL）。
+
+    模型串翻译（2026-10-07 实测：旧串派发 1.0 且不计量）：legacy
+    ``"PaddleOCR-VL"`` 由云侧路由到旧 1.0 产品线（结果 URL 路径
+    ``pp-ocr-vl-10``），正确产品线是 ``"PaddleOCR-VL-1.6"``（用户已核实
+    该串计量生效）。本客户端在构造时把 legacy 串翻译成 1.6 串再提交，
+    调用方传旧串依旧可用（``self.model`` 为翻译后的实际提交串）。
+    """
+
+    #: legacy 模型串 → 当前产品线串（构造时翻译）
+    _MODEL_ALIAS = {"PaddleOCR-VL": "PaddleOCR-VL-1.6"}
 
     def __init__(self, model: str, token: str | None = None, base: str = JOB_URL,
                  poll_interval: float = POLL_INTERVAL_START, timeout: float = POLL_TIMEOUT):
-        self.model = model
+        self.model = self._MODEL_ALIAS.get(model, model)
         self.base = base.rstrip("/")
         self.poll_interval = poll_interval
         self.timeout = timeout
@@ -169,12 +179,12 @@ class CloudVLClient:
             result = json.loads(line).get("result") or {}
             if self.model == "PP-OCRv6":
                 pages.extend(self._pages_v6(result))
-            elif self.model == "PaddleOCR-VL":
+            elif self.model.startswith("PaddleOCR-VL"):
                 pages.extend(self._pages_vl(result))
             else:
                 raise ValueError(
                     f"未知模型 {self.model!r}：响应顶层结构必须按模型分派"
-                    "（PP-OCRv6 → ocrResults / PaddleOCR-VL → layoutParsingResults）")
+                    "（PP-OCRv6 → ocrResults / PaddleOCR-VL 线 → layoutParsingResults）")
         return pages
 
     # -- 双模型响应结构分派（私有仓方案 §3：两模型顶层结构不同） ------------
@@ -225,7 +235,9 @@ class LocalVLClient:
 def build_clients(spec: str, _token: str | None = None) -> TranscriptionClient:
     """按 spec 构建转录客户端。
 
-    - "cloud:PP-OCRv6" / "cloud:PaddleOCR-VL" → CloudVLClient（token 缺省走 CLOUD_VL_TOKEN）
+    - "cloud:PP-OCRv6" / "cloud:PaddleOCR-VL[-1.6]" → CloudVLClient
+      （legacy 串 "PaddleOCR-VL" 构造时翻译为 "PaddleOCR-VL-1.6"——
+      2026-10-07 实测旧串派发 1.0 且不计量）
     - "vlmd:http://127.0.0.1:8095"            → LocalVLClient
 
     `_token` 仅供测试注入（绕过环境变量），生产调用方不要使用。

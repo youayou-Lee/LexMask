@@ -71,6 +71,7 @@ import eval_ner_quality as _nerq  # noqa: E402
 from gt.arbitrate import arbitrate_page  # noqa: E402
 from gt.compare import compare_transcripts  # noqa: E402
 from gt.entities import REGEX_CHANNELS, extract_ner, extract_regex, merge_entities  # noqa: E402
+from gt.lock import acquire_work_lock, release_work_lock  # noqa: E402
 from gt.normalize import FaceMap, normalize_text  # noqa: E402
 from gt.pagepack import CachedTranscriptionClient, pick_page, run_page  # noqa: E402
 from gt.run_pipeline import build_ner, map_page_type, parse_clients  # noqa: E402
@@ -489,6 +490,15 @@ def _resolve_input(manifest_dir: Path, synthetic_dir: Path, rel: str) -> Path | 
 
 
 def _run(args: argparse.Namespace) -> int:
+    # 单实例守卫（2026-10-07 实战缺陷：两个并发进程在同一 work 目录竞态）
+    acquire_work_lock(Path(args.work))
+    try:
+        return _run_unlocked(args)
+    finally:
+        release_work_lock(Path(args.work))
+
+
+def _run_unlocked(args: argparse.Namespace) -> int:
     manifest_path = Path(args.manifest)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     entries = [e for e in (manifest.get("files") or [])
@@ -712,7 +722,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--synthetic-dir", required=True, help="合成集目录")
     parser.add_argument("--manifest", required=True, help="manifest.json 路径")
     parser.add_argument("--work", required=True, help="GT 工作目录（pack 与报告落盘根）")
-    parser.add_argument("--clients", default="cloud:PP-OCRv6,cloud:PaddleOCR-VL",
+    parser.add_argument("--clients", default="cloud:PP-OCRv6,cloud:PaddleOCR-VL-1.6",
                         help="转录客户端 spec（同 run_pipeline，双云必选）")
     parser.add_argument("--skip-existing", action="store_true",
                         help="断点续跑：工作目录中已存在合法 pack 的页直接复用（两次跑批连挂后的恢复路径）")

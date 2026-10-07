@@ -6,7 +6,7 @@
 
     python eval/gt/run_pipeline.py \
         --sample 页面副本.pdf --page 0 --page-type body \
-        --clients "cloud:PP-OCRv6,cloud:PaddleOCR-VL[,vlmd:http://127.0.0.1:8095]" \
+        --clients "cloud:PP-OCRv6,cloud:PaddleOCR-VL-1.6[,vlmd:http://127.0.0.1:8095]" \
         --ner off | --ner-base URL \
         --work GT工作目录 [--carrier scanned] [--segment first]
 
@@ -48,6 +48,7 @@ if __package__ in (None, ""):  # 直接脚本执行（python eval/gt/run_pipelin
 
 from gt.entities import NEROff  # noqa: E402
 from gt.gt_schema import PAGE_TYPES  # noqa: E402
+from gt.lock import acquire_work_lock, release_work_lock  # noqa: E402
 from gt.pagepack import (  # noqa: E402
     OpenAINERClient,
     CachedTranscriptionClient,
@@ -57,7 +58,8 @@ from gt.pagepack import (  # noqa: E402
 from gt.unify import CloudVLClient, LocalVLClient, build_clients  # noqa: E402
 
 # 双云通道的模型名 → clients dict 键（a = 云 v6、b = 云 VL；md = 本地 vl-md）
-_CLOUD_MODEL_KEYS = {"PP-OCRv6": "a", "PaddleOCR-VL": "b"}
+# legacy "PaddleOCR-VL" 在 CloudVLClient 构造时已翻译为 "PaddleOCR-VL-1.6"，此处键用翻译后的串
+_CLOUD_MODEL_KEYS = {"PP-OCRv6": "a", "PaddleOCR-VL-1.6": "b"}
 
 
 # ---- 参数解析辅助 ----------------------------------------------------------------
@@ -65,7 +67,7 @@ _CLOUD_MODEL_KEYS = {"PP-OCRv6": "a", "PaddleOCR-VL": "b"}
 def parse_clients(spec: str) -> dict[str, object]:
     """把逗号分隔的转录客户端 spec 组装成 run_page 的 clients dict。
 
-    ``cloud:PP-OCRv6`` → ``"a"``、``cloud:PaddleOCR-VL`` → ``"b"``、
+    ``cloud:PP-OCRv6`` → ``"a"``、``cloud:PaddleOCR-VL-1.6`` → ``"b"``、
     ``vlmd:<base_url>`` → ``"md"``（可选，顺序不敏感）。a/b 双云缺一即
     ``ValueError``（双云互验是管线前提，不允许单云降级）。
     """
@@ -89,7 +91,8 @@ def parse_clients(spec: str) -> dict[str, object]:
     if missing:
         raise ValueError(
             f"--clients 缺少双云通道 {sorted(missing)}：需要 cloud:PP-OCRv6 与 "
-            "cloud:PaddleOCR-VL（vlmd 可选）")
+            "cloud:PaddleOCR-VL-1.6（vlmd 可选；legacy 串 cloud:PaddleOCR-VL 亦可，"
+            "构造时自动翻译为 1.6）")
     return clients
 
 
@@ -131,6 +134,16 @@ def _run_single(args: argparse.Namespace, clients: dict, ner) -> int:
 
 
 def _run_batch(args: argparse.Namespace, clients: dict, ner) -> int:
+    # 单实例守卫（2026-10-07 实战缺陷：并发跑批在同一 work 目录竞态）；单页模式不加锁
+    work = Path(args.work)
+    acquire_work_lock(work)
+    try:
+        return _run_batch_unlocked(args, clients, ner)
+    finally:
+        release_work_lock(work)
+
+
+def _run_batch_unlocked(args: argparse.Namespace, clients: dict, ner) -> int:
     manifest_path = Path(args.manifest)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     entries = manifest.get("files") or []
@@ -173,8 +186,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--page", type=int, default=0, help="页号（默认 0）")
     parser.add_argument("--page-type", default="body", choices=sorted(PAGE_TYPES),
                         help="页型（默认 body）")
-    parser.add_argument("--clients", default="cloud:PP-OCRv6,cloud:PaddleOCR-VL",
-                        help="转录客户端 spec，逗号分隔：cloud:PP-OCRv6,cloud:PaddleOCR-VL"
+    parser.add_argument("--clients", default="cloud:PP-OCRv6,cloud:PaddleOCR-VL-1.6",
+                        help="转录客户端 spec，逗号分隔：cloud:PP-OCRv6,cloud:PaddleOCR-VL-1.6"
                              "[,vlmd:URL]（双云必选，vlmd 可选）")
     parser.add_argument("--ner-shape", choices=["openai", "entities"], default="openai",
                         help="NER 端点形状：openai=vLLM /chat/completions（实测真实形状，默认）；entities=直连 REST 假定形状")

@@ -71,6 +71,57 @@ def test_build_clients_spec():
     c = unify.build_clients("cloud:PP-OCRv6", _token=monkey_token)
     assert c.model == "PP-OCRv6"
 
+def test_legacy_vl_model_translated_to_16(monkeypatch, tmp_path):
+    # 2026-10-07 实测：旧串 "PaddleOCR-VL" 被云侧派发到 1.0 产品线（结果 URL
+    # 路径 pp-ocr-vl-10）且不计量——构造时必须翻译为 "PaddleOCR-VL-1.6"，
+    # 且提交体、结果分派都用翻译后的串。
+    submits = []
+    def fake_post(url, headers=None, data=None, files=None, timeout=None):
+        submits.append(data["model"]); return FakeResp({"data": {"jobId": "J1"}})
+    jsonl = "\n".join(json.dumps({"result": {"layoutParsingResults": [{"markdown": {"text": t}}]}})
+                      for t in ["第一页", "第二页"])
+    def fake_get(url, headers=None, timeout=None):
+        if "bcebos" not in url:
+            return FakeResp({"data": {"state": "done", "resultUrl": {"jsonUrl": "https://x.bj.bcebos.com/r.json?authorization=SECRET"}}})
+        out = FakeResp(None)
+        out.text = jsonl
+        return out
+    monkeypatch.setattr(unify.requests, "post", fake_post)
+    monkeypatch.setattr(unify.requests, "get", fake_get)
+    monkeypatch.setattr(unify.time, "sleep", lambda s: None)
+    pdf = tmp_path / "fake.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    c = unify.CloudVLClient("PaddleOCR-VL", token="t")  # legacy 串
+    assert c.model == "PaddleOCR-VL-1.6"  # 构造即翻译
+    got = c.transcribe(str(pdf))
+    assert submits == ["PaddleOCR-VL-1.6"]  # 提交体用 1.6 串
+    assert [p["text_raw"] for p in got] == ["第一页", "第二页"]  # VL 分派不受影响
+
+def test_pages_vl_jsonl_two_lines(monkeypatch, tmp_path):
+    # T1 deferred minor：_pages_vl（VL JSONL 解析）此前零覆盖——
+    # 两行 JSONL（每行一个 result.layoutParsingResults）必须出两页、文本各就各位。
+    jsonl = "\n".join([
+        json.dumps({"result": {"layoutParsingResults": [{"markdown": {"text": "页甲正文"}}]}}),
+        json.dumps({"result": {"layoutParsingResults": [{"markdown": {"text": "页乙正文"}}]}}),
+    ])
+    def fake_post(url, headers=None, data=None, files=None, timeout=None):
+        return FakeResp({"data": {"jobId": "J1"}})
+    def fake_get(url, headers=None, timeout=None):
+        if "bcebos" not in url:
+            return FakeResp({"data": {"state": "done", "resultUrl": {"jsonUrl": "https://x.bj.bcebos.com/r.json?authorization=SECRET"}}})
+        out = FakeResp(None)
+        out.text = jsonl
+        return out
+    monkeypatch.setattr(unify.requests, "post", fake_post)
+    monkeypatch.setattr(unify.requests, "get", fake_get)
+    monkeypatch.setattr(unify.time, "sleep", lambda s: None)
+    pdf = tmp_path / "fake.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    got = unify.CloudVLClient("PaddleOCR-VL-1.6", token="t").transcribe(str(pdf))
+    assert len(got) == 2
+    assert [p["text_raw"] for p in got] == ["页甲正文", "页乙正文"]
+    assert all(p["boxes"] is None for p in got)
+
 def test_download_conn_error_masks_url(monkeypatch, tmp_path):
     # 评审 Fix#1：连接级失败（requests.ConnectionError）的消息会内嵌完整签名 URL
     # （urllib3 "Max retries exceeded with url: /r.json?authorization=..."）——

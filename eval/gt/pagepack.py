@@ -48,6 +48,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
 import requests
@@ -94,6 +96,11 @@ class OpenAINERClient:
     （围栏剥离+子串提取，与 has_client 同序）。``base`` 以 ``/v1`` 结尾
     （如 ``http://127.0.0.1:8080/v1``），``model`` 可省（单模型 vLLM 忽略）。
     2026-10-06 已对实例 8080（HaS_Text_0209_0.6B）实测。
+
+    硬墙钟（2026-10-07 黑洞连接事件回归）：requests 的 read timeout 对
+    半开 TCP / 服务端 stall 不生效（整进程挂 31+ 分钟的实战教训），故
+    ``ner()`` 把 POST 放进工作线程，主线程以 deadline 强制等待——到点
+    即抛 RuntimeError，不信任传输层超时。
     """
 
     def __init__(self, base_url: str, model: str | None = None, types: list[str] | None = None,
@@ -103,13 +110,14 @@ class OpenAINERClient:
         self.types = sorted(types) if types is not None else sorted(PRESET_TYPE_NAMES)
         self.max_tokens = max_tokens
         self.timeout = timeout
+        self._pool = ThreadPoolExecutor(max_workers=1)
         nerq = _load_ner_quality()
         self._build_prompt = nerq.build_ner_prompt
         self._parse = nerq.parse_model_json
         self._temperature = nerq._MODEL_TEMPERATURE
         self._top_p = nerq._MODEL_TOP_P
 
-    def ner(self, text: str) -> dict[str, list[str]]:
+    def _post(self, text: str) -> dict[str, list[str]]:
         payload = {
             "messages": [{"role": "user", "content": self._build_prompt(text, self.types)}],
             "temperature": self._temperature, "top_p": self._top_p,
@@ -122,6 +130,16 @@ class OpenAINERClient:
             raise RuntimeError(f"NER 调用失败 status={r.status_code} body[:300]={r.text[:300]}")
         content = r.json()["choices"][0]["message"]["content"]
         return self._parse(content) or {}
+
+    def ner(self, text: str) -> dict[str, list[str]]:
+        future = self._pool.submit(self._post, text)
+        try:
+            return future.result(timeout=self.timeout)
+        except FuturesTimeoutError:
+            future.cancel()
+            raise RuntimeError(
+                f"NER 调用硬墙钟超时（>{self.timeout:g}s）——疑似黑洞连接"
+                "（requests 超时未触发；见 2026-10-07 黑洞连接事件）") from None
 
 
 class HTTPNERClient:
