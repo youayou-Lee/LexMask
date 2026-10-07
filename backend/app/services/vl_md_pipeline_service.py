@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from app.models.entity_schemas import Entity
@@ -44,7 +45,18 @@ VL_MD_LINKAGE_TRIGGERS = ("ID_CARD", "BANK_CARD")
 VL_MD_LINKAGE_TYPE = "BIRTH_DATE"
 
 PLACEHOLDER_RE = re.compile(r"\[[A-Za-z][A-Za-z0-9_]*_\d+\]")
+_PLACEHOLDER_TYPE_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_]*)_\d+\]")
 CONVERGENCE_MAX_ROUNDS = 3
+
+
+def _type_of_placeholder(replacement: str) -> str | None:
+    m = _PLACEHOLDER_TYPE_RE.fullmatch(replacement.strip())
+    return m.group(1) if m else None
+
+
+def _replaced_words(context: RedactionContext) -> set:
+    """已生成的化名合成词(替换值≠原文),供 diff/自检防化名子串污染。"""
+    return {v for k, v in context.entity_map.items() if v != k}
 
 
 def residual_input(text: str, context: RedactionContext) -> str:
@@ -82,7 +94,8 @@ class VlMdPipelineService:
         self._file_parser = file_parser
         # job 级映射上下文:同 job 跨文件共享一张映射表(同一实体同一占位符,#50 验收 A4)。
         # 队列 worker 单进程串行,内存态即可;进程重启丢表 → 各文件重新编号(不泄漏,仅一致性降级)。
-        self._job_contexts: dict = {}
+        # LRU 封顶防无界增长——映射表内存态含真实姓名,PII 不允许永驻(评审 Important#1)。
+        self._job_contexts: OrderedDict[str, RedactionContext] = OrderedDict()
 
     def _vl(self):
         if self._vl_client is None:
@@ -164,11 +177,11 @@ class VlMdPipelineService:
         return pages, raw_texts, sources
 
     async def _render_page_png(self, file_path: str, page: int) -> str:
+        import tempfile
+
         png_bytes = await self._parser().get_pdf_page_image(file_path, page)
-        out = os.path.join(
-            "/tmp", f"vlmd_{uuid.uuid4().hex}.png"
-        )
-        with open(out, "wb") as f:
+        fd, out = tempfile.mkstemp(prefix="vlmd_", suffix=".png")
+        with os.fdopen(fd, "wb") as f:
             f.write(png_bytes)
         return out
 
@@ -203,26 +216,42 @@ class VlMdPipelineService:
     # ---------- 替换 ----------
 
     @staticmethod
-    def apply_entities(md: str, entities: list[Entity], context: RedactionContext) -> str:
-        """按 start 降序切片替换:偏移精确,天然免疫子串误替换(POC 长实体优先的升级)。"""
+    def apply_entities(md: str, entities: list[Entity],
+                       context: RedactionContext) -> tuple[str, list[str]]:
+        """按 start 降序切片替换:偏移精确,天然免疫子串误替换(POC 长实体优先的升级)。
+
+        返回 (替换后文本, 偏移漂移被跳过的实体文本列表)——漂移=未替换,调用方须计入泄漏面。
+        """
+        drifted: list[str] = []
         for e in sorted(entities, key=lambda x: (x.start, -(x.end - x.start)), reverse=True):
             if md[e.start:e.end] != e.text:
                 logger.warning("[vl-md] offset drift for entity %r, skip", e.text[:20])
+                drifted.append(e.text)
                 continue
             md = md[:e.start] + context.get_replacement(e) + md[e.end:]
-        return md
+        return md, drifted
 
     # ---------- 主流程 ----------
+
+    MAX_CACHED_JOB_CONTEXTS = 64
 
     def context_for_job(self, job_id: str | None, word_pools: dict | None) -> RedactionContext:
         """同 job 复用同一映射上下文(跨文件一致);无 job_id(直连调用)则独立建表。"""
         if not job_id:
             return RedactionContext(ReplacementMode.PLACEHOLDER, word_pools=word_pools)
         ctx = self._job_contexts.get(job_id)
-        if ctx is None:
-            ctx = RedactionContext(ReplacementMode.PLACEHOLDER, word_pools=word_pools)
-            self._job_contexts[job_id] = ctx
+        if ctx is not None:
+            self._job_contexts.move_to_end(job_id)
+            return ctx
+        while len(self._job_contexts) >= self.MAX_CACHED_JOB_CONTEXTS:
+            self._job_contexts.popitem(last=False)
+        ctx = RedactionContext(ReplacementMode.PLACEHOLDER, word_pools=word_pools)
+        self._job_contexts[job_id] = ctx
         return ctx
+
+    def release_job_context(self, job_id: str) -> None:
+        """job 终态后由队列侧调用:释放映射表内存态(含真实姓名)。"""
+        self._job_contexts.pop(job_id, None)
 
     async def process(self, *, pages: list[str], raw_texts: list[list[str]], types,
                       word_pools: dict | None = None,
@@ -230,7 +259,7 @@ class VlMdPipelineService:
         md = "\n\n".join(pages)
         entities = await self.collect_entities(md, types)
         context = context or RedactionContext(ReplacementMode.PLACEHOLDER, word_pools=word_pools)
-        desens = self.apply_entities(md, entities, context)
+        desens, drifted = self.apply_entities(md, entities, context)
         md_entity_texts = {e.text for e in entities}
 
         # T5 diff(raw 块 vs MD 侧;自愈替换在 diff 内同步落 desens)
@@ -245,7 +274,9 @@ class VlMdPipelineService:
                         diff["covered"].append({"text": e.text, "type": e.type})
                     elif any(m in e.text for m in md_entity_texts):
                         diff["superseded"].append({"text": e.text, "type": e.type})
-                    elif e.text in desens:
+                    elif e.text in desens and not any(
+                        e.text in w for w in _replaced_words(context)
+                    ):
                         desens = desens.replace(e.text, context.get_replacement(e))
                         diff["self_healed"].append({"text": e.text, "type": e.type})
                     else:
@@ -270,12 +301,14 @@ class VlMdPipelineService:
         leaks = sorted({
             e.text for e in await self.collect_entities(final_stripped, types)
             if e.text not in context.entity_map
-        })
+        } | set(drifted))  # 替换时偏移漂移被跳过的实体=未替换,计入泄漏面(评审 Minor#2)
 
-        mapping = {
-            replacement: {"text": text}
-            for text, replacement in context.entity_map.items()
-        }
+        # 反转构建:同替换值(如两个出生日期同年→同一「1976年」)不得互相覆盖(评审 Important#2)
+        mapping: dict = {}
+        for text, replacement in context.entity_map.items():
+            entry = mapping.setdefault(replacement, {"type": _type_of_placeholder(replacement), "texts": []})
+            if text not in entry["texts"]:
+                entry["texts"].append(text)
         return VlMdResult(
             desens_md=desens,
             mapping=mapping,
@@ -296,6 +329,12 @@ class VlMdPipelineService:
         owner_id = str(file_info.get("owner_id") or "local_user")
         types = self.resolve_types(cfg, owner_id)
         pages, raw_texts, sources = await self.build_markdown(file_info)
+        if not any(p.strip() for p in pages):
+            # A7:空文件/纯图片无文字层/解析失败 → 显式报错,不静默产空产物
+            raise ValueError(
+                f"文档无可解析文本(file_type={file_info.get('file_type')},"
+                "空文件或图片页无文字层),拒绝产出空脱敏文档"
+            )
         context = self.context_for_job(job_id, load_word_pools(owner_id))
         result = await self.process(
             pages=pages, raw_texts=raw_texts, types=types, context=context,
@@ -350,7 +389,9 @@ class VlMdPipelineService:
         keep = [t for t in ("DATE", "TIME", "AMOUNT", "AGE") if t not in resolved]
         return {
             "policy": "issue50-default",
-            "replaced_placeholder": sorted(resolved & set(VL_MD_DEFAULT_TYPE_IDS)),
+            "replaced_placeholder": sorted(
+                (resolved & set(VL_MD_DEFAULT_TYPE_IDS)) - {"BIRTH_DATE", "ADDRESS"}
+            ),
             "generalized": sorted(resolved & {"BIRTH_DATE", "ADDRESS"}),
             "pseudonym": sorted(resolved & {"ORG"}),
             "retained_by_default": keep,

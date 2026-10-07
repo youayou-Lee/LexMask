@@ -540,7 +540,7 @@ class RecognitionPipelineMixin:
 
     async def _run_vl_md(self, task: TaskItem, cfg: dict) -> None:
         """VL-MD 脱敏管线(Issue #66/#50 T1):识别+替换+产物落盘一步到位,条目直达 COMPLETED。"""
-        from app.services.job_models import JobItemStatus
+        from app.services.job_models import JobItemStatus, JobStatus
         from app.services.vl_md_pipeline_service import get_vl_md_pipeline_service
 
         store = self._get_store()
@@ -552,13 +552,18 @@ class RecognitionPipelineMixin:
         fi = get_file_info(task.file_id)
         if not fi:
             raise ValueError(f"file_id={task.file_id} not in file_store")
-        summary = await get_vl_md_pipeline_service().process_file(fi, cfg, job_id=task.job_id)
+        svc = get_vl_md_pipeline_service()
+        summary = await svc.process_file(fi, cfg, job_id=task.job_id)
         store.update_item_progress(
             task.item_id, stage="vl_md", current=1, total=1,
             message=f"vl_md_done entities={summary['entity_count']} {summary['verdict']}",
         )
         # 直达 COMPLETED:产物已落盘(file_store output_* 字段),无审阅/回写阶段
         store.update_item_status(task.item_id, JobItemStatus.COMPLETED)
+        # job 终态即释放映射表内存态(含真实姓名,不永驻;评审 Important#1)
+        row = store.get_job(task.job_id)
+        if row and row.get("status") in (JobStatus.COMPLETED.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value):
+            svc.release_job_context(task.job_id)
         logger.info(
             "[queue] item=%s vl-md done entities=%d rounds=%d %s",
             task.item_id[:8], summary["entity_count"], summary["rounds"], summary["verdict"],

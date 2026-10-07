@@ -59,7 +59,7 @@ class VlParseClient:
             except httpx.HTTPError as exc:
                 last_exc = VlParseError(f"VL 转 MD 服务不可达({self.base_url}): {exc!r}")
                 continue
-            if resp.status_code >= 500 and attempt < attempts - 1:
+            if (resp.status_code >= 500 or resp.status_code == 429) and attempt < attempts - 1:
                 last_exc = VlParseError(f"VL 转 MD 服务返回 {resp.status_code}: {resp.text[:200]}")
                 continue
             if resp.status_code != 200:
