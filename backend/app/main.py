@@ -33,6 +33,7 @@ from app.api import (
     vision_pipeline,
     word_pools,
 )
+from app.api import agent_md as agent_md_api
 from app.api import audit as audit_api
 from app.api import auth as auth_api
 from app.api import (
@@ -504,6 +505,7 @@ app.include_router(jobs.router, prefix=settings.API_PREFIX, tags=["批量任务"
 app.include_router(structured.router, prefix=settings.API_PREFIX, tags=["structured"], dependencies=[Depends(require_auth)])
 app.include_router(dicom.router, prefix=settings.API_PREFIX, tags=["DICOM"], dependencies=[Depends(require_auth)])
 app.include_router(safety_api.router, prefix=settings.API_PREFIX, tags=["数据安全"], dependencies=[Depends(require_auth)])
+app.include_router(agent_md_api.router, prefix=settings.API_PREFIX, tags=["喂Agent"], dependencies=[Depends(require_auth)])
 
 logger.info("presets API: GET/POST %s/presets (若前端仍 404，请重启本进程以加载最新路由", settings.API_PREFIX)
 
