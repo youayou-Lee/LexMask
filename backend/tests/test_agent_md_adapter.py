@@ -1,5 +1,6 @@
-"""适配器规则测试：type 过滤/seal 哨兵/Markdown 与 LaTeX 剥除。全部合成内容。"""
-from app.services.agent_md_adapter import clean_segments, strip_inline
+"""适配器规则测试：type 过滤/seal 哨兵/Markdown 与 LaTeX 剥除/image 补 OCR。全部合成内容。"""
+from app.services.agent_md_adapter import clean_segments, enrich_image_blocks, strip_inline
+from app.services.agent_md_types import Seg
 
 
 def _block(**kw):
@@ -67,3 +68,47 @@ def test_text_blocks_keep_reading_order_and_page():
     cl = [_block(text="第一页段", page_idx=0), _block(text="第二页段", page_idx=1)]
     segs, _ = clean_segments(cl)
     assert [s.page_idx for s in segs] == [0, 1]
+
+
+class _FakeOcr:
+    def __init__(self, texts=None, raise_on=None):
+        self.texts = texts or []
+        self.raise_on = raise_on
+
+    def extract_text_boxes(self, image_bytes: bytes):
+        if self.raise_on and image_bytes == self.raise_on:
+            raise RuntimeError("ocr down")
+        from app.services.ocr_service import OCRItem
+
+        return [OCRItem(text=t, x=0, y=0, width=0, height=0, confidence=0.9) for t in self.texts]
+
+
+def test_enrich_image_blocks_fills_ocr_text():
+    segs = [Seg(text="", page_idx=0, source="img_ocr", img_path="images/a.jpg")]
+    filled, warns = enrich_image_blocks(segs, {"images/a.jpg": b"jpg"}, _FakeOcr(texts=["截图文字"]))
+    assert filled[0].text == "截图文字" and filled[0].source == "img_ocr"
+    assert warns == []
+
+
+def test_enrich_image_blocks_degrades_on_ocr_failure():
+    segs = [Seg(text="", page_idx=0, source="img_ocr", img_path="images/a.jpg")]
+    filled, warns = enrich_image_blocks(segs, {"images/a.jpg": b"jpg"}, _FakeOcr(raise_on=b"jpg"))
+    assert filled[0].text == "[图片]" and filled[0].source == "sentinel"
+    assert len(warns) == 1
+
+
+def test_enrich_image_blocks_missing_image_degrades():
+    segs = [Seg(text="", page_idx=0, source="img_ocr", img_path="images/a.jpg")]
+    filled, warns = enrich_image_blocks(segs, {}, _FakeOcr())
+    assert filled[0].text == "[图片]"
+    assert len(warns) == 1
+
+
+def test_enrich_keeps_order_and_empty_ocr_joined_by_newline():
+    segs = [
+        Seg(text="正文", page_idx=0, source="text"),
+        Seg(text="", page_idx=1, source="img_ocr", img_path="i"),
+    ]
+    filled, _ = enrich_image_blocks(segs, {"i": b"x"}, _FakeOcr(texts=["行一", "行二"]))
+    assert filled[0].text == "正文"
+    assert filled[1].text == "行一\n行二"

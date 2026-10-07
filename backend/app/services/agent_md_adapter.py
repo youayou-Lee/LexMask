@@ -5,6 +5,7 @@
 """
 import re
 from html.parser import HTMLParser
+from typing import Any
 
 from app.services.agent_md_types import Seg
 
@@ -86,3 +87,34 @@ def clean_segments(content_list: list[dict]) -> tuple[list[Seg], list[str]]:
         elif btype is not None:
             warns.append(f"unhandled block type: {btype}")
     return segs, warns
+
+
+def enrich_image_blocks(
+    segs: list[Seg],
+    images: dict[str, bytes],
+    ocr: Any,  # OCRService（测试注入 fake，生产代码不 import OCR 服务）
+) -> tuple[list[Seg], list[str]]:
+    """用 zip 自带 image 切图补 OCR（spec §4.4）。失败降级 [图片] 哨兵。"""
+    warns: list[str] = []
+    out: list[Seg] = []
+    for seg in segs:
+        if seg.source != "img_ocr":
+            out.append(seg)
+            continue
+        path = seg.img_path
+        try:
+            image_bytes = images.get(path)
+            if not image_bytes:
+                raise ValueError(f"image not in zip: {path}")
+            items = ocr.extract_text_boxes(image_bytes)
+            texts = [it.text.strip() for it in items if it.text and it.text.strip()]
+        except Exception as exc:  # noqa: BLE001 —— 单图失败不拖垮整卷
+            warns.append(f"image ocr failed: {path}: {exc}")
+            out.append(Seg(text="[图片]", page_idx=seg.page_idx, source="sentinel"))
+            continue
+        if texts:
+            out.append(Seg(text="\n".join(texts), page_idx=seg.page_idx, source="img_ocr"))
+        else:
+            warns.append(f"image ocr empty: {path}")
+            out.append(Seg(text="[图片]", page_idx=seg.page_idx, source="sentinel"))
+    return out, warns
