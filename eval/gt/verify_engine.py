@@ -99,6 +99,12 @@ A2_PREFER_ENTITY_PAGES = True
 
 # ---- A1：分类型 P/R ---------------------------------------------------------------
 
+# 合成 GT 粒度对齐：HaS 细粒度类型 → 合成 GT 粗粒度类型（仅评测比对面使用，
+# 不改动 GT 数据与 pack）。证据：2026-10-07 A1 复测诊断——GT 机构名称从不包含
+# 银行名（开户行不映射）、HaS 组织类输出为公司名称/机关单位两种细名。
+GT_EVAL_TYPE_ALIASES = {"公司名称": "机构名称", "机关单位": "机构名称"}
+
+
 def _match_records(engine_packs: list[dict], gt_json: dict) -> list[dict]:
     """引擎 packs × 合成 GT 页对齐 → ``eval_ner_quality.compute_metrics`` records。
 
@@ -118,8 +124,10 @@ def _match_records(engine_packs: list[dict], gt_json: dict) -> list[dict]:
         gt_squashed = {t: [normalize_text(s) for s in vals]
                        for t, vals in gt_pages[page].items()}
         pred: dict[str, list[str]] = {}
+        # 类型粒度对齐（仅比对面）：HaS 细名 → GT 粗名（GT_EVAL_TYPE_ALIASES）
         for ent in pack.get("entities") or []:
-            pred.setdefault(ent["type"], []).append(ent["text"])
+            t = GT_EVAL_TYPE_ALIASES.get(ent["type"], ent["type"])
+            pred.setdefault(t, []).append(ent["text"])
         records.append({"page_id": pack.get("page_id"), "gt": gt_squashed, "pred": pred})
     return records
 
@@ -537,8 +545,12 @@ def _run(args: argparse.Namespace) -> int:
                 failed_pages.append(f"{label}: {type(e).__name__}: {e}")
                 print(f"[verify] 页失败 {label}: {type(e).__name__}: {e}", file=sys.stderr)
         packs_by_entry[entry_id] = packs
-        row["v6_pages"] = len(_safe_transcribe(wrapped["a"], str(fpath)))
-        row["vl_pages"] = len(_safe_transcribe(wrapped["b"], str(fpath)))
+        if args.skip_existing:
+            # 断点续跑全离线：页数对账不发起云调用（None=报告披露「续跑未对账」）
+            row["v6_pages"] = row["vl_pages"] = None
+        else:
+            row["v6_pages"] = len(_safe_transcribe(wrapped["a"], str(fpath)))
+            row["vl_pages"] = len(_safe_transcribe(wrapped["b"], str(fpath)))
         gt_path = _resolve_input(base_dir, synthetic_dir, str(entry.get("gt") or ""))
         if gt_path is not None:
             try:
@@ -576,7 +588,14 @@ def _run(args: argparse.Namespace) -> int:
         if fpath is None:
             continue
         page_type = map_page_type(entry)
-        pages_a = _safe_transcribe(wrapped["a"], str(fpath))
+        if args.skip_existing:
+            # 全离线：以包内定稿转录为注毒底稿（adopt 面；R3 采 VL 的页与原 v6 底稿
+            # 语义略有差异，与 T8 评审 Minor#9 同级披露），不发云调用
+            pages_a = []
+            for pk in packs_by_entry.get(entry_id) or []:
+                pages_a.append({"text_raw": (pk.get("transcript_gt") or {}).get("text") or ""})
+        else:
+            pages_a = _safe_transcribe(wrapped["a"], str(fpath))
         for page_no in range(int(entry.get("pages") or 1)):
             if page_no >= len(pages_a):
                 break  # 转录页数不足（页数对账在报告披露），可切片页之外无从注毒

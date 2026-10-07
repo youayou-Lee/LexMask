@@ -353,3 +353,17 @@ def test_skip_existing_reuses_valid_pack(tmp_path, monkeypatch):
     from gt.gt_schema import validate_pagepack
     assert validate_pagepack(good) == []
     assert (tmp_path / "pages" / "syn_x-p000" / "pack.json").is_file()
+
+
+def test_type_alias_alignment():
+    """类型粒度对齐：HaS 细名（公司名称/机关单位）计为 GT 机构名称；开户行不映射。"""
+    gt = {"pages": [{"page": 0, "entities": {"机构名称": ["某市第一人民法院"]}}]}
+    pack = {"page_id": "x-p000", "source": {"page": 0}, "entities": [
+        {"text": "某市第一人民法院", "type": "机关单位"},
+        {"text": "某市第二人民法院", "type": "公司名称"},
+        {"text": "某银行", "type": "开户行"},
+    ]}
+    r = verify.per_type_pr([pack], gt)
+    assert r["机构名称"]["tp"] == 1 and r["机构名称"]["fn"] == 0
+    assert r["机构名称"]["fp"] == 1  # 公司名称无对应 GT 串
+    assert "开户行" in r and r["开户行"]["fp"] == 1  # 不映射，独立计 FP
