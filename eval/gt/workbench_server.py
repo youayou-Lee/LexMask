@@ -72,7 +72,29 @@ def create_app(work: Path, pdf_root: Path | None = None) -> FastAPI:
 
     @app.get("/api/trust")
     def trust():
+        # Task 5：前端 boot 即拉可信率——无抽样时 404 + 中文原因（同 /api/sample
+        # 口径），而非让 trust_rate 的 ValueError 冒泡成 500。
+        if not (work / "sample_seed.json").is_file():
+            return _404("尚无抽样（先在抽检视图点「开始抽检」）")
         return workbench.trust_rate(work)
+
+    @app.get("/api/preset-types")
+    def preset_types():
+        """preset 实体类型名集（Task 5 前端改判/补漏表单下拉数据源）。
+
+        单一事实源直出（gt_schema.PRESET_TYPE_NAMES ← preset_entity_types.json），
+        前端不硬编码类型清单，preset 改名自动跟随。
+        """
+        return sorted(gt_schema.PRESET_TYPE_NAMES)
+
+    @app.get("/api/sample")
+    def get_sample():
+        """抽样清单只读（Task 5 前端抽检视图契约）：无抽样 → 404 + 中文原因。"""
+        import json
+        path = work / "sample_seed.json"
+        if not path.is_file():
+            return _404("尚无抽样（先在抽检视图点「开始抽检」）")
+        return json.loads(path.read_text(encoding="utf-8"))
 
     @app.get("/api/page/{page_id}")
     def page(page_id: str):

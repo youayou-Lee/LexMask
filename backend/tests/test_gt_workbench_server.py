@@ -268,6 +268,42 @@ def test_index_served(client):
     assert "text/html" in r.headers["content-type"]
 
 
+def test_index_contains_key_element_ids(client):
+    """Task 5 前端骨架：关键元素 id 必须在首页 HTML 中（离线 DOM 结构自检）。"""
+    html = client.get("/").text
+    for eid in ("stats-bar", "mode-toggle", "dispute-list",
+                "finalize-btn", "sample-list", "trust-card", "undo-btn"):
+        assert f'id="{eid}"' in html, f"首页缺关键元素 id={eid!r}"
+
+
+def test_sample_read_endpoint(client):
+    """GET /api/sample：抽样前 404 + 中文原因；抽样后返回 seed/selected。"""
+    r = client.get("/api/sample")
+    assert r.status_code == 404
+    assert "error" in r.json()
+    saved = client.post("/api/sample", json={"ratio": 0.5, "seed": 7}).json()
+    r = client.get("/api/sample")
+    assert r.status_code == 200
+    assert r.json()["seed"] == 7
+    assert r.json()["selected"] == saved["selected"]
+
+
+def test_trust_before_sample_404(client):
+    """Task 5：前端 boot 即拉 /api/trust——无抽样须 404 + 中文原因（非 500）。"""
+    r = client.get("/api/trust")
+    assert r.status_code == 404
+    assert "error" in r.json()
+
+
+def test_preset_types_endpoint(client):
+    """Task 5 前端改判/补漏表单下拉数据源：preset 类型名集（排序、单一事实源）。"""
+    r = client.get("/api/preset-types")
+    assert r.status_code == 200
+    names = r.json()
+    assert isinstance(names, list) and names == sorted(names)
+    assert "姓名" in names and "身份证号" in names
+
+
 # ---- Task 4: /img/{page_id}（渲染不可用 → 404 + 原因） -----------------------------
 
 def test_img_without_pdf_root_404(client):
