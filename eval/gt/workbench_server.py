@@ -21,6 +21,7 @@ pypdfium2 为可选依赖（缺失时 /img 降级 404，前端回落转录高亮
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -90,7 +91,6 @@ def create_app(work: Path, pdf_root: Path | None = None) -> FastAPI:
     @app.get("/api/sample")
     def get_sample():
         """抽样清单只读（Task 5 前端抽检视图契约）：无抽样 → 404 + 中文原因。"""
-        import json
         path = work / "sample_seed.json"
         if not path.is_file():
             return _404("尚无抽样（先在抽检视图点「开始抽检」）")
@@ -131,7 +131,6 @@ def create_app(work: Path, pdf_root: Path | None = None) -> FastAPI:
     # ---- finalize（前置检查 → 409 {"missing": 缺项清单}） ----------------------
 
     def _selected_count() -> int:
-        import json
         data = json.loads((work / "sample_seed.json").read_text(encoding="utf-8"))
         return len(data.get("selected", []))
 
@@ -143,7 +142,7 @@ def create_app(work: Path, pdf_root: Path | None = None) -> FastAPI:
         if n_disputed:
             missing.append(f"未裁决 {n_disputed} 条")
         if not (work / "sample_seed.json").is_file():
-            missing.append("抽检未完成（尚无抽样，先 POST /api/sample）")
+            missing.append("抽检未完成（尚无抽样，先在抽检视图点「开始抽检」）")
         else:
             trust = workbench.trust_rate(work)
             total = _selected_count()

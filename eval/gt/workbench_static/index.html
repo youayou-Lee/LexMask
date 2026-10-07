@@ -140,7 +140,7 @@
     <div id="trust-card" class="card trust-card"><span class="trust-empty">加载中…</span></div>
     <div class="sample-head">
       <button type="button" id="sample-start-btn" class="btn btn-add">开始抽检</button>
-      <span class="trust-sub">从「双方一致」实体中按比例分层抽样；同一 seed 得到同一清单，可复查</span>
+      <span class="trust-sub">从「双方一致」实体中按比例分层抽样；同一抽样号得到同一清单，可复查</span>
     </div>
     <div id="sample-list"><div class="empty">加载中…</div></div>
   </section>
@@ -249,14 +249,26 @@ function renderStats() {
 }
 
 // ---- 裁决视图 -----------------------------------------------------------------
-// 与数据层 _linked_disputed_index 同口径：候选 span_original 精确匹配优先，text 兜底
+// 与数据层 _linked_disputed_index 同口径：候选 span_original 精确匹配优先，text 兜底。
+// T5 评审 Critical#1：span 必须逐元素值比较——disputes 与 page 是两次独立的
+// JSON.parse，数组引用比较（===）恒为 false，会退化成 text 兜底；同文两处实体
+// （法律文书常见）时错锚第一处，误确认另一实体后分歧仍被静默关单。
+function spansEqual(a, b) {
+  return Array.isArray(a) && Array.isArray(b) && a.length === b.length
+    && a.every((v, i) => v === b[i]);
+}
+
 function linkedEntity(pack, adj) {
   const cands = adj.candidates || {};
   const entries = Object.values(cands).flat().filter((e) => e && typeof e === "object");
   const ents = (pack && pack.entities) || [];
+  const matchers = {
+    span_original: (ent) => entries.some((e) => spansEqual(e.span_original, ent.span_original)),
+    text: (ent) => entries.some((e) => e.text === ent.text),
+  };
   for (const key of ["span_original", "text"]) {
     for (let i = 0; i < ents.length; i++) {
-      if (entries.some((e) => e[key] === ents[i][key])) return i;
+      if (matchers[key](ents[i])) return i;
     }
   }
   return -1;
@@ -321,7 +333,7 @@ function buildDisputeCard(pid, adj, pack) {
       <div class="page-panel"><div class="panel-loading">页面图加载中…</div></div>
       <div class="info-panel">
         ${entHtml}
-        <div class="cands-title">三方读数（candidates）</div>
+        <div class="cands-title">各模型读数</div>
         <div class="cands">${candsHtml}</div>
         <div class="actions">
           <button type="button" class="btn btn-ok" data-act="dui"
@@ -493,7 +505,7 @@ function renderSample() {
   const meta = document.createElement("div");
   meta.className = "sample-meta";
   meta.textContent = `抽样清单：共 ${state.sample.selected.length} 条` +
-    `（seed=${state.sample.seed}，比例 ${state.sample.ratio}）`;
+    `（抽样号 ${state.sample.seed}，比例 ${state.sample.ratio}）`;
   list.appendChild(meta);
   for (const [pid, idx] of state.sample.selected) {
     list.appendChild(buildSampleRow(pid, idx));
@@ -591,7 +603,7 @@ function wireEvents() {
   el("sample-start-btn").addEventListener("click", async () => {
     const r = await jsonPost("/api/sample", { ratio: 0.1 });
     if (r.ok) {
-      flashMsg(`已抽样 ${r.data.selected.length} 条（seed=${r.data.seed}）`);
+      flashMsg(`已抽样 ${r.data.selected.length} 条（抽样号 ${r.data.seed}）`);
       await refreshAll();
     } else flashMsg(`抽样失败：${errText(r)}`, true);
   });
