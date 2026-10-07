@@ -39,6 +39,7 @@ from app.api import (
     license as license_api,
 )
 from app.api import safety as safety_api
+from app.api import vlmd as vlmd_api
 from app.core.auth import require_auth, require_super_admin
 from app.core.config import settings
 from app.core.errors import AppError, app_error_handler, http_exception_handler, validation_exception_handler
@@ -498,6 +499,7 @@ app.include_router(ner_backend.router, prefix=settings.API_PREFIX, tags=["文本
 app.include_router(admin.router, prefix=settings.API_PREFIX, tags=["管理控制台"], dependencies=[Depends(require_super_admin)])
 app.include_router(presets.router, prefix=settings.API_PREFIX, tags=["识别配置预设"], dependencies=[Depends(require_auth)])
 app.include_router(word_pools.router, prefix=settings.API_PREFIX, tags=["替换词池"], dependencies=[Depends(require_auth)])
+app.include_router(vlmd_api.router, prefix=settings.API_PREFIX, tags=["VL-MD 脱敏管线"], dependencies=[Depends(require_auth)])
 app.include_router(jobs.router, prefix=settings.API_PREFIX, tags=["批量任务"], dependencies=[Depends(require_auth)])
 app.include_router(structured.router, prefix=settings.API_PREFIX, tags=["structured"], dependencies=[Depends(require_auth)])
 app.include_router(dicom.router, prefix=settings.API_PREFIX, tags=["DICOM"], dependencies=[Depends(require_auth)])
