@@ -127,6 +127,11 @@ class AgentMdPipelineService:
 
     async def _run_stage1(self, task: AgentMdTask) -> AgentMdTask:
         """Stage1：读文件→MinerU 解析（全局串行锁）→清洗→NER→映射草稿。"""
+        # 评审 rider：Stage1 进行中（等锁/解析/NER 的任一 await 窗口）confirm 都会把
+        # 任务判 FAILED（"task not ready"）——此后状态机不得再推进（复活会导致迟到
+        # 的 confirm 绕过就绪校验出稿）。was_failed 覆盖等锁窗口被 line 内
+        # ``task.state = PARSING/NER_RUNNING`` 覆写丢失的情况。
+        was_failed = task.state == TaskState.FAILED
         try:
             async with self._lock:
                 file_bytes = Path(task.file_path).read_bytes()
@@ -138,6 +143,8 @@ class AgentMdPipelineService:
                     task.pages_done, task.pages_total = done, total
 
                 result = await self.mineru.wait_result(job_id, on_progress=on_progress)
+            if task.state == TaskState.FAILED or was_failed:
+                return task
             task.state = TaskState.NER_RUNNING
             task.stage = "ner"
             segs, warns = clean_segments(result.content_list_v2)
@@ -150,6 +157,8 @@ class AgentMdPipelineService:
             entities, _ = await run_ner(chunks, self.entity_types, self.ner)
             task.entities = entities
             task.mapping = build_mapping_draft(entities)
+            if task.state == TaskState.FAILED:  # NER await 窗口内被判死同样不复活
+                return task
             task.state = TaskState.MAPPING_READY
         except Exception as exc:  # noqa: BLE001 —— 单任务失败不拖垮服务
             task.state = TaskState.FAILED

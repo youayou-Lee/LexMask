@@ -82,3 +82,53 @@ def test_stage2_confirm_writes_artifacts(service, sample_pdf, tmp_path):
 
 def test_unknown_task_returns_none(service):
     assert service.get_task("nope") is None
+
+
+class _GatedMineru:
+    """wait_result 挂起直到放行：复现 Stage1 进行中 confirm 的竞争窗口。"""
+
+    def __init__(self):
+        self.gate = None  # scenario 内注入 asyncio.Event
+        self.wait_started = None
+
+    async def submit(self, file_bytes, filename):
+        return "job-1"
+
+    async def wait_result(self, task_id, on_progress=None):
+        self.wait_started.set()
+        await self.gate.wait()
+        if on_progress:
+            on_progress(1, 1)
+        return MineruResult(
+            md="# 合成",
+            content_list_v2=[
+                {"type": "text", "text": "张三借李四人民币一万元", "page_idx": 0},
+            ],
+            images={},
+        )
+
+
+def test_confirm_during_stage1_failed_not_resurrected(tmp_path, sample_pdf):
+    """评审 rider：Stage1 挂起期间 confirm 把任务判 FAILED，Stage1 完成后不得复活为 MAPPING_READY。"""
+    import asyncio
+
+    async def scenario():
+        mineru = _GatedMineru()
+        mineru.gate = asyncio.Event()
+        mineru.wait_started = asyncio.Event()
+        svc = AgentMdPipelineService(
+            mineru_client=mineru, ocr=_FakeOcr(), ner=_FakeNer(),
+            entity_types=[], output_dir=str(tmp_path),
+        )
+        task = await svc.create_task(sample_pdf, "a.pdf")
+        await asyncio.wait_for(mineru.wait_started.wait(), 2)  # Stage1 已挂起在解析等待点
+        judged = await svc.confirm(task.task_id, [])  # 非 MAPPING_READY → 判死
+        assert judged.state == TaskState.FAILED
+        mineru.gate.set()  # 放行 Stage1 完成
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*pending)
+        final = svc.get_task(task.task_id)
+        assert final.state == TaskState.FAILED  # 不复活
+        assert final.message == "task not ready"
+
+    asyncio.run(scenario())
