@@ -45,9 +45,15 @@ def test_run_ner_shifts_offsets_and_sets_page():
 
 
 def test_build_mapping_draft_occurrence_order_and_merge():
+    """4 实体含重复（张三×2）→ 去重后 3 行唯一 (text,type)；类型内首次出现编号不变。"""
     e1 = Entity(id="a", text="张三", type="PERSON", start=0, end=2)
     e2 = Entity(id="b", text="李四", type="PERSON", start=5, end=7)
     e3 = Entity(id="c", text="张三", type="PERSON", start=9, end=11)
     e4 = Entity(id="d", text="6222", type="BANK_CARD", start=20, end=24)
     items = build_mapping_draft([e1, e2, e3, e4])
-    assert [m.replacement for m in items] == ["[人名_1]", "[人名_2]", "[人名_1]", "[银行卡_1]"]
+    assert len(items) == 3
+    assert [m.replacement for m in items] == ["[人名_1]", "[人名_2]", "[银行卡_1]"]
+    # 行唯一且行 id 唯一：render_outputs 查找 dict 不再有 last-row-wins 覆写
+    keys = {(m.original_text, m.entity_type) for m in items}
+    assert len(keys) == 3
+    assert len({m.id for m in items}) == 3

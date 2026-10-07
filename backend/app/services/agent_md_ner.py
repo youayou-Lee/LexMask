@@ -67,9 +67,10 @@ def _type_label(entity_type: str) -> str:
 
 
 def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
-    """同 (原文, 类型) 同占位符；N 按该类型内首次出现顺序从 1 递增。
+    """同 (原文, 类型) 一行、同占位符；N 按该类型内首次出现顺序从 1 递增。
 
-    每个实体出现位置一行（下游替换按行执行），同 (原文, 类型) 的行共用同一 replacement。
+    终审 I2：每 (原文, 类型) 只出一行——render_outputs 的查找 dict 是 last-row-wins，
+    重复行会让用户对非末行决策被静默忽略；去重后行 id 与 (text,type) 一一对应。
     """
     # 第一遍：按 (原文, 类型) 去重，首次出现顺序做类型内全局编号。
     numbers: dict[tuple[str, str], int] = {}
@@ -80,13 +81,20 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
             continue
         per_type[ent.type] = per_type.get(ent.type, 0) + 1
         numbers[key] = per_type[ent.type]
-    # 第二遍：逐实体出表行，共用编号。
-    return [
-        MappingItem(
-            id=f"e{i + 1}",
-            original_text=ent.text,
-            entity_type=ent.type,
-            replacement=f"[{_type_label(ent.type)}_{numbers[(ent.text, ent.type)]}]",
+    # 第二遍：每个唯一 (原文, 类型) 出一行，共用编号。
+    items: list[MappingItem] = []
+    seen: set[tuple[str, str]] = set()
+    for ent in entities:
+        key = (ent.text, ent.type)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            MappingItem(
+                id=f"e{len(items) + 1}",
+                original_text=ent.text,
+                entity_type=ent.type,
+                replacement=f"[{_type_label(ent.type)}_{numbers[key]}]",
+            )
         )
-        for i, ent in enumerate(entities)
-    ]
+    return items

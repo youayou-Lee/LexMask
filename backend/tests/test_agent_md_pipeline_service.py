@@ -2,6 +2,9 @@
 
 Stage1 会真实读取 file_path 字节（生产契约），故 fixture 用 fitz 造 1 页最小 PDF，
 而非 brief 草稿里的 /tmp/a.pdf（不存在，read_bytes 必炸）。
+fake Mineru 返回 **v2 嵌套真形态**（Task 0 §6c：外层按页 list-of-lists，文本在
+block["content"]["paragraph_content"][i]["content"]，无 page_idx）——终审修复后
+Stage1 走 normalize_content_list 归一化，此处覆盖 C1 接线端到端。
 """
 import fitz
 import pytest
@@ -11,6 +14,23 @@ from app.services.agent_md_types import TaskState
 from app.services.mineru_parse_client import MineruResult
 
 
+def _v2_nested_one_para():
+    """真实 sidecar v2 结构复刻（内容合成）：单页单段落块。"""
+    return [
+        [
+            {
+                "type": "paragraph",
+                "content": {
+                    "paragraph_content": [
+                        {"type": "text", "content": "张三借李四人民币一万元"}
+                    ]
+                },
+                "bbox": [112, 75, 566, 94],
+            }
+        ]
+    ]
+
+
 class _FakeMineru:
     async def submit(self, file_bytes, filename):
         return "job-1"
@@ -18,13 +38,7 @@ class _FakeMineru:
     async def wait_result(self, task_id, on_progress=None):
         if on_progress:
             on_progress(1, 1)
-        return MineruResult(
-            md="# 合成",
-            content_list_v2=[
-                {"type": "text", "text": "张三借李四人民币一万元", "page_idx": 0},
-            ],
-            images={},
-        )
+        return MineruResult(md="# 合成", content_list_v2=_v2_nested_one_para(), images={})
 
 
 class _FakeOcr:
@@ -80,6 +94,27 @@ def test_stage2_confirm_writes_artifacts(service, sample_pdf, tmp_path):
     assert (tmp_path / f"{done.output_file_id}.retained_fields.json").exists()
 
 
+def test_stage2_confirm_registers_vl_md_meta_key(service, sample_pdf):
+    """C3：file_store 登记键必须是 ``vl_md_meta``——main.py orphan 清理
+    （_known_file_store_paths）只认 output_path + vl_md_meta，键名错则
+    mapping/retained 两份产物在孤儿清理窗口后被删。"""
+    import os
+
+    from app.services import file_management_service as fms
+
+    task = service.create_task_nowait(sample_pdf, "a.pdf")
+    done = service.confirm_nowait(task.task_id, [])
+    try:
+        info = fms.file_store[done.output_file_id]
+        assert "agent_md_meta" not in info  # 旧键名已废除
+        meta = info["vl_md_meta"]
+        assert set(meta) == {"mapping_path", "retained_path"}
+        assert os.path.exists(meta["mapping_path"])
+        assert os.path.exists(meta["retained_path"])
+    finally:
+        fms.file_store.pop(done.output_file_id, None)  # 不污染全局 store
+
+
 def test_unknown_task_returns_none(service):
     assert service.get_task("nope") is None
 
@@ -99,13 +134,7 @@ class _GatedMineru:
         await self.gate.wait()
         if on_progress:
             on_progress(1, 1)
-        return MineruResult(
-            md="# 合成",
-            content_list_v2=[
-                {"type": "text", "text": "张三借李四人民币一万元", "page_idx": 0},
-            ],
-            images={},
-        )
+        return MineruResult(md="# 合成", content_list_v2=_v2_nested_one_para(), images={})
 
 
 def test_confirm_during_stage1_failed_not_resurrected(tmp_path, sample_pdf):
@@ -132,3 +161,88 @@ def test_confirm_during_stage1_failed_not_resurrected(tmp_path, sample_pdf):
         assert final.message == "task not ready"
 
     asyncio.run(scenario())
+
+
+class _SubmitGatedMineru:
+    """submit 挂起直到放行：复现 submit await 窗口内 confirm 判死的复活窗口（终审 I1）。"""
+
+    def __init__(self):
+        self.gate = None
+        self.submit_started = None
+
+    async def submit(self, file_bytes, filename):
+        self.submit_started.set()
+        await self.gate.wait()
+        return "job-1"
+
+    async def wait_result(self, task_id, on_progress=None):
+        if on_progress:
+            on_progress(1, 1)
+        return MineruResult(md="# 合成", content_list_v2=_v2_nested_one_para(), images={})
+
+
+def test_confirm_in_submit_window_failed_not_resurrected(tmp_path, sample_pdf):
+    """终审 I1：submit await 窗口内 confirm 判死，submit 返回后
+    ``task.state = PARSING`` 不得无条件覆写——复活会让迟到 confirm 绕过就绪校验。"""
+    import asyncio
+
+    async def scenario():
+        mineru = _SubmitGatedMineru()
+        mineru.gate = asyncio.Event()
+        mineru.submit_started = asyncio.Event()
+        svc = AgentMdPipelineService(
+            mineru_client=mineru, ocr=_FakeOcr(), ner=_FakeNer(),
+            entity_types=[], output_dir=str(tmp_path),
+        )
+        task = await svc.create_task(sample_pdf, "a.pdf")
+        await asyncio.wait_for(mineru.submit_started.wait(), 2)  # Stage1 挂起在 submit 窗口
+        judged = await svc.confirm(task.task_id, [])  # 判死
+        assert judged.state == TaskState.FAILED
+        mineru.gate.set()  # 放行 submit——修复前此处状态被覆写回 PARSING 而复活
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.gather(*pending)
+        final = svc.get_task(task.task_id)
+        assert final.state == TaskState.FAILED  # 不复活
+        assert final.message == "task not ready"
+
+    asyncio.run(scenario())
+
+
+class _TypeRecordingNer:
+    """记录 run_ner 实际收到的 entity_types（C2 零实体静默回归用）。"""
+
+    def __init__(self):
+        self.seen = None
+
+    async def extract(self, text, entity_types):
+        self.seen = entity_types
+        return []
+
+
+def test_default_entity_types_resolved_for_fresh_owner(tmp_path, sample_pdf):
+    """终审 C2：entity_types 缺省空 → Stage1 须按 #66 同款口径解析 owner 缺省启用类型；
+    否则 run_ner 恒零实体、「零脱敏 MD」静默出稿。"""
+    ner = _TypeRecordingNer()
+    svc = AgentMdPipelineService(
+        mineru_client=_FakeMineru(), ocr=_FakeOcr(), ner=ner,
+        entity_types=[], output_dir=str(tmp_path),
+    )
+    task = svc.create_task_nowait(sample_pdf, "a.pdf", owner_id="fresh-owner-c2")
+    assert task.state == TaskState.MAPPING_READY
+    assert ner.seen, "缺省必须解析出非空实体类型清单"
+    ids = {t.id for t in ner.seen}
+    # 与 #66 缺省九类一致（test_vl_md_pipeline_service.test_default_types_include_all_nine）
+    assert ids >= {"PERSON", "ORG", "ADDRESS", "CASE_NUMBER", "BIRTH_DATE",
+                   "ID_CARD", "PHONE", "BANK_CARD", "LICENSE_PLATE"}
+
+
+def test_explicit_entity_types_override_still_honored(tmp_path, sample_pdf):
+    """终审 C2 不回归：构造期显式传入的 entity_types 原样透传，不触发解析。"""
+    ner = _TypeRecordingNer()
+    svc = AgentMdPipelineService(
+        mineru_client=_FakeMineru(), ocr=_FakeOcr(), ner=ner,
+        entity_types=["SENTINEL_TYPE"], output_dir=str(tmp_path),
+    )
+    task = svc.create_task_nowait(sample_pdf, "a.pdf")
+    assert task.state == TaskState.MAPPING_READY
+    assert ner.seen == ["SENTINEL_TYPE"]

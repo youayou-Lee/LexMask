@@ -10,7 +10,8 @@
 
 依赖注入：``mineru_client`` / ``ocr`` / ``ner`` 构造参数，缺省时惰性构建真实单例
 （``_default_*`` 全部函数内 import，避免模块导入期拉起真实依赖）。``entity_types``
-缺省空列表——preset 接入由 router 层/后续任务提供。
+显式传入时原样透传给 NER；缺省空列表则 Stage1 起点按 #66 同款口径
+（``resolve_requested_entity_types`` × 默认九类）解析 owner 缺省启用类型（终审 C2）。
 """
 import asyncio
 import json
@@ -19,7 +20,7 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.services import file_management_service as fms
-from app.services.agent_md_adapter import clean_segments, enrich_image_blocks
+from app.services.agent_md_adapter import clean_segments, enrich_image_blocks, normalize_content_list
 from app.services.agent_md_ner import build_mapping_draft, chunk_segments, run_ner
 from app.services.agent_md_replace import apply_decisions, render_outputs
 from app.services.agent_md_types import AgentMdTask, TaskState
@@ -85,13 +86,15 @@ class AgentMdPipelineService:
             json.dumps(retained_json, ensure_ascii=False, indent=2), encoding="utf-8")
         task.output_file_id = output_file_id
         task.state = TaskState.COMPLETED
-        # file_store 登记（orphan 清理尊重 file_store 引用，main.py cleanup_orphan_files）
+        # file_store 登记（orphan 清理尊重 file_store 引用，main.py cleanup_orphan_files；
+        # 键名必须是 vl_md_meta——main.py _known_file_store_paths 只认 output_path+vl_md_meta，
+        # 终审 C3：旧键 agent_md_meta 不被识别，mapping/retained 会被孤儿清理删除）
         fms.file_store[output_file_id] = {
             "file_id": output_file_id,
             "filename": f"{task.filename}-脱敏MD.md",
             "output_path": str(md_path),
             "owner_id": task.owner_id,
-            "agent_md_meta": {
+            "vl_md_meta": {
                 "mapping_path": str(mapping_path),
                 "retained_path": str(retained_path),
             },
@@ -132,29 +135,35 @@ class AgentMdPipelineService:
         # 的 confirm 绕过就绪校验出稿）。was_failed 覆盖等锁窗口被 line 内
         # ``task.state = PARSING/NER_RUNNING`` 覆写丢失的情况。
         was_failed = task.state == TaskState.FAILED
+        dead = False  # 终审 I1：锁内任一 await 窗口后被判死，后续一律不覆写不推进
         try:
             async with self._lock:
                 file_bytes = Path(task.file_path).read_bytes()
                 task.pages_total = max(1, _pdf_page_count(file_bytes))
                 job_id = await self.mineru.submit(file_bytes=file_bytes, filename=task.filename)
-                task.state = TaskState.PARSING
+                if task.state == TaskState.FAILED:  # submit 窗口内被判死不得覆写回 PARSING
+                    dead = True
+                else:
+                    task.state = TaskState.PARSING
 
                 def on_progress(done: int, total: int) -> None:
                     task.pages_done, task.pages_total = done, total
 
                 result = await self.mineru.wait_result(job_id, on_progress=on_progress)
-            if task.state == TaskState.FAILED or was_failed:
+            if dead or task.state == TaskState.FAILED or was_failed:
                 return task
             task.state = TaskState.NER_RUNNING
             task.stage = "ner"
-            segs, warns = clean_segments(result.content_list_v2)
+            # 终审 C1：sidecar v2 为外层按页嵌套形态（Task 0 §6c），先归一化成扁平 v1
+            segs, warns = clean_segments(normalize_content_list(result.content_list_v2))
             segs, more = enrich_image_blocks(segs, result.images, self.ocr)
             task.warnings.extend(warns)
             task.warnings.extend(more)
             task.segs = segs
             chunks = chunk_segments(segs)
             # run_ner 就地平移 Entity 偏移——每任务只调一次
-            entities, _ = await run_ner(chunks, self.entity_types, self.ner)
+            entity_types = self.entity_types or self._resolve_entity_types(task.owner_id)
+            entities, _ = await run_ner(chunks, entity_types, self.ner)
             task.entities = entities
             task.mapping = build_mapping_draft(entities)
             if task.state == TaskState.FAILED:  # NER await 窗口内被判死同样不复活
@@ -164,6 +173,16 @@ class AgentMdPipelineService:
             task.state = TaskState.FAILED
             task.message = f"{type(exc).__name__}: {exc}"
         return task
+
+    @staticmethod
+    def _resolve_entity_types(owner_id: str | None) -> list:
+        """缺省实体类型解析（终审 C2）：与 #66 同款口径——默认九类清单经
+        ``resolve_requested_entity_types`` 按 owner 三态配置过滤（停用不识别、
+        自定义项一等公民）。显式构造参数优先，仅在 entity_types 为空时调用。"""
+        from app.services.entity_type_service import resolve_requested_entity_types
+        from app.services.vl_md_pipeline_service import VL_MD_DEFAULT_TYPE_IDS
+
+        return resolve_requested_entity_types(list(VL_MD_DEFAULT_TYPE_IDS), owner_id or None)
 
 
 def _pdf_page_count(pdf_bytes: bytes) -> int:
