@@ -77,6 +77,13 @@ def _known_file_store_paths(file_store) -> set[str]:
             path = info.get(key)
             if path:
                 known_paths.add(os.path.realpath(path))
+        # VL-MD 产物(Issue#66):mapping/retained 不占 output_path,须显式保护
+        vl_meta = info.get("vl_md_meta")
+        if isinstance(vl_meta, dict):
+            for key in ("mapping_path", "retained_path"):
+                path = vl_meta.get(key)
+                if path:
+                    known_paths.add(os.path.realpath(path))
     return known_paths
 
 

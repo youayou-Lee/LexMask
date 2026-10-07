@@ -360,6 +360,12 @@ class Settings(BaseSettings):
     # True: OCR 服务离线时直接报错而非尝试 CPU 回退（防止超慢推理阻塞队列）
     OCR_REQUIRE_GPU: bool = False
 
+    # VL-MD 管线（Issue #66/#50）：PaddleOCR-VL 转 MD 服务（独立进程，端口8095，
+    # POST /parse {"path","raw":true} -> {"markdown","raw_texts"}；实例侧部署见 #40 实录）
+    VL_PARSE_BASE_URL: str = "http://127.0.0.1:8095"
+    # VL 页级转 MD 实测 12-50s/页（DCU 300W 功耗帽），留足余量
+    VL_PARSE_TIMEOUT: float = 600.0
+
     # 文本 NER：HaS Text（默认 vLLM 8080/v1，OpenAI 兼容；llama.cpp 仅保留为旧调试入口）
     HAS_LLAMACPP_BASE_URL: str = "http://127.0.0.1:8080/v1"
     HAS_MODEL_PATH: str = "./models/has/HaS_Text_0209_0.6B_Q4_K_M.gguf"

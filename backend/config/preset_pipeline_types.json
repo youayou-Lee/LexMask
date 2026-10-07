@@ -1767,5 +1767,195 @@
       "entity_type_ids": [],
       "default_enabled": true
     }
+  ],
+  "vl_md": [
+    {
+      "id": "PERSON",
+      "name": "姓名",
+      "description": "自然人的姓名、别名、曾用名、网名。只表示人名。",
+      "examples": [
+        "张三",
+        "李明",
+        "John Smith"
+      ],
+      "color": "#2563EB",
+      "enabled": true,
+      "order": 10,
+      "data_domain": "pii",
+      "coref_enabled": true,
+      "default_enabled": true,
+      "linkage_groups": [
+        "person_like"
+      ],
+      "entity_type_ids": [],
+      "generic_target": "GEN_PERSON_SUBJECT"
+    },
+    {
+      "id": "ORG",
+      "name": "组织机构",
+      "description": "兜底型组织机构名称。通用默认清单优先使用公司名称、机构名称、机关单位、部门名称、项目名称等原子项；本项用于用户需要宽泛组织识别时手动选择。不包含文书标题、表单标题、章节标题或文件类型名称。",
+      "examples": [
+        "某某科技有限公司",
+        "上海市第一人民医院",
+        "中国工商银行上海分行",
+        "某某律师事务所",
+        "北京市某区人民法院"
+      ],
+      "color": "#4F46E5",
+      "enabled": true,
+      "order": 20,
+      "data_domain": "organization_subject",
+      "coref_enabled": true,
+      "default_enabled": true,
+      "linkage_groups": [
+        "organization_like"
+      ],
+      "entity_type_ids": [],
+      "generic_target": "GEN_ORGANIZATION_SUBJECT"
+    },
+    {
+      "id": "ADDRESS",
+      "name": "地址",
+      "description": "住址、办公地址、通信地址、收货地址、邮编等地址文本。只表示地址。",
+      "examples": [
+        "北京市朝阳区xx路xx号",
+        "上海市浦东新区xx园区"
+      ],
+      "color": "#EA580C",
+      "enabled": true,
+      "order": 30,
+      "data_domain": "address_location",
+      "coref_enabled": true,
+      "default_enabled": true,
+      "linkage_groups": [
+        "address_like"
+      ],
+      "entity_type_ids": [],
+      "generic_target": "GEN_ADDRESS_LOCATION"
+    },
+    {
+      "id": "CASE_NUMBER",
+      "name": "编号",
+      "description": "案号、合同号、协议号、保单号、订单号、工单号、发票号、项目编号、申请编号、报告编号等业务对象编号。只表示编号本身，不包含客户号、交易流水号、病历号等已有专门类型的编号。",
+      "examples": [
+        "案号（2026）京0101民初100号",
+        "编号BH-2026-0001",
+        "单号SO-2026-0509",
+        "流水号LS20260509001",
+        "订单号SO-2026-0509"
+      ],
+      "color": "#A855F7",
+      "enabled": true,
+      "order": 40,
+      "data_domain": "custom_extension",
+      "coref_enabled": true,
+      "default_enabled": true,
+      "linkage_groups": [
+        "identifier_like"
+      ],
+      "entity_type_ids": [],
+      "generic_target": "GEN_NUMBER_CODE"
+    },
+    {
+      "id": "BIRTH_DATE",
+      "name": "出生日期",
+      "description": "自然人的出生日期或生日。只表示出生日期，不包含普通业务日期、签署日期、立案日期或付款日期。",
+      "examples": [
+        "1992年10月5日出生",
+        "出生日期：1992-10-05",
+        "生日1992/10/05"
+      ],
+      "color": "#64748B",
+      "enabled": true,
+      "order": 50,
+      "data_domain": "pii",
+      "coref_enabled": false,
+      "default_enabled": true,
+      "linkage_groups": [
+        "date_like"
+      ],
+      "entity_type_ids": [],
+      "generic_target": "GEN_DATE_TIME"
+    },
+    {
+      "id": "ID_CARD",
+      "name": "身份证号",
+      "description": "居民身份证号码。只表示身份证号。",
+      "examples": [
+        "110101199001011234",
+        "11010119900101123X"
+      ],
+      "color": "#DC2626",
+      "enabled": true,
+      "order": 60,
+      "data_domain": "pii",
+      "coref_enabled": true,
+      "default_enabled": true,
+      "linkage_groups": [
+        "identifier_like",
+        "person_like"
+      ],
+      "entity_type_ids": [],
+      "generic_target": "GEN_NUMBER_CODE"
+    },
+    {
+      "id": "PHONE",
+      "name": "电话",
+      "description": "手机、座机、传真、热线等电话号码。只表示电话号码。",
+      "examples": [
+        "13800138000",
+        "010-88888888",
+        "+86 21 12345678"
+      ],
+      "color": "#059669",
+      "enabled": true,
+      "order": 70,
+      "data_domain": "pii",
+      "coref_enabled": false,
+      "default_enabled": true,
+      "linkage_groups": [],
+      "entity_type_ids": [],
+      "generic_target": "GEN_CONTACT"
+    },
+    {
+      "id": "BANK_CARD",
+      "name": "银行卡号",
+      "description": "银行卡、信用卡、借记卡、支付卡等金融卡片号码。只表示银行卡号，不包含车牌号、证件号或业务编号。",
+      "examples": [
+        "622202********1234",
+        "信用卡4200123456789012"
+      ],
+      "color": "#DB2777",
+      "enabled": true,
+      "order": 80,
+      "data_domain": "account_transaction",
+      "coref_enabled": true,
+      "default_enabled": true,
+      "linkage_groups": [
+        "account_like"
+      ],
+      "entity_type_ids": [],
+      "generic_target": "GEN_ACCOUNT_TRANSACTION"
+    },
+    {
+      "id": "LICENSE_PLATE",
+      "name": "车牌号",
+      "description": "机动车车牌号码。只表示车牌号。",
+      "examples": [
+        "沪A12345",
+        "京B88888"
+      ],
+      "color": "#F59E0B",
+      "enabled": true,
+      "order": 90,
+      "data_domain": "asset_resource",
+      "coref_enabled": true,
+      "default_enabled": true,
+      "linkage_groups": [
+        "identifier_like"
+      ],
+      "entity_type_ids": [],
+      "generic_target": "GEN_NUMBER_CODE"
+    }
   ]
 }

@@ -40,7 +40,7 @@ MASK_MIN_LEN_BANK_CARD = 16  # 银行卡：保留后4
 # 词形取「名称后缀」口径，避免「司法鉴定服务有限公司」「海关咨询有限公司」这类
 # 名字里恰好含机关词的公司名被误入机关池（公司名永远不会以下列后缀结尾）。
 INSTITUTION_GOV_TEXT_RE = re.compile(
-    r"(公安局|派出所|人民法院|人民检察院|法院|检察院|人民政府|司法局|监察委|税务局|海关|市场监管|分局|局)$"
+    r"(公安局|派出所|人民法院|人民检察院|法院|检察院|人民政府|司法局|监察委|税务局|海关|市场监管|分局|监狱|看守所|拘留所|戒毒所|局)$"
 )
 INSTITUTION_BANK_TEXT_RE = re.compile(r"(银行|支行|分行|信用社|信用合作联社)$")
 
@@ -58,6 +58,66 @@ MASK_KEEP_SUFFIX_BANK_CARD = 4  # 银行卡保留后4位
 
 # derived 策略：派生基名可用的首字符范围（中文姓氏/机关名开头）
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+# ---------- VL-MD 线（Issue #66/#50）泛化规则版 ----------
+# 口径（#50 门⓪拍板默认表）：BIRTH_DATE 只留年份；ADDRESS 保留省+市、其后行政名词打「某」。
+
+_BIRTH_YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+
+_PROVINCE_RE = re.compile(r"^(?:[^省]{1,8}省|[^自治区]{2,10}自治区|北京市|天津市|上海市|重庆市)")
+_CITY_RE = re.compile(r"^(?:[^省市区县盟州]{1,10}?(?:市|地区|盟|自治州))")
+# 分级锚定：区县 → 镇乡街道 → 村小区，逐级向后消费，避免「中关村」的「村」这类
+# 街道名内部字误配；剩余部分含路/街/巷（道路名）时不再取村/小区层级
+_ADDRESS_LEVELS = (("区", "县", "旗"), ("镇", "乡", "街道", "苏木"))
+_ADDRESS_VILLAGE_LEVEL = ("村", "小区", "屯")
+
+
+def _generalize_birth_date(text: str) -> str | None:
+    """出生日期泛化留年份：1976年9月1日 → 1976年。无公元年份返回 None（调用方回退占位）。"""
+    m = _BIRTH_YEAR_RE.search(text or "")
+    return f"{m.group(0)}年" if m else None
+
+
+def _generalize_address(text: str) -> str | None:
+    """地址泛化：保留省+市前缀，其余按行政层级锚定打「某」（如 某区某镇某村）。
+
+    无法识别省/市前缀（省+市均缺）或空文本返回 None，调用方回退占位替换；
+    仅剩省+市无后续内容时原样返回（已无定位信息）。规则版，T4 精化。
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    prov = ""
+    m = _PROVINCE_RE.match(t)
+    if m:
+        prov = m.group(0)
+        rest = t[len(prov):]
+    else:
+        rest = t
+    city = ""
+    m = _CITY_RE.match(rest)
+    if m:
+        city = m.group(0)
+        rest = rest[len(city):]
+    if not prov and not city:
+        return None
+    tails: list[str] = []
+    for level in _ADDRESS_LEVELS:
+        for noun in level:
+            i = rest.find(noun)
+            if i != -1:
+                tails.append("某" + noun)
+                rest = rest[i + len(noun):]
+                break
+    if not any(w in rest for w in ("路", "街", "巷")):
+        for noun in _ADDRESS_VILLAGE_LEVEL:
+            i = rest.find(noun)
+            if i != -1:
+                tails.append("某" + noun)
+                break
+    if not tails:
+        return prov + city
+    return prov + city + "".join(tails)
 
 
 def _raw_entity_type_id(entity_type: object) -> str:
@@ -116,11 +176,11 @@ class RedactionContext:
                 self.entity_map[entity.text] = replacement
             return replacement
 
-        # 化名模式：公共机构（国家机关/司法行政类公共机构）默认保留原文，
-        # 不参与匿名化；登记映射保证同一主体全文一致（Issue #56）。
+        # 化名口径（含 VL-MD 占位模式复用，Issue #66）：公共机构（国家机关/司法行政类
+        # 公共机构）默认保留原文，不参与匿名化；登记映射保证同一主体全文一致（Issue #56）。
         # 用户显式指定的替换词优先于保留策略（误判白名单可手动纠正）。
         if (
-            self.mode == ReplacementMode.PSEUDONYM
+            self.mode in (ReplacementMode.PSEUDONYM, ReplacementMode.PLACEHOLDER)
             and is_org_like(type_key)
             and is_preserved_org_text(entity.text)
             and not self.custom_replacements.get(entity.text)
@@ -129,9 +189,9 @@ class RedactionContext:
             self.entity_map[entity.text] = entity.text
             return entity.text
 
-        # 化名模式：同一原文此前已分配过（如无 coref 的正则命中与有 coref 的
+        # 化名口径：同一原文此前已分配过（如无 coref 的正则命中与有 coref 的
         # 模型命中混排），复用既有替换词，保证全文一致
-        if self.mode == ReplacementMode.PSEUDONYM and entity.text in self.entity_map:
+        if self.mode in (ReplacementMode.PSEUDONYM, ReplacementMode.PLACEHOLDER) and entity.text in self.entity_map:
             replacement = self.entity_map[entity.text]
             self._coref_map[entity_key] = replacement
             return replacement
@@ -152,6 +212,9 @@ class RedactionContext:
         elif self.mode == ReplacementMode.PSEUDONYM:
             # 化名替换：同类型虚构词（词池 + 精确映射 + 格式生成）
             replacement = self._generate_pseudonym_replacement(entity)
+        elif self.mode == ReplacementMode.PLACEHOLDER:
+            # VL-MD 喂云端 Agent 线（Issue #66/#50）：[TYPE_N] 占位 + 口径泛化
+            replacement = self._generate_placeholder_replacement(entity)
         else:
             # 智能模式
             replacement = self._generate_smart_replacement(entity)
@@ -300,6 +363,26 @@ class RedactionContext:
 
             self.word_pools = word_pool_service.load_word_pools()
         return self.word_pools or {}
+
+    def _generate_placeholder_replacement(self, entity: Entity) -> str:
+        """VL-MD 线（Issue #66/#50）占位替换，口径默认表：
+        ORG → 化名口径（词池/派生/公共机构保留）；BIRTH_DATE → 留年份；
+        ADDRESS → 省+市+某；其余 → [TYPE_N]（custom 类型保留 custom_ 原键）。"""
+        type_key = _type_key_for_entity(entity)
+        if is_org_like(type_key):
+            return self._generate_pseudonym_replacement(entity)
+        if type_key == "BIRTH_DATE":
+            generalized = _generalize_birth_date(entity.text)
+            if generalized is not None:
+                return generalized
+        if type_key == "ADDRESS":
+            generalized = _generalize_address(entity.text)
+            if generalized is not None:
+                return generalized
+        if type_key not in self.type_counters:
+            self.type_counters[type_key] = 0
+        self.type_counters[type_key] += 1
+        return f"[{type_key}_{self.type_counters[type_key]}]"
 
     def _generate_pseudonym_replacement(self, entity: Entity) -> str:
         """同类型虚构词替换：精确映射 > 词池按序 > 耗尽策略 > 格式生成。"""
@@ -451,10 +534,10 @@ class RedactionContext:
         return f"-fictional-{seq}"
 
     def _coref_key_for_entity(self, entity: Entity, type_key: str) -> str:
-        # 化名模式按「原文」取键：模型共指分组会把不同的人误并成一组（真实案卷
-        # 实测 6 个不同人名同组），隐式共享化名会张冠李戴；别名统一交由用户在
-        # 映射表手动填同一个词完成。
-        if self.mode == ReplacementMode.PSEUDONYM:
+        # 化名口径与 VL-MD 占位模式（Issue #66）都按「原文」取键：模型共指分组会把
+        # 不同的人误并成一组（真实案卷实测 6 个不同人名同组），隐式共享替换词会
+        # 张冠李戴；别名统一交由用户在映射表手动填同一个词完成。
+        if self.mode in (ReplacementMode.PSEUDONYM, ReplacementMode.PLACEHOLDER):
             return (entity.text or "").strip()
         coref_id = entity.coref_id
         if not coref_id:
