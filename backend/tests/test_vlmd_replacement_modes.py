@@ -140,3 +140,10 @@ def test_org_two_entities_distinct_pseudonyms():
 def test_custom_type_gets_placeholder():
     ctx = _ctx()
     assert ctx.get_replacement(_entity("某网络平台", "custom_abc123")) == "[custom_abc123_1]"
+
+
+def test_detention_prison_routed_to_gov_pool():
+    # 冒烟实证:江门监狱被化名为「某公司」——监管场所属机关,应派生「某监狱」
+    ctx = RedactionContext(ReplacementMode.PLACEHOLDER)
+    r = ctx.get_replacement(_entity("江门监狱", "ORG"))
+    assert r.startswith("某监狱"), r
