@@ -13,6 +13,7 @@
 - 视觉链路：LocateAnything-3B + OpenCV 骑缝章补全，章压文字找回
 - 化名模式：组织分池化名、公共机构白名单保留
 - PDF 双链路输出：MASK 真打码栅格化 / 替换走 docx 回转
+- 喂 Agent 模式：PDF → 脱敏 Markdown + 映射表，可直接投喂云端 AI（[接口基线](./docs/接口基线-喂Agent模式-agentmd.md)）
 - 国产算力：NVIDIA + 海光 DCU（DTK 25.04+）双栈
 - 多用户隔离、Docker Compose 一键部署
 
