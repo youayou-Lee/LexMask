@@ -60,3 +60,6 @@ python-dotenv>=1.2.2
 pytest>=9.0.3
 setuptools>=77,<81
 paramiko>=3.4  # SFTP 主动拉取（内网服务器间文件接入,第五段方案二）
+
+# eval/gt GT 预标引擎（Issue#56）：转录客户端/探针使用 requests
+requests>=2.31.0
