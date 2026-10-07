@@ -363,12 +363,12 @@ async def test_pseudonym_words_not_re_collected():
         {"type": "ORG", "name": "人民法院", "only_call": 0},
     ]))
     result = await svc.process(pages=[md], raw_texts=[], types=_types("ORG"))
-    texts = {v["text"] for v in result.mapping.values()}
-    # 不得出现「化名词再进映射」的链式条目
-    chained = [t for t in texts if t.startswith("某") and any(t == x for x in texts)]
-    assert not chained, f"化名词被二次收集: {texts}"
-    # 原文法院名不残留
+    # 原文与化名合成词都不得被再次收进映射的原文侧(套娃实证:某人民法院1→某公司8)
+    originals = [v["text"] for v in result.mapping.values()]
+    assert not [t for t in originals if t.startswith("某")], f"化名词被二次收集: {originals}"
+    # 原文法院名与化名词都不残留在脱敏文
     assert "清城区人民法院" not in result.desens_md
-    # 映射里法院的替换词是派生化名而非某公司
-    vals = [v["text"] for v in result.mapping.values() if "人民法院" in v["text"]]
-    assert vals and all(v.startswith("某人民法院") for v in vals)
+    assert "某公司" not in result.desens_md
+    # 法院的替换词(keys)是派生化名「某人民法院N」而非某公司
+    keys = [k for k, v in result.mapping.items() if "人民法院" in v["text"]]
+    assert keys and all(k.startswith("某人民法院") for k in keys), result.mapping
