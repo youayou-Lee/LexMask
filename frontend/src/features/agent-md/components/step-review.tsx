@@ -134,7 +134,7 @@ export function StepReview({ items, onConfirm }: StepReviewProps) {
       <div className="flex justify-end">
         <Button
           onClick={() => void confirm()}
-          disabled={confirming || items.length === 0}
+          disabled={confirming}
           data-testid="agent-md-confirm"
         >
           {confirming ? '…' : t('agentMd.confirmGenerate')}
