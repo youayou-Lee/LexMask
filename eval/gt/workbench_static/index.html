@@ -67,6 +67,8 @@
               font:13px/1.9 ui-monospace,Menlo,Consolas,monospace}
   mark{background:#fde68a;padding:0 1px;border-radius:2px}
   mark.current{background:#fda29b;outline:2px solid var(--hot)}
+  /* v2 高亮联动：争议卡自身的候选读数（蓝色），与黄色「已采纳」区分 */
+  mark.mk-dispute{background:#bfdbfe;outline:2px solid var(--accent)}
   .info-panel{flex:1;min-width:0}
   .entity-line{margin:2px 0 10px;font-size:14px}
   .entity-text{font-size:17px}
@@ -306,6 +308,21 @@ function renderDisputes() {
   }
 }
 
+// 争议卡自身主题 = 该条争议的候选读数：candidates 按面坐标携带 span_original，
+// 取第一路有合法 span 的候选（a→b→md 序，与 linkedEntity 同序）；gap 条目
+// （candidates={"detail":[...]}）无候选读数 → null。
+function firstCandidateSpan(adj) {
+  const cands = (adj && adj.candidates) || {};
+  for (const k of candOrder(cands)) {
+    for (const c of (cands[k] || [])) {
+      const sp = c && typeof c === "object" ? c.span_original : null;
+      if (Array.isArray(sp) && sp.length === 2
+          && typeof sp[0] === "number" && typeof sp[1] === "number") return sp;
+    }
+  }
+  return null;
+}
+
 function buildDisputeCard(pid, adj, pack) {
   const card = document.createElement("article");
   card.className = "card dispute-card";
@@ -389,12 +406,13 @@ function buildDisputeCard(pid, adj, pack) {
         </form>
       </div>
     </div>`;
-  mountPagePanel(card.querySelector(".page-panel"), pid, idx);
+  // v2 高亮联动：把本卡争议候选读数的 span 传给转录兜底视图（蓝色高亮锚点）
+  mountPagePanel(card.querySelector(".page-panel"), pid, idx, firstCandidateSpan(adj));
   return card;
 }
 
 // 页面图：/img 200 → 展示 PNG；404/网络失败 → 转录高亮兜底（404 原因随面板展示）
-async function mountPagePanel(panel, pid, currentIdx) {
+async function mountPagePanel(panel, pid, currentIdx, disputeSpan) {
   const pack = state.packs.get(pid);
   try {
     const res = await fetch(`/img/${encodeURIComponent(pid)}`);
@@ -409,13 +427,13 @@ async function mountPagePanel(panel, pid, currentIdx) {
     }
     let reason = "";
     try { const j = await res.json(); reason = (j && j.error) || ""; } catch (e) { /* 忽略 */ }
-    panel.replaceChildren(transcriptBlock(pack, reason, currentIdx));
+    panel.replaceChildren(transcriptBlock(pack, reason, currentIdx, disputeSpan));
   } catch (e) {
-    panel.replaceChildren(transcriptBlock(pack, "网络请求失败", currentIdx));
+    panel.replaceChildren(transcriptBlock(pack, "网络请求失败", currentIdx, disputeSpan));
   }
 }
 
-function transcriptBlock(pack, reason, currentIdx) {
+function transcriptBlock(pack, reason, currentIdx, disputeSpan) {
   const wrap = document.createElement("div");
   wrap.className = "transcript-box";
   const head = document.createElement("div");
@@ -423,15 +441,21 @@ function transcriptBlock(pack, reason, currentIdx) {
   head.textContent = `页面图不可用（${reason || "原因未知"}），以下为转录高亮兜底`;
   const pre = document.createElement("pre");
   pre.className = "transcript";
-  pre.appendChild(highlightTranscript(pack, currentIdx));
+  pre.appendChild(highlightTranscript(pack, currentIdx, disputeSpan ? [disputeSpan] : []));
   wrap.appendChild(head);
   wrap.appendChild(pre);
   return wrap;
 }
 
-// transcript_gt.text 按 entity span_original 包 <mark>；当前分歧实体加重高亮
-function highlightTranscript(pack, currentIdx) {
-  const frag = document.createDocumentFragment();
+// transcript_gt.text 按 entity span_original 包 <mark>；当前分歧实体加重高亮；
+// 争议卡自身的候选读数 span 以蓝色 mk-dispute 标出（v2 高亮联动：选中卡在
+// 左侧转录中锚定它自己的争议读数，与黄色「已采纳」区分；漏/错采纳后实体
+// 入 pack.entities，照常显示黄色）。
+// 纯函数段构造器（无 DOM，自测可直跑）：返回 [{text, mark, title}]，mark ∈
+// ""（普通文本）| "ent"（已采纳实体，黄）| "current"（当前实体，红）|
+// "mk-dispute"（争议候选读数，蓝）。同字符多重重叠时优先级 蓝 disputes > 红 current > 黄 ent。
+function transcriptSegments(pack, currentIdx, disputeSpans) {
+  disputeSpans = Array.isArray(disputeSpans) ? disputeSpans : [];
   const text = (pack && pack.transcript_gt && pack.transcript_gt.text) || "";
   const marks = new Array(text.length).fill(null);
   ((pack && pack.entities) || []).forEach((ent, i) => {
@@ -439,39 +463,56 @@ function highlightTranscript(pack, currentIdx) {
     const e2 = ent.span_original && ent.span_original[1];
     if (!(typeof s === "number" && typeof e2 === "number" && s >= 0 && e2 <= text.length)) return;
     for (let k = s; k < e2; k++) {
-      if (!marks[k]) marks[k] = { types: new Set(), current: false };
+      if (!marks[k]) marks[k] = { types: new Set(), current: false, dispute: false };
       marks[k].types.add(ent.type || "?");
       if (i === currentIdx) marks[k].current = true;
     }
   });
+  disputeSpans.forEach((sp) => {
+    const s = sp && sp[0], e2 = sp && sp[1];
+    if (!(typeof s === "number" && typeof e2 === "number")) return;
+    for (let k = Math.max(0, s); k < Math.min(e2, text.length); k++) {
+      if (!marks[k]) marks[k] = { types: new Set(), current: false, dispute: false };
+      marks[k].dispute = true;
+    }
+  });
+  const segments = [];
   let buf = "";
   let sig = "";
   let title = "";
-  let isCurrent = false;
+  let cls = "";
   const flush = () => {
     if (!buf) return;
-    if (!sig) frag.appendChild(document.createTextNode(buf));
-    else {
-      const m = document.createElement("mark");
-      if (isCurrent) m.className = "current";
-      m.title = title;
-      m.textContent = buf;
-      frag.appendChild(m);
-    }
+    segments.push({ text: buf, mark: cls, title });
     buf = "";
   };
   for (let i = 0; i < text.length; i++) {
     const mk = marks[i];
-    const s2 = mk ? (mk.current ? "C" : "M") : "";
+    const s2 = mk ? (mk.dispute ? "mk-dispute" : mk.current ? "current" : "ent") : "";
     if (s2 !== sig) {
       flush();
       sig = s2;
-      isCurrent = mk ? mk.current : false;
+      cls = s2;
       title = mk ? [...mk.types].join(" / ") : "";
     }
     buf += text[i];
   }
   flush();
+  return segments;
+}
+
+function highlightTranscript(pack, currentIdx, disputeSpans) {
+  const frag = document.createDocumentFragment();
+  for (const seg of transcriptSegments(pack, currentIdx, disputeSpans)) {
+    if (!seg.mark) frag.appendChild(document.createTextNode(seg.text));
+    else {
+      const m = document.createElement("mark");
+      if (seg.mark !== "ent") m.className = seg.mark;  // ent = 默认黄，无需类名
+      m.title = seg.title;
+      m.textContent = seg.text;
+      frag.appendChild(m);
+    }
+  }
   return frag;
 }
 
@@ -677,7 +718,14 @@ function wireEvents() {
   // 裁决卡片：四键 / 取消（每键恒传 adjudication_index——显式关单，控制器终审裁定）
   el("dispute-list").addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-act]");
-    if (!btn) return;
+    if (!btn) {
+      // v2 高亮联动：点卡片空白处（非按钮/表单）→ 本卡争议读数蓝色高亮滚动入视野
+      if (e.target.closest("form, input, .fix-form")) return;
+      const card = e.target.closest(".dispute-card");
+      const mk = card && card.querySelector("mark.mk-dispute");
+      if (mk) mk.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
     const card = btn.closest(".dispute-card");
     const act = btn.dataset.act;
     if (act === "cancel") {

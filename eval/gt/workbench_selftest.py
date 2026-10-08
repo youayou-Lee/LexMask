@@ -14,7 +14,9 @@
   不在 entities）——旧三键在真实 M1 引擎产出上 94% 分歧无法关单的卡死路径。
   零真实案卷、零网络外呼（仅 127.0.0.1）、不碰任何 git 仓（铁律 1）。
 - 流程：首页关键元素 id + 前端 linkedEntity 值比较回归钉 + 第四键/显式关单/
-  位置确认源码钉 → 未抽样 404 口径（/api/trust、/api/sample）→ 一单裁对 →
+  位置确认源码钉 + v2 高亮联动钉（争议候选读数蓝 mk-dispute 段构造器 node
+  真执行、点卡滚动接线、争议 payload 候选 span）→ 未抽样 404 口径（/api/trust、
+  /api/sample）→ 一单裁对 →
   同文第二处裁决（第二处 confirmed、第一处不动、定向关单）→ 一单补漏 →
   一单裁错（带 correction）→ 撤销一次（快照还原、分歧复现，且不波及 p2
   补漏 / p3 裁决）→ finalize 期待 409 缺项清单（含「未裁决」）→ 真实形状
@@ -289,6 +291,66 @@ def frontend_real_shape_pins(html: str) -> None:
          'typeof c === "object"' in html)
 
 
+def frontend_highlight_pins(html: str) -> None:
+    """v2 高亮联动源码钉：争议候选读数蓝色高亮 / 无 DOM 段构造器 / 点卡滚动接线。"""
+    step("前端源码钉：争议读数蓝色高亮（mk-dispute 类 + CSS 规则在案）",
+         "mk-dispute" in html and "mark.mk-dispute{" in html)
+    step("前端源码钉：无 DOM 段构造器 transcriptSegments（自测可直跑）",
+         "function transcriptSegments" in html)
+    step("前端源码钉：点卡片滚动到争议高亮（scrollIntoView + mk-dispute 定位在案）",
+         "scrollIntoView" in html and 'querySelector("mark.mk-dispute")' in html)
+
+
+# 争议卡蓝高亮真执行钉：transcriptSegments（无 DOM）对候选读数 span 产出 mk-dispute 段
+_NODE_SEG_CODE = ("const fs = require('fs');"
+                  "eval(fs.readFileSync(process.argv[1], 'utf8'));"
+                  "const pack = JSON.parse(process.argv[2]);"
+                  "const segs = transcriptSegments(pack, -1, [[0, 2]]);"
+                  "console.log(JSON.stringify(segs));")
+
+_SEG_PACK = {"transcript_gt": {"text": "张三号码110122198110227771"},
+             "entities": [{"text": "张三", "type": "姓名", "span_original": [0, 2]},
+                          {"text": "110122198110227771", "type": "身份证号",
+                           "span_original": [4, 22]}]}
+
+
+def frontend_highlight_exec_pin(html: str) -> None:
+    """真执行钉：争议候选读数 span → 蓝 mk-dispute 段，已采纳实体 → 黄段（node 直跑）。"""
+    try:
+        js = html[html.index("function transcriptSegments"):
+                  html.index("function highlightTranscript")]
+    except ValueError:
+        step("前端执行钉：未能从 HTML 抽出 transcriptSegments 源", False)
+        return
+    if not shutil.which("node"):
+        skip("前端执行钉（node 真跑 transcriptSegments）", "node 不可用，源码钉已覆盖")
+        return
+    with tempfile.TemporaryDirectory() as td:
+        js_path = Path(td) / "segments.js"
+        js_path.write_text(js, encoding="utf-8")
+        try:
+            r = subprocess.run(
+                ["node", "-e", _NODE_SEG_CODE, str(js_path),
+                 json.dumps(_SEG_PACK, ensure_ascii=False)],
+                capture_output=True, text=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            step("前端执行钉：node 执行超时", False)
+            return
+    ok, detail = False, (f"stdout={r.stdout.strip()[:200]!r} "
+                         f"stderr={r.stderr.strip()[:200]!r}")
+    if r.returncode == 0:
+        try:
+            segs = json.loads(r.stdout.strip())
+            ok = (bool(segs) and segs[0]["mark"] == "mk-dispute"
+                  and segs[0]["text"] == "张三"
+                  and any(s["mark"] == "ent" and s["text"] == "110122198110227771"
+                          for s in segs))
+        except (ValueError, KeyError, IndexError):
+            pass
+    step("前端执行钉：争议 span → 蓝 mk-dispute 段 + 已采纳实体黄段", ok,
+         "" if ok else detail)
+
+
 # ---- 全流程 -----------------------------------------------------------------------
 
 def run_flow(client: httpx.Client, work: Path) -> None:
@@ -306,6 +368,10 @@ def run_flow(client: httpx.Client, work: Path) -> None:
 
     # 2.5 终审修复波前端源码钉（第四键/显式关单/位置确认/gap 直出）
     frontend_real_shape_pins(html)
+
+    # 2.7 v2 高亮联动钉（蓝色争议读数高亮 + 点卡滚动 + 段构造器真执行）
+    frontend_highlight_pins(html)
+    frontend_highlight_exec_pin(html)
 
     # 3. 未抽样口径：/api/trust 与 /api/sample 均 404 + 中文原因（前端 boot 依赖）
     r_trust = client.get("/api/trust")
@@ -331,6 +397,12 @@ def run_flow(client: httpx.Client, work: Path) -> None:
          and len(ds.get("p1", [])) == 2 and len(ds.get("p3", [])) == 1
          and len(ds.get("p4", [])) == 2 and len(ds.get("p5", [])) == 1,
          str(r.text if r.status_code != 200 else {k: len(v) for k, v in ds.items()}))
+    # 4.5 v2 高亮联动数据钉：争议 payload 携带 UI 所需的候选读数 span
+    #（卡=蓝高亮锚，前端 firstCandidateSpan 按 a→b→md 取第一路合法 span）
+    first_p1 = (ds.get("p1") or [{}])[0]
+    span = ((first_p1.get("candidates") or {}).get("a") or [{}])[0].get("span_original")
+    step("争议 payload 携候选读数 span（p1#0 a 路 span_original=[0,2]）",
+         span == [0, 2], str(span))
     r = client.get("/api/page/p1")
     page = r.json() if r.status_code == 200 else {}
     step("GET /api/page/p1 → image_url=/img/p1、2 条实体",

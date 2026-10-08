@@ -444,6 +444,16 @@ def test_index_contains_key_element_ids(client):
         assert f'id="{eid}"' in html, f"首页缺关键元素 id={eid!r}"
 
 
+def test_index_dispute_highlight_linkage(client):
+    """v2 高亮联动：争议候选读数蓝高亮（mk-dispute）、无 DOM 段构造器、
+    点卡滚动接线必须在服务出的首页 HTML 中。"""
+    html = client.get("/").text
+    assert "mark.mk-dispute{" in html             # 蓝色争议读数高亮 CSS
+    assert "function transcriptSegments" in html  # 无 DOM 段构造器（自测直跑）
+    assert "scrollIntoView" in html               # 点卡片滚动到争议高亮
+    assert "firstCandidateSpan" in html           # 候选读数 span 提取
+
+
 def test_sample_read_endpoint(client):
     """GET /api/sample：抽样前 404 + 中文原因；抽样后返回 seed/selected。"""
     r = client.get("/api/sample")
