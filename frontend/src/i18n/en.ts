@@ -2610,6 +2610,8 @@ Object.assign(enOverrides, {
   'agentMd.pageNext': 'Next page',
   'agentMd.pageInfo': 'Page {x} / {y}',
   'agentMd.artifactFailed': 'Failed to load artifacts',
+  'agentMd.newUpload': 'Upload new document',
+  'agentMd.taskExpired': 'Previous task artifacts have expired — please upload again',
   'agentMd.copyFailed': 'Copy failed — select and copy manually',
   'agentMd.retainedEmpty': 'No fields were kept as original text in this run',
 });

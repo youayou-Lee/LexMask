@@ -2552,6 +2552,8 @@ Object.assign(zhOverrides, {
   'agentMd.pageNext': '下一页',
   'agentMd.pageInfo': '第 {x} / {y} 页',
   'agentMd.artifactFailed': '产物读取失败',
+  'agentMd.newUpload': '上传新文档',
+  'agentMd.taskExpired': '上次任务产物已过期，请重新上传',
   'agentMd.copyFailed': '复制失败，请手动选择复制',
   'agentMd.retainedEmpty': '本次没有保留原文的字段',
 });

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useT } from '@/i18n';
 import { agentMdApi, type AgentMdStatus } from './api';
+import { authFetch } from '@/services/api-client';
 import {
   buildDecisions,
   nextStepFromStatus,
@@ -17,8 +18,8 @@ import { StepReview } from './components/step-review';
 import { StepResult } from './components/step-result';
 
 /** 活跃任务 localStorage 键：跨页面跳转后恢复动线（用户反馈「切页面状态全丢」）。 */
-const ACTIVE_TASK_KEY = 'agent-md.active-task';
-/** 可恢复的状态：终态 failed 不恢复（404/failed 由调用处清键）。 */
+export const ACTIVE_TASK_KEY = 'agent-md.active-task';
+/** 可恢复的状态：终态 failed 不恢复（404/failed 由调用处清键）。completed 仅产物可读时一次性恢复。 */
 const RESUMABLE_STATES = new Set(['parsing', 'ner_running', 'mapping_ready', 'completed']);
 
 /** Issue#75 喂 Agent：/agent-md 四步动线（上传→解析→复核映射→出稿）。 */
@@ -87,13 +88,34 @@ export function AgentMd() {
           localStorage.removeItem(ACTIVE_TASK_KEY);
           return;
         }
-        if (!cancelled) {
+        if (cancelled) return;
+        if (st.state === 'completed') {
+          // completed 产物可能已被清理（用户验收反馈：恢复后「产物读取失败」且无出口）。
+          // 先验产物可读；不可读则清键回上传步并提示；可读则一次性恢复（读完即清键，下次访问全新上传）。
+          let artifactsOk = false;
+          try {
+            const mdRes = await authFetch(agentMdApi.artifactUrl(stored, 'md'));
+            artifactsOk = mdRes.ok;
+          } catch {
+            artifactsOk = false;
+          }
+          if (!artifactsOk) {
+            localStorage.removeItem(ACTIVE_TASK_KEY);
+            if (!cancelled) setError(t('agentMd.taskExpired'));
+            return;
+          }
+          localStorage.removeItem(ACTIVE_TASK_KEY); // one-shot：completed 只恢复这一次
           onUploaded(stored);
-          setStatus(st); // StepProcessing 首轮 pollOnce 会按状态切到 review/result
+          setStatus(st);
+          setStep('result');
+          return;
         }
+        onUploaded(stored);
+        setStatus(st); // StepProcessing 首轮 pollOnce 会按状态切到 review/result
       } catch {
-        // 404/网络失败：任务不存在，清键回到上传步
+        // 404/网络失败/任何恢复意外：任务不可续，清键回上传步，绝不留死路页面（用户验收反馈）
         localStorage.removeItem(ACTIVE_TASK_KEY);
+        if (!cancelled) setError(t('agentMd.taskExpired'));
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -146,7 +168,9 @@ export function AgentMd() {
           }}
         />
       )}
-      {step === 'result' && taskId && <StepResult taskId={taskId} />}
+      {step === 'result' && taskId && (
+        <StepResult taskId={taskId} onNewUpload={resetToUpload} />
+      )}
     </div>
   );
 }
