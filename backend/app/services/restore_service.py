@@ -57,6 +57,10 @@ def normalize_mapping(raw: object) -> Mapping:
         return mapping
     for key, value in raw.items():
         key = str(key).strip()
+        # agent-md 映射表格式:{"items": [...]}(list 值仅此键合法)
+        if key == "items" and isinstance(value, list):
+            _ingest_items_list(mapping, value)
+            continue
         if not key:
             continue
         # 扁平反查:{原文: 替换词};若键本身是占位符形态则按旧格式 {text} 语义
@@ -86,6 +90,29 @@ def normalize_mapping(raw: object) -> Mapping:
             continue
         mapping.parse_warnings.append(f"条目 {key!r} 值类型不支持({type(value).__name__}),已跳过")
     return mapping
+
+
+def _ingest_items_list(mapping: Mapping, items: list) -> None:
+    """agent-md 映射表格式（Issue#75）:{"items": [{id, original_text, entity_type,
+    replacement, excluded}, ...]}。替换词 → 原文（还原方向）；excluded 项未被替换,
+    无需还原,跳过并计一条提示。"""
+    for entry in items:
+        if not isinstance(entry, dict):
+            mapping.parse_warnings.append(f"items 中非对象条目已跳过: {entry!r}")
+            continue
+        original = str(entry.get("original_text") or "").strip()
+        replacement = str(entry.get("replacement") or "").strip()
+        if not original or not replacement:
+            mapping.parse_warnings.append(
+                f"items 条目 {entry.get('id')!r} 原文或替换词为空,已跳过")
+            continue
+        if entry.get("excluded"):
+            mapping.parse_warnings.append(
+                f"items 条目 {entry.get('id')!r} 为保留项(excluded),未替换无需还原")
+            continue
+        mapping.entries[replacement] = MappingEntry(
+            texts=[original], type=str(entry["entity_type"]) if entry.get("entity_type") else None,
+        )
 
 
 def _pseudonym_like(key: str) -> bool:

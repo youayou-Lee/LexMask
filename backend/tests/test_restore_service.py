@@ -238,3 +238,41 @@ def test_idempotent_second_pass_unknown_stable():
     r1 = restore("[PERSON_1]任职于某公司1。", m)
     r2 = restore(r1.restored_text, m)
     assert r2.unknown == []
+
+
+# ---------- Issue#75 缺陷修复:agent-md items 映射表格式 ----------
+
+def test_normalize_agent_md_items_format():
+    """agent-md 三件套映射表 {"items": [...]}:替换词→原文还原;excluded 跳过。"""
+    raw = {
+        "items": [
+            {"id": "e1", "original_text": "袁某1", "entity_type": "PERSON",
+             "replacement": "袁吃霄", "excluded": False},
+            {"id": "e2", "original_text": "2023年5月1日", "entity_type": "DATE",
+             "replacement": "[DATE_1]", "excluded": False},
+            {"id": "e3", "original_text": "某银行", "entity_type": "ORG",
+             "replacement": "", "excluded": False},  # 空替换词→跳过
+            {"id": "e4", "original_text": "保留字段", "entity_type": "ORG",
+             "replacement": "保留字段", "excluded": True},  # excluded→跳过
+        ]
+    }
+    m = normalize_mapping(raw)
+    assert m.entries["袁吃霄"].texts == ["袁某1"]
+    assert m.entries["袁吃霄"].type == "PERSON"
+    assert m.entries["[DATE_1]"].texts == ["2023年5月1日"]
+    assert "保留字段" not in m.entries  # excluded 不入表(未替换无需还原)
+    assert any("excluded" in w for w in m.parse_warnings)
+    assert any("e3" in w or "为空" in w for w in m.parse_warnings)
+
+
+def test_agent_md_items_roundtrip_restore():
+    """端到端:脱敏稿 + items 映射表 → 还原出原文;excluded 项原文不动。"""
+    mapping = normalize_mapping({"items": [
+        {"id": "e1", "original_text": "袁某1", "entity_type": "PERSON",
+         "replacement": "袁吃霄", "excluded": False},
+        {"id": "e2", "original_text": "工商银行", "entity_type": "ORG",
+         "replacement": "某银行", "excluded": True},
+    ]})
+    r = restore("袁吃霄 借款于某银行。", mapping)
+    assert r.restored_text == "袁某1 借款于某银行。"
+    assert r.restored_count == 1

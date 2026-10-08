@@ -88,10 +88,34 @@ def test_stage2_confirm_writes_artifacts(service, sample_pdf, tmp_path):
     task = service.create_task_nowait(sample_pdf, "a.pdf")
     done = service.confirm_nowait(task.task_id, [{"id": "e1", "action": "exclude"}])
     assert done.state == TaskState.COMPLETED
-    md_path = tmp_path / f"{done.output_file_id}.md"
-    assert md_path.exists() and "张三借李某1" in md_path.read_text()
-    assert (tmp_path / f"{done.output_file_id}.mapping.json").exists()
-    assert (tmp_path / f"{done.output_file_id}.retained_fields.json").exists()
+    md_files = list(tmp_path.glob("a_脱敏MD_*.md"))
+    assert len(md_files) == 1
+    assert "张三借李某1" in md_files[0].read_text()
+    assert list(tmp_path.glob("a_映射表_*.json"))
+    assert list(tmp_path.glob("a_保留清单_*.json"))
+
+
+def test_stage2_confirm_friendly_filenames(service, sample_pdf, tmp_path):
+    """导出文件名 = 原文件名前缀 + 类型 + 时间 + short4（非随机 UUID 名）。"""
+    import re as _re
+
+    task = service.create_task_nowait(sample_pdf, "我的 案卷:借条/ v2.pdf")
+    done = service.confirm_nowait(task.task_id, [])
+    assert done.state == TaskState.COMPLETED
+    md_files = list(tmp_path.glob("*.md"))
+    assert len(md_files) == 1
+    name = md_files[0].name
+    assert name.startswith("我的 案卷_借条_ v2_脱敏MD_")
+    assert _re.fullmatch(
+        r"我的 案卷_借条_ v2_脱敏MD_\d{8}_\d{4}_[0-9a-f]{4}\.md", name), name
+    # file_store 登记的 filename 与落盘名一致（下载走 Content-Disposition）
+    from app.services import file_management_service as fms
+
+    try:
+        assert fms.file_store[done.output_file_id]["filename"] == name
+        assert fms.file_store[done.output_file_id]["output_path"] == str(md_files[0])
+    finally:
+        fms.file_store.pop(done.output_file_id, None)
 
 
 def test_stage2_confirm_registers_vl_md_meta_key(service, sample_pdf):

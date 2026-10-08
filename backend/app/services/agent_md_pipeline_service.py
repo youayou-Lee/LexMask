@@ -15,7 +15,9 @@
 """
 import asyncio
 import json
+import re
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from app.core.config import settings
@@ -74,10 +76,12 @@ class AgentMdPipelineService:
         apply_decisions(task.mapping, decisions)
         md, mapping_json, retained_json = render_outputs(task.segs, task.entities, task.mapping)
         output_file_id = str(uuid.uuid4())
-        base = self.output_dir / output_file_id
-        md_path = base.with_suffix(".md")
-        mapping_path = base.with_suffix(".mapping.json")
-        retained_path = base.with_suffix(".retained_fields.json")
+        stem = _friendly_stem(task.filename)
+        ts = datetime.now().strftime("%Y%m%d_%H%M")
+        short4 = output_file_id[:4]
+        md_path = self.output_dir / f"{stem}_脱敏MD_{ts}_{short4}.md"
+        mapping_path = self.output_dir / f"{stem}_映射表_{ts}_{short4}.json"
+        retained_path = self.output_dir / f"{stem}_保留清单_{ts}_{short4}.json"
         self.output_dir.mkdir(parents=True, exist_ok=True)
         md_path.write_text(md, encoding="utf-8")
         mapping_path.write_text(
@@ -91,9 +95,9 @@ class AgentMdPipelineService:
         # 终审 C3：旧键 agent_md_meta 不被识别，mapping/retained 会被孤儿清理删除）
         fms.file_store[output_file_id] = {
             "file_id": output_file_id,
-            "filename": f"{task.filename}-脱敏MD.md",
+            "filename": md_path.name,
             # original_filename 镜像：处理历史列表（GET /files）与行下载文件名都读这个键
-            "original_filename": f"{task.filename}-脱敏MD.md",
+            "original_filename": md_path.name,
             "output_path": str(md_path),
             "owner_id": task.owner_id,
             "vl_md_meta": {
@@ -185,6 +189,19 @@ class AgentMdPipelineService:
         from app.services.vl_md_pipeline_service import VL_MD_DEFAULT_TYPE_IDS
 
         return resolve_requested_entity_types(list(VL_MD_DEFAULT_TYPE_IDS), owner_id or None)
+
+
+_ILLEGAL_FILENAME_CHARS = re.compile(r'[/\\:*?"<>|]')
+
+
+def _friendly_stem(filename: str) -> str:
+    """原文件名 → 导出文件名前缀:去扩展名、非法字符与路径分隔符→下划线、
+    空白折叠、截断 60 字符;清空后兜底 "document"。"""
+    stem = (filename or "").rsplit(".", 1)[0] if filename else ""
+    stem = _ILLEGAL_FILENAME_CHARS.sub("_", stem)
+    stem = re.sub(r"\s+", " ", stem).strip()
+    stem = stem[:60].strip()
+    return stem or "document"
 
 
 def _pdf_page_count(pdf_bytes: bytes) -> int:
