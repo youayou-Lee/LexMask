@@ -2,7 +2,8 @@
 
 - chunk_segments: 清洁文本段 → NER 分块（段间 ``\\n\\n`` 连接，不跨段切分）。
 - run_ner: 逐块顺序调 HybridNER，Entity.start/end 平移为全局偏移，page=块首页+1。
-- build_mapping_draft: 同 (原文, 类型) 同占位符，N 按该类型内首次出现顺序从 1 递增。
+- build_mapping_draft: 同 (原文, 类型) 同替换值；PERSON 化名「姓某N」（N 按姓
+  计数），其余类型 [类型_N] 占位符，N 按该类型内首次出现顺序从 1 递增。
 """
 from app.core.config import settings
 from app.models.schemas import Entity
@@ -82,19 +83,29 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
         per_type[ent.type] = per_type.get(ent.type, 0) + 1
         numbers[key] = per_type[ent.type]
     # 第二遍：每个唯一 (原文, 类型) 出一行，共用编号。
+    # PERSON 化名口径「姓某N」（法律文书惯例，N 按姓计数：袁吃霄→袁某1、
+    # 张三→张某1，姓取首字；两个袁姓→袁某1/袁某2）。其余类型保持 [类型_N]
+    # 占位符——机构/地址化名口径后续对齐 Issue#50 T4，本期不改。
     items: list[MappingItem] = []
     seen: set[tuple[str, str]] = set()
+    per_surname: dict[str, int] = {}
     for ent in entities:
         key = (ent.text, ent.type)
         if key in seen:
             continue
         seen.add(key)
+        if ent.type == "PERSON":
+            surname = ent.text[:1]
+            per_surname[surname] = per_surname.get(surname, 0) + 1
+            replacement = f"{surname}某{per_surname[surname]}"
+        else:
+            replacement = f"[{_type_label(ent.type)}_{numbers[key]}]"
         items.append(
             MappingItem(
                 id=f"e{len(items) + 1}",
                 original_text=ent.text,
                 entity_type=ent.type,
-                replacement=f"[{_type_label(ent.type)}_{numbers[key]}]",
+                replacement=replacement,
             )
         )
     return items

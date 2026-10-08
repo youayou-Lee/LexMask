@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useT } from '@/i18n';
+import { useNavigate } from 'react-router-dom';
 import { agentMdApi } from '../api';
 import { authFetch } from '@/services/api-client';
 import { Button } from '@/components/ui/button';
@@ -22,6 +23,7 @@ interface StepResultProps {
 /** 四步动线第四步：MD 预览 + 一键复制 + 三件套下载 + 保留字段清单。 */
 export function StepResult({ taskId }: StepResultProps) {
   const t = useT();
+  const navigate = useNavigate();
   const [md, setMd] = useState<string | null>(null);
   const [retained, setRetained] = useState<RetainedField[] | null>(null);
   // retained 拉不到 ≠ 空清单：区分展示（评审 R1），失败不打断结果页主内容
@@ -151,7 +153,12 @@ export function StepResult({ taskId }: StepResultProps) {
         )}
       </div>
 
-      <p className="text-sm text-muted-foreground">{t('agentMd.restoreHint')}</p>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="outline" onClick={() => navigate('/restore')} data-testid="agent-md-go-restore">
+          {t('agentMd.goRestore')}
+        </Button>
+        <p className="text-sm text-muted-foreground">{t('agentMd.restoreHint')}</p>
+      </div>
     </section>
   );
 }

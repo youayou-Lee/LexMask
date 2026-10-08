@@ -2585,6 +2585,7 @@ Object.assign(enOverrides, {
   'agentMd.downloadMapping': 'Download mapping table',
   'agentMd.downloadRetained': 'Download retained fields list',
   'agentMd.retainedNote': 'Fields kept as original text in this run (attached to the export for cloud-side audit)',
+  'agentMd.goRestore': 'Restore',
   'agentMd.restoreHint': 'Need the original text back? Round-trip with the downloaded mapping table in the restore tool.',
   'agentMd.wrongPassword': 'Incorrect PDF password',
   'agentMd.needPassword': 'This PDF is encrypted. Enter the open password',

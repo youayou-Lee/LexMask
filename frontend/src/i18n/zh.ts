@@ -2527,6 +2527,7 @@ Object.assign(zhOverrides, {
   'agentMd.downloadMapping': '下载映射表',
   'agentMd.downloadRetained': '下载保留字段清单',
   'agentMd.retainedNote': '以下为本次保留原文的字段（随导出附带给云端侧审计）',
+  'agentMd.goRestore': '去还原',
   'agentMd.restoreHint': '需要还原原文？用下载的映射表在还原工具中 round-trip。',
   'agentMd.wrongPassword': 'PDF 密码错误',
   'agentMd.needPassword': '该 PDF 已加密，请输入打开密码',
