@@ -125,6 +125,54 @@ def test_r2_rev_both_sides_unique_readings_stay_disputed():
         "110122198110227771", "110122198110229999"}
 
 
+def test_r2_rev_single_side_type_conflict_regex_wins_not_lexicographic():
+    # v2.1 评审修复钉：单方键同面类型冲突（regex 银行卡号 + NER 机构名称 两条
+    # 保留，origin=conflict）不按 type 字典序盲采首条——「机构名称」(U+673A)
+    # 排序在「银行卡号」(U+94F6) 前，旧实现会 NER 类型压过正则类型被采信。
+    # 裁定 carve-out：恰一名正则类型在场 → 正则胜（与 _resolve_agreed 同款）。
+    a = [_ent("13800138000112233", "机构名称", 0, 17, origin="conflict"),
+         _ent("13800138000112233", "银行卡号", 0, 17, origin="conflict")]
+    assert [e["type"] for e in sorted(a, key=lambda e: e["type"])] == ["机构名称", "银行卡号"]
+    arb = arbitrate.arbitrate_page(_cmp("consistent"), a, [], None, "body")
+    assert arb["disputed"] == [] and arb["consistent"] == []
+    assert len(arb["auto_resolved"]) == 1
+    entry = arb["auto_resolved"][0]
+    assert entry["rule"] == "R2" and entry["source"] == "a"
+    assert entry["entity"]["type"] == "银行卡号"  # 正则类型胜出，非字典序首条
+
+
+def test_r2_rev_single_side_two_regex_type_names_conflict_disputed():
+    # 单方键同面多型、且 ≥2 个正则类型名在场（电话+银行卡号，通道归属不可辨，
+    # 评审 repro 原形）→ 与 _resolve_agreed「≥2 正则名来源不明」同款 → disputed
+    a = [_ent("13800138000112233", "电话", 0, 17, origin="conflict"),
+         _ent("13800138000112233", "银行卡号", 0, 17, origin="conflict")]
+    arb = arbitrate.arbitrate_page(_cmp("consistent"), a, [], None, "body")
+    assert arb["auto_resolved"] == [] and arb["consistent"] == []
+    assert len(arb["disputed"]) == 1 and arb["disputed"][0]["rule"] == "R2"
+
+
+def test_r2_rev_single_side_ner_vs_ner_type_conflict_disputed():
+    # v2.1 护栏：单方键同面多型且无正则类型（NER 间冲突）→ 真类型冲突无裁决
+    # → disputed（不再盲采首条）
+    a = [_ent("钱明涛", "姓名", 0, 3, origin="conflict"),
+         _ent("钱明涛", "机构名", 0, 3, origin="conflict")]
+    arb = arbitrate.arbitrate_page(_cmp("consistent"), a, [], None, "body")
+    assert arb["auto_resolved"] == [] and arb["consistent"] == []
+    assert len(arb["disputed"]) == 1
+    d = arb["disputed"][0]
+    assert d["rule"] == "R2" and d["entity"]["text"] == "钱明涛"
+    assert {e["type"] for e in d["candidates"]["a"]} == {"姓名", "机构名"}
+
+
+def test_r6_rev_partial_verifiable_texts_fail_fast():
+    # v2.1 nit 修复：verifiable_texts 提供时必须双面注入——缺 b 键若被读成空面
+    # 会误触发单方采信；缺键 fail-fast（不核验应传 None = 保守整页升级）
+    ph = _ent("13800138000", "电话", 8, 19)
+    with pytest.raises(ValueError, match="双面"):
+        arbitrate.arbitrate_page(_cmp("dispute", "single_side"), [dict(ph)], [], None,
+                                 "edge", verifiable_texts={"a": _A_NORM})
+
+
 # ---- R3 / R4：两云分歧 + md 佐证单方 -------------------------------------------
 
 def test_r3_md_agrees_with_vl_adopt_b():

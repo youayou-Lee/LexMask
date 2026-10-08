@@ -14,7 +14,10 @@ GT 管线的裁决核心：消费 Task 4 比对结论（``CompareResult``，**as
   读到方（auto_resolved, rule=R2）。保守边界：双向各有独有读数（两云各执）
   → 逐条 disputed 留人工——pack 实体须整体落在单一采信面上（跨面换算即失真），
   双向独有读数无单一承载面；同位置真类型冲突（无正则裁决）仍 disputed；
-  正则命中仍正则优先（不变）。
+  正则命中仍正则优先（不变）。单方键**自身**同面多型（通道冲突双保留）同款
+  护栏（v2.1 评审修复，对齐 R6-rev/_resolve_agreed）：恰一名正则类型在场 →
+  正则胜，否则 disputed——组序为 type 字典序，盲采首条会让 NER 类型压过
+  正则类型。
 - **R6-rev**：single_side 且恰一侧整面为空、读到方为非空页（norm ≥ 低密度
   阈值）→ 逐读数采信读到方（rule=R6），条件：(a) 读数文本能在读到方转录中
   逐字找到（防捏造——经 ``verifiable_texts`` 注入该面归一化转录核验）；
@@ -74,9 +77,10 @@ rule ∈ R1..R7；``source`` ∈ {"a", "b"} 为 auto_resolved 的采信面标注
 （R3→b、R4→a、R2→胜者/读到方、R6-rev→读到方、R7→a）；``candidates`` =
 {"a"/"b"/"md": 该读数在各源的实例列表}，gap 条目的 candidates = {"detail":
 [compare 争议 detail...]}。``verifiable_texts``（可选）= ``{"a"/"b"/"md":
-该面归一化转录}``，仅供 R6-rev 核验（缺席 = 无法核验，保守升级）。
-未知 page_type / verdict → ``ValueError``（fail-fast，与 compare 的页型校验
-同款）。
+该面归一化转录}``，仅供 R6-rev 核验：``None`` = 无法核验、保守整页升级；
+**提供时必须含 a/b 两面**（缺键 fail-fast——缺键被当空面恰是「对方为空」
+误采信形态；md 可选）。未知 page_type / verdict → ``ValueError``（fail-fast，
+与 compare 的页型校验同款）。
 """
 from __future__ import annotations
 
@@ -241,12 +245,40 @@ def _arbitrate_r7(ga: dict, gb: dict, gm: dict) -> Arbitration:
     return {"consistent": [], "auto_resolved": auto, "disputed": disputed}
 
 
+def _arbitrate_single_side(ga: dict, gb: dict, gm: dict, group: dict, side: str,
+                           auto: list, disputed: list) -> None:
+    """R2-rev 单方采信臂（v2.1 评审修复：类型冲突护栏对齐 R6-rev/_resolve_agreed）。
+
+    单型键直采（auto R2, source=side）；同键多型（同面通道冲突，regex 类型 X +
+    NER 类型 Y 两条保留）**不盲采首条**——组序是 type 字典序，盲采会让 NER 类型
+    压过正则类型。裁定 carve-out：恰一名正则类型在场 → 正则胜（实例取胜者）；
+    零名或 ≥2 名正则类型名 → 真类型冲突无裁决 → disputed 升级。
+    """
+    for key in sorted(group):
+        insts = group[key]
+        types = {e["type"] for e in insts}
+        if len(types) > 1:
+            regex_types = types & _REGEX_TYPE_NAMES
+            winner_inst = None
+            if len(regex_types) == 1:
+                winner = next(iter(regex_types))
+                winner_inst = next((e for e in insts if e["type"] == winner), None)
+            if winner_inst is not None:
+                auto.append({"entity": winner_inst, "rule": "R2", "source": side})
+            else:
+                disputed.append({"entity": insts[0], "rule": "R2",
+                                 "candidates": _cands(ga, gb, gm, key)})
+        else:
+            auto.append({"entity": insts[0], "rule": "R2", "source": side})
+
+
 def _arbitrate_r1_r2(ga: dict, gb: dict, gm: dict) -> Arbitration:
     """R1/R2：两云一致——同读同型入一致集；类型冲突走 R2；单方读数 R2-rev 采信。
 
     v2 R2-rev（用户裁决 2026-10-08）：一致页上单方独有读数（对方 NER/正则
     缺席，非类型冲突）→ 采信读到方 auto_resolved(rule=R2)；双向各有独有
-    读数（两云各执，且无单一采信面可承载）→ 逐条 disputed 留人工。
+    读数（两云各执，且无单一采信面可承载）→ 逐条 disputed 留人工；单方键
+    自身同面类型冲突按护栏裁决（见 ``_arbitrate_single_side``）。
     """
     ka, kb, km = set(ga), set(gb), set(gm)
     consistent: list = []
@@ -259,12 +291,10 @@ def _arbitrate_r1_r2(ga: dict, gb: dict, gm: dict) -> Arbitration:
         for key in sorted(a_only | b_only):
             disputed.append({"entity": _rep(ga.get(key), gb.get(key)),
                              "rule": "R2", "candidates": _cands(ga, gb, gm, key)})
-    elif a_only:  # v2 R2-rev：a 单方读到（b 缺席）→ 采信 a
-        for key in sorted(a_only):
-            auto.append({"entity": ga[key][0], "rule": "R2", "source": "a"})
-    elif b_only:  # v2 R2-rev：b 单方读到（a 缺席）→ 采信 b
-        for key in sorted(b_only):
-            auto.append({"entity": gb[key][0], "rule": "R2", "source": "b"})
+    elif a_only:  # v2 R2-rev：a 单方读到（b 缺席）→ 采信 a（类型冲突护栏在臂内）
+        _arbitrate_single_side(ga, gb, gm, ga, "a", auto, disputed)
+    elif b_only:  # v2 R2-rev：b 单方读到（a 缺席）→ 采信 b（同款护栏）
+        _arbitrate_single_side(ga, gb, gm, gb, "b", auto, disputed)
     for key in sorted(km - ka - kb):  # md 独有读数：升级
         disputed.append({"entity": gm[key][0], "rule": "R5",
                          "candidates": _cands(ga, gb, gm, key)})
@@ -325,11 +355,18 @@ def arbitrate_page(cmp: CompareResult, ents_a: list[Entity], ents_b: list[Entity
     ``cmp`` 为 Task 4 ``compare_transcripts`` 产物（as-is 消费）；``ents_*``
     为 Task 3 合并产物；``ents_md`` 为 ``None`` 时视为 md 沉默；
     ``verifiable_texts``（可选）= ``{"a"/"b"/"md": 该面归一化转录}``，供
-    R6-rev 单方采信的逐字核验（缺席 = 无法核验，保守整页升级）。分支判定
-    见模块 docstring；未知 page_type / verdict raise ``ValueError``。
+    R6-rev 单方采信的逐字核验（``None`` = 无法核验，保守整页升级；提供时
+    必须含 a/b 两面，缺键 raise ``ValueError``）。分支判定见模块 docstring；
+    未知 page_type / verdict raise ``ValueError``。
     """
     if page_type not in PAGE_TYPES:
         raise ValueError(f"未知页型 {page_type!r}，有效页型：{sorted(PAGE_TYPES)}")
+    if verifiable_texts and not (isinstance(verifiable_texts.get("a"), str)
+                                 and isinstance(verifiable_texts.get("b"), str)):
+        # v2.1 评审修复：缺键不得被读成空面——空面恰是 R6-rev「对方为空」的
+        # 采信触发条件，缺键即静默误采信。提供即须双面注入；不核验传 None。
+        raise ValueError("verifiable_texts 提供时必须双面注入 a/b 面归一化转录"
+                         "（缺键 fail-fast；不核验请传 None = 保守整页升级）")
     verdict = cmp["verdict"]
     ga, gb = _group(ents_a or []), _group(ents_b or [])
     gm = _group(ents_md or [])
