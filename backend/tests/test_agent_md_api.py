@@ -8,6 +8,7 @@ router 层必须经模块属性调用（`pipeline_mod.get_agent_md_pipeline()`�
 import io
 import json as _json
 from pathlib import Path
+from urllib.parse import unquote
 
 import fitz
 import pytest
@@ -34,6 +35,7 @@ class _FakePipeline:
                              filename="a.pdf", file_path="x")
         self.t.mapping = [MappingItem(id="e1", original_text="张三", entity_type="PERSON", replacement="[人名_1]")]
         self.created_with: tuple[str, str] | None = None
+        self.confirm_record: dict | None = None
 
     async def create_task(self, file_path, filename, owner_id="local_user"):
         self.created_with = (file_path, filename)
@@ -47,9 +49,17 @@ class _FakePipeline:
         self.t.output_file_id = "out-1"
         out = Path(settings.OUTPUT_DIR)
         out.mkdir(parents=True, exist_ok=True)
-        (out / "out-1.md").write_text("脱敏MD", encoding="utf-8")
-        (out / "out-1.mapping.json").write_text(_json.dumps({"items": []}), encoding="utf-8")
-        (out / "out-1.retained_fields.json").write_text(_json.dumps({"retained_fields": []}), encoding="utf-8")
+        # 友好文件名（3f5c36c 起）：端点必须经 file_store 登记路径取件，不能再拼 uuid
+        (out / "a_脱敏MD_20261008_1407_9789.md").write_text("脱敏MD", encoding="utf-8")
+        (out / "a_映射表_20261008_1407_9789.json").write_text(_json.dumps({"items": []}), encoding="utf-8")
+        (out / "a_保留清单_20261008_1407_9789.json").write_text(_json.dumps({"retained_fields": []}), encoding="utf-8")
+        self.confirm_record = {
+            "output_path": str(out / "a_脱敏MD_20261008_1407_9789.md"),
+            "vl_md_meta": {
+                "mapping_path": str(out / "a_映射表_20261008_1407_9789.json"),
+                "retained_path": str(out / "a_保留清单_20261008_1407_9789.json"),
+            },
+        }
         return self.t
 
 
@@ -193,15 +203,34 @@ def test_mapping_not_ready_409(fake_pipeline):
     assert r.json()["error_code"] == "TASK_NOT_READY"
 
 
-def test_confirm_and_download(fake_pipeline):
+def test_confirm_and_download(fake_pipeline, monkeypatch):
+    from app.services import file_management_service as fms
+
     r = client.post("/api/v1/agent-md/tk-1/confirm", json={"decisions": []})
     assert r.status_code == 200 and r.json()["output_file_id"] == "out-1"
+    monkeypatch.setattr(fms, "file_store", _FakeStore({"out-1": fake_pipeline.confirm_record}))
     downloads = r.json()["downloads"]
     assert downloads["md"].endswith("/agent-md/tk-1/artifacts/md")
+    # 三件套 200 + Content-Disposition 文件名是友好 stem（非 uuid）——友好文件名回归
+    for kind, stem in (("md", "a_脱敏MD"), ("mapping", "a_映射表"), ("retained", "a_保留清单")):
+        resp = client.get(f"/api/v1/agent-md/tk-1/artifacts/{kind}")
+        assert resp.status_code == 200, kind
+        cd = resp.headers["content-disposition"]
+        fname = unquote(cd.rsplit("utf-8''", 1)[-1].strip('"'))
+        assert fname.startswith(stem) and not fname.startswith("out-1"), (kind, fname)
     assert client.get("/api/v1/agent-md/tk-1/artifacts/md").content == "脱敏MD".encode("utf-8")
-    assert client.get("/api/v1/agent-md/tk-1/artifacts/mapping").status_code == 200
-    assert client.get("/api/v1/agent-md/tk-1/artifacts/retained").status_code == 200
     assert client.get("/api/v1/agent-md/tk-1/artifacts/exe").status_code == 404
+
+
+def test_artifacts_missing_file_store_record_404(fake_pipeline, monkeypatch):
+    from app.services import file_management_service as fms
+
+    fake_pipeline.t.state = TaskState.COMPLETED
+    fake_pipeline.t.output_file_id = "out-1"
+    monkeypatch.setattr(fms, "file_store", _FakeStore({}))
+    r = client.get("/api/v1/agent-md/tk-1/artifacts/md")
+    assert r.status_code == 404
+    assert r.json()["error_code"] == "ARTIFACT_NOT_FOUND"
 
 
 def test_confirm_unknown_task_404(fake_pipeline):

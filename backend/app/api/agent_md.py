@@ -143,8 +143,16 @@ async def artifacts(task_id: str, kind: str, owner_id: str = Depends(require_aut
     suffix = _ARTIFACT_SUFFIX.get(kind)
     if task is None or task.state != TaskState.COMPLETED or not task.output_file_id or suffix is None:
         raise AppError(status_code=404, error_code="ARTIFACT_NOT_FOUND", message="产物不存在或任务未完成")
-    path = os.path.join(settings.OUTPUT_DIR, f"{task.output_file_id}{suffix}")
-    if not os.path.exists(path):
+    # 产物路径以 file_store 登记为准（confirm 落盘友好文件名，uuid 拼路径在 3f5c36c 后全 404）
+    record = fms.file_store.get(task.output_file_id)
+    if record is None:
+        raise AppError(status_code=404, error_code="ARTIFACT_NOT_FOUND", message="产物不存在或任务未完成")
+    if kind == "md":
+        path = record.get("output_path")
+    else:
+        meta = record.get("vl_md_meta") or {}
+        path = meta.get("mapping_path") if kind == "mapping" else meta.get("retained_path")
+    if not path or not os.path.exists(path):
         raise AppError(status_code=404, error_code="ARTIFACT_NOT_FOUND", message="产物文件缺失")
     return FileResponse(path, filename=os.path.basename(path))
 
