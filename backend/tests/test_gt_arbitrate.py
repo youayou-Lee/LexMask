@@ -164,6 +164,39 @@ def test_r2_rev_single_side_ner_vs_ner_type_conflict_disputed():
     assert {e["type"] for e in d["candidates"]["a"]} == {"姓名", "机构名"}
 
 
+def test_r2_rev_mixed_agreed_and_single_side_no_double_adjudication():
+    # v2.2 回归钉（Fix round 2）：混合页（同读组 + 单方键）——单方臂组必须收敛
+    # 到单方键子集；同读组只裁一次（consistent/R1），单方键采信一次（auto/R2），
+    # 互不重复（v2.1 曾传整面组 → 同读键被 consistent 后又在单方臂 auto 一次）
+    agreed = _ent("110122198110227771", "身份证号", 2, 20)
+    ph = _ent("13800138000", "电话", 40, 51)
+    arb = arbitrate.arbitrate_page(_cmp("consistent"),
+                                   [dict(agreed), dict(ph)], [dict(agreed)],
+                                   None, "body")
+    assert [e["text"] for e in arb["consistent"]] == ["110122198110227771"]
+    assert len(arb["auto_resolved"]) == 1
+    entry = arb["auto_resolved"][0]
+    assert entry["rule"] == "R2" and entry["source"] == "a"
+    assert entry["entity"]["text"] == "13800138000"
+    assert arb["disputed"] == []
+    # 同读键不得被单方臂重复采信
+    assert all(e["entity"]["text"] != "110122198110227771"
+               for e in arb["auto_resolved"])
+
+
+def test_r2_rev_mixed_agreed_and_b_side_single_side():
+    # 对称钉：同读组（两云一致）+ b 单方键 → consistent 一条 + auto:b 一条
+    agreed = _ent("110122198110227771", "身份证号", 2, 20)
+    nm = _ent("钱明涛", "姓名", 40, 43, origin="ner")
+    arb = arbitrate.arbitrate_page(_cmp("consistent"),
+                                   [dict(agreed)], [dict(agreed), dict(nm)],
+                                   None, "body")
+    assert [e["text"] for e in arb["consistent"]] == ["110122198110227771"]
+    assert [(e["rule"], e["source"], e["entity"]["text"])
+            for e in arb["auto_resolved"]] == [("R2", "b", "钱明涛")]
+    assert arb["disputed"] == []
+
+
 def test_r6_rev_partial_verifiable_texts_fail_fast():
     # v2.1 nit 修复：verifiable_texts 提供时必须双面注入——缺 b 键若被读成空面
     # 会误触发单方采信；缺键 fail-fast（不核验应传 None = 保守整页升级）

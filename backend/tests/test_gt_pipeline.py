@@ -184,6 +184,32 @@ def test_run_page_r2_rev_b_only_reading_switches_face(tmp_path):
                for adj in pack["adjudications"])
 
 
+# 混合页夹具（Fix round 2 回归钉）：长正文页保证 13 字插入仍在双向覆盖率 ≥0.9
+#（compare=consistent）——共享身份证号（同读组）+ a 面单方电话（R2-rev 采信）
+_MIXED_SHARED = ("证件号码110122198110227771经核查上述信息由经办机构归档保存"
+                 "如有异议请于十五日内提出申诉等事项"
+                 + "本记录一式两份各自存档备查并经经办人签字确认无误" * 8
+                 + "特此说明并请当事人知悉相关权利义务及办理时限等细节")
+_MIXED_A = _MIXED_SHARED[:80] + "电话13800138000" + _MIXED_SHARED[80:]
+
+
+def test_run_page_mixed_agreed_and_r2rev_no_duplicate_entities(tmp_path):
+    # v2.2 回归钉（pack 级）：混合页（同读组 + a 单方电话）实体不重复——v2.1 曾
+    # 让单方臂以整面组重裁同读键，pack 出现同键双实体（consistent + arbitrated）
+    sample = _make_sample(tmp_path)
+    pack = pagepack.run_page(str(sample), 0, "body",
+                             _fake_clients([_MIXED_A], [_MIXED_SHARED]),
+                             NEROff(), tmp_path / "w")
+    assert gt_schema.validate_pagepack(pack) == []
+    keys = [(tuple(e["span_normalized"]), e["text"]) for e in pack["entities"]]
+    assert len(keys) == len(set(keys)), f"实体键重复：{keys}"
+    assert {(e["type"], e["text"]) for e in pack["entities"]} == {
+        ("身份证号", "110122198110227771"), ("电话", "13800138000")}
+    assert sorted(e["verify"] for e in pack["entities"]) == ["arbitrated", "consistent"]
+    adjs = {(adj["rule"], adj["verdict"]) for adj in pack["adjudications"]}
+    assert ("R1", "consistent") in adjs and ("R2", "auto:a") in adjs
+
+
 def test_run_page_r7_format_residue_auto_ok(tmp_path):
     a_raw = "电话13800138000请联系代理律师张三丰办理相关手续事宜。"
     b_raw = "电话13800138000请联系#代理律师张三丰办理相关手续事宜。"

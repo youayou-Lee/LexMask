@@ -249,10 +249,13 @@ def _arbitrate_single_side(ga: dict, gb: dict, gm: dict, group: dict, side: str,
                            auto: list, disputed: list) -> None:
     """R2-rev 单方采信臂（v2.1 评审修复：类型冲突护栏对齐 R6-rev/_resolve_agreed）。
 
-    单型键直采（auto R2, source=side）；同键多型（同面通道冲突，regex 类型 X +
-    NER 类型 Y 两条保留）**不盲采首条**——组序是 type 字典序，盲采会让 NER 类型
-    压过正则类型。裁定 carve-out：恰一名正则类型在场 → 正则胜（实例取胜者）；
-    零名或 ≥2 名正则类型名 → 真类型冲突无裁决 → disputed 升级。
+    ``group`` 必须是**单方键子集**（调用方以 a_only/b_only 收敛；v2.2 修复：
+    传整面组会同读组双裁——consistent/R1 裁一次、单方臂再采一次，pack 实体
+    重复）。单型键直采（auto R2, source=side）；同键多型（同面通道冲突，
+    regex 类型 X + NER 类型 Y 两条保留）**不盲采首条**——组序为 type 字典序，
+    盲采会让 NER 类型压过正则类型。裁定 carve-out：恰一名正则类型在场 →
+    正则胜（实例取胜者）；零名或 ≥2 名正则类型名 → 真类型冲突无裁决 →
+    disputed 升级。
     """
     for key in sorted(group):
         insts = group[key]
@@ -291,10 +294,10 @@ def _arbitrate_r1_r2(ga: dict, gb: dict, gm: dict) -> Arbitration:
         for key in sorted(a_only | b_only):
             disputed.append({"entity": _rep(ga.get(key), gb.get(key)),
                              "rule": "R2", "candidates": _cands(ga, gb, gm, key)})
-    elif a_only:  # v2 R2-rev：a 单方读到（b 缺席）→ 采信 a（类型冲突护栏在臂内）
-        _arbitrate_single_side(ga, gb, gm, ga, "a", auto, disputed)
-    elif b_only:  # v2 R2-rev：b 单方读到（a 缺席）→ 采信 b（同款护栏）
-        _arbitrate_single_side(ga, gb, gm, gb, "b", auto, disputed)
+    elif a_only:  # v2 R2-rev：a 单方读到（b 缺席）→ 采信 a（组收敛到单方键，防同读组双裁）
+        _arbitrate_single_side(ga, gb, gm, {k: ga[k] for k in a_only}, "a", auto, disputed)
+    elif b_only:  # v2 R2-rev：b 单方读到（a 缺席）→ 采信 b（同款收敛）
+        _arbitrate_single_side(ga, gb, gm, {k: gb[k] for k in b_only}, "b", auto, disputed)
     for key in sorted(km - ka - kb):  # md 独有读数：升级
         disputed.append({"entity": gm[key][0], "rule": "R5",
                          "candidates": _cands(ga, gb, gm, key)})
