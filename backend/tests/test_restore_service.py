@@ -276,3 +276,46 @@ def test_agent_md_items_roundtrip_restore():
     r = restore("袁吃霄 借款于某银行。", mapping)
     assert r.restored_text == "袁某1 借款于某银行。"
     assert r.restored_count == 1
+
+
+# ---------- Issue#75 括号化名口径（2026-10-08 用户定稿） ----------
+
+def test_bracketed_pseudonym_items_roundtrip_restore():
+    """[袁某一]/[袁某] 形态映射（items 格式）→ 字面扫描还原原文。"""
+    mapping = normalize_mapping({"items": [
+        {"id": "e1", "original_text": "袁吃霄", "entity_type": "PERSON",
+         "replacement": "[袁某一]", "excluded": False},
+        {"id": "e2", "original_text": "袁飞", "entity_type": "PERSON",
+         "replacement": "[袁某二]", "excluded": False},
+        {"id": "e3", "original_text": "张三", "entity_type": "PERSON",
+         "replacement": "[张某]", "excluded": False},
+    ]})
+    r = restore("[袁某一] 与 [袁某二] 及 [张某] 均到庭。", mapping)
+    assert r.restored_text == "袁吃霄 与 袁飞 及 张三 均到庭。"
+    assert r.restored_count == 3
+    assert r.unknown == [] and r.ambiguous == []
+
+
+def test_bracketed_pseudonym_adjacency_not_corrupted():
+    """相邻数字/汉字不吞吃：[袁某一]2 不得按 [袁某一] 部分还原成 袁吃霄2 的残缺形态。"""
+    mapping = normalize_mapping({"items": [
+        {"id": "e1", "original_text": "袁吃霄", "entity_type": "PERSON",
+         "replacement": "[袁某一]", "excluded": False},
+    ]})
+    r = restore("文书号=[袁某一]2023号", mapping)
+    # ] 后无边界吞吃问题：整体命中还原（] 是 key 尾字符，字面匹配即完整命中）
+    assert r.restored_text == "文书号=袁吃霄2023号"
+    # 独立出现完整还原
+    r2 = restore("[袁某一]借款。", mapping)
+    assert r2.restored_text == "袁吃霄借款。"
+
+
+def test_bracketed_pseudonym_missing_from_mapping_reported_unknown():
+    """映射表没有的括号化名 → unknown 显式暴露（不被当原文残留）。"""
+    mapping = normalize_mapping({"items": [
+        {"id": "e1", "original_text": "张三", "entity_type": "PERSON",
+         "replacement": "[张某]", "excluded": False},
+    ]})
+    r = restore("[张某]与[李某]到庭。", mapping)
+    assert "[李某]" in r.unknown
+    assert r.restored_text == "张三与[李某]到庭。"

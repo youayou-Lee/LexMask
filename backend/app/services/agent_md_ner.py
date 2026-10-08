@@ -2,8 +2,8 @@
 
 - chunk_segments: 清洁文本段 → NER 分块（段间 ``\\n\\n`` 连接，不跨段切分）。
 - run_ner: 逐块顺序调 HybridNER，Entity.start/end 平移为全局偏移，page=块首页+1。
-- build_mapping_draft: 同 (原文, 类型) 同替换值；PERSON 化名「姓某N」（N 按姓
-  计数），其余类型 [类型_N] 占位符，N 按该类型内首次出现顺序从 1 递增。
+- build_mapping_draft: 同 (原文, 类型) 同替换值；PERSON 化名「[姓某]」，同姓多个加
+  汉字序号「[姓某一]/[姓某二]」，其余类型 [类型_N] 占位符，N 按该类型内首次出现顺序从 1 递增。
 """
 from app.core.config import settings
 from app.models.schemas import Entity
@@ -82,10 +82,45 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
             continue
         per_type[ent.type] = per_type.get(ent.type, 0) + 1
         numbers[key] = per_type[ent.type]
-    # 第二遍：每个唯一 (原文, 类型) 出一行，共用编号。
-    # PERSON 化名口径「姓某N」（法律文书惯例，N 按姓计数：袁吃霄→袁某1、
-    # 张三→张某1，姓取首字；两个袁姓→袁某1/袁某2）。其余类型保持 [类型_N]
-    # 占位符——机构/地址化名口径后续对齐 Issue#50 T4，本期不改。
+def _cn_numeral(n: int) -> str:
+    """1→一 … 10→十、11→十一、20→二十、21→二十一 … 99；≥100 回退阿拉伯数字。"""
+    if n >= 100:
+        return str(n)
+    digits = "零一二三四五六七八九"
+    if n < 10:
+        return digits[n]
+    tens, unit = divmod(n, 10)
+    return ("十" if tens == 1 else digits[tens] + "十") + (digits[unit] if unit else "")
+
+
+def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
+    """同 (原文, 类型) 一行、同占位符；N 按该类型内首次出现顺序从 1 递增。
+
+    终审 I2：每 (原文, 类型) 只出一行——render_outputs 的查找 dict 是 last-row-wins，
+    重复行会让用户对非末行决策被静默忽略；去重后行 id 与 (text,type) 一一对应。
+    PERSON 化名口径（用户定稿 2026-10-08）：替换值一律 [..] 括号包裹；该姓唯一实体
+    → [袁某]；同姓多个 → 汉字序号 [袁某一]/[袁某二]…（≥100 回退阿拉伯数字）。
+    其余类型保持 [类型_N] 占位符——机构/地址化名口径后续对齐 Issue#50 T4。
+    """
+    # 第一遍：按 (原文, 类型) 去重，首次出现顺序做类型内全局编号。
+    numbers: dict[tuple[str, str], int] = {}
+    per_type: dict[str, int] = {}
+    for ent in entities:
+        key = (ent.text, ent.type)
+        if key in numbers:
+            continue
+        per_type[ent.type] = per_type.get(ent.type, 0) + 1
+        numbers[key] = per_type[ent.type]
+    # 同姓 PERSON 实体总数（按唯一 (text,type) 计数），决定唯一不加序号还是加汉字序号。
+    surname_totals: dict[str, int] = {}
+    seen_keys: set[tuple[str, str]] = set()
+    for ent in entities:
+        key = (ent.text, ent.type)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        if ent.type == "PERSON":
+            surname_totals[ent.text[:1]] = surname_totals.get(ent.text[:1], 0) + 1
     items: list[MappingItem] = []
     seen: set[tuple[str, str]] = set()
     per_surname: dict[str, int] = {}
@@ -97,7 +132,10 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
         if ent.type == "PERSON":
             surname = ent.text[:1]
             per_surname[surname] = per_surname.get(surname, 0) + 1
-            replacement = f"{surname}某{per_surname[surname]}"
+            if surname_totals[surname] == 1:
+                replacement = f"[{surname}某]"
+            else:
+                replacement = f"[{surname}某{_cn_numeral(per_surname[surname])}]"
         else:
             replacement = f"[{_type_label(ent.type)}_{numbers[key]}]"
         items.append(

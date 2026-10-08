@@ -11,8 +11,8 @@ def _fixture():
         Entity(id="b", text="李四", type="PERSON", start=3, end=5),
     ]
     mapping = [
-        MappingItem(id="e1", original_text="张三", entity_type="PERSON", replacement="张某1"),
-        MappingItem(id="e2", original_text="李四", entity_type="PERSON", replacement="李某1"),
+        MappingItem(id="e1", original_text="张三", entity_type="PERSON", replacement="[张某]"),
+        MappingItem(id="e2", original_text="李四", entity_type="PERSON", replacement="[李某]"),
     ]
     return segs, ents, mapping
 
@@ -23,7 +23,7 @@ def test_apply_decisions_exclude_and_custom():
         {"id": "e1", "action": "exclude"},
         {"id": "e2", "action": "custom", "replacement": "[人名_9]"},
     ])
-    assert out[0].excluded is True and out[0].replacement == "张某1"
+    assert out[0].excluded is True and out[0].replacement == "[张某]"
     assert out[1].replacement == "[人名_9]" and out[1].excluded is False
 
 
@@ -31,7 +31,7 @@ def test_render_outputs_replaces_and_keeps_excluded():
     segs, ents, mapping = _fixture()
     mapping = apply_decisions(mapping, [{"id": "e1", "action": "exclude"}])
     md, mapping_json, retained = render_outputs(segs, ents, mapping)
-    assert "张三借李某1人民币一万元" in md
+    assert "张三借[李某]人民币一万元" in md
     assert mapping_json["items"][0]["excluded"] is True
     assert retained["retained_fields"][0]["text"] == "张三"
 
@@ -54,8 +54,8 @@ def _two_seg_fixture_unannotated():
         Entity(id="b", text="李四", type="PERSON", start=3, end=5),
     ]
     mapping = [
-        MappingItem(id="e1", original_text="张三", entity_type="PERSON", replacement="张某1"),
-        MappingItem(id="e2", original_text="李四", entity_type="PERSON", replacement="李某1"),
+        MappingItem(id="e1", original_text="张三", entity_type="PERSON", replacement="[张某]"),
+        MappingItem(id="e2", original_text="李四", entity_type="PERSON", replacement="[李某]"),
     ]
     return segs, ents, mapping
 
@@ -64,7 +64,7 @@ def test_full_text_fallback_replaces_unannotated_occurrences():
     segs, ents, mapping = _two_seg_fixture_unannotated()
     md, _, retained = render_outputs(segs, ents, mapping)
     assert "张三" not in md and "李四" not in md  # 未标注处也零残留
-    assert "经查，张某1另欠李某1两千元" in md
+    assert "经查，[张某]另欠[李某]两千元" in md
     assert retained["retained_fields"] == []  # 兜底不产生保留字段
 
 
@@ -86,7 +86,7 @@ def test_excluded_substring_longer_replacement_wins():
     ents = [Entity(id="a", text="张三", type="PERSON", start=9, end=11)]
     mapping = [
         MappingItem(id="e1", original_text="张三建设有限公司", entity_type="ORG", replacement="[公司_1]"),
-        MappingItem(id="e2", original_text="张三", entity_type="PERSON", replacement="张某1"),
+        MappingItem(id="e2", original_text="张三", entity_type="PERSON", replacement="[张某]"),
     ]
     mapping = apply_decisions(mapping, [{"id": "e2", "action": "exclude"}])
     md, _, retained = render_outputs(segs, ents, mapping)

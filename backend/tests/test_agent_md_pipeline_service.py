@@ -80,7 +80,7 @@ def service(tmp_path):
 def test_stage1_reaches_mapping_ready(service, sample_pdf):
     task = service.create_task_nowait(sample_pdf, "a.pdf")  # 同步驱动版
     assert task.state == TaskState.MAPPING_READY
-    assert [m.replacement for m in task.mapping] == ["张某1", "李某1"]
+    assert [m.replacement for m in task.mapping] == ["[张某]", "[李某]"]
     assert task.pages_total == 1
 
 
@@ -90,7 +90,7 @@ def test_stage2_confirm_writes_artifacts(service, sample_pdf, tmp_path):
     assert done.state == TaskState.COMPLETED
     md_files = list(tmp_path.glob("a_脱敏MD_*.md"))
     assert len(md_files) == 1
-    assert "张三借李某1" in md_files[0].read_text()
+    assert "张三借[李某]" in md_files[0].read_text()
     assert list(tmp_path.glob("a_映射表_*.json"))
     assert list(tmp_path.glob("a_保留清单_*.json"))
 

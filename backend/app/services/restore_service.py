@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 PLACEHOLDER_RE = re.compile(r"\[[A-Za-z][A-Za-z0-9_]*_\d+\]")
 # 化名词:替换引擎生成的合成词形态(某+名词+可选序号)
 PSEUDONYM_RE = re.compile(r"某[\u4e00-\u9fff]{1,6}\d{0,3}")
+# 括号化名词(Issue#75 用户定稿口径 2026-10-08):[袁某]/[袁某一]/[袁某十二] 等
+BRACKETED_PSEUDONYM_RE = re.compile(r"\[[\u4e00-\u9fff]某[一二三四五六七八九十]{0,2}\]")
 # 泛化词后界续接字符(日期/区划):命中即视为子串碰撞
 # 后界续接字符:日期(月日年时分秒号代初末底中旬)+ 区划(区县市省旗镇乡村路街巷道屯清新)。
 # 注意:「起/以来/前后/起诉」是合法还原续接,不得加入(「2023年起诉」还原后语义正确)。
@@ -118,7 +120,7 @@ def _ingest_items_list(mapping: Mapping, items: list) -> None:
 def _pseudonym_like(key: str) -> bool:
     if PLACEHOLDER_RE.fullmatch(key):
         return False
-    return bool(PSEUDONYM_RE.fullmatch(key))
+    return bool(PSEUDONYM_RE.fullmatch(key) or BRACKETED_PSEUDONYM_RE.fullmatch(key))
 
 
 def _generalized_like(key: str) -> bool:
@@ -127,6 +129,8 @@ def _generalized_like(key: str) -> bool:
         return False
     if PSEUDONYM_RE.fullmatch(key) and key[-1].isdigit():
         return False
+    if BRACKETED_PSEUDONYM_RE.fullmatch(key):
+        return False  # 括号化名按化名处理,不吃泛化词后界断言
     return True
 
 
@@ -227,6 +231,16 @@ def restore(text: str, mapping: Mapping, policy: str = "safe") -> RestoreResult:
             continue  # 与某 key 完全相等/互为子串(如「某公司1」是「某公司12」前缀态)不报;
             # 纯前缀重叠(「某公司」⊂「某公司1」且前者非 key)由 I1 数字后界断言负责
         if any(ws <= text.find(w) < we for ws, we in consumed_spans):
+            continue  # 位于将被替换的区间内(原文形态),非幻觉
+        if w not in result.unknown:
+            result.unknown.append(w)
+
+    # unknown 括号化名:映射表没有的 [李某] 形态 → 显式暴露(幻觉/缺失,不假装还原)
+    for m in BRACKETED_PSEUDONYM_RE.finditer(text):
+        w = m.group(0)
+        if w in mapping.entries:
+            continue
+        if any(ws <= m.start() < we for ws, we in consumed_spans):
             continue  # 位于将被替换的区间内(原文形态),非幻觉
         if w not in result.unknown:
             result.unknown.append(w)
