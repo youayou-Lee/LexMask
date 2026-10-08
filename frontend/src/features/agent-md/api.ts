@@ -1,6 +1,6 @@
 // Copyright 2026 LexMask Contributors
 
-import { authFetch } from '@/services/api-client';
+import { authFetch, getCsrfToken } from '@/services/api-client';
 import { t } from '@/i18n';
 import type { Decision, MappingItemDto } from './lib/agent-md-flow';
 
@@ -15,6 +15,13 @@ export interface AgentMdStatus {
   pages_total: number;
   message: string;
   warnings_count: number;
+}
+
+/** 上传进度回调载荷（loadedBytes/totalBytes 为 XHR 原始字节计数）。 */
+export interface UploadProgress {
+  loadedBytes: number;
+  totalBytes: number;
+  percent: number;
 }
 
 /** POST /agent-md/{id}/confirm 的返回体。 */
@@ -41,6 +48,79 @@ async function responseErrorMessage(res: Response, fallbackKey: string): Promise
 
 async function readError(res: Response, fallbackKey: string): Promise<never> {
   throw new Error(await responseErrorMessage(res, fallbackKey));
+}
+
+/**
+ * 解析非 2xx 响应体里的错误信封（AppError：{error_code, message, detail}）。
+ * XHR 与 fetch 两条上传路径共用，保证 PDF_ENCRYPTED_NEEDS_PASSWORD / PDF_WRONG_PASSWORD 分支一致。
+ */
+export function parseUploadErrorEnvelope(
+  bodyText: string,
+): { code: string | null; message: string | null } {
+  try {
+    const data = JSON.parse(bodyText) as { error_code?: unknown; message?: unknown; detail?: unknown };
+    const code = typeof data.error_code === 'string' && data.error_code ? data.error_code : null;
+    const detail = data.message ?? data.detail;
+    const message = typeof detail === 'string' && detail.trim() ? detail.trim() : null;
+    return { code, message };
+  } catch {
+    return { code: null, message: null };
+  }
+}
+
+/** 上传失败错误：携带后端 error_code（PDF_ENCRYPTED_NEEDS_PASSWORD 等）供调用方分支。 */
+export class UploadError extends Error {
+  code: string | null;
+  constructor(message: string, code: string | null) {
+    super(message);
+    this.name = 'UploadError';
+    this.code = code;
+  }
+}
+
+/**
+ * XHR 版上传：fetch 拿不到上传方向进度，196MB 大文件会全程黑盒，
+ * 改用 XMLHttpRequest.upload.onprogress 上报真实字节进度（同源 cookie 自动携带）。
+ */
+export function uploadWithProgress(
+  file: File,
+  password: string | undefined,
+  onProgress: (progress: UploadProgress) => void,
+): Promise<{ task_id: string }> {
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    if (password) fd.append('password', password);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/v1/agent-md/upload');
+    xhr.withCredentials = true;
+    const csrfToken = getCsrfToken();
+    if (csrfToken) xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+
+    xhr.upload.onprogress = (event) => {
+      const totalBytes = event.total || file.size;
+      const loadedBytes = event.loaded;
+      const percent = totalBytes > 0 ? Math.min(100, Math.round((loadedBytes / totalBytes) * 100)) : 0;
+      onProgress({ loadedBytes, totalBytes, percent });
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as { task_id: string });
+        } catch {
+          reject(new Error(t('agentMd.uploadFailed')));
+        }
+        return;
+      }
+      const { code, message } = parseUploadErrorEnvelope(xhr.responseText);
+      reject(new UploadError(message || t('agentMd.uploadFailed'), code));
+    };
+    xhr.onerror = () => reject(new Error(t('agentMd.uploadFailed')));
+    xhr.ontimeout = () => reject(new Error(t('agentMd.uploadFailed')));
+    xhr.send(fd);
+  });
 }
 
 export const agentMdApi = {

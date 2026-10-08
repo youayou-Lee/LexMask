@@ -3,33 +3,10 @@
 import { useCallback, useState } from 'react';
 import { useDropzone, type FileRejection } from 'react-dropzone';
 import { useT } from '@/i18n';
-import { authFetch } from '@/services/api-client';
+import { UploadError, uploadWithProgress } from '../api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
-
-/**
- * 读取 /agent-md/upload 的错误信封（AppError：{error_code, message, detail, request_id}）。
- * 与 playground 的 readErrorEnvelope 同款：响应体非 JSON 时回退 null，由调用方走 i18n 文案。
- * 加密 PDF 复用 Issue#30 链路的两个 code：409 PDF_ENCRYPTED_NEEDS_PASSWORD / PDF_WRONG_PASSWORD。
- */
-async function readUploadEnvelope(
-  res: Response,
-): Promise<{ code: string | null; message: string | null }> {
-  try {
-    const data = (await res.json()) as {
-      error_code?: unknown;
-      message?: unknown;
-      detail?: unknown;
-    };
-    const code = typeof data.error_code === 'string' && data.error_code ? data.error_code : null;
-    const detail = data.message ?? data.detail;
-    const message = typeof detail === 'string' && detail.trim() ? detail.trim() : null;
-    return { code, message };
-  } catch {
-    return { code: null, message: null };
-  }
-}
 
 interface StepUploadProps {
   onUploaded: (taskId: string) => void;
@@ -37,7 +14,8 @@ interface StepUploadProps {
 
 /**
  * 四步动线第一步：PDF 投递 + 加密 PDF 条件密码分支（Issue#75）。
- * 上传失败只走本步内的 issue 框展示（不喂页面横幅，评审 R1 去重——横幅留给后续步骤的错误）。
+ * 上传走 XHR（uploadWithProgress）拿真实上传进度——196MB 大文件 fetch 全程黑盒（用户验收反馈）。
+ * 上传失败/拒收只走本步内的 issue 框展示（不喂页面横幅，评审 R1 去重——横幅留给后续步骤的错误）。
  */
 export function StepUpload({ onUploaded }: StepUploadProps) {
   const t = useT();
@@ -47,39 +25,43 @@ export function StepUpload({ onUploaded }: StepUploadProps) {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [issue, setIssue] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ percent: number; loadedBytes: number; totalBytes: number } | null>(
+    null,
+  );
+
+  const formatMb = (bytes: number) => `${Math.round(bytes / (1024 * 1024))}MB`;
 
   const upload = useCallback(
     async (target: File, pwd?: string) => {
       setBusy(true);
       setIssue(null);
+      setProgress({ percent: 0, loadedBytes: 0, totalBytes: target.size });
       try {
-        const fd = new FormData();
-        fd.append('file', target);
-        if (pwd) fd.append('password', pwd);
-        const res = await authFetch('/api/v1/agent-md/upload', { method: 'POST', body: fd });
-        if (!res.ok) {
-          const { code, message } = await readUploadEnvelope(res);
-          if (code === 'PDF_ENCRYPTED_NEEDS_PASSWORD') {
-            setNeedPassword(true);
-            setIssue(t('agentMd.needPassword'));
-            return;
-          }
-          if (code === 'PDF_WRONG_PASSWORD') {
-            setNeedPassword(true);
-            setIssue(t('agentMd.wrongPassword'));
-            return;
-          }
-          throw new Error(message || t('agentMd.uploadFailed'));
-        }
-        const data = (await res.json()) as { task_id: string };
+        const data = await uploadWithProgress(target, pwd, (p) => setProgress(p));
         setPassword('');
         setNeedPassword(false);
         onUploaded(data.task_id);
       } catch (err) {
+        if (err instanceof UploadError) {
+          if (err.code === 'PDF_ENCRYPTED_NEEDS_PASSWORD') {
+            setNeedPassword(true);
+            setIssue(t('agentMd.needPassword'));
+            return;
+          }
+          if (err.code === 'PDF_WRONG_PASSWORD') {
+            setNeedPassword(true);
+            setIssue(t('agentMd.wrongPassword'));
+            return;
+          }
+          setIssue(`${t('agentMd.uploadFailed')}：${err.message}`);
+          return;
+        }
+        // XHR 网络层失败等：同样给一句话反馈，绝不留死黑盒
         const message = err instanceof Error && err.message ? err.message : t('agentMd.uploadFailed');
-        setIssue(message);
+        setIssue(`${t('agentMd.uploadFailed')}：${message}`);
       } finally {
         setBusy(false);
+        setProgress(null);
       }
     },
     [onUploaded, t],
@@ -100,7 +82,15 @@ export function StepUpload({ onUploaded }: StepUploadProps) {
   const onDropRejected = useCallback(
     (rejections: FileRejection[]) => {
       const firstCode = rejections[0]?.errors[0]?.code;
-      setIssue(firstCode === 'file-invalid-type' ? t('agentMd.pdfOnly') : t('agentMd.uploadFailed'));
+      if (firstCode === 'file-invalid-type') {
+        setIssue(t('agentMd.rejectNotPdf'));
+        return;
+      }
+      if (firstCode === 'too-many-files') {
+        setIssue(t('agentMd.rejectMultiple'));
+        return;
+      }
+      setIssue(t('agentMd.rejectNotPdf'));
     },
     [t],
   );
@@ -150,6 +140,27 @@ export function StepUpload({ onUploaded }: StepUploadProps) {
         <p className="text-base font-semibold tracking-[-0.02em]">{t('agentMd.dropHere')}</p>
         <p className="text-sm text-muted-foreground">{t('agentMd.pdfOnly')}</p>
       </div>
+
+      {busy && progress && (
+        <div
+          className="flex flex-col gap-2 rounded-2xl border border-border bg-card p-4"
+          data-testid="agent-md-upload-progress"
+        >
+          <p className="text-sm font-medium" data-testid="agent-md-upload-progress-text">
+            {`${t('agentMd.uploadProgress')} ${progress.percent}% · ${formatMb(progress.loadedBytes)}/${formatMb(progress.totalBytes)}`}
+          </p>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-primary transition-all duration-200 ease-out"
+              style={{ width: `${progress.percent}%` }}
+              role="progressbar"
+              aria-valuenow={progress.percent}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            />
+          </div>
+        </div>
+      )}
 
       {issue && (
         <div
