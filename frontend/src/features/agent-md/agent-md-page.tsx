@@ -115,7 +115,12 @@ export function AgentMd() {
   }, [taskId]);
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 p-6" data-testid="agent-md-page">
+    // Layout 的 main 是固定高 + overflow-hidden（playground 等自管滚动），本页需自带滚动容器，
+    // 否则长页面（评审 197 行映射表）被裁切且无法滑动（用户验收反馈）。
+    <div
+      className="mx-auto flex w-full max-w-4xl min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-6"
+      data-testid="agent-md-page"
+    >
       <h1 className="text-xl font-semibold tracking-tight">{t('agentMd.title')}</h1>
       {error && (
         <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">

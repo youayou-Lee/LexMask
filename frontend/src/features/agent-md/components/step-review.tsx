@@ -1,6 +1,6 @@
 // Copyright 2026 LexMask Contributors
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useT } from '@/i18n';
 import { getEntityTypeName } from '@/config/entityTypes';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,9 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import type { MappingItemDto, ItemEdits } from '../lib/agent-md-flow';
+
+/** 每页固定 20 行（YAGNI：不做行数选择器）。 */
+const PAGE_SIZE = 20;
 
 interface StepReviewProps {
   items: MappingItemDto[];
@@ -33,6 +36,17 @@ export function StepReview({ items, onConfirm }: StepReviewProps) {
   const [edits, setEdits] = useState<ItemEdits>({});
   const [confirming, setConfirming] = useState(false);
   const [issue, setIssue] = useState<string | null>(null);
+  // 分页：edits 按 item.id 键控，与页码无关，翻页不丢改动
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+
+  // 新任务（items 变化）时回到第一页，并夹紧越界页码
+  useEffect(() => {
+    setPage(1);
+  }, [items]);
+
+  const safePage = Math.min(page, pageCount);
+  const pageItems = items.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   const setEdit = (id: string, edit: ItemEdits[string] | undefined) => {
     setEdits((prev) => {
@@ -76,7 +90,8 @@ export function StepReview({ items, onConfirm }: StepReviewProps) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {items.map((item, index) => {
+              {pageItems.map((item, i) => {
+                const index = (safePage - 1) * PAGE_SIZE + i;
                 const edit = edits[item.id];
                 const excluded = edit ? edit.action === 'exclude' : item.excluded;
                 const replacementValue =
@@ -118,6 +133,37 @@ export function StepReview({ items, onConfirm }: StepReviewProps) {
               })}
             </TableBody>
           </Table>
+        </div>
+      )}
+
+      {items.length > PAGE_SIZE && (
+        <div
+          className="flex items-center justify-center gap-3 text-sm text-muted-foreground"
+          data-testid="agent-md-pager"
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setPage(safePage - 1)}
+            disabled={safePage <= 1}
+            data-testid="agent-md-pager-prev"
+          >
+            {t('agentMd.pagePrev')}
+          </Button>
+          <span data-testid="agent-md-pager-info">
+            {t('agentMd.pageInfo')
+              .replace('{x}', String(safePage))
+              .replace('{y}', String(pageCount))}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setPage(safePage + 1)}
+            disabled={safePage >= pageCount}
+            data-testid="agent-md-pager-next"
+          >
+            {t('agentMd.pageNext')}
+          </Button>
         </div>
       )}
 
