@@ -77,6 +77,9 @@ const ConsolePage = React.lazy(() =>
 const AgentMd = React.lazy(() =>
   import('./features/agent-md').then((m) => ({ default: m.AgentMd })),
 );
+const Restore = React.lazy(() =>
+  import('./features/restore').then((m) => ({ default: m.RestorePage })),
+);
 
 function DelayedSpinner() {
   const [show, setShow] = React.useState(false);
@@ -337,6 +340,14 @@ export const router = createBrowserRouter([
         element: (
           <LazyPage>
             <DicomWorkspace />
+          </LazyPage>
+        ),
+      },
+      {
+        path: 'restore',
+        element: (
+          <LazyPage>
+            <Restore />
           </LazyPage>
         ),
       },

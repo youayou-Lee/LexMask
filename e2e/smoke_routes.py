@@ -15,6 +15,7 @@ ROUTES = [
     "/structured/files",
     "/structured/datasets",
     "/structured/delivery",
+    "/restore",
     "/history",
     "/jobs",
     "/settings",

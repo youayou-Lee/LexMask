@@ -11,6 +11,7 @@ import {
   Server,
   Sparkles,
   TableProperties,
+  Undo2,
 } from 'lucide-react';
 import { useT } from '@/i18n';
 import { BRAND, brandName, brandTagline } from '@/config/brand';
@@ -114,6 +115,12 @@ export function AppSidebar() {
       label: t('nav.dicom'),
       sublabel: t('nav.dicom.sub'),
       icon: ScanLine,
+    },
+    {
+      path: '/restore',
+      label: t('nav.restore'),
+      sublabel: t('nav.restore.sub'),
+      icon: Undo2,
     },
     { path: '/jobs', label: t('nav.jobs'), sublabel: t('nav.jobs.sub'), icon: JobsCenterIcon },
     {
