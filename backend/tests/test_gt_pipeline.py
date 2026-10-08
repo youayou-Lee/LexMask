@@ -134,13 +134,54 @@ def test_run_page_r6_edge_adopts_a_side_no_entities(tmp_path):
     sample = _make_sample(tmp_path)
     pack = pagepack.run_page(str(sample), 0, "edge", _fake_clients(["甲"], ["甲水印字"]),
                              NEROff(), tmp_path / "w")
-    # R6：单方多字整页升级——零采信、全部读数 disputed 留痕、仍采 a 侧文本
+    # R6：两侧各有文本（不一致）→ 整页升级（v2 R6-rev 不采信双方都读到的页）——
+    # 零采信、全部读数 disputed 留痕、仍采 a 侧文本
     assert pack["transcript_gt"]["text"] == "甲"
     assert pack["entities"] == []
     rules = {adj["rule"] for adj in pack["adjudications"]}
     assert rules == {"R6"}
     assert all(adj["verdict"] == "disputed" for adj in pack["adjudications"])
     assert any("gap" in adj for adj in pack["adjudications"])  # 页级 gap 记录
+
+
+def test_run_page_r6_rev_single_side_adopts_reading_side(tmp_path):
+    # v2 R6-rev：b 侧整面为空、a 侧非空页（norm≥20）→ a 读数自动采信
+    #（rule=R6），实体落在采信面（a）上、verify=arbitrated
+    a_raw = "委托人钱明涛的电话13800138000由被告方负担费用共计三十日为准等内容"
+    sample = _make_sample(tmp_path)
+    pack = pagepack.run_page(str(sample), 0, "edge", _fake_clients([a_raw], [""]),
+                             NEROff(), tmp_path / "w")
+    assert gt_schema.validate_pagepack(pack) == []
+    assert pack["transcript_gt"]["text"] == a_raw  # 读到方 a 面为采信面
+    assert [e["verify"] for e in pack["entities"]] == ["arbitrated"]
+    assert pack["entities"][0]["arbitration"] == "R6"
+    assert pack["entities"][0]["type"] == "电话"
+    o0, o1 = pack["entities"][0]["span_original"]
+    assert pack["transcript_gt"]["text"][o0:o1] == "13800138000"
+    adjs = [adj for adj in pack["adjudications"] if adj["verdict"].startswith("auto:")]
+    assert any(adj["rule"] == "R6" and adj["verdict"] == "auto:a" for adj in adjs)
+
+
+_A_SIDE_RAW = "委托人 钱明涛到场办理相关手续事宜并签字确认全部文件"
+_B_SIDE_RAW = "委托人钱明涛到场办理相关手续事宜并签字确认全部文件"  # 无空格（norm 与 a 面同）
+
+
+def test_run_page_r2_rev_b_only_reading_switches_face(tmp_path):
+    # v2 R2-rev：一致页上 b 面单方读数（NER 仅 b 面命中）→ 采信 b，且采信面
+    # 随之切到 b 面（pack 实体 span 落在 b 面坐标、transcript_gt 取 b 面文本）
+    sample = _make_sample(tmp_path)
+    pack = pagepack.run_page(str(sample), 0, "body",
+                             _fake_clients([_A_SIDE_RAW], [_B_SIDE_RAW]),
+                             _SideNER("钱明涛", "姓名", side=2), tmp_path / "w")
+    assert gt_schema.validate_pagepack(pack) == []
+    assert pack["transcript_gt"]["text"] == _B_SIDE_RAW  # 采信面切到 b
+    assert [ (e["type"], e["text"]) for e in pack["entities"] ] == [("姓名", "钱明涛")]
+    assert pack["entities"][0]["verify"] == "arbitrated"
+    assert pack["entities"][0]["arbitration"] == "R2"
+    o0, o1 = pack["entities"][0]["span_original"]
+    assert (o0, o1) == (3, 6)  # b 面（无空格）坐标；a 面应为 (4, 7)
+    assert any(adj["rule"] == "R2" and adj["verdict"] == "auto:b"
+               for adj in pack["adjudications"])
 
 
 def test_run_page_r7_format_residue_auto_ok(tmp_path):
@@ -179,8 +220,8 @@ def test_run_page_does_not_mutate_arbitration_output(tmp_path, monkeypatch):
     captured = {}
     orig = pagepack.arbitrate_page
 
-    def _spy(cmp, ents_a, ents_b, ents_md, page_type):
-        arb = orig(cmp, ents_a, ents_b, ents_md, page_type)
+    def _spy(cmp, ents_a, ents_b, ents_md, page_type, verifiable_texts=None):
+        arb = orig(cmp, ents_a, ents_b, ents_md, page_type, verifiable_texts)
         captured["arb"] = arb
         return arb
 
@@ -250,7 +291,7 @@ def test_run_page_self_gate_refuses_invalid_pack(tmp_path):
     clients = _fake_clients([raw], [raw])
     orig = pagepack.arbitrate_page
 
-    def _bad_arbitrate(cmp, ents_a, ents_b, ents_md, page_type):
+    def _bad_arbitrate(cmp, ents_a, ents_b, ents_md, page_type, verifiable_texts=None):
         return {"consistent": [],
                 "auto_resolved": [{"entity": {"text": "13800138000", "type": "不存在的类型",
                                               "span_original": [2, 13],

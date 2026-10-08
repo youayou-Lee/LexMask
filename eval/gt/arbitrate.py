@@ -1,9 +1,29 @@
-"""逐页仲裁表 R1-R7（Issue#56 M1 / Task 5）。
+"""逐页仲裁表 R1-R7（Issue#56 M1 / Task 5；v2 修订 2026-10-08）。
 
 GT 管线的裁决核心：消费 Task 4 比对结论（``CompareResult``，**as-is 不重议**）
 与三源实体列表，按 spec §3.4 仲裁分支表把每条实体读数归入三桶，产出
 ``Arbitration`` dict 供 Task 7 组装 pagepack。**纯函数**：无 IO、无时钟、
 无随机，同入参必得同输出（桶内条目按判键排序保证确定性）；入参不被修改。
+
+**v2 修订（用户裁决 2026-10-08）**：真实工作目录 1440 条分歧实测 1300 条为
+单方读数（一侧读到、另一侧空白）、12 条双方各执、128 条空页多字。用户定调：
+**人工只裁「双方都读到但不一致」，单方读数自动采信**。据此修订两分支（v1 的
+宁枉勿纵语义作废）：
+
+- **R2-rev**：一致页上单方独有读数（对方 NER/正则缺席，非类型冲突）→ 采信
+  读到方（auto_resolved, rule=R2）。保守边界：双向各有独有读数（两云各执）
+  → 逐条 disputed 留人工——pack 实体须整体落在单一采信面上（跨面换算即失真），
+  双向独有读数无单一承载面；同位置真类型冲突（无正则裁决）仍 disputed；
+  正则命中仍正则优先（不变）。
+- **R6-rev**：single_side 且恰一侧整面为空、读到方为非空页（norm ≥ 低密度
+  阈值）→ 逐读数采信读到方（rule=R6），条件：(a) 读数文本能在读到方转录中
+  逐字找到（防捏造——经 ``verifiable_texts`` 注入该面归一化转录核验）；
+  (b) 该读数有类型来源（正则命中或任一 NER 给过类型；同键多型冲突无单一
+  可采类型 → disputed，前端「选类型」轻操作）。空页（norm<20）单方多字
+  （VL 水印幻觉实证场景）/ 两侧各有文本（双方都读到）/ 集合不合 / 未提供
+  ``verifiable_texts``（无法核验）→ 维持整页升级（v1 行为）。
+- R5/R3/R4/R7 与 md 独有读数升级路径**不变**（两云不一致→md 仲裁→三方各执
+  升级）；全部自动采信保留审计（auto_resolved 条目携 rule + source，同 v1）。
 
 源语义：``ents_a`` = 云 v6 转录面实体、``ents_b`` = 云 VL 转录面实体、
 ``ents_md`` = 本地 vl-md 实体（``None`` = 未接入，视为 md 沉默）。实体为
@@ -19,13 +39,12 @@ text) 二元组**对齐——键相同即同读；**type 不入键**，同键异
 不参与分支选择）：
 
 - **R6**（最优先）：verdict == ``dispute`` 且争议 kind 含 ``single_side`` /
-  ``set_mismatch`` → **不走仲裁整页升级**：全部读数逐条 disputed(R6) + 页级
-  gap 记录（candidates.detail 携 compare 争议原文），零采信。compare 争议
-  as-is 消费、不重议——T4 评审盲区存档：表格域集合比对**不数重复出现**
-  （同 (type,text) 两次 vs 一次在 compare 层读 consistent），本层以集合差
-  消费其结论、同键多实例同样折叠，该盲区由抽检（A5）盯防；低密度页
-  ``single_side`` 的 detail 区分「单方多字」与「两侧文本不一致」，本层同样
-  as-is 消费。
+  ``set_mismatch`` → 优先尝试 **R6-rev 单方采信**（见上；需 ``verifiable_texts``
+  提供读到方归一化转录）；不满足采信条件则**不走仲裁整页升级**：全部读数
+  逐条 disputed(R6) + 页级 gap 记录（candidates.detail 携 compare 争议原文），
+  零采信。compare 争议 as-is 消费、不重议——T4 评审盲区存档：表格域集合比对
+  **不数重复出现**（同 (type,text) 两次 vs 一次在 compare 层读 consistent），
+  本层以集合差消费其结论、同键多实例同样折叠，该盲区由抽检（A5）盯防。
 - **R7**：verdict == ``auto_ok_format``（纯格式残差）→ 同读实体
   auto_resolved(rule=R7, source="a")；未对齐读数（残差干扰抽取的异常）
   disputed(R7) 留痕、不静默丢弃。
@@ -35,10 +54,9 @@ text) 二元组**对齐——键相同即同读；**type 不入键**，同键异
   **恰好一个正则通道类型名在场 → 正则胜**，auto_resolved(rule=R2,
   source=胜者侧)——T3 冲突标注把 per-entity 来源抹为 conflict，类型名 ∈
   ``REGEX_CHANNELS`` 键集是唯一可用的通道归属证据；NER 间冲突无正则、或
-  ≥2 个正则类型名在场（来源不明）→ disputed(R2)（仍不明 → 升级）。compare
-  一致但两侧实体集不合（窗域阈值下的实体级差异）→ disputed(R2)，不引入
-  md 仲裁（md 仲裁专属两云分歧路径）。R2 的类型冲突判定适用于一切路径中
-  「读数已同」的组（R7/R3-R5 页同享）。
+  ≥2 个正则类型名在场（来源不明）→ disputed(R2)（真类型冲突 → 升级）。
+  单方独有读数 → R2-rev 单方采信（见 v2 修订；双向各有独有 → 逐条 disputed）。
+  R2 的类型冲突判定适用于一切路径中「读数已同」的组（R7/R3-R5 页同享）。
 - **R3/R4/R5**：verdict == ``dispute``（其余 kind）。同读键照常入
   consistent/R2；独有读数交 md 仲裁：md 确认 b(VL) 独有读数且不支持 a 独有
   → **R3 采 VL 面**——b 独有读数 auto_resolved(rule=R3, source="b")，a 独
@@ -47,20 +65,22 @@ text) 二元组**对齐——键相同即同读；**type 不入键**，同键异
   对独有读数全沉默（含 md 缺席）、或整页无实体级分歧可解释转录分歧 →
   **R5 disputed**：独有读数逐条 disputed(R5) + 页级 gap 记录（该页转录
   分歧未获实体级仲裁解释）。md 独有读数（Km 有、两云皆无）在任何路径均
-  disputed(R5)——无两云佐证的第三方读数升级人工（R6 域内已被整页升级
-  吸收，不重复成条）。
+  disputed(R5)——无两云佐证的第三方读数升级人工（R6 域内 v1 整页升级已被
+  R6-rev 采信替代，md 独有读数仍逐条 disputed(R6)）。
 
 输出形状：``{"consistent": [Entity...], "auto_resolved": [{"entity", "rule",
 "source"}...], "disputed": [{"entity"|"gap", "rule", "candidates"}...]}``，
 rule ∈ R1..R7；``source`` ∈ {"a", "b"} 为 auto_resolved 的采信面标注
-（R3→b、R4→a、R2→胜者侧、R7→a）；``candidates`` = {"a"/"b"/"md": 该读数
-在各源的实例列表}，gap 条目的 candidates = {"detail": [compare 争议
-detail...]}。未知 page_type / verdict → ``ValueError``（fail-fast，与
-compare 的页型校验同款）。
+（R3→b、R4→a、R2→胜者/读到方、R6-rev→读到方、R7→a）；``candidates`` =
+{"a"/"b"/"md": 该读数在各源的实例列表}，gap 条目的 candidates = {"detail":
+[compare 争议 detail...]}。``verifiable_texts``（可选）= ``{"a"/"b"/"md":
+该面归一化转录}``，仅供 R6-rev 核验（缺席 = 无法核验，保守升级）。
+未知 page_type / verdict → ``ValueError``（fail-fast，与 compare 的页型校验
+同款）。
 """
 from __future__ import annotations
 
-from gt.compare import PAGE_TYPES, CompareResult
+from gt.compare import LOW_DENSITY_CHARS, PAGE_TYPES, CompareResult
 from gt.entities import REGEX_CHANNELS, Entity
 
 # R2「正则胜」的通道证据：T3 的 conflict 标注抹掉 per-entity 来源，
@@ -142,9 +162,57 @@ def _resolve_agreed_into(ga: dict, gb: dict, gm: dict, key: tuple,
         disputed.append(payload)
 
 
-def _arbitrate_r6(ga: dict, gb: dict, gm: dict, cmp: CompareResult) -> Arbitration:
-    """R6：单方多字/集合不合 → 不走仲裁整页升级（页级 gap + 全读数逐条 disputed）。"""
-    disputed = [_gap_entry(cmp, "R6", "单方多字/集合不合，整页升级（R6）")]
+def _has_type_source(etype: str, insts: list[Entity]) -> bool:
+    """R6-rev 条件(b)：读数有类型来源——类型名 ∈ 正则通道键集（R2 同款通道
+    归属证据），或任一实例 origin 含 NER 记录（``ner``/``regex+ner``）。"""
+    if etype in _REGEX_TYPE_NAMES:
+        return True
+    return any(e.get("origin") in ("ner", "regex+ner") for e in insts)
+
+
+def _arbitrate_r6(ga: dict, gb: dict, gm: dict, cmp: CompareResult,
+                  verifiable_texts: dict | None = None) -> Arbitration:
+    """R6：single_side/set_mismatch（v2 修订，见模块 docstring R6-rev）。
+
+    - **R6-rev 单方采信**：single_side 且恰一侧整面为空、读到方为非空页
+      （norm ≥ 低密度阈值）→ 读到方读数逐条判定：逐字可核验（文本 ∈ 该面
+      归一化转录）+ 有类型来源 → auto_resolved(rule=R6, source=读到方)；
+      条件不满足（无类型/不可核验/同键多型）→ 逐条 disputed（前端选类型）。
+      md 独有读数仍 disputed（无两云佐证）；零采信时保留页级 gap 记录。
+    - **整页升级（v1 行为）**：空页（norm<20）单方多字（VL 水印幻觉实证）、
+      两侧各有文本（双方都读到）、集合不合、或未提供 verifiable_texts
+      （无法核验）→ 全部读数逐条 disputed + 页级 gap，零采信。
+    """
+    auto: list = []
+    disputed: list = []
+    kinds = {d.get("kind") for d in (cmp.get("disputes") or [])}
+    texts = verifiable_texts or {}
+    norm_a, norm_b = texts.get("a") or "", texts.get("b") or ""
+    adopt_group: dict | None = None
+    adopt_side = ""
+    if kinds == {"single_side"} and texts:
+        if norm_b == "" and len(norm_a) >= LOW_DENSITY_CHARS:
+            adopt_group, adopt_side = ga, "a"
+        elif norm_a == "" and len(norm_b) >= LOW_DENSITY_CHARS:
+            adopt_group, adopt_side = gb, "b"
+    if adopt_group is not None:
+        side_text = texts.get(adopt_side) or ""
+        for key in sorted(adopt_group):
+            insts = adopt_group[key]
+            types = {e["type"] for e in insts}
+            if (len(types) == 1 and insts[0]["text"] in side_text
+                    and _has_type_source(next(iter(types)), insts)):
+                auto.append({"entity": insts[0], "rule": "R6", "source": adopt_side})
+            else:  # 无类型来源 / 不可核验 / 同键多型 → 人工（前端选类型）
+                disputed.append({"entity": insts[0], "rule": "R6",
+                                 "candidates": _cands(ga, gb, gm, key)})
+        for key in sorted(set(gm) - set(ga) - set(gb)):  # md 独有读数：升级
+            disputed.append({"entity": gm[key][0], "rule": "R6",
+                             "candidates": _cands(ga, gb, gm, key)})
+        if not auto:  # 零采信（全部条件不满足）→ 保留页级升级记录
+            disputed.insert(0, _gap_entry(cmp, "R6", "单方多字/集合不合，整页升级（R6）"))
+        return {"consistent": [], "auto_resolved": auto, "disputed": disputed}
+    disputed.append(_gap_entry(cmp, "R6", "单方多字/集合不合，整页升级（R6）"))
     for key in sorted(set(ga) | set(gb) | set(gm)):
         disputed.append({"entity": _rep(ga.get(key), gb.get(key), gm.get(key)),
                          "rule": "R6", "candidates": _cands(ga, gb, gm, key)})
@@ -174,16 +242,29 @@ def _arbitrate_r7(ga: dict, gb: dict, gm: dict) -> Arbitration:
 
 
 def _arbitrate_r1_r2(ga: dict, gb: dict, gm: dict) -> Arbitration:
-    """R1/R2：两云一致——同读同型入一致集；类型冲突/跨侧读数不合走 R2。"""
+    """R1/R2：两云一致——同读同型入一致集；类型冲突走 R2；单方读数 R2-rev 采信。
+
+    v2 R2-rev（用户裁决 2026-10-08）：一致页上单方独有读数（对方 NER/正则
+    缺席，非类型冲突）→ 采信读到方 auto_resolved(rule=R2)；双向各有独有
+    读数（两云各执，且无单一采信面可承载）→ 逐条 disputed 留人工。
+    """
     ka, kb, km = set(ga), set(gb), set(gm)
     consistent: list = []
     auto: list = []
     disputed: list = []
     for key in sorted(ka & kb):
         _resolve_agreed_into(ga, gb, gm, key, consistent, auto, disputed)
-    for key in sorted((ka - kb) | (kb - ka)):  # 一致页上的实体级读数差（窗域阈值之下）
-        disputed.append({"entity": _rep(ga.get(key), gb.get(key)),
-                         "rule": "R2", "candidates": _cands(ga, gb, gm, key)})
+    a_only, b_only = ka - kb, kb - ka
+    if a_only and b_only:  # 双向各有独有读数：两云各执 → 人工（v1 行为）
+        for key in sorted(a_only | b_only):
+            disputed.append({"entity": _rep(ga.get(key), gb.get(key)),
+                             "rule": "R2", "candidates": _cands(ga, gb, gm, key)})
+    elif a_only:  # v2 R2-rev：a 单方读到（b 缺席）→ 采信 a
+        for key in sorted(a_only):
+            auto.append({"entity": ga[key][0], "rule": "R2", "source": "a"})
+    elif b_only:  # v2 R2-rev：b 单方读到（a 缺席）→ 采信 b
+        for key in sorted(b_only):
+            auto.append({"entity": gb[key][0], "rule": "R2", "source": "b"})
     for key in sorted(km - ka - kb):  # md 独有读数：升级
         disputed.append({"entity": gm[key][0], "rule": "R5",
                          "candidates": _cands(ga, gb, gm, key)})
@@ -237,12 +318,15 @@ def _arbitrate_r3_r4_r5(ga: dict, gb: dict, gm: dict, cmp: CompareResult) -> Arb
 
 
 def arbitrate_page(cmp: CompareResult, ents_a: list[Entity], ents_b: list[Entity],
-                   ents_md: list[Entity] | None, page_type: str) -> Arbitration:
+                   ents_md: list[Entity] | None, page_type: str,
+                   verifiable_texts: dict[str, str] | None = None) -> Arbitration:
     """按仲裁表 R1-R7 裁决一页的三源实体读数（纯函数，入参不被修改）。
 
     ``cmp`` 为 Task 4 ``compare_transcripts`` 产物（as-is 消费）；``ents_*``
-    为 Task 3 合并产物；``ents_md`` 为 ``None`` 时视为 md 沉默。分支判定见
-    模块 docstring；未知 page_type / verdict raise ``ValueError``。
+    为 Task 3 合并产物；``ents_md`` 为 ``None`` 时视为 md 沉默；
+    ``verifiable_texts``（可选）= ``{"a"/"b"/"md": 该面归一化转录}``，供
+    R6-rev 单方采信的逐字核验（缺席 = 无法核验，保守整页升级）。分支判定
+    见模块 docstring；未知 page_type / verdict raise ``ValueError``。
     """
     if page_type not in PAGE_TYPES:
         raise ValueError(f"未知页型 {page_type!r}，有效页型：{sorted(PAGE_TYPES)}")
@@ -252,7 +336,7 @@ def arbitrate_page(cmp: CompareResult, ents_a: list[Entity], ents_b: list[Entity
     kinds = {d.get("kind") for d in (cmp.get("disputes") or [])}
 
     if verdict == "dispute" and kinds & {"single_side", "set_mismatch"}:
-        return _arbitrate_r6(ga, gb, gm, cmp)
+        return _arbitrate_r6(ga, gb, gm, cmp, verifiable_texts)
     if verdict == "auto_ok_format":
         return _arbitrate_r7(ga, gb, gm)
     if verdict == "consistent":

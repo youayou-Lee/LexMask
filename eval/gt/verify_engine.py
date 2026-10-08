@@ -35,7 +35,11 @@ span 漂移（实体尾字符截断或复制延伸）/ ``drop`` 整实体删 / `
 1. 页级 gap（R5/R6 整页升级）在场 → 该页全部病灶检出（整页显性化，人工必见）；
 2. disputed 条目的 a 面（注入面）候选实体 span 与病灶区间相交 → 检出；
 3. disputed 条目的 b 面候选文本 == 病灶 target_text（被删/被打散的原读数在对侧
-   露面）→ 检出；auto_resolved 同理（R2 胜者实体按 source 归面判定）。
+   露面）→ 检出；auto_resolved 同理（auto 采信实体——R2 正则胜者与 v2 单方
+   采信 R2-rev/R6-rev——按 source 归面判定：src==a 看 span 相交、src==b 看
+   target_text 露面）。v2 单方采信（R2-rev/R6-rev）会把注入面（a）的 extra
+   病灶读数直接采信——检出判据 3 的 src==a span 相交仍覆盖该路径，A2 闸门
+   因此是 v2 语义的第一道回归防线。
 
 报告写 ``{work}/verify/A1A2-<日期>.md``（工作目录，不入仓），含合成集构成清单
 （页型×类型×量）、A1 分类型表、A2 逐病灶表、**单行判定** ``A1=PASS/FAIL
@@ -403,7 +407,9 @@ def _plan_lesion(kind: str, text: str, face: FaceMap, ents: list[dict],
 def _arbitrate_pair(text_a_raw: str, text_b_raw: str, page_type: str, ner) -> dict:
     """run_page 核心的离线复刻（无 IO、无落盘）：归一化 → 比对 → 实体 → 仲裁。
 
-    md 恒缺席（A2 检验的是 compare+arbitrate 自身对转录层分歧的显性化能力）。
+    md 恒缺席（A2 检验的是 compare+arbitrate 自身对转录层分歧的显性化能力）；
+    verifiable_texts 注入两侧归一化转录（与 run_page 同款，R6-rev 单方采信
+    的逐字核验在 A2 检验中同口径生效）。
     """
     face_a = FaceMap.from_raw(text_a_raw)
     face_b = FaceMap.from_raw(text_b_raw)
@@ -412,7 +418,8 @@ def _arbitrate_pair(text_a_raw: str, text_b_raw: str, page_type: str, ner) -> di
                             extract_ner(face_a.norm, ner, face_a))
     ents_b = merge_entities(extract_regex(face_b.norm, face_b),
                             extract_ner(face_b.norm, ner, face_b))
-    return arbitrate_page(cmp_result, ents_a, ents_b, None, page_type)
+    return arbitrate_page(cmp_result, ents_a, ents_b, None, page_type,
+                          verifiable_texts={"a": face_a.norm, "b": face_b.norm})
 
 
 def _overlap(inst: dict, lesion: dict) -> bool:
@@ -465,6 +472,10 @@ def verdict_line(a1_pass: bool, a2_pass: bool) -> str:
 
 
 # ---- 报告盲区清单（A5 抽检设计必读；文案即裁定存档） --------------------------------
+# v2（2026-10-08 用户裁决）注记：R2-rev/R6-rev 单方采信上线后，「一侧读到、
+# 另一侧空白」的读数不再升级人工而直接入 GT——单侧 OCR 幻觉/噪声读数无第二云
+# 制衡，是该裁决明示接受的代价，A5 抽检须对 arbitration ∈ {R2, R6} 且
+# verdict 以 auto: 开头的条目做定向复核（下 1、3 条）。
 
 REPORT_BLIND_SPOTS = [
     "R2 正则代理窄误自动：R2 以「类型名 ∈ 正则通道键集」作通道归属证据，恰一名正则类型"
@@ -476,6 +487,16 @@ REPORT_BLIND_SPOTS = [
     "同串出现两次 vs 一次读数一致（页内去重口径）。同一实体串在页内确应出现两次而引擎只标"
     "一次（或反之）时，管线零争议、GT 静默少计/多计。抽检（A5）应对集合判 consistent 的"
     "表格页做同串出现次数人工核对。",
+    "R2-rev 单方采信无第二云制衡（v2 新增）：一致页上单方独有读数直接 auto_resolved(R2)"
+    " 入 GT——若读到方系 OCR 幻觉/噪声成字（对方转录确无该内容），假读数无制衡进册。"
+    "该代价为用户裁决明示接受（真实目录 1300/1440 单方读数人工不可负担），抽检（A5）应"
+    "定向复核 arbitration=R2 且 verdict=auto: 的实体：其原文串在采信面转录中逐字存在、"
+    "且上下文语义成立。",
+    "R6-rev 单方采信的类型来源窄口（v2 新增）：single_side 页单方采信条件 (b) 以「类型名 "
+    "∈ 正则通道键集或 origin 含 ner」为通道证据——NER 误标类型名（同盲区 1 的代理问题）"
+    "在 R6-rev 下同样直通入册；空页（norm<20）水印幻觉已由整页升级兜住，但 20 字阈之上的"
+    "短页单方读数仍属自动采信域，抽检（A5）应对 arbitration=R6 且 verdict=auto: 的实体"
+    "按页复核。",
 ]
 
 
