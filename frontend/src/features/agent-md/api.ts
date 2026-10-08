@@ -133,6 +133,19 @@ export const agentMdApi = {
     return res.json();
   },
 
+  /**
+   * 复用 file_store 已上传文件建任务（playground 分流入口，免重复上传）。
+   * 后端按 file_id 查 file_store 的 file_path，须为 UPLOAD_DIR 内存在的 PDF。
+   */
+  async startFromFileId(fileId: string, filename?: string): Promise<{ task_id: string }> {
+    const fd = new FormData();
+    fd.append('file_id', fileId);
+    if (filename) fd.append('filename', filename);
+    const res = await authFetch('/api/v1/agent-md/upload', { method: 'POST', body: fd });
+    if (!res.ok) await readError(res, 'agentMd.uploadFailed');
+    return res.json();
+  },
+
   async status(taskId: string): Promise<AgentMdStatus> {
     const res = await authFetch(`/api/v1/agent-md/${taskId}/status`);
     if (!res.ok) await readError(res, 'agentMd.statusFailed');

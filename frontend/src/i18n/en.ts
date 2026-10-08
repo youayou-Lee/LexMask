@@ -1131,6 +1131,8 @@ const enOverrides: Record<string, string> = {
   'playground.reRecognize': 'Run recognition again',
   'playground.reconfigTypes': 'Adjust recognition items',
   'playground.reconfigHint': 'Go back to the upload page to pick a preset or tick recognition items, then upload the file to recognize.',
+  'playground.feedAgent': 'Feed cloud AI (generate redacted MD)',
+  'playground.feedAgentHint': 'Switch to Feed Agent mode: MinerU parsing → mapping review → redacted Markdown (no re-upload needed)',
   'playground.recognitionSection': 'Recognition',
   'playground.recognitionSectionDesc':
     'Refresh detection after updating the recognition list or item settings.',

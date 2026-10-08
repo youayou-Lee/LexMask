@@ -1040,6 +1040,8 @@ const zhOverrides: Record<string, string> = {
   'playground.reRecognize': '重新识别',
   'playground.reconfigTypes': '调整识别项',
   'playground.reconfigHint': '回到上传页，重新选择配置清单或勾选识别项，再上传文件识别',
+  'playground.feedAgent': '投喂云端 AI（生成脱敏 MD）',
+  'playground.feedAgentHint': '切换到喂 Agent 模式：MinerU 解析 → 映射确认 → 脱敏 Markdown（无需重新上传）',
   'playground.recognitionSection': '识别',
   'playground.recognitionSectionDesc':
     '修改配置清单或识别项设置后，可以重新刷新当前文件的识别结果。',

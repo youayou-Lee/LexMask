@@ -1,7 +1,7 @@
 // Copyright 2026 LexMask Contributors
 
 import { useCallback, useEffect, useRef, useState, type FC, type ReactNode, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useT } from '@/i18n';
 import { getEntityTypeName } from '@/config/entityTypes';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -104,6 +104,14 @@ const PlaygroundInner: FC = () => {
   } = ctx;
 
   const { entityTypes } = recognition;
+  const navigate = useNavigate();
+  // 用户反馈：喂 Agent 不应是孤立入口——用已上传文件分流，免重传、状态可续
+  const goFeedAgent = useCallback(() => {
+    if (!fileInfo) return;
+    void navigate(
+      `/agent-md?fileId=${encodeURIComponent(fileInfo.file_id)}&filename=${encodeURIComponent(fileInfo.filename)}`,
+    );
+  }, [navigate, fileInfo]);
   const visionTypes = useMemo(
     () =>
       (recognition.pipelines ?? []).flatMap((pipeline) =>
@@ -469,6 +477,22 @@ const PlaygroundInner: FC = () => {
                   <p className="line-clamp-2 text-xs leading-4 text-muted-foreground">
                     {t('playground.reconfigHint')}
                   </p>
+                  {fileInfo && (
+                    <>
+                      <Button
+                        variant="outline"
+                        onClick={goFeedAgent}
+                        disabled={isLoading}
+                        className="h-9 w-full whitespace-nowrap"
+                        data-testid="playground-feed-agent-btn"
+                      >
+                        {t('playground.feedAgent')}
+                      </Button>
+                      <p className="line-clamp-2 text-xs leading-4 text-muted-foreground">
+                        {t('playground.feedAgentHint')}
+                      </p>
+                    </>
+                  )}
                 </div>
               }
               onRerunNer={handleRerunNer}
