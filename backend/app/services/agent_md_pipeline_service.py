@@ -92,6 +92,8 @@ class AgentMdPipelineService:
         fms.file_store[output_file_id] = {
             "file_id": output_file_id,
             "filename": f"{task.filename}-脱敏MD.md",
+            # original_filename 镜像：处理历史列表（GET /files）与行下载文件名都读这个键
+            "original_filename": f"{task.filename}-脱敏MD.md",
             "output_path": str(md_path),
             "owner_id": task.owner_id,
             "vl_md_meta": {

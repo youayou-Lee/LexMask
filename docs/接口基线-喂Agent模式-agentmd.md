@@ -24,7 +24,8 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `file` | file | 是 | **仅 `.pdf`**；非 PDF → `400 UNSUPPORTED_FILE_TYPE` |
+| `file` | file | 与 `file_id` 二选一 | **仅 `.pdf`**；非 PDF → `400 UNSUPPORTED_FILE_TYPE` |
+| `file_id` | string | 与 `file` 二选一 | 复用 file_store 已登记上传文件（免重传分流）；未知/缺失 → `404 FILE_NOT_FOUND`，非 PDF → `400 UNSUPPORTED_FILE_TYPE` |
 | `password` | string | 否 | 加密 PDF 密码；仅本请求即用即弃——不落日志、不进错误响应、不存任务上下文 |
 
 响应 `200`：

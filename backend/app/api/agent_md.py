@@ -20,7 +20,9 @@ from app.core.auth import require_auth
 from app.core.config import settings
 from app.core.errors import AppError
 from app.services import agent_md_pipeline_service as pipeline_mod
+from app.services import file_management_service as fms
 from app.services.agent_md_types import TaskState
+from app.core.file_validation import safe_path_in_dir
 from app.services.file_parser import (
     PdfEncryptedError,
     decrypt_pdf_with_password,
@@ -52,27 +54,47 @@ async def _prepare_pdf(file_bytes: bytes, password: str | None, stored_path: str
 
 @router.post("/agent-md/upload")
 async def upload(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    file_id: str | None = Form(None),
     password: str | None = Form(None),
     owner_id: str = Depends(require_auth),
 ):
     """上传 PDF 建任务：返回管线 task_id，Stage1（解析→NER）后台进行。
 
     密码仅在表单出现一次、即用即弃：不落日志、不进错误响应。
+    file_id 二选一：给 file_id 时复用 file_store 已登记的上传文件（跳过重复
+    上传，playground 分流入口）；给 file 时走常规 multipart 上传。
     """
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext != ".pdf":
-        raise AppError(status_code=400, error_code="UNSUPPORTED_FILE_TYPE", message="仅支持 PDF 文件")
-    file_bytes = await file.read()
-    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-    stored = os.path.realpath(os.path.join(settings.UPLOAD_DIR, f"{uuid.uuid4()}.pdf"))
-    try:
-        await _prepare_pdf(file_bytes, password, stored)
-    except PdfEncryptedError as exc:
-        # 对齐 files.py decrypt 端点：结构化错误码供前端弹密码框；409=补密码可重试
-        raise AppError(status_code=409, error_code=exc.error_code, message=exc.user_message)
+    if file_id:
+        info = fms.file_store.get(file_id)
+        if not isinstance(info, dict):
+            raise AppError(status_code=404, error_code="FILE_NOT_FOUND", message="文件不存在")
+        path = info.get("file_path")
+        if not path or not os.path.exists(path):
+            raise AppError(status_code=404, error_code="FILE_NOT_FOUND", message="原上传文件已缺失，请重新上传")
+        if os.path.splitext(str(path))[1].lower() != ".pdf":
+            raise AppError(status_code=400, error_code="UNSUPPORTED_FILE_TYPE", message="仅支持 PDF 文件")
+        if not safe_path_in_dir(os.path.realpath(str(path)), settings.UPLOAD_DIR):
+            raise AppError(status_code=403, error_code="FORBIDDEN_PATH", message="禁止访问该路径")
+        stored = os.path.realpath(str(path))
+        filename = str(info.get("original_filename") or info.get("filename") or "upload.pdf")
+    else:
+        if file is None:
+            raise AppError(status_code=400, error_code="MISSING_FILE", message="缺少文件或 file_id")
+        ext = os.path.splitext(file.filename or "")[1].lower()
+        if ext != ".pdf":
+            raise AppError(status_code=400, error_code="UNSUPPORTED_FILE_TYPE", message="仅支持 PDF 文件")
+        file_bytes = await file.read()
+        os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+        stored = os.path.realpath(os.path.join(settings.UPLOAD_DIR, f"{uuid.uuid4()}.pdf"))
+        filename = file.filename or "upload.pdf"
+        try:
+            await _prepare_pdf(file_bytes, password, stored)
+        except PdfEncryptedError as exc:
+            # 对齐 files.py decrypt 端点：结构化错误码供前端弹密码框；409=补密码可重试
+            raise AppError(status_code=409, error_code=exc.error_code, message=exc.user_message)
     task = await pipeline_mod.get_agent_md_pipeline().create_task(
-        stored, file.filename or "upload.pdf", owner_id=owner_id
+        stored, filename, owner_id=owner_id
     )
     # 注意：落盘文件名是本端点的 uuid4，返回的是管线 task.task_id，二者不是同一个
     return {"task_id": task.task_id}

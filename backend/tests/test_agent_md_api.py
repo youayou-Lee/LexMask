@@ -33,8 +33,10 @@ class _FakePipeline:
         self.t = AgentMdTask(task_id="tk-1", state=TaskState.MAPPING_READY, pages_total=3, pages_done=3,
                              filename="a.pdf", file_path="x")
         self.t.mapping = [MappingItem(id="e1", original_text="张三", entity_type="PERSON", replacement="[人名_1]")]
+        self.created_with: tuple[str, str] | None = None
 
     async def create_task(self, file_path, filename, owner_id="local_user"):
+        self.created_with = (file_path, filename)
         return self.t
 
     def get_task(self, task_id):
@@ -80,6 +82,68 @@ def test_upload_returns_task_id(fake_pipeline):
     r = client.post("/api/v1/agent-md/upload",
                     files={"file": ("a.pdf", _pdf_bytes(), "application/pdf")})
     assert r.status_code == 200 and r.json()["task_id"] == "tk-1"
+
+
+class _FakeStore:
+    """fms.file_store 桩：只实现 upload(file_id) 路径用到的 get。"""
+
+    def __init__(self, entries):
+        self._entries = entries
+
+    def get(self, file_id):
+        return self._entries.get(file_id)
+
+
+def test_upload_with_file_id_reuses_stored_file(fake_pipeline, tmp_path, monkeypatch):
+    from app.services import file_management_service as fms
+
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    src = uploads / "src.pdf"
+    src.write_bytes(_pdf_bytes())
+    monkeypatch.setattr(fms, "file_store", _FakeStore(
+        {"fid-1": {"file_path": str(src), "original_filename": "案卷.pdf"}}))
+    r = client.post("/api/v1/agent-md/upload", data={"file_id": "fid-1"})
+    assert r.status_code == 200 and r.json()["task_id"] == "tk-1"
+    assert fake_pipeline.created_with == (str(src), "案卷.pdf")
+    # 未写新的上传副本
+    assert [p for p in uploads.glob("*.pdf") if p.name != "src.pdf"] == []
+
+
+def test_upload_with_file_id_unknown_404(fake_pipeline, monkeypatch):
+    from app.services import file_management_service as fms
+
+    monkeypatch.setattr(fms, "file_store", _FakeStore({}))
+    r = client.post("/api/v1/agent-md/upload", data={"file_id": "nope"})
+    assert r.status_code == 404
+    assert r.json()["error_code"] == "FILE_NOT_FOUND"
+
+
+def test_upload_with_file_id_not_pdf_400(fake_pipeline, tmp_path, monkeypatch):
+    from app.services import file_management_service as fms
+
+    txt = tmp_path / "a.txt"
+    txt.write_text("x")
+    monkeypatch.setattr(fms, "file_store", _FakeStore({"fid-2": {"file_path": str(txt)}}))
+    r = client.post("/api/v1/agent-md/upload", data={"file_id": "fid-2"})
+    assert r.status_code == 400
+    assert r.json()["error_code"] == "UNSUPPORTED_FILE_TYPE"
+
+
+def test_upload_with_file_id_missing_disk_404(fake_pipeline, tmp_path, monkeypatch):
+    from app.services import file_management_service as fms
+
+    monkeypatch.setattr(fms, "file_store", _FakeStore(
+        {"fid-3": {"file_path": str(tmp_path / "gone.pdf")}}))
+    r = client.post("/api/v1/agent-md/upload", data={"file_id": "fid-3"})
+    assert r.status_code == 404
+    assert r.json()["error_code"] == "FILE_NOT_FOUND"
+
+
+def test_upload_without_file_or_file_id_400(fake_pipeline):
+    r = client.post("/api/v1/agent-md/upload")
+    assert r.status_code == 400
+    assert r.json()["error_code"] == "MISSING_FILE"
 
 
 def test_upload_rejects_non_pdf(fake_pipeline):
