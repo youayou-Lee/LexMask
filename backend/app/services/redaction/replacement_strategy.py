@@ -59,6 +59,10 @@ MASK_KEEP_SUFFIX_BANK_CARD = 4  # 银行卡保留后4位
 # derived 策略：派生基名可用的首字符范围（中文姓氏/机关名开头）
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
+# 包裹性引号(Issue#88):剥 span 首尾用,不含书名号《》(有语义)。
+# vl_md_pipeline_service 的 span 剥引号与本文件 _derived_base 共用此一份,勿两处维护。
+WRAPPING_QUOTE_CHARS = "“”‘’「」『』\"'"
+
 # ---------- VL-MD 线（Issue #66/#50）泛化规则版 ----------
 # 口径（#50 门⓪拍板默认表）：BIRTH_DATE 只留年份；ADDRESS 保留省+市、其后行政名词打「某」。
 
@@ -477,7 +481,7 @@ class RedactionContext:
         text = text or ""
         if pool_key == "PERSON":
             # 防御(Issue#88):先剥包裹性引号再取姓,否则「“李四”」取到引号退化「某人N」
-            text = text.strip("\"'“”‘’「」『』")
+            text = text.strip(WRAPPING_QUOTE_CHARS)
             if _CJK_RE.match(text[:1]):
                 return f"{text[0]}某"
             return "某人"

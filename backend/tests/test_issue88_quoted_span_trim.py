@@ -32,6 +32,11 @@ class StubNER:
         for r in self.rules:
             if r.get("only_call") is not None and self.call_idx != r["only_call"]:
                 continue
+            if r.get("offset") is not None:
+                # 直接按给定偏移上报(可越界),不 find
+                out.append(Entity(id=f"s{len(out)}", text=r["name"], type=r.get("type", "PERSON"),
+                                  start=r["offset"], end=r["offset"] + len(r["name"]), source="has"))
+                continue
             i = text.find(r["name"])
             if i != -1 and all(o.text != r["name"] for o in out):
                 out.append(Entity(id=f"s{len(out)}", text=r["name"], type=r.get("type", "PERSON"),
@@ -108,7 +113,51 @@ def test_t7_ascii_quotes_stripped():
 def test_t4_all_quote_span_dropped():
     res = _process('证人“”出庭。', [{"name": "“”", "type": "PERSON"}])
     assert "某人" not in res.desens_md and "李某" not in res.desens_md
-    assert res.leaks == [] or all(not NAME_LIKE.match(x) for x in res.leaks)
+    assert res.leaks == [], res.leaks
+
+
+# ---------- 剥引号 helper 直测(评审缺口) ----------
+
+def test_trim_quoted_span_branches():
+    from app.services.vl_md_pipeline_service import _trim_quoted_span
+    assert _trim_quoted_span('“李四”', 0, 4) == (1, 3)      # 双侧剥
+    assert _trim_quoted_span('“李四', 0, 3) == (1, 3)       # 仅首
+    assert _trim_quoted_span('李四”', 0, 3) == (0, 2)       # 仅尾
+    assert _trim_quoted_span('"“李四”', 0, 5) == (2, 4)     # ASCII+中文连剥
+    assert _trim_quoted_span('“”', 0, 2) is None            # 全引号
+    assert _trim_quoted_span('张三', 99, 101) == (99, 101)  # 越界放行(漂移兜底)
+    assert _trim_quoted_span('张三', 2, 2) == (2, 2)        # 空 span 放行
+
+
+def test_out_of_bounds_entity_counted_as_leak():
+    # 越界放行 → apply_entities 漂移检查 → 计入泄漏面(契约不回退)
+    res = _process('被告人张三,男。', [{"name": "张三", "offset": 99}])
+    assert "张三" in res.leaks, res.leaks
+
+
+def test_trim_preserves_entity_extra_fields():
+    # model_copy 只动 text/start/end,page/coref_id 等下游字段保全
+    import asyncio
+
+    class FieldNER:
+        async def extract(self, text, types):
+            i = text.find('“李四”')
+            return [Entity(id="fx", text="“李四”", type="PERSON", start=i, end=i + 4,
+                           source="has", page=3, coref_id="c1")]
+
+    coro = _svc(FieldNER()).process
+    del coro  # 仅验 collect_entities,不起管线
+    svc = _svc(FieldNER())
+    ents = asyncio.run(svc.collect_entities('证人“李四”出庭。', []))
+    assert len(ents) == 1
+    e = ents[0]
+    assert (e.text, e.start, e.end) == ("李四", 3, 5)
+    assert e.page == 3 and e.coref_id == "c1" and e.id == "fx"
+
+
+def test_leading_quote_only_span():
+    res = _process('据“张三供述。', [{"name": "“张三"}])
+    assert res.desens_md == "据“张某1供述。", res.desens_md
 
 
 # ---------- T8 书名号护栏(改动前后行为一致) ----------
