@@ -294,6 +294,14 @@ class Settings(BaseSettings):
 
     # PaddleOCR-VL 微服务配置（独立进程，端口8082）
     OCR_BASE_URL: str = "http://127.0.0.1:8082"
+    # MinerU sidecar（喂Agent模式，独立 venv 常驻 16581，Issue#75）
+    MINERU_API_BASE_URL: str = "http://127.0.0.1:16581"
+    # MinerU 异步解析任务轮询间隔（秒）
+    MINERU_POLL_INTERVAL: float = 2.0
+    # 单个解析任务整体超时（秒）；350 页实测约 29min，默认 2h
+    MINERU_TASK_TIMEOUT: float = 7200.0
+    # 喂Agent模式 NER 分块字符数（防止超长文本截断重试风暴，Issue#41 教训）
+    AGENT_MD_CHUNK_CHARS: int = 6000
     # VL 推理常 >120s（大图 CPU/显卡繁忙时）；可用环境变量 OCR_TIMEOUT 覆盖
     OCR_TIMEOUT: float = 360.0
     # PaddleOCR-VL generation budget. Long scanned contract pages can exceed

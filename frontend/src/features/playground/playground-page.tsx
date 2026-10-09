@@ -105,6 +105,8 @@ const PlaygroundInner: FC = () => {
   } = ctx;
 
   const { entityTypes } = recognition;
+  // Issue#80：第一代（OCR+NER）在产期间，单文件结果页不放「投喂云端 AI」跳转按钮——
+  // 两代产物不同无法带结果跳转，点了只会重识别；喂Agent入口只在侧边栏，第二代升级后再恢复（挂 #50）。
   const visionTypes = useMemo(
     () =>
       (recognition.pipelines ?? []).flatMap((pipeline) =>
