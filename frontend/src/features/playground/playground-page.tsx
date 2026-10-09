@@ -360,8 +360,10 @@ const PlaygroundInner: FC = () => {
               <PlaygroundToolbar
                 filename={fileInfo?.filename}
                 isImageMode={showPageCanvas}
-                canUndo={canUndo}
-                canRedo={canRedo}
+                // 替换页面视图下框历史不可见（预览过滤 manual 框），撤销/重做
+                // 置灰防「点了没反应还隐改打码草稿」（评审 Minor#4）
+                canUndo={canUndo && !replacePageView}
+                canRedo={canRedo && !replacePageView}
                 onUndo={handleUndo}
                 onRedo={handleRedo}
                 onReset={handleReset}

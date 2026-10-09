@@ -97,12 +97,13 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
     enabled: outputPreviewAvailable && resultView === 'output',
   });
   // 翻页时按成品真实页数钳制（docx 回转后成品页数可能与原卷不同；页数未知
-  // 时先放行，X-Page-Count 到达后 Rail 总页数即被成品口径接管）
+  // 时先按原文页数占位钳制，防止首帧前快速点页触发越界 400）
   const handleOutputPageChange = useCallback(
     (page: number) => {
-      setOutputPage(Math.min(Math.max(1, page), outputPreview.pageCount ?? page));
+      const bound = outputPreview.pageCount ?? totalPages;
+      setOutputPage(Math.min(Math.max(1, page), Math.max(1, bound)));
     },
-    [outputPreview.pageCount],
+    [outputPreview.pageCount, totalPages],
   );
 
   const isTextPaginated = !isImageMode && totalPages > 1;
