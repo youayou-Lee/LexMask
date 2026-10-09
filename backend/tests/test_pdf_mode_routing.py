@@ -3,7 +3,6 @@ MASK=实体定位→整页栅格化真打码（与扫描件同构）；
 替换模式=PDF→docx→替换→PDF 回转，转换失败回退原位替换。
 """
 
-import asyncio
 import os
 
 import fitz
@@ -123,8 +122,8 @@ async def test_pdf_replacement_prefers_docx_roundtrip(_dirs, monkeypatch):
     called = {}
 
     def _fake_pdf2docx(src, wd):
+
         from docx import Document as _Doc
-        import shutil as _sh
         fake_docx = os.path.join(wd, "source.docx")
         d = _Doc()
         for e in _entities():
@@ -297,8 +296,20 @@ async def test_pdf_replacement_per_entity_check_catches_dropped(_dirs, monkeypat
         return fake_docx
 
     async def _fake_docx2pdf(docx, out):
+        # 从 redacted docx 真实构 PDF（不能拷贝原件：定向补删只删漏网实体，
+        # 原件里未被 docx 替换的文本不会消失）
         called["docx2pdf"] = True
-        import shutil; shutil.copy(str(src), out); return True
+        from docx import Document as _Doc
+        d = _Doc(docx)
+        pdf = fitz.open()
+        page = pdf.new_page()
+        y = 100
+        for para in d.paragraphs:
+            if para.text.strip():
+                page.insert_text((72, y), para.text, fontsize=12, fontname="china-s")
+                y += 20
+        pdf.save(str(out)); pdf.close()
+        return True
 
     monkeypatch.setattr(Redactor, "_pdf_to_docx", staticmethod(_fake_pdf2docx))
     monkeypatch.setattr(Redactor, "_docx_to_pdf", staticmethod(_fake_docx2pdf))
@@ -308,11 +319,52 @@ async def test_pdf_replacement_per_entity_check_catches_dropped(_dirs, monkeypat
         config=RedactionConfig(replacement_mode="structured"),
     )
     assert called.get("pdf2docx")
-    assert "docx2pdf" not in called, "检测到转换丢实体后必须回退，不得交付回转产物"
+    # Issue #84 三轮：单实体转换缺失不再整档回退（排版劣化惩罚全文档），
+    # 照常回转 PDF 后对漏网实体定向补删；成品仍必须零残留。
+    assert called.get("docx2pdf"), "少量实体缺失应走 docx 主路+定向补删"
+    text = "".join(p.get_text() for p in fitz.open(result["output_path"]))
+    squeezed = text.replace(" ", "").replace("\n", "")
+    assert "陈文清" not in squeezed and "110101199001019999" not in squeezed, \
+        "补删后两个实体原文都必须消失"
+
+
+@pytest.mark.asyncio
+async def test_pdf_replacement_catastrophic_absence_still_falls_back(_dirs, monkeypatch):
+    """灾难性转换缺失（大量实体不在源 docx）仍整档回退原位替换（评审 I1）。"""
+    up, _ = _dirs
+    src = up / "cat.pdf"
+    _make_pdf(src)
+    called = {}
+
+    def _fake_pdf2docx(src_path, wd):
+        from docx import Document as _Doc
+        fake_docx = os.path.join(wd, "source.docx")
+        d = _Doc()
+        d.add_paragraph("与案情无关的开头段落")  # 10 个实体全被「转换丢失」
+        d.save(fake_docx)
+        called["pdf2docx"] = True
+        return fake_docx
+
+    async def _fake_docx2pdf(docx, out):
+        called["docx2pdf"] = True
+        import shutil; shutil.copy(str(src), out); return True
+
+    monkeypatch.setattr(Redactor, "_pdf_to_docx", staticmethod(_fake_pdf2docx))
+    monkeypatch.setattr(Redactor, "_docx_to_pdf", staticmethod(_fake_docx2pdf))
+    many = _entities() + [
+        Entity(id=f"e{i}", text=f"实体名称{i}", type="PERSON", start=0, end=5, page=1, selected=True)
+        for i in range(10)
+    ]
+    result = await Redactor().redact(
+        file_info={"file_path": str(src), "file_type": "pdf"},
+        entities=many, bounding_boxes=[],
+        config=RedactionConfig(replacement_mode="structured"),
+    )
+    assert called.get("pdf2docx")
+    assert "docx2pdf" not in called, "灾难性缺失必须整档回退，不得交付回转产物"
     text = "".join(p.get_text() for p in fitz.open(result["output_path"]))
     squeezed = text.replace(" ", "")
-    assert "陈文清" not in squeezed and "110101199001019999" not in squeezed, \
-        "回退原位替换后两个实体原文都必须消失"
+    assert "陈文清" not in squeezed, "回退后原文必须消失"
 
 
 @pytest.mark.asyncio
