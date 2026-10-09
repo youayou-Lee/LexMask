@@ -221,28 +221,33 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
               replaceDisabled={replacementLocked}
               maskDisabled={maskDisabled}
             />
-            {!replacementLocked &&
-              (processingMode === 'mask' ? (
+            {/* Issue #79 v2：打码=直接涂黑，无子选项（执行固定 mask）；
+                三种打码方式只属于替换分支——掩码替换=化名对照表确认流（默认
+                +推荐），结构化标签/智能替换直出无对照表 */}
+            {!replacementLocked && processingMode === 'replace' && (
+              <>
                 <MaskModeSelector
                   entities={entities}
-                  mode={replacementMode === 'pseudonym' ? 'structured' : replacementMode}
+                  mode={replacementMode === 'pseudonym' ? 'mask' : replacementMode}
                   onModeChange={(mode) => {
                     clearPlaygroundTextPresetTracking();
                     setReplacementMode(mode);
                   }}
                 />
-              ) : (
-                <PseudonymMapSection
-                  entities={mappingEntities ?? entities}
-                  pseudonymMap={pseudonymMap}
-                  onPseudonymChange={onPseudonymChange}
-                  loading={pseudonymMapLoading}
-                  error={pseudonymMapError}
-                  onRetry={onRetryPseudonymLoad}
-                  conflicts={pseudonymConflicts}
-                  typeNameById={typeNameById}
-                />
-              ))}
+                {replacementMode === 'mask' && (
+                  <PseudonymMapSection
+                    entities={mappingEntities ?? entities}
+                    pseudonymMap={pseudonymMap}
+                    onPseudonymChange={onPseudonymChange}
+                    loading={pseudonymMapLoading}
+                    error={pseudonymMapError}
+                    onRetry={onRetryPseudonymLoad}
+                    conflicts={pseudonymConflicts}
+                    typeNameById={typeNameById}
+                  />
+                )}
+              </>
+            )}
 
             <div className="space-y-1">
               <Label htmlFor="playground-watermark" className="text-xs text-muted-foreground">
@@ -485,14 +490,13 @@ const MaskModeSelector: FC<{
   const t = useT();
   const sampleEntity = pickPreviewSample(entities);
   const modes: { value: 'structured' | 'smart' | 'mask'; label: string; badge?: string }[] = [
-    { value: 'structured', label: t('mode.structured'), badge: t('playground.recommended') },
+    { value: 'structured', label: t('mode.structured') },
     { value: 'smart', label: t('mode.smart') },
-    { value: 'mask', label: t('mode.mask') },
+    { value: 'mask', label: t('mode.mask'), badge: t('playground.recommended') },
   ];
-  // Issue #79：此选择器只在 PDF 族文件的打码分支渲染（docx/txt 被 #59 门控、
-  // 扫描件被 replacementLocked 收起），掩码替换成品=栅格化涂黑框，示例按黑框口径
+  // Issue #79 v2：选择器只渲染在替换分支下；掩码替换产出=化名派生（范某1）
   const exampleFor = (value: 'structured' | 'smart' | 'mask') =>
-    getModePreview(value, sampleEntity, undefined, { maskBlackBox: value === 'mask' });
+    getModePreview(value, sampleEntity);
 
   return (
     <div className="space-y-2">

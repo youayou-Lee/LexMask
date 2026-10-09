@@ -1,7 +1,7 @@
 // Copyright 2026 LexMask Contributors
 
 import { describe, expect, it } from 'vitest';
-import { getModePreview, pickPreviewSample } from './utils';
+import { getModePreview, maskAliasPreview, pickPreviewSample } from './utils';
 import type { Entity } from './types';
 
 function entity(partial: Partial<Entity>): Entity {
@@ -54,22 +54,21 @@ describe('pickPreviewSample (Issue #79)', () => {
   });
 });
 
-describe('getModePreview mask 口径 (Issue #79)', () => {
-  const sample = entity({ text: '范科威', type: 'PERSON' });
-
-  it('maskBlackBox 时掩码示例按黑框口径，不再展示星号', () => {
-    expect(getModePreview('mask', sample, undefined, { maskBlackBox: true })).toContain(
-      '范科威 -> 涂黑框',
-    );
-    expect(getModePreview('mask', sample, undefined, { maskBlackBox: true })).not.toContain('*');
+describe('getModePreview mask 口径 (Issue #79 v2)', () => {
+  it('掩码替换=化名派生：中文姓+某+序号（范某1），非星号', () => {
+    const sample = entity({ text: '范科威', type: 'PERSON' });
+    expect(getModePreview('mask', sample)).toBe('范科威 -> 范某1');
   });
 
-  it('缺省时保持星号口径（后端文本兜底等既有调用不变）', () => {
-    expect(getModePreview('mask', sample)).toBe('范科威 -> 范**');
+  it('maskAliasPreview：非 CJK 首字回落后端 derived 兜底基名「某人1」', () => {
+    expect(maskAliasPreview('John Smith')).toBe('某人1');
+    expect(maskAliasPreview('')).toBe('某人1');
   });
 
   it('getModePreview 不挑样例：人名优先由 pickPreviewSample 在组件层保证', () => {
+    const sample = entity({ text: '范科威', type: 'PERSON' });
     expect(getModePreview('structured', sample)).toBe('范科威 -> <人物[001].个人.姓名>');
+    expect(getModePreview('smart', sample)).toBe('范科威 -> [当事人一]');
     expect(getModePreview('structured', entity({ text: '英德市人民检察院', type: 'ORG' }))).toBe(
       '英德市人民检察院 -> <人物[001].个人.姓名>',
     );

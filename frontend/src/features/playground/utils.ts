@@ -141,23 +141,22 @@ export function pickPreviewSample(entities?: Entity[]): Entity | undefined {
   return pool.find((e) => PERSON_LIKE_TYPE_RE.test(e.type)) ?? pool[0];
 }
 
-export function getModePreview(
-  mode: string,
-  sampleEntity?: Entity,
-  pseudonymMap?: Record<string, string>,
-  opts?: { maskBlackBox?: boolean },
-) {
+// 掩码替换（替换分支）= 化名派生口径：中文姓+某+序号（范科威→范某1）；
+// 非 CJK 首字走后端 derived 兜底基名「某人」。仅用于示例文案。
+export function maskAliasPreview(name: string): string {
+  const first = (name || '')[0] ?? '';
+  return /[\u4e00-\u9fff]/.test(first) ? `${first}某1` : '某人1';
+}
+
+export function getModePreview(mode: string, sampleEntity?: Entity, pseudonymMap?: Record<string, string>) {
   const name = sampleEntity?.text || t('editor.sampleName');
   switch (mode) {
     case 'smart':
       return `${name} -> [${t('editor.sampleSmart')}]`;
     case 'mask':
-      // maskBlackBox：playground 打码仅 PDF 族可选，掩码替换成品=栅格化涂黑框；
-      // 星号只是后端定位失败时的文本兜底，不该作为承诺展示给用户（Issue #79）
-      if (opts?.maskBlackBox) {
-        return `${name} -> ${t('playground.maskExampleBlackBox')}`;
-      }
-      return `${name} -> ${name[0]}${'*'.repeat(Math.max(name.length - 1, 1))}`;
+      // Issue #79 v2：掩码替换只存在于替换分支，产出=化名派生（范某1），
+      // 星号是后端定位失败的兜底形态，不作为承诺展示
+      return `${name} -> ${maskAliasPreview(name)}`;
     case 'structured':
       return `${name} -> <${t('editor.sampleStructured')}>`;
     case 'pseudonym': {
