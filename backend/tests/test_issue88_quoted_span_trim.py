@@ -225,3 +225,14 @@ def test_t13_seq_no_collision():
     md = res.desens_md
     names = sorted(re.findall(r"张某\d+", md))
     assert len(names) == 2 and len(set(names)) == 2, md
+
+
+# ---------- 机制触发性观测(验收门⑤证据,评审补) ----------
+
+def test_trim_event_logged(caplog):
+    # 剥引号发生必须留 INFO 日志——真机验收据此区分「机制拦截」vs「案件无引号」
+    import logging
+    with caplog.at_level(logging.INFO, logger="app.services.vl_md_pipeline_service"):
+        _process('证人“李四”出庭。', [{"name": "“李四”"}])
+    assert any("quoted span trimmed" in r.message and "李四" in r.getMessage()
+               for r in caplog.records), [r.getMessage() for r in caplog.records]

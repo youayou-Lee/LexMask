@@ -235,14 +235,18 @@ class VlMdPipelineService:
         for e in await self._ner().extract(text, types):
             span = _trim_quoted_span(text, e.start, e.end)
             if span is None:
+                logger.info("[vl-md] quoted-only span dropped: %r", e.text[:20])
                 continue
             if _overlap(*span):
                 continue
             if span == (e.start, e.end):
                 merged.append(e)
             else:
+                trimmed = text[span[0]:span[1]]
+                # Issue#88 验收观测点:剥引号发生即留痕,真机验收据此证明机制被触发
+                logger.info("[vl-md] quoted span trimmed: %r -> %r", e.text[:20], trimmed[:20])
                 merged.append(e.model_copy(
-                    update={"text": text[span[0]:span[1]], "start": span[0], "end": span[1]}))
+                    update={"text": trimmed, "start": span[0], "end": span[1]}))
         return merged
 
     # ---------- 替换 ----------
