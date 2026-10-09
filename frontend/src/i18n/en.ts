@@ -185,7 +185,7 @@ const enBase: Record<string, string> = {
   'playground.processingModeMask': 'Masking',
   'playground.processingModeMaskDesc': 'Cover sensitive content',
   'playground.processingModeReplace': 'Replace (Pseudonym)',
-  'playground.processingModeReplaceDesc': 'Fictional words, still readable',
+  'playground.processingModeReplaceDesc': 'Replace text, keep it readable',
   'playground.processingModeReplaceUnavailable': 'Unavailable for scanned files / images',
   'playground.processingModeScannedNotice':
     'Replacement (pseudonym) is not yet available for scanned PDFs / images; only masking is supported for now.',
@@ -1211,10 +1211,6 @@ const enOverrides: Record<string, string> = {
   'playground.loading.visionHybrid': 'Running vision detection (OCR text + image features)...',
   'playground.loading.text': 'Recognizing sensitive text...',
   'playground.startRedact': 'Start redaction',
-  'playground.recommended': 'Recommended',
-  'playground.redactMode': 'Masking style',
-  'playground.redactModeHint':
-    'How masked content is rendered. Not used in Replace (Pseudonym) mode.',
   'playground.noResultsTitle': 'No redaction-ready results',
   'playground.noResultsDescText':
     'Run recognition again, adjust text recognition items, or select text in the document to add a manual annotation.',

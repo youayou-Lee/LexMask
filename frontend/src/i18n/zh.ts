@@ -182,7 +182,7 @@ const zhBase: Record<string, string> = {
   'playground.processingModeMask': '打码',
   'playground.processingModeMaskDesc': '遮盖敏感内容',
   'playground.processingModeReplace': '替换（化名）',
-  'playground.processingModeReplaceDesc': '虚构词替换，保留可读',
+  'playground.processingModeReplaceDesc': '换掉原文，保留可读',
   'playground.processingModeReplaceUnavailable': '扫描件 / 图片暂不可用',
   'playground.processingModeScannedNotice':
     '扫描型 PDF / 图片暂未上线替换（化名），当前仅支持打码。',
@@ -1118,9 +1118,6 @@ const zhOverrides: Record<string, string> = {
   'playground.loading.visionHybrid': '正在进行图像识别（图片文字 + 图像特征）...',
   'playground.loading.text': '正在识别文本中的敏感信息...',
   'playground.startRedact': '开始匿名化',
-  'playground.recommended': '推荐',
-  'playground.redactMode': '打码方式',
-  'playground.redactModeHint': '「打码」的呈现形式；选「替换（化名）」时此处不生效。',
   'playground.noResultsTitle': '当前没有可匿名化的结果',
   'playground.noResultsDescText': '可以重新识别、调整文本识别项，或在正文中选中文本手动添加标注。',
   'playground.noResultsDescImage': '可以重新识别、调整图像识别项，或直接在预览图上手动画框。',

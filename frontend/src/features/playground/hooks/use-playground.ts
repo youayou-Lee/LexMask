@@ -484,13 +484,11 @@ export function usePlayground() {
             selectedEntities.filter((e) => !nerBoxTexts.has(e.text)).length
           : selectedEntities.length;
 
+      // Issue #79 v3：打码无子选项，固定 mask（文本型 PDF=栅格化涂黑框）；
+      // 替换分支唯一方案=化名词池+对照表确认（pseudonym），「打码方式」选择
+      // 已整体移除。replacementMode 残留值不再参与任何执行决策。
       const isPseudonym = recognition.processingMode === 'replace' && !fileCtx.isImageMode;
-      // 双保险：打码分支永远不透传 pseudonym（防御残留状态），回落结构化标签
-      const effectiveReplacementMode = isPseudonym
-        ? 'pseudonym'
-        : recognition.replacementMode === 'pseudonym'
-          ? 'structured'
-          : recognition.replacementMode;
+      const effectiveReplacementMode = isPseudonym ? 'pseudonym' : 'mask';
       const pseudonymReplacements: Record<string, string> = {};
       if (isPseudonym) {
         for (const entity of selectedEntities) {

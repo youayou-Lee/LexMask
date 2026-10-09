@@ -440,8 +440,6 @@ const PlaygroundInner: FC = () => {
               displayStats={
                 Object.keys(previewCoverageStats).length > 0 ? previewCoverageStats : undefined
               }
-              replacementMode={recognition.replacementMode}
-              setReplacementMode={recognition.setReplacementMode}
               processingMode={processingMode}
               setProcessingMode={setProcessingMode}
               maskDisabled={!maskAllowed}
