@@ -399,7 +399,7 @@ const PlaygroundInner: FC = () => {
                       <ImageBBoxEditor
                         imageSrc={isImageMode ? imageUrl : staticPageUrl}
                         boxes={replacePageView ? replacePreviewBoxes : visibleBoxes}
-                        readOnly={replacePageView}
+                        lockDraw={replacePageView}
                         onBoxesChange={
                           replacePageView
                             ? () => {}

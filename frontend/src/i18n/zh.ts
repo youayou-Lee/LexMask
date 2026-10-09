@@ -1351,6 +1351,7 @@ const zhOverrides: Record<string, string> = {
   'editor.deselected': '已取消',
   'editor.exitDraw': '退出绘制模式',
   'editor.enterDraw': '进入拉框标注模式',
+  'editor.drawLockedHint': '替换模式不支持拉框',
   'editor.drawModeActive': '绘制模式 (ESC退出)',
   'editor.drawModeTrigger': '拉框标注',
   'editor.deleteSelected': '删除选中的标注区域',

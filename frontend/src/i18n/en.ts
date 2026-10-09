@@ -1542,6 +1542,7 @@ const enOverrides: Record<string, string> = {
   'editor.deselected': 'Deselected',
   'editor.exitDraw': 'Exit draw mode',
   'editor.enterDraw': 'Enter bounding box draw mode',
+  'editor.drawLockedHint': 'Box drawing is not available in replace mode',
   'editor.drawModeActive': 'Draw mode (ESC to exit)',
   'editor.drawModeTrigger': 'Draw box',
   'editor.deleteSelected': 'Delete selected region',
