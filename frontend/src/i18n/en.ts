@@ -1214,7 +1214,8 @@ const enOverrides: Record<string, string> = {
   'playground.recommended': 'Recommended',
   'playground.redactMode': 'Masking style',
   'playground.redactModeHint':
-    'How masked content is rendered. Not used in Replace (Pseudonym) mode.',
+    'How selected content will look in the output once masked. The original text is not kept.',
+  'playground.maskExampleBlackBox': 'blacked out (unreadable)',
   'playground.noResultsTitle': 'No redaction-ready results',
   'playground.noResultsDescText':
     'Run recognition again, adjust text recognition items, or select text in the document to add a manual annotation.',

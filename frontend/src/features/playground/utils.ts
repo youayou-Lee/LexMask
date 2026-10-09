@@ -130,16 +130,33 @@ export async function locateEntityBoxes(
   }
 }
 
+// 预览样例优先取人名实体：结构化/智能的样例文案是人名口径，拿列表第一个
+// 实体硬拼会出现「英德市人民检察院 -> <人物001>」的机构配人名标签错位
+// （Issue #79）。
+const PERSON_LIKE_TYPE_RE =
+  /(^|_)(person|plaintiff|defendant|attorney|patient|clinician|witness|judge|third_party)($|_)/i;
+
+export function pickPreviewSample(entities?: Entity[]): Entity | undefined {
+  const pool = (entities ?? []).filter((e) => e.selected !== false && !!e.text);
+  return pool.find((e) => PERSON_LIKE_TYPE_RE.test(e.type)) ?? pool[0];
+}
+
 export function getModePreview(
   mode: string,
   sampleEntity?: Entity,
   pseudonymMap?: Record<string, string>,
+  opts?: { maskBlackBox?: boolean },
 ) {
   const name = sampleEntity?.text || t('editor.sampleName');
   switch (mode) {
     case 'smart':
       return `${name} -> [${t('editor.sampleSmart')}]`;
     case 'mask':
+      // maskBlackBox：playground 打码仅 PDF 族可选，掩码替换成品=栅格化涂黑框；
+      // 星号只是后端定位失败时的文本兜底，不该作为承诺展示给用户（Issue #79）
+      if (opts?.maskBlackBox) {
+        return `${name} -> ${t('playground.maskExampleBlackBox')}`;
+      }
       return `${name} -> ${name[0]}${'*'.repeat(Math.max(name.length - 1, 1))}`;
     case 'structured':
       return `${name} -> <${t('editor.sampleStructured')}>`;

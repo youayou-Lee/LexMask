@@ -18,7 +18,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { ENTITY_GROUPS, getEntityGroupLabel, getEntityTypeName } from '@/config/entityTypes';
-import { computeEntityStats, getModePreview } from '../utils';
+import { computeEntityStats, getModePreview, pickPreviewSample } from '../utils';
 import type { BoundingBox, Entity } from '../types';
 
 export interface PlaygroundEntityPanelProps {
@@ -483,14 +483,16 @@ const MaskModeSelector: FC<{
   onModeChange: (mode: 'structured' | 'smart' | 'mask') => void;
 }> = ({ entities, mode, onModeChange }) => {
   const t = useT();
-  const sampleEntity = entities.find(
-    (entity) => entity.selected !== false && entity.text && entity.text.length > 0,
-  );
+  const sampleEntity = pickPreviewSample(entities);
   const modes: { value: 'structured' | 'smart' | 'mask'; label: string; badge?: string }[] = [
     { value: 'structured', label: t('mode.structured'), badge: t('playground.recommended') },
     { value: 'smart', label: t('mode.smart') },
     { value: 'mask', label: t('mode.mask') },
   ];
+  // Issue #79：此选择器只在 PDF 族文件的打码分支渲染（docx/txt 被 #59 门控、
+  // 扫描件被 replacementLocked 收起），掩码替换成品=栅格化涂黑框，示例按黑框口径
+  const exampleFor = (value: 'structured' | 'smart' | 'mask') =>
+    getModePreview(value, sampleEntity, undefined, { maskBlackBox: value === 'mask' });
 
   return (
     <div className="space-y-2">
@@ -506,7 +508,7 @@ const MaskModeSelector: FC<{
           return (
             <label
               key={item.value}
-              title={getModePreview(item.value, sampleEntity)}
+              title={exampleFor(item.value)}
               className={ModeOptionCardClasses(selected)}
             >
               <div className="flex items-center gap-1.5">
@@ -533,9 +535,23 @@ const MaskModeSelector: FC<{
           );
         })}
       </div>
-      <p className="truncate text-[11px] text-muted-foreground">
-        {getModePreview(mode, sampleEntity)}
-      </p>
+      <div className="space-y-1" data-testid="playground-mask-style-examples">
+        {modes.map((item) => {
+          const selected = mode === item.value;
+          return (
+            <p
+              key={item.value}
+              className={cn(
+                'truncate text-[11px] leading-4',
+                selected ? 'font-medium text-foreground' : 'text-muted-foreground',
+              )}
+              data-testid={`playground-mask-style-example-${item.value}`}
+            >
+              {item.label}：{exampleFor(item.value)}
+            </p>
+          );
+        })}
+      </div>
     </div>
   );
 };
