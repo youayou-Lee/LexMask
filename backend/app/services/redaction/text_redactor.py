@@ -39,6 +39,10 @@ PDF_LABEL_FONT_SIZE_FLOOR = 5.0
 # Fraction of rect height used as the base label font size
 PDF_LABEL_HEIGHT_FONT_RATIO = 0.78
 
+# 空白归一匹配时两侧都压掉的字符（Issue #84：PyMuPDF 提取的实体文本带
+# 空格伪影如 `2018 年3 月26 日`，与 pdf2docx 产出的 docx 空格位置不一致）
+SQUEEZE_CHARS = " \t\n\r\u00a0\u3000\u200b"
+
 
 class TextRedactorMixin:
     """
@@ -102,6 +106,50 @@ class TextRedactorMixin:
         doc.save(output_path)
         return redacted_count
 
+    @staticmethod
+    def _squeeze_with_index(text: str) -> tuple[str, list[int]]:
+        """压掉空白后的文本 + squeezed 偏移→原文本偏移映射。"""
+        chars: list[str] = []
+        index_map: list[int] = []
+        for i, ch in enumerate(text):
+            if ch in SQUEEZE_CHARS:
+                continue
+            chars.append(ch)
+            index_map.append(i)
+        return "".join(chars), index_map
+
+    @classmethod
+    def _find_replacement_matches(
+        cls, full_text: str, replacements: dict[str, str]
+    ) -> list[tuple[int, int, str]]:
+        """空白归一匹配（Issue #84）：实体键与文档文本两侧压掉空白后定位，
+        再映射回真实偏移区间。优先长匹配、过滤重叠，语义与原精确匹配一致，
+        仅匹配口径放宽——空格伪影不再导致漏替。"""
+        squeezed, idx = cls._squeeze_with_index(full_text)
+        if not squeezed:
+            return []
+        matches: list[tuple[int, int, str]] = []
+        for old_text, new_text in replacements.items():
+            sq = "".join(ch for ch in old_text if ch not in SQUEEZE_CHARS)
+            if not sq:
+                continue
+            start = 0
+            while True:
+                pos = squeezed.find(sq, start)
+                if pos < 0:
+                    break
+                matches.append((idx[pos], idx[pos + len(sq) - 1] + 1, new_text))
+                start = pos + len(sq)
+        matches.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+        filtered: list[tuple[int, int, str]] = []
+        last_end = -1
+        for start, end, replacement in matches:
+            if start < last_end:
+                continue
+            filtered.append((start, end, replacement))
+            last_end = end
+        return filtered
+
     def _split_paragraph_replacement_keys(
         self, para, replacements: dict[str, str]
     ) -> tuple[dict[str, str], dict[str, str]]:
@@ -128,24 +176,28 @@ class TextRedactorMixin:
         if not full_text:
             return (dict(replacements), {})
 
+        # 空白归一口径分流（与 _find_replacement_matches 一致，Issue #84）
+        squeezed, idx = self._squeeze_with_index(full_text)
+        sq_direct = [is_direct_flags[i] for i in idx]
+
         run_keys: dict[str, str] = {}
         union_keys: dict[str, str] = {}
         for old_text, new_text in replacements.items():
-            if not old_text:
-                continue
-            start = full_text.find(old_text)
-            if start < 0:
+            sq = "".join(ch for ch in old_text if ch not in SQUEEZE_CHARS)
+            if not sq:
                 continue
             needs_union = False
-            pos = 0
+            pos = squeezed.find(sq)
+            if pos < 0:
+                continue
             while True:
-                found = full_text.find(old_text, pos)
+                found = squeezed.find(sq, pos)
                 if found < 0:
                     break
-                if not all(is_direct_flags[found : found + len(old_text)]):
+                if not all(sq_direct[found : found + len(sq)]):
                     needs_union = True
                     break
-                pos = found + len(old_text)
+                pos = found + len(sq)
             if needs_union:
                 union_keys[old_text] = new_text
             else:
@@ -216,32 +268,13 @@ class TextRedactorMixin:
         if not node_ids:
             return 0
 
-        matches: list[tuple[int, int, str]] = []
-        for old_text, new_text in replacements.items():
-            if not old_text:
-                continue
-            start = 0
-            while True:
-                pos = full_text.find(old_text, start)
-                if pos < 0:
-                    break
-                matches.append((pos, pos + len(old_text), new_text))
-                start = pos + len(old_text)
-
+        # 空白归一匹配（Issue #84），返回原文本偏移区间
+        matches = self._find_replacement_matches(full_text, replacements)
         if not matches:
             return 0
-        matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
-
-        filtered_matches: list[tuple[int, int, str]] = []
-        last_end = -1
-        for start, end, replacement in matches:
-            if start < last_end:
-                continue
-            filtered_matches.append((start, end, replacement))
-            last_end = end
 
         replace_map: dict[int, tuple[int, str, int]] = {}
-        for start, end, replacement in filtered_matches:
+        for start, end, replacement in matches:
             span_node_ids = node_ids[start:end] if end <= len(node_ids) else node_ids[start:]
             target_node_idx = Counter(span_node_ids).most_common(1)[0][0] if span_node_ids else node_ids[start]
             replace_map[start] = (end, replacement, target_node_idx)
@@ -324,35 +357,9 @@ class TextRedactorMixin:
         if not style_ids:
             return 0
 
-        # 找到所有替换
-        matches: list[tuple[int, int, str]] = []
-        for old_text, new_text in replacements.items():
-            if not old_text:
-                continue
-            start = 0
-            while True:
-                pos = full_text.find(old_text, start)
-                if pos < 0:
-                    break
-                matches.append((pos, pos + len(old_text), new_text))
-                start = pos + len(old_text)
-
+        # 空白归一匹配（Issue #84），返回原文本偏移区间
+        matches = self._find_replacement_matches(full_text, replacements)
         if not matches:
-            return 0
-
-        # 优先长匹配，避免"张三丰"被"张三"提前吞掉
-        matches.sort(key=lambda x: (x[0], -(x[1] - x[0])))
-
-        # 过滤重叠匹配
-        filtered_matches: list[tuple[int, int, str]] = []
-        last_end = -1
-        for start, end, replacement in matches:
-            if start < last_end:
-                continue
-            filtered_matches.append((start, end, replacement))
-            last_end = end
-
-        if not filtered_matches:
             return 0
 
         before_snapshot = None
@@ -362,7 +369,7 @@ class TextRedactorMixin:
         # 构建替换起点索引：start -> (end, replacement, target_run_idx)
         # target_run_idx 使用区间内主样式 run，避免跨 run 时字体错位
         replace_map: dict[int, tuple[int, str, int]] = {}
-        for start, end, replacement in filtered_matches:
+        for start, end, replacement in matches:
             span_style_ids = style_ids[start:end] if end <= len(style_ids) else style_ids[start:]
             if span_style_ids:
                 target_run_idx = Counter(span_style_ids).most_common(1)[0][0]
@@ -407,7 +414,7 @@ class TextRedactorMixin:
                             "original": full_text[s:e],
                             "replacement": rep,
                         }
-                        for (s, e, rep) in filtered_matches
+                        for (s, e, rep) in matches
                     ],
                     "runs_before": before_snapshot,
                     "runs_after": after_snapshot,
@@ -778,30 +785,41 @@ class TextRedactorMixin:
             # 对每一页进行处理
             for page_num in range(len(doc)):
                 page = doc.load_page(page_num)
-                replacement_inserts: list[tuple[fitz.Rect, str]] = []
+                replacement_inserts: list[tuple[fitz.Rect, str, float | None]] = []
 
                 for old_text, new_text in replacements.items():
-                    # 查找文本位置
+                    # 查找文本位置；实体带空格伪影时 MuPDF 可能匹配不上，
+                    # 退而用压空白形态再找（Issue #84）
                     text_instances = page.search_for(old_text)
+                    if not text_instances:
+                        squeezed_key = "".join(
+                            ch for ch in old_text if ch not in SQUEEZE_CHARS
+                        )
+                        if squeezed_key and squeezed_key != old_text:
+                            text_instances = page.search_for(squeezed_key)
 
                     for inst in text_instances:
                         # Use a real PDF redaction annotation so original text is
                         # removed from the content stream, not merely covered.
                         rect = fitz.Rect(inst)
+                        # 原文字号必须在涂红前读（apply_redactions 后原文已删）
+                        orig_size = self._span_font_size(page, rect)
                         page.add_redact_annot(rect, fill=(1, 1, 1))
-                        replacement_inserts.append((rect, new_text))
+                        replacement_inserts.append((rect, new_text, orig_size))
 
                         redacted_count += 1
 
                 if replacement_inserts:
                     page.apply_redactions()
-                    for rect, new_text in replacement_inserts:
+                    for rect, new_text, orig_size in replacement_inserts:
                         # 默认 Helvetica 无 CJK 字形（中文会写成 ???），中文替换词用内置 china-s
                         has_cjk = any(ord(ch) > 127 for ch in new_text)
                         fontname = "china-s" if has_cjk else "helv"
                         self._insert_pdf_replacement(
                             page, rect, new_text, fontname,
-                            self._fit_pdf_replacement_font_size(rect, new_text, fontname),
+                            self._fit_pdf_replacement_font_size(
+                                rect, new_text, fontname, original_size=orig_size
+                            ),
                         )
 
             doc.save(output_path, garbage=PDF_SAVE_GARBAGE_LEVEL, deflate=True, clean=True)
@@ -835,14 +853,35 @@ class TextRedactorMixin:
             size = max(4.0, size - 1.0)
 
     @staticmethod
-    def _fit_pdf_replacement_font_size(rect: fitz.Rect, text: str, fontname: str = "helv") -> float:
-        """Choose a conservative font size for inline PDF replacement labels."""
+    def _span_font_size(page: "fitz.Page", rect: "fitz.Rect") -> float | None:
+        """读取矩形处原文字的真实字号（须在 apply_redactions 前调用，Issue #84）。"""
+        try:
+            info = page.get_text("dict", clip=rect)
+        except Exception:
+            return None
+        for block in info.get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if span.get("text", "").strip() and fitz.Rect(span["bbox"]).intersects(rect):
+                        return float(span["size"])
+        return None
+
+    @staticmethod
+    def _fit_pdf_replacement_font_size(
+        rect: fitz.Rect, text: str, fontname: str = "helv",
+        original_size: float | None = None,
+    ) -> float:
+        """替换标签字号：优先沿用原文字号（Issue #84，不再钳 10pt 帽），
+        超宽按矩形自适应缩放；读不到原文信息时退回高度估算的保守值。"""
         if not text:
             return PDF_LABEL_FONT_SIZE_MAX
-        base_size = max(
-            PDF_LABEL_FONT_SIZE_MIN,
-            min(PDF_LABEL_FONT_SIZE_MAX, rect.height * PDF_LABEL_HEIGHT_FONT_RATIO),
-        )
+        if original_size and original_size > 0:
+            base_size = original_size
+        else:
+            base_size = max(
+                PDF_LABEL_FONT_SIZE_MIN,
+                min(PDF_LABEL_FONT_SIZE_MAX, rect.height * PDF_LABEL_HEIGHT_FONT_RATIO),
+            )
         estimated_width = fitz.get_text_length(text, fontname=fontname, fontsize=base_size)
         if estimated_width <= max(1.0, rect.width):
             return base_size
