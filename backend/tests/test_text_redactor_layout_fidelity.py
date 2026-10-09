@@ -200,9 +200,11 @@ def test_docx_path_no_residual_with_space_artifact(tmp_path):
         )
     )
     assert count == 2, "两个空格错位实体都应被替换"
-    residual, lost_absent, lost_dropped = r._docx_verify_replacements(
-        str(docx_path), str(out),
-        {"2018 年3 月26 日": "【日期1】", "2019 年01 月01 日": "【日期2】"},
+    residual, lost_absent, lost_dropped, cross_pure, cross_adj = (
+        r._docx_verify_replacements(
+            str(docx_path), str(out),
+            {"2018 年3 月26 日": "【日期1】", "2019 年01 月01 日": "【日期2】"},
+        )
     )
     assert not residual and not lost_absent and not lost_dropped, (
         f"替换后不应残留/丢失: {residual} {lost_absent} {lost_dropped}"
@@ -241,8 +243,8 @@ def test_preserved_host_substring_no_false_residual(tmp_path):
         Entity(id="e3", text="陈海新", type="PERSON", start=0, end=3, page=1, selected=True),
     ]
     asyncio.run(r._redact_docx(str(docx_path), str(out), ents, ctx))
-    residual, lost_absent, lost_dropped = r._docx_verify_replacements(
-        str(docx_path), str(out), replacements
+    residual, lost_absent, lost_dropped, cross_pure, cross_adj = (
+        r._docx_verify_replacements(str(docx_path), str(out), replacements)
     )
     assert not residual, f"子串落在保留名里不应判残留: {residual}"
     assert not lost_absent and not lost_dropped
@@ -271,8 +273,8 @@ def test_generated_value_fragment_no_false_residual(tmp_path):
         Entity(id="e2", text="22", type="NUMBER", start=0, end=2, page=1, selected=True),
     ]
     asyncio.run(r._redact_docx(str(docx_path), str(out), ents, ctx))
-    residual, lost_absent, lost_dropped = r._docx_verify_replacements(
-        str(docx_path), str(out), replacements
+    residual, lost_absent, lost_dropped, cross_pure, cross_adj = (
+        r._docx_verify_replacements(str(docx_path), str(out), replacements)
     )
     assert not residual, f"生成值中的碎片不应判残留: {residual}"
     assert not lost_absent and not lost_dropped
@@ -300,8 +302,8 @@ def test_true_miss_still_detected(tmp_path):
     d2 = Docx()
     d2.add_paragraph("犯罪嫌疑人陈海新到案")
     d2.save(str(bad))
-    residual, lost_absent, lost_dropped = r._docx_verify_replacements(
-        str(docx_path), str(bad), {"陈海新": "[姓名一]"}
+    residual, lost_absent, lost_dropped, cross_pure, cross_adj = (
+        r._docx_verify_replacements(str(docx_path), str(bad), {"陈海新": "[姓名一]"})
     )
     assert "陈海新" in residual
 
@@ -552,3 +554,58 @@ def test_promote_page_number_inside_last_table(tmp_path):
     assert "1" not in texts and "2" not in texts
     cell_text = "\n".join(c.text for row in d2.tables[0].rows for c in row.cells)
     assert "末页证据表格" in cell_text
+
+
+# ------------------------------------------------- 评审修复（Critical#1 等）
+
+
+def test_verify_flags_cross_paragraph_entity(tmp_path):
+    """跨段落实体（段A尾「张」+段B头「三」）必须判残留——零泄漏红线。
+
+    逐段干跑与逐段替换同样匹配不到跨段实体，旧实现 exp==act 零拦截；
+    期望值须改在拼接文本上模拟，使「跨段未被替换」缺席于期望 → residual。
+    """
+    from docx import Document as Docx
+
+    src = tmp_path / "src.docx"
+    out = tmp_path / "out.docx"
+    d = Docx()
+    d.add_paragraph("罪嫌人张")
+    d.add_paragraph("三到案供述")
+    d.save(str(src))
+    # 成品=替换后的 docx（跨段实体未被替换，仍在）
+    d2 = Docx()
+    d2.add_paragraph("罪嫌人张")
+    d2.add_paragraph("三到案供述")
+    d2.save(str(out))
+
+    r = TextRedactorMixin()
+    residual, lost_absent, lost_dropped, cross_pure, cross_adj = (
+        r._docx_verify_replacements(str(src), str(out), {"张三": "[姓名一]"})
+    )
+    assert "张三" in cross_pure, f"纯跨段实体必须归入 cross_pure: {cross_pure}"
+    assert not cross_adj
+    assert not residual, f"段内无实体，不应判段内残留: {residual}"
+
+
+def test_cross_page_residual_after_patch_falls_back(tmp_path):
+    """补删后复检：残留键在成品 PDF 中仍有超替换值自含次数的出现 → 判泄漏。"""
+    import fitz as _fitz
+
+    r = TextRedactorMixin()
+    # 造一个含「张三」的成品 PDF
+    pdf = tmp_path / "out.pdf"
+    doc = _fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "罪嫌人张三到案。", fontsize=14, fontname="china-s")
+    doc.save(str(pdf))
+    doc.close()
+    # 替换值不含「张三」→ 出现 1 次即超允许 → 泄漏
+    assert r._post_patch_leak_keys(str(pdf), {"张三": "[姓名一]"}) == {"张三"}
+    # 替换值自含该键（生成值撞碎片）→ 允许同等次数
+    doc = _fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "[姓名一]张三到案。", fontsize=14, fontname="china-s")
+    doc.save(str(pdf))
+    doc.close()
+    assert r._post_patch_leak_keys(str(pdf), {"张三": "[姓名一]张三"}) == set()

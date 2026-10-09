@@ -622,11 +622,20 @@ class TextRedactorMixin:
             )
             return 0
         removed = 0
+        removed_texts: list[str] = []
         for _ordinal, p, _value in candidates:
+            removed_texts.append(
+                "".join(t.text or "" for t in p.findall(f".//{W}t"))
+            )
             p.getparent().remove(p)
             removed += 1
         if not removed:
             return 0
+        # 删除清单落日志供审计（评审 Important#4：promote 在校验之后执行，
+        # 误删数字段无安全网兜底，至少留痕）
+        logger.info(
+            "[redact:pdf-docx] 伪页码删除 %d 段: %s", removed, removed_texts[:10]
+        )
 
         # 挂真页脚：首页节建页脚（居中 PAGE 域），其余节默认链接同页脚
         footer = doc.sections[0].footer
@@ -647,6 +656,10 @@ class TextRedactorMixin:
         fld_end.set(qn("w:fldCharType"), "end")
         for el in (fld_begin, instr, fld_sep, sample, fld_end):
             run._r.append(el)
+        # 其余节显式链接首页页脚（不依赖 pdf2docx 是否给后续节建独立 footer）
+        for section in doc.sections[1:]:
+            if not section.footer.is_linked_to_previous:
+                section.footer.is_linked_to_previous = True
         doc.save(docx_path)
         return removed
 
@@ -694,13 +707,14 @@ class TextRedactorMixin:
                 #   residual：次数超出期望 = 真漏替（泄密方向）
                 #   lost_absent：源 docx 就没有 = pdf2docx 丢/改写了该实体文本
                 #   lost_dropped：应保留的内容变少 = 替换/转换丢内容
+                entity_by_text = {
+                    e.text: e for e in entities if e.selected and e.text
+                }
                 full_map = {
-                    t: context.get_replacement(
-                        next(e for e in entities if e.selected and e.text == t)
-                    )
+                    t: context.get_replacement(entity_by_text[t])
                     for t in unique_texts
                 }
-                residual, lost_absent, lost_dropped = (
+                residual, lost_absent, lost_dropped, cross_pure, cross_adj = (
                     self._docx_verify_replacements(
                         docx_path, redacted_docx_path, full_map
                     )
@@ -713,7 +727,7 @@ class TextRedactorMixin:
                     return await self._redact_pdf_text(
                         input_path, output_path, entities, context
                     )
-                if residual or lost_absent:
+                if residual or lost_absent or cross_pure:
                     # 少量漏网实体（跨行碎片在 docx 里不连续、个别处漏替）：
                     # 不再整档回退兜底（排版劣化惩罚全文档），照常回转 PDF，
                     # 对漏网实体做一次逐字流补删（Issue #84 三轮）——
@@ -742,11 +756,27 @@ class TextRedactorMixin:
                             input_path, output_path, entities, context
                         )
                     patch_keys = {
-                        t: full_map[t] for t in residual | lost_absent
+                        t: full_map[t] for t in residual | lost_absent | cross_pure
                     }
-                    patched = await self._targeted_pdf_redact(
+                    patched, matched_keys = await self._targeted_pdf_redact(
                         output_path, patch_keys
                     )
+                    # 补删后复检（评审 Important#3）：残留键落空（跨页等形态
+                    # 逐字流找不到）或成品仍超替换值自含次数 → 整档回退兜底
+                    # residual/cross_pure 落空=原文应删而未删，不得交付；
+                    # lost_absent 落空属正常（成品里本来就没有）
+                    unpatched = {
+                        t for t in residual | cross_pure if t not in matched_keys
+                    }
+                    leak_keys = self._post_patch_leak_keys(output_path, patch_keys)
+                    if unpatched or leak_keys:
+                        logger.warning(
+                            "[redact:pdf-docx] 补删复检失败 unpatched=%s leak=%s，回退原位替换: %s",
+                            sorted(unpatched), sorted(leak_keys), input_path,
+                        )
+                        return await self._redact_pdf_text(
+                            input_path, output_path, entities, context
+                        )
                     logger.warning(
                         "[redact:pdf-docx] 校验 residual=%s lost_absent=%s，已定向补删 %d 处: %s",
                         sorted(residual)[:5], sorted(lost_absent)[:5], patched, input_path,
@@ -800,17 +830,24 @@ class TextRedactorMixin:
         source_docx_path: str,
         redacted_docx_path: str,
         replacements: dict[str, str],
-    ) -> tuple[set[str], set[str], set[str]]:
-        """残留校验（期望值对照，Issue #84 二轮）。
+    ) -> tuple[set[str], set[str], set[str], set[str], set[str]]:
+        """残留校验（期望值对照，Issue #84 二轮；粒度修订见四轮评审）。
 
-        旧法按「实体原文是否仍出现在成品」判残留，遇到两类必然误判：
-        ① 子串实体落在设计性保留原文的长机构名里（英德市人民检察院 ⊃ 人民检察院）；
-        ② 实体碎片出现在替换生成值里（生成证件号含 22）。
-        现改为：用同一替换语义对源 docx 干跑出「应有成品文本」，实际成品
-        与期望按出现次数对照——
-          次数超出期望 = 真漏替（residual，泄密方向）
-          源 docx 就没有 = pdf2docx 丢/改写该实体（lost_absent）
-          应保留内容变少 = 替换/转换丢内容（lost_dropped）
+        按「段粒度干跑期望 vs 段粒度实际」判三类——
+          residual：次数超出期望 = 段内真漏替（泄密方向）
+          lost_absent：源 docx 就没有 = pdf2docx 丢/改写该实体
+          lost_dropped：应保留内容变少 = 替换/转换丢内容
+        另返回两类跨段键（源拼接出现次数 > 段内出现次数之和，评审
+        Critical#1）——
+          cross_para_pure：源里只有跨段形态（段内 0 命中），是真实体，
+            逐段替换天然无法处理，调用方必须 PDF 补删并严格复检；
+          cross_para_adjacent：段内也有实例，拼接处的相邻读属于无关
+            文本的巧合相邻（原文档同样存在），不补不查——补删会误伤
+            生成值里的相同字符（如 [姓名22] 的 22）。
+
+        不在拼接文本上判 residual 的原因：相邻段落会在拼接处产生幻影
+        相邻读（如「…7 月」+「17 日…」），并非实体真实例，会误回退。
+        子串实体落在保留机构名/替换生成值里的两类误判由期望值对照解决。
         """
         try:
             src_parts = self._docx_paragraph_texts(source_docx_path)
@@ -825,39 +862,86 @@ class TextRedactorMixin:
             )
 
         src_squeezed = _squeeze_all(src_parts)
-        act_squeezed = _squeeze_all(act_parts)
-        exp_squeezed = _squeeze_all(
-            [self._simulate_replaced_text(t, replacements) for t in src_parts]
-        )
+        src_squeezed_list = [self._squeeze_with_index(t)[0] for t in src_parts]
+        act_squeezed_list = [self._squeeze_with_index(t)[0] for t in act_parts]
+        exp_squeezed_list = [
+            self._squeeze_with_index(
+                self._simulate_replaced_text(t, replacements)
+            )[0]
+            for t in src_parts
+        ]
 
         residual: set[str] = set()
         lost_absent: set[str] = set()
         lost_dropped: set[str] = set()
+        cross_para_pure: set[str] = set()
+        cross_para_adjacent: set[str] = set()
         for old_text in replacements:
             sq = "".join(ch for ch in old_text if ch not in SQUEEZE_CHARS)
             if not sq:
                 continue
-            exp_count = exp_squeezed.count(sq)
-            act_count = act_squeezed.count(sq)
+            # 段粒度计数：拼接计数会把相邻段落的幻影相邻读（如「…7 月」+
+            # 「17 日…」）误判为漏替实体（四轮评审修复时实测踩中）
+            exp_count = sum(t.count(sq) for t in exp_squeezed_list)
+            act_count = sum(t.count(sq) for t in act_squeezed_list)
             src_count = src_squeezed.count(sq)
+            src_perpara = sum(t.count(sq) for t in src_squeezed_list)
             if act_count > exp_count:
                 residual.add(old_text)
             if src_count == 0:
                 lost_absent.add(old_text)
-            elif act_count < exp_count:
+            elif act_count < exp_count and len(sq) >= 3:
+                # 长度阈值：1-2 字符碎片的出现次数对生成值/多趟替换的
+                # 相互作用极其敏感（实测 [姓名22] 类值导致 ±1 抖动），
+                # 「应保留内容变少」信号对它们无意义
                 lost_dropped.add(old_text)
-        return residual, lost_absent, lost_dropped
+            # 跨段实体（评审 Critical#1）：源拼接出现 > 段内出现之和
+            if src_count > src_perpara:
+                if src_perpara == 0:
+                    cross_para_pure.add(old_text)
+                else:
+                    cross_para_adjacent.add(old_text)
+        return residual, lost_absent, lost_dropped, cross_para_pure, cross_para_adjacent
+
+    def _post_patch_leak_keys(
+        self, pdf_path: str, keys: dict[str, str]
+    ) -> set[str]:
+        """补删后全卷复检（评审 Important#3）。
+
+        在成品 PDF 的压空白全拼接文本上数键的出现次数；替换值自含该键
+        （生成值撞碎片，如 [编号22] 含 22）允许同等次数。超出即判泄漏。
+        口径注意：跨页拼接会引入假阳性方向的误报（保守方向，宁可回退）。
+        """
+        doc = fitz.open(pdf_path)
+        try:
+            full = "".join(
+                self._squeeze_with_index(page.get_text())[0] for page in doc
+            )
+        finally:
+            doc.close()
+        leaks: set[str] = set()
+        for old_text, new_text in keys.items():
+            sq = "".join(ch for ch in old_text if ch not in SQUEEZE_CHARS)
+            if not sq:
+                continue
+            allowed = new_text.count(sq)
+            if full.count(sq) > allowed:
+                leaks.add(old_text)
+        return leaks
 
     async def _targeted_pdf_redact(
         self, pdf_path: str, keys: dict[str, str]
-    ) -> int:
+    ) -> tuple[int, set[str]]:
         """对回转产物定向补删漏网实体（Issue #84 三轮）。
 
         逐字流匹配（同兜底路），只处理给定键；键文本找得到就涂红删除，
         找不到（pdf2docx 把文本改写/丢了）说明成品里没有，无需处理。
+        返回 (补删处数, 实际命中并删除的键集合)——命中空集是补删落空的
+        信号，由调用方决定是否回退（评审 Important#3）。
         """
+        matched_keys: set[str] = set()
         if not keys:
-            return 0
+            return 0, set()
         # 注意：pdf_path 是我们自己刚回转的产物（非用户上传），不走上传白名单
         doc = fitz.open(pdf_path)
         try:
@@ -865,6 +949,7 @@ class TextRedactorMixin:
             for page in doc:
                 inserts = self._redact_pdf_page_chars(page, keys)
                 patched += sum(1 for _, t, _ in inserts if t)
+                matched_keys.update(t for _, t, _ in inserts if t)
                 if inserts:
                     page.apply_redactions()
                     for rect, new_text, orig_size in inserts:
@@ -878,11 +963,20 @@ class TextRedactorMixin:
                                 rect, new_text, fontname, original_size=orig_size
                             ),
                         )
+            tmp_out: str | None = None
             if patched:
-                doc.save(pdf_path, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
+                # 全量保存（评审 Important#2）：增量保存会在文件里物理保留
+                # 被删原文的旧字节，朴素对象扫描可还原——交付物必须物理性删除。
+                # PyMuPDF 不允许非增量保存到原路径，落临时文件后原子替换
+                tmp_out = pdf_path + ".patched"
+                doc.save(
+                    tmp_out, garbage=PDF_SAVE_GARBAGE_LEVEL, deflate=True, clean=True
+                )
         finally:
             doc.close()
-        return patched
+        if tmp_out is not None:
+            os.replace(tmp_out, pdf_path)
+        return patched, matched_keys
 
     @staticmethod
     def _pdf_to_docx(input_path: str, workdir: str) -> str | None:

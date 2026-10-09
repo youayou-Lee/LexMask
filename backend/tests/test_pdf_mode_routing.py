@@ -3,7 +3,6 @@ MASK=实体定位→整页栅格化真打码（与扫描件同构）；
 替换模式=PDF→docx→替换→PDF 回转，转换失败回退原位替换。
 """
 
-import asyncio
 import os
 
 import fitz
@@ -123,8 +122,8 @@ async def test_pdf_replacement_prefers_docx_roundtrip(_dirs, monkeypatch):
     called = {}
 
     def _fake_pdf2docx(src, wd):
+
         from docx import Document as _Doc
-        import shutil as _sh
         fake_docx = os.path.join(wd, "source.docx")
         d = _Doc()
         for e in _entities():
