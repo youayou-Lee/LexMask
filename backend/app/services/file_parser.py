@@ -657,6 +657,19 @@ class FileParser:
                     self._pdf_page_image_cache.popitem(last=False)
         return img_data
 
+    async def get_pdf_page_count(self, file_path: str) -> int:
+        """获取 PDF 总页数（加密卷走统一认证入口）。
+
+        Issue #83：成品预览翻页需要该 PDF 自身的真实页数——替换模式 docx 回
+        转后成品页数可能与原卷不同，不能用上传时记录的 page_count 代替。
+        """
+        _validate_path(file_path)
+        doc = open_pdf_checked(file_path)
+        try:
+            return len(doc)
+        finally:
+            doc.close()
+
     async def get_pdf_page_text_blocks(self, file_path: str, page: int, dpi: int = 150):
         """Return native PDF text-layer blocks mapped into rendered-page pixels."""
         _validate_path(file_path)

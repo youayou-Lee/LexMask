@@ -40,18 +40,31 @@ export function isMaskAllowedForFile(fileType?: string): boolean {
   return normalized === 'pdf' || normalized === 'image' || normalized === 'pdf_scanned';
 }
 
-// Issue #66：预览范式跟随处理模式——文本型 PDF 在打码模式下切到图像工作台
-// （页面图+拉框，与扫描件一致），替换模式保持文本范式。docx/txt 打码被
-// #59 门控不可能出现，扫描件替换被门控恒为图像，故不存在两头落空的组合。
-export function isVisualPreviewMode(
-  fileType?: string,
-  isScanned?: boolean,
-  processingMode?: 'mask' | 'replace',
-): boolean {
+// Issue #83：预览范式由文件形态决定，与处理方式无关——文本型 PDF 也走页
+// 面视图（打码=可编辑框，替换=只读高亮框，替换另提供文本辅助视图切换）。
+// 扫描件/图片恒为页面视图；docx/txt 恒为文本范式（打码被 #59 门控不可能
+// 出现，扫描件替换被门控恒为图像，故不存在两头落空的组合）。
+export function isVisualPreviewMode(fileType?: string, isScanned?: boolean): boolean {
   if (!fileType) return false;
   const normalized = fileType.toLowerCase();
-  if (normalized === 'image' || normalized === 'pdf_scanned' || isScanned) return true;
-  return normalized === 'pdf' && processingMode === 'mask';
+  return (
+    normalized === 'image' || normalized === 'pdf_scanned' || normalized === 'pdf' || !!isScanned
+  );
+}
+
+// Issue #83：替换模式页面视图的展示框——只取 ner 定位框（manual 框是打码
+// 工作台对象，不进替换预览、执行也不上送，语义一致）；实体被删除 → 框消
+// 失；实体取消勾选 → 框呈「已取消」态（与文本视图半透明 mark 同语义）。
+export function boxesForReplacePreview(
+  boxes: BoundingBox[],
+  entityByText: Map<string, { selected?: boolean }> | null,
+): BoundingBox[] {
+  return boxes.flatMap((box) => {
+    if (box.source !== 'ner' && !box.id?.startsWith('ner_')) return [];
+    const entity = entityByText?.get(box.text ?? '');
+    if (!entity) return [];
+    return [{ ...box, selected: entity.selected !== false }];
+  });
 }
 
 // Issue #66 A 案：文本型文件在替换模式下不携带拉框——后端见到「文本 PDF +

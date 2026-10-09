@@ -19,7 +19,8 @@ import { buildTextSegments } from '@/utils/textRedactionSegments';
 import type { VersionHistoryEntry } from '@/types';
 import type { BoundingBox, Entity, FileInfo, VisionTypeConfig } from '../types';
 import { PlaygroundResultActionBar, RedactionReportSection } from './playground-result-action-bar';
-import { TextResultView, ImageResultView } from './playground-result-views';
+import { TextResultView, ImageResultView, OutputResultView } from './playground-result-views';
+import { useOutputPagePreview } from '../hooks/use-output-page-preview';
 
 export interface PlaygroundResultProps {
   fileInfo: FileInfo | null;
@@ -78,11 +79,32 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
 }) => {
   const t = useT();
   const [mobileTab, setMobileTab] = useState<'original' | 'redacted' | 'mapping'>('original');
+  // Issue #83：结果页「对照 | 成品」视图切换（成品=下载文件的实际渲染）
+  const [resultView, setResultView] = useState<'compare' | 'output'>('compare');
+  const [outputPage, setOutputPage] = useState(1);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const clickCounterRef = useRef<Record<string, number>>({});
   const activeMarkTimeoutRef = useRef<number | null>(null);
   const activeMarksRef = useRef<HTMLElement[]>([]);
   const resultReady = !isImageMode || Boolean(redactedImageUrl);
+
+  // 成品视图仅文本型 PDF 提供（扫描件/图片的结果页本就实时渲染成品；
+  // docx/txt 成品非 PDF 无页图，page-image 端点也不支持）
+  const outputPreviewAvailable = !isImageMode && fileInfo?.file_type === 'pdf';
+  const outputPreview = useOutputPagePreview({
+    fileId: outputPreviewAvailable ? (fileInfo?.file_id ?? null) : null,
+    page: outputPage,
+    enabled: outputPreviewAvailable && resultView === 'output',
+  });
+  // 翻页时按成品真实页数钳制（docx 回转后成品页数可能与原卷不同；页数未知
+  // 时先按原文页数占位钳制，防止首帧前快速点页触发越界 400）
+  const handleOutputPageChange = useCallback(
+    (page: number) => {
+      const bound = outputPreview.pageCount ?? totalPages;
+      setOutputPage(Math.min(Math.max(1, page), Math.max(1, bound)));
+    },
+    [outputPreview.pageCount, totalPages],
+  );
 
   const isTextPaginated = !isImageMode && totalPages > 1;
   const pageEntities = useMemo(
@@ -286,28 +308,69 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
         />
       )}
 
-      <div className="mx-3 flex shrink-0 gap-1 rounded-t-[20px] border border-border/60 border-b-0 bg-background px-2 pt-2 md:hidden">
-        {(
-          [
-            ['original', t('playground.mobile.original')],
-            ['redacted', t('playground.mobile.redacted')],
-            ['mapping', t('playground.mobile.mapping')],
-          ] as const
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => setMobileTab(key)}
-            className={cn(
-              'rounded-xl px-3 py-2 text-xs font-medium transition-colors',
-              mobileTab === key ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground',
-            )}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {outputPreviewAvailable && (
+        <div
+          className="mx-3 flex shrink-0 items-center gap-1 self-start rounded-2xl border border-border/60 bg-[var(--surface-control)] p-1 shadow-[var(--shadow-control)] md:mx-4"
+          data-testid="playground-result-view-toggle"
+        >
+          {(
+            [
+              ['compare', t('playground.resultViewToggle.compare')],
+              ['output', t('playground.resultViewToggle.output')],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setResultView(key)}
+              className={cn(
+                'whitespace-nowrap rounded-xl px-3 py-1.5 text-xs font-medium transition-colors',
+                resultView === key
+                  ? 'bg-card text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+              data-testid={`playground-result-view-${key}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {isImageMode ? (
+      {resultView === 'compare' && (
+        <div className="mx-3 flex shrink-0 gap-1 rounded-t-[20px] border border-border/60 border-b-0 bg-background px-2 pt-2 md:hidden">
+          {(
+            [
+              ['original', t('playground.mobile.original')],
+              ['redacted', t('playground.mobile.redacted')],
+              ['mapping', t('playground.mobile.mapping')],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setMobileTab(key)}
+              className={cn(
+                'rounded-xl px-3 py-2 text-xs font-medium transition-colors',
+                mobileTab === key ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {resultView === 'output' && outputPreviewAvailable ? (
+        <OutputResultView
+          url={outputPreview.url}
+          pageCount={outputPreview.pageCount}
+          fallbackPageCount={totalPages}
+          loading={outputPreview.loading}
+          error={outputPreview.error}
+          currentPage={outputPage}
+          onPageChange={handleOutputPageChange}
+          getVisionTypeConfig={getVisionTypeConfig}
+        />
+      ) : isImageMode ? (
         <ImageResultView
           fileInfo={fileInfo}
           imageUrl={imageUrl}

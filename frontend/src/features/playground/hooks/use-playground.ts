@@ -140,43 +140,38 @@ export function usePlayground() {
     getRecognitionBlocker,
   });
 
-  // Issue #66：文本型 PDF + 打码 = 图像工作台。派生一次多处复用（评审 M7：
-  // 三处独立重算会漂移——工作台/历史语义/执行阈值必须同源）
-  const textPdfMaskMode = useMemo(
+  // Issue #83：预览范式由文件形态决定——文本型 PDF（不分打码/替换）都走页
+  // 面视图，派生一次多处复用（评审 M7：工作台/历史语义/执行阈值必须同源）。
+  // textPdfMaskMode 保留执行语义分叉：框选中同步（syncEntitiesWithNerBoxes）
+  // 与撤销/重做只属于打码工作台，替换模式画布只读、执行仍走实体勾选。
+  const textPdfVisualMode = useMemo(
     () =>
       !fileCtx.isImageMode &&
-      isVisualPreviewMode(
-        fileCtx.fileInfo?.file_type,
-        Boolean(fileCtx.fileInfo?.is_scanned),
-        recognition.processingMode,
-      ),
-    [
-      fileCtx.isImageMode,
-      fileCtx.fileInfo?.file_type,
-      fileCtx.fileInfo?.is_scanned,
-      recognition.processingMode,
-    ],
+      isVisualPreviewMode(fileCtx.fileInfo?.file_type, Boolean(fileCtx.fileInfo?.is_scanned)),
+    [fileCtx.isImageMode, fileCtx.fileInfo?.file_type, fileCtx.fileInfo?.is_scanned],
   );
+  const textPdfMaskMode = textPdfVisualMode && recognition.processingMode === 'mask';
 
   const imageCtx = usePlaygroundImage({
     fileInfo: fileCtx.fileInfo,
     redactionVersion,
     showRedactedPreview: fileCtx.stage === 'result',
-    // Issue #66：文本型 PDF 打码模式切图像工作台（页面图+拉框）
-    staticPagePreview: textPdfMaskMode,
+    // Issue #83：文本型 PDF 两种模式都加载页面图（页面视图底座）
+    staticPagePreview: textPdfVisualMode,
   });
 
-  // Issue #66 验收反馈：识别实体必须像扫描件一样自动成框（手拉框只是兜底）。
-  // 文本 PDF 打码模式下，识别完成/实体集变化时调用后端 locate-entities
-  // （与执行链路共用定位核心，所见即所打），ner 框并入 boundingBoxes 展示；
-  // 手拉框（manual）保留。按实体文本签名去重，避免模式来回切换反复请求。
+  // Issue #66 验收反馈、#83 扩展：识别实体自动成框（手拉框只是兜底）。
+  // 文本 PDF 页面视图下（两种处理方式），识别完成/实体集变化时调用后端
+  // locate-entities（与执行链路共用定位核心，所见即所打），ner 框并入
+  // boundingBoxes 展示；手拉框（manual）保留。按实体文本签名去重，避免
+  // 模式来回切换反复请求。
   const locatedSignatureRef = useRef<string | null>(null);
   const locateEpochRef = useRef(0);
   useEffect(() => {
     const fileId = fileCtx.fileInfo?.file_id;
     const entities = entityCtx.entities;
     const signature =
-      fileId && textPdfMaskMode && entities.length
+      fileId && textPdfVisualMode && entities.length
         ? fileId + ':' + [...new Set(entities.map((e) => e.text))].join('\u0001')
         : null;
     if (signature === locatedSignatureRef.current) return;
@@ -206,7 +201,7 @@ export function usePlayground() {
       });
     // setBoundingBoxes 稳定；entities 以签名为准避免每词抖动重触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [textPdfMaskMode, fileCtx.fileInfo?.file_id, entityCtx.entities]);
+  }, [textPdfVisualMode, fileCtx.fileInfo?.file_id, entityCtx.entities]);
 
   const { setTypeTab } = recognition;
   useEffect(() => {
@@ -484,13 +479,11 @@ export function usePlayground() {
             selectedEntities.filter((e) => !nerBoxTexts.has(e.text)).length
           : selectedEntities.length;
 
+      // Issue #79 v3：打码无子选项，固定 mask（文本型 PDF=栅格化涂黑框）；
+      // 替换分支唯一方案=化名词池+对照表确认（pseudonym），「打码方式」选择
+      // 已整体移除。replacementMode 残留值不再参与任何执行决策。
       const isPseudonym = recognition.processingMode === 'replace' && !fileCtx.isImageMode;
-      // 双保险：打码分支永远不透传 pseudonym（防御残留状态），回落结构化标签
-      const effectiveReplacementMode = isPseudonym
-        ? 'pseudonym'
-        : recognition.replacementMode === 'pseudonym'
-          ? 'structured'
-          : recognition.replacementMode;
+      const effectiveReplacementMode = isPseudonym ? 'pseudonym' : 'mask';
       const pseudonymReplacements: Record<string, string> = {};
       if (isPseudonym) {
         for (const entity of selectedEntities) {

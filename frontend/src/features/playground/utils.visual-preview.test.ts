@@ -3,32 +3,69 @@
 import { describe, expect, it } from 'vitest';
 import {
   boxesForRedactPayload,
+  boxesForReplacePreview,
   isVisualPreviewMode,
   mergeNerBoxes,
   syncEntitiesWithNerBoxes,
 } from './utils';
+import type { BoundingBox } from './types';
 
-// Issue #66：预览范式跟随处理模式
+// Issue #83：预览范式由文件形态决定，与处理方式无关
 describe('isVisualPreviewMode', () => {
-  it('扫描件/图片恒为图像范式（与模式无关）', () => {
-    expect(isVisualPreviewMode('pdf_scanned', true, 'mask')).toBe(true);
-    expect(isVisualPreviewMode('pdf_scanned', true, 'replace')).toBe(true);
-    expect(isVisualPreviewMode('image', false, 'replace')).toBe(true);
-    expect(isVisualPreviewMode('image', false, 'mask')).toBe(true);
+  it('扫描件/图片恒为页面范式', () => {
+    expect(isVisualPreviewMode('pdf_scanned', true)).toBe(true);
+    expect(isVisualPreviewMode('image', false)).toBe(true);
+    expect(isVisualPreviewMode('docx', true)).toBe(true);
   });
 
-  it('文本型 PDF：打码=图像工作台，替换=文本范式', () => {
-    expect(isVisualPreviewMode('pdf', false, 'mask')).toBe(true);
-    expect(isVisualPreviewMode('pdf', false, 'replace')).toBe(false);
+  it('文本型 PDF：两种处理方式都是页面范式（打码=可编辑框，替换=只读高亮）', () => {
+    expect(isVisualPreviewMode('pdf', false)).toBe(true);
   });
 
   it('docx/txt 等文本格式恒为文本范式（打码被 #59 门控不存在）', () => {
-    expect(isVisualPreviewMode('docx', false, 'mask')).toBe(false);
-    expect(isVisualPreviewMode('txt', false, 'replace')).toBe(false);
+    expect(isVisualPreviewMode('docx', false)).toBe(false);
+    expect(isVisualPreviewMode('txt', false)).toBe(false);
   });
 
   it('无文件类型时为 false', () => {
-    expect(isVisualPreviewMode(undefined, false, 'mask')).toBe(false);
+    expect(isVisualPreviewMode(undefined, false)).toBe(false);
+  });
+});
+
+// Issue #83：替换页面视图的展示框——只取 ner 定位框，随实体勾选态联动
+describe('boxesForReplacePreview', () => {
+  const nerBox = (text: string, overrides: Partial<BoundingBox> = {}): BoundingBox =>
+    ({ id: `ner_${text}`, source: 'ner', text, type: 'NAME', selected: true, ...overrides }) as never;
+  const entityByText = new Map([
+    ['张三', { selected: true }],
+    ['李四', { selected: false }],
+  ]);
+
+  it('只取 ner 框：manual 框不进替换预览（打码工作台对象，执行也不上送）', () => {
+    const boxes = [nerBox('张三'), { id: 'm1', source: 'manual', text: '手工框' } as never];
+    const out = boxesForReplacePreview(boxes, entityByText);
+    expect(out).toHaveLength(1);
+    expect(out[0].text).toBe('张三');
+  });
+
+  it('实体被删除（text 不在实体表）→ 框消失', () => {
+    const boxes = [nerBox('张三'), nerBox('王五')];
+    const out = boxesForReplacePreview(boxes, entityByText);
+    expect(out.map((b) => b.text)).toEqual(['张三']);
+  });
+
+  it('实体取消勾选 → 框呈未选态（与文本视图半透明 mark 同语义）', () => {
+    const out = boxesForReplacePreview([nerBox('李四')], entityByText);
+    expect(out[0].selected).toBe(false);
+  });
+
+  it('实体勾选态缺省（undefined）→ 视为选中（与 mergeNerBoxes 同口径）', () => {
+    const out = boxesForReplacePreview([nerBox('赵六')], new Map([['赵六', {}]]));
+    expect(out[0].selected).toBe(true);
+  });
+
+  it('实体表为空 → 全部框消失', () => {
+    expect(boxesForReplacePreview([nerBox('张三')], new Map())).toEqual([]);
   });
 });
 

@@ -22,6 +22,7 @@ import {
 } from './playground-context';
 import { needsSwitchConfirm, splitVirtualPages } from './lib/playground-draft';
 import {
+  boxesForReplacePreview,
   isMaskAllowedForFile,
   isVisualPreviewMode,
   previewEntityHoverRingClass,
@@ -154,13 +155,27 @@ const PlaygroundInner: FC = () => {
     }
   }, [maskAllowed, processingMode, setProcessingMode]);
 
-  // Issue #66：预览范式跟随处理模式——文本型 PDF 打码=图像工作台（页面图+
-  // 拉框，与扫描件一致），替换=文本范式。手拉框存于 boundingBoxes 草稿态，
-  // 切换模式不清理（A 案：打码/替换各管各的，切回打码框原样恢复）。
-  const visualMaskPreview =
+  // Issue #83：预览范式由文件形态决定——文本型 PDF 两种处理方式都走页面视图。
+  // 打码=可编辑框工作台（与扫描件一致）；替换=只读高亮框，另有「文本视图」
+  // 作辅助校对（圈选补实体能力保留在文本视图）。手拉框存于 boundingBoxes
+  // 草稿态，切换模式不清理（切回打码框原样恢复）。
+  const textPdfPagePreview =
     !isImageMode &&
-    isVisualPreviewMode(fileInfo?.file_type, Boolean(fileInfo?.is_scanned), processingMode);
-  const isVisualPreview = isImageMode || visualMaskPreview;
+    isVisualPreviewMode(fileInfo?.file_type, Boolean(fileInfo?.is_scanned));
+  const maskPageView = isImageMode || (textPdfPagePreview && processingMode === 'mask');
+  const [replacePreviewView, setReplacePreviewView] = useState<'page' | 'text'>('page');
+  // 换文件回到默认页面视图：视图偏好不跨文件携带，保证新会话口径一致
+  const lastPreviewFileIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const fileId = fileInfo?.file_id ?? null;
+    if (lastPreviewFileIdRef.current !== null && lastPreviewFileIdRef.current !== fileId) {
+      setReplacePreviewView('page');
+    }
+    lastPreviewFileIdRef.current = fileId;
+  }, [fileInfo?.file_id]);
+  const replacePageView =
+    textPdfPagePreview && processingMode === 'replace' && replacePreviewView === 'page';
+  const showPageCanvas = maskPageView || replacePageView;
 
   const pagesArr = fileInfo?.pages;
   // 虚拟分页（Issue #33 验收反馈）：MinerU 转出的 markdown 单页可达数十万字符、
@@ -200,6 +215,11 @@ const PlaygroundInner: FC = () => {
   const entityByText = useMemo(() => {
     return buildEntityCoverageMap(entities);
   }, [entities]);
+  // 替换页面视图的展示框：ner 框随实体勾选/删除联动（只读，不可拉框）
+  const replacePreviewBoxes = useMemo(
+    () => boxesForReplacePreview(visibleBoxes, entityByText),
+    [visibleBoxes, entityByText],
+  );
   const previewCoverageMap = useMemo(() => {
     const map: Record<string, string> = {};
     for (const text of entityByText.keys()) {
@@ -343,23 +363,38 @@ const PlaygroundInner: FC = () => {
             <div className="saas-panel flex min-w-0 flex-1 flex-col overflow-hidden">
               {/* popout 尚不支持静态页面图协议（文本 PDF 打码模式只能拿到原始
                   PDF 下载地址当 img src，会开出坏窗口）——评审 I1：回退仅
-                  扫描件/图片开放独立窗口，待 popout 支持静态页后再放开 */}
+                  扫描件/图片开放独立窗口，待 popout 支持静态页后再放开；
+                  #83 统一预览后文本 PDF 两种模式均维持现状不开独立窗口 */}
               <PlaygroundToolbar
                 filename={fileInfo?.filename}
-                isImageMode={isVisualPreview}
-                canUndo={canUndo}
-                canRedo={canRedo}
+                isImageMode={showPageCanvas}
+                // 替换页面视图下框历史不可见（预览过滤 manual 框），撤销/重做
+                // 置灰防「点了没反应还隐改打码草稿」（评审 Minor#4）
+                canUndo={canUndo && !replacePageView}
+                canRedo={canRedo && !replacePageView}
                 onUndo={handleUndo}
                 onRedo={handleRedo}
                 onReset={handleReset}
                 hintText={
-                  visualMaskPreview
-                    ? t('playground.previewHint.pdfMask')
-                    : isImageMode
-                      ? t('playground.previewHint.image')
-                      : t('playground.previewHint.text')
+                  replacePageView
+                    ? t('playground.previewHint.pdfReplacePage')
+                    : maskPageView && !isImageMode
+                      ? t('playground.previewHint.pdfMask')
+                      : isImageMode
+                        ? t('playground.previewHint.image')
+                        : t('playground.previewHint.text')
                 }
                 onPopout={isImageMode ? openPopout : undefined}
+                viewToggle={
+                  textPdfPagePreview && processingMode === 'replace'
+                    ? {
+                        value: replacePreviewView,
+                        onChange: setReplacePreviewView,
+                        pageLabel: t('playground.previewViewToggle.page'),
+                        textLabel: t('playground.previewViewToggle.text'),
+                      }
+                    : undefined
+                }
               />
 
               <div
@@ -368,19 +403,26 @@ const PlaygroundInner: FC = () => {
                 onKeyUp={ui.handleTextSelect}
                 className="flex min-h-0 flex-1 flex-col overflow-hidden select-text"
               >
-                {isVisualPreview ? (
+                {showPageCanvas ? (
                   <div className="flex-1 min-h-0">
                     {fileInfo && (
                       <ImageBBoxEditor
-                        imageSrc={visualMaskPreview ? staticPageUrl : imageUrl}
-                        boxes={visibleBoxes}
-                        onBoxesChange={(nextBoxes) =>
-                          setBoundingBoxes(mergeVisibleBoxes(nextBoxes))
+                        imageSrc={isImageMode ? imageUrl : staticPageUrl}
+                        boxes={replacePageView ? replacePreviewBoxes : visibleBoxes}
+                        lockDraw={replacePageView}
+                        onBoxesChange={
+                          replacePageView
+                            ? () => {}
+                            : (nextBoxes) => setBoundingBoxes(mergeVisibleBoxes(nextBoxes))
                         }
-                        onBoxesCommit={(previousBoxes, nextBoxes) => {
-                          imageHistory.save(mergeVisibleBoxes(previousBoxes, nextBoxes));
-                          setBoundingBoxes(mergeVisibleBoxes(nextBoxes, previousBoxes));
-                        }}
+                        onBoxesCommit={
+                          replacePageView
+                            ? undefined
+                            : (previousBoxes, nextBoxes) => {
+                                imageHistory.save(mergeVisibleBoxes(previousBoxes, nextBoxes));
+                                setBoundingBoxes(mergeVisibleBoxes(nextBoxes, previousBoxes));
+                              }
+                        }
                         getTypeConfig={recognition.getVisionTypeConfig}
                         viewportTopSlot={
                           totalPages > 1 ? (
@@ -421,15 +463,16 @@ const PlaygroundInner: FC = () => {
                   </div>
                 )}
 
-                {!isVisualPreview && <PlaygroundTextSelectionPopover entityTypes={entityTypes} />}
-                {!isVisualPreview && <PlaygroundEntityPopover />}
+                {!showPageCanvas && <PlaygroundTextSelectionPopover entityTypes={entityTypes} />}
+                {!showPageCanvas && <PlaygroundEntityPopover />}
               </div>
             </div>
 
-            {/* Issue #66：图像工作台（含文本 PDF 打码）右侧=区域列表（ner 框+
-                手拉框），与扫描件同体验；计数走 visibleBoxes 分支 */}
+            {/* Issue #66/#83：区域列表面板（ner 框+手拉框）只属于打码工作台
+                （扫描件/图片+文本 PDF 打码）；替换模式（页面/文本视图）保持
+                实体面板+coverage 计数，勾选/删除交互不变 */}
             <PlaygroundEntityPanel
-              isImageMode={isVisualPreview}
+              isImageMode={maskPageView}
               replacementLocked={isImageMode}
               isLoading={isLoading}
               recognitionIssue={recognitionIssue}
@@ -440,16 +483,14 @@ const PlaygroundInner: FC = () => {
               visibleBoxes={visibleBoxes}
               selectedCount={selectedCount}
               displaySelectedCount={
-                isImageMode ? undefined : previewCoverageSelectedCount
+                maskPageView ? undefined : previewCoverageSelectedCount
               }
               displayTotalCount={
-                isImageMode ? undefined : previewCoverageTotalCount
+                maskPageView ? undefined : previewCoverageTotalCount
               }
               displayStats={
                 Object.keys(previewCoverageStats).length > 0 ? previewCoverageStats : undefined
               }
-              replacementMode={recognition.replacementMode}
-              setReplacementMode={recognition.setReplacementMode}
               processingMode={processingMode}
               setProcessingMode={setProcessingMode}
               maskDisabled={!maskAllowed}

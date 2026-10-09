@@ -185,7 +185,7 @@ const enBase: Record<string, string> = {
   'playground.processingModeMask': 'Masking',
   'playground.processingModeMaskDesc': 'Cover sensitive content',
   'playground.processingModeReplace': 'Replace (Pseudonym)',
-  'playground.processingModeReplaceDesc': 'Fictional words, still readable',
+  'playground.processingModeReplaceDesc': 'Replace text, keep it readable',
   'playground.processingModeReplaceUnavailable': 'Unavailable for scanned files / images',
   'playground.processingModeScannedNotice':
     'Replacement (pseudonym) is not yet available for scanned PDFs / images; only masking is supported for now.',
@@ -1213,10 +1213,6 @@ const enOverrides: Record<string, string> = {
   'playground.loading.visionHybrid': 'Running vision detection (OCR text + image features)...',
   'playground.loading.text': 'Recognizing sensitive text...',
   'playground.startRedact': 'Start redaction',
-  'playground.recommended': 'Recommended',
-  'playground.redactMode': 'Masking style',
-  'playground.redactModeHint':
-    'How masked content is rendered. Not used in Replace (Pseudonym) mode.',
   'playground.noResultsTitle': 'No redaction-ready results',
   'playground.noResultsDescText':
     'Run recognition again, adjust text recognition items, or select text in the document to add a manual annotation.',
@@ -1263,6 +1259,14 @@ const enOverrides: Record<string, string> = {
   'playground.redactedResult': 'Redacted result',
   'playground.redactedPreviewPreparing': 'Preparing redacted preview...',
   'playground.redactedPreviewFailed': 'Redacted preview failed to load',
+  'playground.resultViewToggle.compare': 'Compare',
+  'playground.resultViewToggle.output': 'Final PDF',
+  'playground.outputPreview.title': 'Final output preview',
+  'playground.outputPreview.hint': 'This is exactly the file you will download',
+  'playground.outputPreview.loading': 'Rendering final output…',
+  'playground.outputPreview.idle': 'Final output page will load here.',
+  'playground.outputPreview.notReady': 'Final output not generated yet',
+  'playground.outputPreview.failed': 'Failed to render final output',
   'playground.redactedPreviewFailedDesc':
     'The original image is not shown here as a fallback. Return to edit, retry redaction, or download only after confirming the output.',
   'playground.originalImage': 'Original image',
@@ -1285,6 +1289,9 @@ const enOverrides: Record<string, string> = {
   'playground.noContent': 'No content available yet.',
   'playground.previewHint.image': 'Adjust regions, then choose what should be redacted.',
   'playground.previewHint.pdfMask': 'Mask mode: recognized entities are auto-located as boxes you can toggle or adjust; draw extra boxes to cover anything missed.',
+  'playground.previewHint.pdfReplacePage': 'Replace mode, page view: highlight boxes follow entity toggles in the side panel (read-only); switch to text view to select missed text.',
+  'playground.previewViewToggle.page': 'Page view',
+  'playground.previewViewToggle.text': 'Text view',
   'playground.locateMissed': '{n} entities could not be auto-located (split across lines etc.); draw boxes manually as fallback.',
   'playground.locateFailed': 'Entity location failed; draw boxes manually or retry later.',
   'playground.previewHint.text':
@@ -1537,6 +1544,7 @@ const enOverrides: Record<string, string> = {
   'editor.deselected': 'Deselected',
   'editor.exitDraw': 'Exit draw mode',
   'editor.enterDraw': 'Enter bounding box draw mode',
+  'editor.drawLockedHint': 'Box drawing is not available in replace mode',
   'editor.drawModeActive': 'Draw mode (ESC to exit)',
   'editor.drawModeTrigger': 'Draw box',
   'editor.deleteSelected': 'Delete selected region',

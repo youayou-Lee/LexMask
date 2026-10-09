@@ -39,8 +39,6 @@ export interface PlaygroundEntityPanelProps {
   displaySelectedCount?: number;
   displayTotalCount?: number;
   displayStats?: Record<string, { total: number; selected: number }>;
-  replacementMode: 'structured' | 'smart' | 'mask' | 'pseudonym';
-  setReplacementMode: (mode: 'structured' | 'smart' | 'mask' | 'pseudonym') => void;
   maskDisabled?: boolean;
   processingMode: 'mask' | 'replace';
   setProcessingMode: (mode: 'mask' | 'replace') => void;
@@ -80,8 +78,6 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
     displaySelectedCount,
     displayTotalCount,
     displayStats,
-    replacementMode,
-    setReplacementMode,
     processingMode,
     setProcessingMode,
     maskDisabled = false,
@@ -221,28 +217,20 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
               replaceDisabled={replacementLocked}
               maskDisabled={maskDisabled}
             />
-            {!replacementLocked &&
-              (processingMode === 'mask' ? (
-                <MaskModeSelector
-                  entities={entities}
-                  mode={replacementMode === 'pseudonym' ? 'structured' : replacementMode}
-                  onModeChange={(mode) => {
-                    clearPlaygroundTextPresetTracking();
-                    setReplacementMode(mode);
-                  }}
-                />
-              ) : (
-                <PseudonymMapSection
-                  entities={mappingEntities ?? entities}
-                  pseudonymMap={pseudonymMap}
-                  onPseudonymChange={onPseudonymChange}
-                  loading={pseudonymMapLoading}
-                  error={pseudonymMapError}
-                  onRetry={onRetryPseudonymLoad}
-                  conflicts={pseudonymConflicts}
-                  typeNameById={typeNameById}
-                />
-              ))}
+            {/* Issue #79 v3：打码=直接涂黑，无子选项（执行固定 mask）；
+                替换（化名）分支唯一方案=化名对照表确认流，「打码方式」选择已删除 */}
+            {!replacementLocked && processingMode === 'replace' && (
+              <PseudonymMapSection
+                entities={mappingEntities ?? entities}
+                pseudonymMap={pseudonymMap}
+                onPseudonymChange={onPseudonymChange}
+                loading={pseudonymMapLoading}
+                error={pseudonymMapError}
+                onRetry={onRetryPseudonymLoad}
+                conflicts={pseudonymConflicts}
+                typeNameById={typeNameById}
+              />
+            )}
 
             <div className="space-y-1">
               <Label htmlFor="playground-watermark" className="text-xs text-muted-foreground">
@@ -473,69 +461,6 @@ const ProcessingModeSelector: FC<{
           {t('playground.processingModeScannedNotice')}
         </p>
       )}
-    </div>
-  );
-};
-
-const MaskModeSelector: FC<{
-  entities: Entity[];
-  mode: 'structured' | 'smart' | 'mask';
-  onModeChange: (mode: 'structured' | 'smart' | 'mask') => void;
-}> = ({ entities, mode, onModeChange }) => {
-  const t = useT();
-  const sampleEntity = entities.find(
-    (entity) => entity.selected !== false && entity.text && entity.text.length > 0,
-  );
-  const modes: { value: 'structured' | 'smart' | 'mask'; label: string; badge?: string }[] = [
-    { value: 'structured', label: t('mode.structured'), badge: t('playground.recommended') },
-    { value: 'smart', label: t('mode.smart') },
-    { value: 'mask', label: t('mode.mask') },
-  ];
-
-  return (
-    <div className="space-y-2">
-      <label className="block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {t('playground.redactMode')}
-      </label>
-      <p className="text-[11px] leading-4 text-muted-foreground">
-        {t('playground.redactModeHint')}
-      </p>
-      <div className="grid grid-cols-3 gap-1.5">
-        {modes.map((item) => {
-          const selected = mode === item.value;
-          return (
-            <label
-              key={item.value}
-              title={getModePreview(item.value, sampleEntity)}
-              className={ModeOptionCardClasses(selected)}
-            >
-              <div className="flex items-center gap-1.5">
-                <input
-                  type="radio"
-                  name="replacementMode"
-                  value={item.value}
-                  checked={selected}
-                  onChange={() => onModeChange(item.value)}
-                  className="sr-only"
-                />
-                <ModeRadioDot active={selected} />
-                <span className={ModeOptionLabelClasses(selected)}>{item.label}</span>
-              </div>
-              {item.badge && (
-                <Badge
-                  variant="outline"
-                  className="hidden shrink-0 rounded-full px-1.5 py-0 xl:inline-flex"
-                >
-                  {item.badge}
-                </Badge>
-              )}
-            </label>
-          );
-        })}
-      </div>
-      <p className="truncate text-[11px] text-muted-foreground">
-        {getModePreview(mode, sampleEntity)}
-      </p>
     </div>
   );
 };
