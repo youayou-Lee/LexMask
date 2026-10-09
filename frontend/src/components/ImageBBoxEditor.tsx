@@ -35,6 +35,10 @@ interface ImageBBoxEditorProps {
 
   readOnly?: boolean;
 
+  /** Issue #83（用户验收反馈）：预览共用——交互锁死但工具栏保留（拉框按钮
+   * 置灰+悬浮提示），布局与可编辑态完全一致；readOnly 则整条工具栏隐藏。 */
+  lockDraw?: boolean;
+
   viewportTopSlot?: React.ReactNode;
 
   viewportBottomSlot?: React.ReactNode;
@@ -225,11 +229,15 @@ function ImageBBoxEditor({
   onBoxesCommit,
   getTypeConfig,
   readOnly = false,
+  lockDraw = false,
   viewportTopSlot,
   viewportBottomSlot,
 }: ImageBBoxEditorProps) {
   // --- hooks ----------------------------------------------------------------
   const t = useT();
+  // lockDraw：画布编辑交互与 readOnly 同锁（拖拽/拉框/手柄全禁），但视口缩放
+  // 与工具栏保留——预览在打码/替换两种模式下共用同一套外观（用户验收反馈）
+  const interactionsLocked = readOnly || lockDraw;
   const viewport = useImageViewport(imageSrc, readOnly);
   const {
     containerRef,
@@ -250,7 +258,7 @@ function ImageBBoxEditor({
     onBoxesCommit,
     displaySize,
     imageRef,
-    readOnly,
+    readOnly: interactionsLocked,
   });
   const {
     selectedBoxId,
@@ -505,7 +513,7 @@ function ImageBBoxEditor({
             config={config}
             isSelected={isSelected}
             drawMode={drawMode}
-            readOnly={readOnly}
+            readOnly={interactionsLocked}
             percentCoords={percentCoords}
             displaySize={displaySize}
             t={t}
@@ -522,7 +530,7 @@ function ImageBBoxEditor({
       getTypeConfig,
       handleBoxMouseDownEvent,
       handleBoxTouchStartEvent,
-      readOnly,
+      interactionsLocked,
       renderResizeHandles,
       selectedBoxId,
       t,
@@ -533,14 +541,18 @@ function ImageBBoxEditor({
   // --- JSX ------------------------------------------------------------------
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Toolbar (hidden in readOnly mode) */}
+      {/* Toolbar（readOnly 整条隐藏；lockDraw 保留——拉框按钮置灰，其余照常） */}
       {!readOnly && (
         <div className="flex flex-wrap items-center gap-1.5 border-b border-border/70 bg-[var(--surface-overlay)] px-2 py-1.5 flex-shrink-0">
           <button
             onClick={() => setDrawMode(!drawMode)}
+            disabled={lockDraw}
+            title={lockDraw ? t('editor.drawLockedHint') : undefined}
             aria-label={drawMode ? t('editor.exitDraw') : t('editor.enterDraw')}
             aria-pressed={drawMode}
             className={`px-3 py-1.5 text-xs font-medium rounded-lg flex items-center gap-1.5 transition-colors ${
+              lockDraw ? 'cursor-not-allowed opacity-50' : ''
+            } ${
               drawMode
                 ? 'bg-foreground text-background shadow-[var(--shadow-control)]'
                 : 'border border-input bg-[var(--surface-control)] text-muted-foreground hover:bg-accent hover:text-foreground'
