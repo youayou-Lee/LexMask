@@ -44,6 +44,13 @@ import {
   SidebarSeparator,
 } from '@/components/ui/sidebar';
 
+// 暂时下线的处理流程入口：整条从侧边栏隐藏（路由与页面保留可达），恢复开放时从此处删除即可。
+const HIDDEN_NAV_PATHS: ReadonlySet<string> = new Set(['/structured', '/dicom']);
+
+export function filterHiddenNavItems<T extends { path: string }>(items: T[]): T[] {
+  return items.filter((item) => !HIDDEN_NAV_PATHS.has(item.path));
+}
+
 interface NavItem {
   path: string;
   label: string;
@@ -123,6 +130,8 @@ export function AppSidebar() {
     },
   ];
 
+  const visibleWorkflowNavItems = filterHiddenNavItems(workflowNavItems);
+
   const configNavItems: NavItem[] = [
     {
       path: '/settings',
@@ -185,7 +194,7 @@ export function AppSidebar() {
             </SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu className="gap-0.5">
-                {workflowNavItems.map((item) => (
+                {visibleWorkflowNavItems.map((item) => (
                   <SidebarNavItem key={item.path} item={item} pathname={location.pathname} />
                 ))}
               </SidebarMenu>
