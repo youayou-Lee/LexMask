@@ -31,7 +31,7 @@ BRACKETED_KEY_RE = re.compile(r"^\[([^\[\]]+)\]$")
 # 该信息已丢失,还原靠映射表不受影响,unknown 上报收窄到序号形态保零误报;
 # X≠某(防「某某」链);(?<!\[) 括号内 token 不算裸;(?![甲乙丙丁人些]) 防「某甲/某人」
 _BARE_PSEUDONYM_RE = re.compile(
-    r"(?<![A-Za-z0-9_\[])[^\W某]某[一二三四五六七八九十]{1,2}(?![甲乙丙丁人些一二三四五六七八九十])"
+    r"(?<![A-Za-z0-9_\[])[\u4e00-\u9fff]某[一二三四五六七八九十]{1,2}(?![甲乙丙丁人些一二三四五六七八九十])"
 )
 # 裸占位符形态(Issue#87 unknown 扫描):机构_1/银行卡_12/PERSON_3 等无空白 token
 _BARE_PLACEHOLDER_RE = re.compile(r"(?<![A-Za-z0-9_\[])[A-Za-z\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*_\d+")

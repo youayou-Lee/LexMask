@@ -528,3 +528,10 @@ def test_issue87_large_text_no_blowup():
     elapsed = time.monotonic() - t0
     assert r.restored_count > 0
     assert elapsed < 10.0
+
+
+def test_issue87_bare_pseudonym_requires_cjk_surname():
+    # 评审 Minor1：裸化名「姓」须为汉字，a某二/1某三 等非汉字前缀不命中 unknown
+    mapping = normalize_mapping({"[袁某]": {"texts": ["袁大"]}})
+    r = restore("代码 a某二、编号 1某三 出现。", mapping)
+    assert r.unknown == []
