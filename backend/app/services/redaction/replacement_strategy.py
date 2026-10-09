@@ -476,6 +476,8 @@ class RedactionContext:
         """池键 + 原文 → 派生基名。人名取姓氏，机关按名称后缀关键词，其余统一基名。"""
         text = text or ""
         if pool_key == "PERSON":
+            # 防御(Issue#88):先剥包裹性引号再取姓,否则「“李四”」取到引号退化「某人N」
+            text = text.strip("\"'“”‘’「」『』")
             if _CJK_RE.match(text[:1]):
                 return f"{text[0]}某"
             return "某人"

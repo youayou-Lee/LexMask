@@ -44,6 +44,26 @@ VL_MD_PII_REGEXES = {
 VL_MD_LINKAGE_TRIGGERS = ("ID_CARD", "BANK_CARD")
 VL_MD_LINKAGE_TYPE = "BIRTH_DATE"
 
+# NER/VL 偶尔把包裹性引号并进实体 span(Issue#88):引号属标点不属敏感本体,
+# 若不剥,替换会吞引号(产物「证人某人1证实」)、姓氏派生取到引号退化「某人N」。
+# 不含书名号《》(有语义,不剥)。
+QUOTE_CHARS = "“”‘’「」『』\"'"
+
+
+def _trim_quoted_span(text: str, start: int, end: int) -> tuple[int, int] | None:
+    """剥 span 首尾引号,返回修正后 (start, end);全 span 皆引号则 None。
+
+    越界偏移(上游 NER 偶发)原样放行不剥——引号剥写只对有效 span 生效,
+    越界 span 交给 apply_entities 漂移检查按泄漏面兜底(Issue#88 修订)。
+    """
+    if not (0 <= start < end <= len(text)):
+        return (start, end)
+    while start < end and text[start] in QUOTE_CHARS:
+        start += 1
+    while end > start and text[end - 1] in QUOTE_CHARS:
+        end -= 1
+    return None if start >= end else (start, end)
+
 PLACEHOLDER_RE = re.compile(r"\[[A-Za-z][A-Za-z0-9_]*_\d+\]")
 _PLACEHOLDER_TYPE_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_]*)_\d+\]")
 CONVERGENCE_MAX_ROUNDS = 3
@@ -200,17 +220,27 @@ class VlMdPipelineService:
             if type_id not in resolved_ids:
                 continue
             for m in rx.finditer(text):
+                span = _trim_quoted_span(text, m.start(), m.end())
+                if span is None:
+                    continue
                 seq += 1
                 merged.append(Entity(
-                    id=f"vlmd-rx-{seq}", text=m.group(0), type=type_id,
-                    start=m.start(), end=m.end(), source="regex",
+                    id=f"vlmd-rx-{seq}", text=text[span[0]:span[1]], type=type_id,
+                    start=span[0], end=span[1], source="regex",
                 ))
-                claimed.append((m.start(), m.end()))
+                claimed.append(span)
 
         for e in await self._ner().extract(text, types):
-            if _overlap(e.start, e.end):
+            span = _trim_quoted_span(text, e.start, e.end)
+            if span is None:
                 continue
-            merged.append(e)
+            if _overlap(*span):
+                continue
+            if span == (e.start, e.end):
+                merged.append(e)
+            else:
+                merged.append(e.model_copy(
+                    update={"text": text[span[0]:span[1]], "start": span[0], "end": span[1]}))
         return merged
 
     # ---------- 替换 ----------
