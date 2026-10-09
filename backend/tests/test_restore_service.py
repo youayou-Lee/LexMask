@@ -3,22 +3,21 @@
 红线:单测一律构造假数据,真实姓名只进加密区 round-trip 冒烟(独立脚本,不入此文件)。
 """
 
-import pytest
-
 from app.services.restore_service import (
-    Mapping,
-    RestoreResult,
     normalize_mapping,
     restore,
 )
 
 # ---------- T01 normalize 三格式 ----------
 
+
 def test_normalize_new_structure():
-    m = normalize_mapping({
-        "[PERSON_1]": {"type": "PERSON", "texts": ["张三"]},
-        "[ID_CARD_1]": {"type": "ID_CARD", "texts": ["110...", "120..."]},
-    })
+    m = normalize_mapping(
+        {
+            "[PERSON_1]": {"type": "PERSON", "texts": ["张三"]},
+            "[ID_CARD_1]": {"type": "ID_CARD", "texts": ["110...", "120..."]},
+        }
+    )
     assert m.entries["[PERSON_1]"].texts == ["张三"]
     assert m.entries["[PERSON_1]"].type == "PERSON"
     assert m.entries["[ID_CARD_1]"].texts == ["110...", "120..."]
@@ -32,10 +31,12 @@ def test_normalize_legacy_structure():
 def test_normalize_string_value_dual_direction():
     # 字符串值双向(评审 I2 定稿):value 是占位符/化名形态=反查 {原文: 替换词};
     # 否则=T1 退化 {替换词: 原文}
-    m = normalize_mapping({
-        "张三": "[PERSON_1]",                                   # 反查方向(preview entity_map)
-        "某人民法院1": "广东省清远市清城区人民法院",              # T1 退化方向
-    })
+    m = normalize_mapping(
+        {
+            "张三": "[PERSON_1]",  # 反查方向(preview entity_map)
+            "某人民法院1": "广东省清远市清城区人民法院",  # T1 退化方向
+        }
+    )
     assert m.entries["[PERSON_1]"].texts == ["张三"]
     assert m.entries["某人民法院1"].texts == ["广东省清远市清城区人民法院"]
 
@@ -43,6 +44,7 @@ def test_normalize_string_value_dual_direction():
 def test_preview_entity_map_roundtrip_direction():
     # build_preview_entity_map 产物 {原文: 替换词} 喂入可正确还原(评审 I2 实测面)
     from app.services.restore_service import restore as _r
+
     m = normalize_mapping({"陈文清": "[PERSON_1]"})
     r = _r("委托人[PERSON_1]到案。", m)
     assert r.restored_text == "委托人陈文清到案。"
@@ -101,16 +103,19 @@ def test_ambiguous_dedup_with_occurrences():
 
 
 def test_normalize_mixed_and_warnings():
-    m = normalize_mapping({
-        "[PERSON_1]": {"type": "PERSON", "texts": ["张三"]},
-        "[BAD_1]": {},               # 空 texts → warning
-        "[BAD_2]": {"text": ""},     # 空原文 → warning
-    })
+    m = normalize_mapping(
+        {
+            "[PERSON_1]": {"type": "PERSON", "texts": ["张三"]},
+            "[BAD_1]": {},  # 空 texts → warning
+            "[BAD_2]": {"text": ""},  # 空原文 → warning
+        }
+    )
     assert len(m.entries) == 1
     assert len(m.parse_warnings) == 2
 
 
 # ---------- T02 占位符还原 ----------
+
 
 def test_placeholder_unique_restores():
     m = normalize_mapping({"[PERSON_1]": {"texts": ["张三"]}})
@@ -143,15 +148,18 @@ def test_unknown_placeholder_and_pseudonym():
 
 
 def test_placeholder_numeric_prefix_no_swallow():
-    m = normalize_mapping({
-        "[PERSON_1]": {"texts": ["张三"]},
-        "[PERSON_10]": {"texts": ["李四"]},
-    })
+    m = normalize_mapping(
+        {
+            "[PERSON_1]": {"texts": ["张三"]},
+            "[PERSON_10]": {"texts": ["李四"]},
+        }
+    )
     r = restore("[PERSON_10]与[PERSON_1]同行。", m)
     assert r.restored_text == "李四与张三同行。"
 
 
 # ---------- T03 化名词还原 ----------
+
 
 def test_pseudonym_direct_restore():
     m = normalize_mapping({"某人民法院1": {"texts": ["广东省清远市清城区人民法院"]}})
@@ -160,15 +168,18 @@ def test_pseudonym_direct_restore():
 
 
 def test_pseudonym_longest_first_full_restore():
-    m = normalize_mapping({
-        "某人民法院1": {"texts": ["清远市清城区人民法院"]},
-        "某人民法院10": {"texts": ["广州市中级人民法院"]},
-    })
+    m = normalize_mapping(
+        {
+            "某人民法院1": {"texts": ["清远市清城区人民法院"]},
+            "某人民法院10": {"texts": ["广州市中级人民法院"]},
+        }
+    )
     r = restore("某人民法院10与某人民法院1。", m)
     assert r.restored_text == "广州市中级人民法院与清远市清城区人民法院。"
 
 
 # ---------- T03a 泛化词后界断言 ----------
+
 
 def test_generalized_key_boundary_guard():
     m = normalize_mapping({"2023年": {"texts": ["2023年(出生)"]}})
@@ -191,11 +202,14 @@ def test_generalized_key_region_boundary():
 
 # ---------- T04 混合/幂等/嵌套 ----------
 
+
 def test_mixed_placeholders_and_pseudonyms():
-    m = normalize_mapping({
-        "[PERSON_1]": {"texts": ["张三"]},
-        "某公司1": {"texts": ["某科技有限公司"]},
-    })
+    m = normalize_mapping(
+        {
+            "[PERSON_1]": {"texts": ["张三"]},
+            "某公司1": {"texts": ["某科技有限公司"]},
+        }
+    )
     r = restore("[PERSON_1]任职于某公司1。", m)
     assert r.restored_text == "张三任职于某科技有限公司。"
 
@@ -210,16 +224,19 @@ def test_idempotent_second_pass():
 
 def test_nested_replacement_not_cascaded():
     # 原文含另一 key 形态:还原插入的文本不得被级联再替换
-    m = normalize_mapping({
-        "[PERSON_1]": {"texts": ["张三[PERSON_2]"]},
-        "[PERSON_2]": {"texts": ["李四"]},
-    })
+    m = normalize_mapping(
+        {
+            "[PERSON_1]": {"texts": ["张三[PERSON_2]"]},
+            "[PERSON_2]": {"texts": ["李四"]},
+        }
+    )
     r = restore("[PERSON_1]指使[PERSON_2]。", m)
     # 张三[PERSON_2] 中的 [PERSON_2] 不得再被替换
     assert r.restored_text == "张三[PERSON_2]指使李四。"
 
 
 # ---------- T05 API(T05 用 TestClient,鉴权见 T08) ----------
+
 
 def test_restore_service_empty_and_plain():
     m = normalize_mapping({"[PERSON_1]": {"texts": ["张三"]}})
@@ -242,18 +259,33 @@ def test_idempotent_second_pass_unknown_stable():
 
 # ---------- Issue#75 缺陷修复:agent-md items 映射表格式 ----------
 
+
 def test_normalize_agent_md_items_format():
     """agent-md 三件套映射表 {"items": [...]}:替换词→原文还原;excluded 跳过。"""
     raw = {
         "items": [
-            {"id": "e1", "original_text": "袁某1", "entity_type": "PERSON",
-             "replacement": "袁吃霄", "excluded": False},
-            {"id": "e2", "original_text": "2023年5月1日", "entity_type": "DATE",
-             "replacement": "[DATE_1]", "excluded": False},
-            {"id": "e3", "original_text": "某银行", "entity_type": "ORG",
-             "replacement": "", "excluded": False},  # 空替换词→跳过
-            {"id": "e4", "original_text": "保留字段", "entity_type": "ORG",
-             "replacement": "保留字段", "excluded": True},  # excluded→跳过
+            {"id": "e1", "original_text": "袁某1", "entity_type": "PERSON", "replacement": "袁吃霄", "excluded": False},
+            {
+                "id": "e2",
+                "original_text": "2023年5月1日",
+                "entity_type": "DATE",
+                "replacement": "[DATE_1]",
+                "excluded": False,
+            },
+            {
+                "id": "e3",
+                "original_text": "某银行",
+                "entity_type": "ORG",
+                "replacement": "",
+                "excluded": False,
+            },  # 空替换词→跳过
+            {
+                "id": "e4",
+                "original_text": "保留字段",
+                "entity_type": "ORG",
+                "replacement": "保留字段",
+                "excluded": True,
+            },  # excluded→跳过
         ]
     }
     m = normalize_mapping(raw)
@@ -267,12 +299,26 @@ def test_normalize_agent_md_items_format():
 
 def test_agent_md_items_roundtrip_restore():
     """端到端:脱敏稿 + items 映射表 → 还原出原文;excluded 项原文不动。"""
-    mapping = normalize_mapping({"items": [
-        {"id": "e1", "original_text": "袁某1", "entity_type": "PERSON",
-         "replacement": "袁吃霄", "excluded": False},
-        {"id": "e2", "original_text": "工商银行", "entity_type": "ORG",
-         "replacement": "某银行", "excluded": True},
-    ]})
+    mapping = normalize_mapping(
+        {
+            "items": [
+                {
+                    "id": "e1",
+                    "original_text": "袁某1",
+                    "entity_type": "PERSON",
+                    "replacement": "袁吃霄",
+                    "excluded": False,
+                },
+                {
+                    "id": "e2",
+                    "original_text": "工商银行",
+                    "entity_type": "ORG",
+                    "replacement": "某银行",
+                    "excluded": True,
+                },
+            ]
+        }
+    )
     r = restore("袁吃霄 借款于某银行。", mapping)
     assert r.restored_text == "袁某1 借款于某银行。"
     assert r.restored_count == 1
@@ -280,16 +326,36 @@ def test_agent_md_items_roundtrip_restore():
 
 # ---------- Issue#75 括号化名口径（2026-10-08 用户定稿） ----------
 
+
 def test_bracketed_pseudonym_items_roundtrip_restore():
     """[袁某一]/[袁某] 形态映射（items 格式）→ 字面扫描还原原文。"""
-    mapping = normalize_mapping({"items": [
-        {"id": "e1", "original_text": "袁吃霄", "entity_type": "PERSON",
-         "replacement": "[袁某一]", "excluded": False},
-        {"id": "e2", "original_text": "袁飞", "entity_type": "PERSON",
-         "replacement": "[袁某二]", "excluded": False},
-        {"id": "e3", "original_text": "张三", "entity_type": "PERSON",
-         "replacement": "[张某]", "excluded": False},
-    ]})
+    mapping = normalize_mapping(
+        {
+            "items": [
+                {
+                    "id": "e1",
+                    "original_text": "袁吃霄",
+                    "entity_type": "PERSON",
+                    "replacement": "[袁某一]",
+                    "excluded": False,
+                },
+                {
+                    "id": "e2",
+                    "original_text": "袁飞",
+                    "entity_type": "PERSON",
+                    "replacement": "[袁某二]",
+                    "excluded": False,
+                },
+                {
+                    "id": "e3",
+                    "original_text": "张三",
+                    "entity_type": "PERSON",
+                    "replacement": "[张某]",
+                    "excluded": False,
+                },
+            ]
+        }
+    )
     r = restore("[袁某一] 与 [袁某二] 及 [张某] 均到庭。", mapping)
     assert r.restored_text == "袁吃霄 与 袁飞 及 张三 均到庭。"
     assert r.restored_count == 3
@@ -298,10 +364,19 @@ def test_bracketed_pseudonym_items_roundtrip_restore():
 
 def test_bracketed_pseudonym_adjacency_not_corrupted():
     """相邻数字/汉字不吞吃：[袁某一]2 不得按 [袁某一] 部分还原成 袁吃霄2 的残缺形态。"""
-    mapping = normalize_mapping({"items": [
-        {"id": "e1", "original_text": "袁吃霄", "entity_type": "PERSON",
-         "replacement": "[袁某一]", "excluded": False},
-    ]})
+    mapping = normalize_mapping(
+        {
+            "items": [
+                {
+                    "id": "e1",
+                    "original_text": "袁吃霄",
+                    "entity_type": "PERSON",
+                    "replacement": "[袁某一]",
+                    "excluded": False,
+                },
+            ]
+        }
+    )
     r = restore("文书号=[袁某一]2023号", mapping)
     # ] 后无边界吞吃问题：整体命中还原（] 是 key 尾字符，字面匹配即完整命中）
     assert r.restored_text == "文书号=袁吃霄2023号"
@@ -312,10 +387,144 @@ def test_bracketed_pseudonym_adjacency_not_corrupted():
 
 def test_bracketed_pseudonym_missing_from_mapping_reported_unknown():
     """映射表没有的括号化名 → unknown 显式暴露（不被当原文残留）。"""
-    mapping = normalize_mapping({"items": [
-        {"id": "e1", "original_text": "张三", "entity_type": "PERSON",
-         "replacement": "[张某]", "excluded": False},
-    ]})
+    mapping = normalize_mapping(
+        {
+            "items": [
+                {
+                    "id": "e1",
+                    "original_text": "张三",
+                    "entity_type": "PERSON",
+                    "replacement": "[张某]",
+                    "excluded": False,
+                },
+            ]
+        }
+    )
     r = restore("[张某]与[李某]到庭。", mapping)
     assert "[李某]" in r.unknown
     assert r.restored_text == "张三与[李某]到庭。"
+
+
+# ---------- Issue#87 还原契约括号免疫（裸形态=Agent 剥括号后的产物） ----------
+
+
+def test_issue87_strip_bracket_full_recovery():
+    # A1 核心回归：产物 [X] 被 Agent 剥成裸 X 后，配原映射表（key 带括号）仍全量还原
+    mapping = normalize_mapping(
+        {
+            "[袁某]": {"texts": ["袁吃霄"]},
+            "[袁某一]": {"texts": ["袁大头"]},
+            "[机构_1]": {"texts": ["某县工商行政管理局"]},
+        }
+    )
+    raw = "袁某与袁某一均在[机构_1]工作。"
+    stripped = raw.replace("[", "").replace("]", "")
+    r = restore(stripped, mapping)
+    assert r.unknown == []
+    assert r.restored_text == "袁吃霄与袁大头均在某县工商行政管理局工作。"
+    assert r.restored_count == 3
+
+
+def test_issue87_bare_pseudonym_boundary_ambiguity():
+    # A3：裸化名后接中文数字=边界歧义，不猜；后接普通字正常还原
+    mapping = normalize_mapping({"[袁某一]": {"texts": ["袁大二"]}})
+    r = restore("袁某一二涉案。", mapping)
+    assert r.restored_text == "袁某一二涉案。"
+    assert any(a["key"] == "[袁某一]" and a.get("reason") == "boundary" for a in r.ambiguous)
+    r2 = restore("袁某一在案发地出现。", mapping)
+    assert r2.restored_text == "袁大二在案发地出现。"
+    assert r2.ambiguous == []
+
+
+def test_issue87_bare_placeholder_restore_and_ambiguity():
+    # A4：裸占位符（中文标签）认；_N 后接数字=歧义不猜
+    mapping = normalize_mapping({"[机构_1]": {"texts": ["甲公司"]}})
+    r = restore("被告机构_1于案发。", mapping)
+    assert r.restored_text == "被告甲公司于案发。"
+    r2 = restore("被告机构_12于案发。", mapping)
+    assert r2.restored_text == "被告机构_12于案发。"
+    assert any(a["key"] == "[机构_1]" and a.get("reason") == "boundary" for a in r2.ambiguous)
+    assert set(r2.unknown) == set()  # 机构_1 是 机构_12 的相关 key，不报 unknown
+
+
+def test_issue87_reverse_mapping_with_bare_replacement():
+    # A5：反查映射 {原文: 裸替换词} 兼容（Agent 回吐剥括号映射）
+    m = normalize_mapping({"袁吃霄": "袁某", "甲公司": "机构_1"})
+    assert m.entries["袁某"].texts == ["袁吃霄"]
+    assert m.entries["机构_1"].texts == ["甲公司"]
+    r = restore("袁某在机构_1任职。", m)
+    assert r.restored_text == "袁吃霄在甲公司任职。"
+
+
+def test_issue87_bare_same_prefix_longest_match():
+    # B1：同前缀共存（[袁某]+[袁某一]）裸文本最长匹配，唯一不串号
+    mapping = normalize_mapping(
+        {
+            "[袁某]": {"texts": ["袁大"]},
+            "[袁某一]": {"texts": ["袁大二"]},
+        }
+    )
+    r = restore("袁某一与袁某均涉案。", mapping)
+    assert r.restored_text == "袁大二与袁大均涉案。"
+    assert r.restored_count == 2
+    assert r.unknown == []
+
+
+def test_issue87_bare_unknown_exposure():
+    # B2：剥括号后形似替换词但映射表没有 → unknown 显式暴露（安全信号不失守）。
+    # 无序号裸「姓某」不报：与原生文本不可区分（评审复核修订，见 PR 说明）
+    mapping = normalize_mapping(
+        {
+            "[机构_1]": {"texts": ["甲公司"]},
+            "[袁某]": {"texts": ["袁大"]},
+        }
+    )
+    r = restore("机构_99与赵某一出现在现场。", mapping)
+    assert set(r.unknown) >= {"机构_99", "赵某一"}
+    assert "袁某" not in r.unknown and "机构_1" not in r.unknown
+
+
+def test_issue87_bare_multicandidate_safe_and_first():
+    # B3：一对多裸形态沿用既有 safe/first 语义
+    mapping = normalize_mapping({"[机构_1]": {"texts": ["甲公司", "乙公司"]}})
+    r = restore("机构_1涉案。", mapping)
+    assert r.restored_text == "机构_1涉案。"
+    assert any(a["key"] == "[机构_1]" and a.get("candidates") == ["甲公司", "乙公司"] for a in r.ambiguous)
+    r2 = restore("机构_1涉案。", mapping, policy="first")
+    assert r2.restored_text == "甲公司涉案。"
+    assert r2.used_first == ["[机构_1]"]
+
+
+def test_issue87_boundary_ambiguity_schema_contract():
+    # B4：边界歧义元素沿用现有 schema {key, candidates, reason, occurrences}
+    mapping = normalize_mapping({"[袁某一]": {"texts": ["袁大二"]}})
+    r = restore("袁某一二。", mapping)
+    a = next(a for a in r.ambiguous if a.get("reason") == "boundary")
+    assert set(a) >= {"key", "candidates", "reason", "occurrences"}
+    assert a["key"] == "[袁某一]" and a["candidates"] == ["袁大二"]
+
+
+def test_issue87_native_words_not_touched():
+    # B5：原生「某些/某甲/某某」不得被误还原或误报 unknown
+    mapping = normalize_mapping({"[袁某]": {"texts": ["袁大"]}})
+    r = restore("某些人员与某甲有关，某某证人说袁某在场。", mapping)
+    assert r.restored_text == "某些人员与某甲有关，某某证人说袁大在场。"
+    assert r.unknown == []
+
+
+def test_issue87_large_text_no_blowup():
+    # B6：可选括号组不得引入灾难性回溯——1MB 级文本还原耗时护栏
+    import time
+
+    mapping = normalize_mapping(
+        {
+            **{f"[机构_{i}]": {"texts": [f"甲公司{i}"]} for i in range(1, 51)},
+            "[袁某]": {"texts": ["袁大"]},
+        }
+    )
+    body = "袁某在机构_1与机构_2之间往返，" * 40000  # ≈1MB
+    t0 = time.monotonic()
+    r = restore(body, mapping)
+    elapsed = time.monotonic() - t0
+    assert r.restored_count > 0
+    assert elapsed < 10.0
