@@ -200,11 +200,13 @@ def test_docx_path_no_residual_with_space_artifact(tmp_path):
         )
     )
     assert count == 2, "两个空格错位实体都应被替换"
-    residual, lost = r._docx_verify_replacements(
+    residual, lost_absent, lost_dropped = r._docx_verify_replacements(
         str(docx_path), str(out),
         {"2018 年3 月26 日": "【日期1】", "2019 年01 月01 日": "【日期2】"},
     )
-    assert not residual and not lost, f"替换后不应残留/丢失: {residual} {lost}"
+    assert not residual and not lost_absent and not lost_dropped, (
+        f"替换后不应残留/丢失: {residual} {lost_absent} {lost_dropped}"
+    )
 
 
 # ------------------------------------------------- 残留校验期望值对照（#84 二轮）
@@ -239,9 +241,11 @@ def test_preserved_host_substring_no_false_residual(tmp_path):
         Entity(id="e3", text="陈海新", type="PERSON", start=0, end=3, page=1, selected=True),
     ]
     asyncio.run(r._redact_docx(str(docx_path), str(out), ents, ctx))
-    residual, lost = r._docx_verify_replacements(str(docx_path), str(out), replacements)
+    residual, lost_absent, lost_dropped = r._docx_verify_replacements(
+        str(docx_path), str(out), replacements
+    )
     assert not residual, f"子串落在保留名里不应判残留: {residual}"
-    assert not lost
+    assert not lost_absent and not lost_dropped
 
 
 def test_generated_value_fragment_no_false_residual(tmp_path):
@@ -267,9 +271,11 @@ def test_generated_value_fragment_no_false_residual(tmp_path):
         Entity(id="e2", text="22", type="NUMBER", start=0, end=2, page=1, selected=True),
     ]
     asyncio.run(r._redact_docx(str(docx_path), str(out), ents, ctx))
-    residual, lost = r._docx_verify_replacements(str(docx_path), str(out), replacements)
+    residual, lost_absent, lost_dropped = r._docx_verify_replacements(
+        str(docx_path), str(out), replacements
+    )
     assert not residual, f"生成值中的碎片不应判残留: {residual}"
-    assert not lost
+    assert not lost_absent and not lost_dropped
 
 
 def test_true_miss_still_detected(tmp_path):
@@ -294,7 +300,7 @@ def test_true_miss_still_detected(tmp_path):
     d2 = Docx()
     d2.add_paragraph("犯罪嫌疑人陈海新到案")
     d2.save(str(bad))
-    residual, lost = r._docx_verify_replacements(
+    residual, lost_absent, lost_dropped = r._docx_verify_replacements(
         str(docx_path), str(bad), {"陈海新": "[姓名一]"}
     )
     assert "陈海新" in residual
@@ -317,3 +323,104 @@ def test_pdf_inplace_no_double_insert_on_nested_entities(tmp_path, _allow_tmp_up
     text = out_doc[0].get_text()
     out_doc.close()
     assert text.count("某检察院") == 1, f"嵌套实体应只写一次，实际: {text!r}"
+
+
+# ------------------------------------------------- 字符坐标定位（#84 三轮）
+
+
+def test_pdf_inplace_matches_across_line_break(tmp_path, _allow_tmp_upload):
+    """跨行实体（原卷折行截断，提取带换行）原位替换也能命中且零残留。"""
+    src = _allow_tmp_upload / "in.pdf"
+    out = tmp_path / "out.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    # 日期跨行：「7」在行尾，「月17 日」在下一行行首（真实案卷形态）
+    page.insert_text((72, 100), "自2018 年7", fontsize=16, fontname="china-s")
+    page.insert_text((72, 130), "月17 日起羁押。", fontsize=16, fontname="china-s")
+    doc.save(str(src))
+    doc.close()
+
+    r = TextRedactorMixin()
+    asyncio.run(
+        r._redact_pdf_text(
+            str(src), str(out), [_ent("7\n月17 日", "DATE")],
+            _ctx({"7\n月17 日": "[日期一]"}),
+        )
+    )
+    out_doc = fitz.open(str(out))
+    text = out_doc[0].get_text().replace(" ", "").replace("\n", "")
+    out_doc.close()
+    assert "[日期一]" in text, f"跨行实体应被替换: {text!r}"
+    assert "月17日" not in text, f"原日期不应残留: {text!r}"
+
+
+def test_pdf_inplace_crossline_keeps_other_text(tmp_path, _allow_tmp_upload):
+    """跨行替换不伤同行/邻行无辜文本。"""
+    src = _allow_tmp_upload / "in.pdf"
+    out = tmp_path / "out.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "刑期自2018 年7", fontsize=16, fontname="china-s")
+    page.insert_text((72, 130), "月17 日起至2019 年止。", fontsize=16, fontname="china-s")
+    doc.save(str(src))
+    doc.close()
+
+    r = TextRedactorMixin()
+    asyncio.run(
+        r._redact_pdf_text(
+            str(src), str(out), [_ent("2018 年7\n月17 日", "DATE")],
+            _ctx({"2018 年7\n月17 日": "[日期一]"}),
+        )
+    )
+    out_doc = fitz.open(str(out))
+    text = out_doc[0].get_text().replace(" ", "").replace("\n", "")
+    out_doc.close()
+    assert "[日期一]" in text
+    assert "刑期自" in text, "行首无辜文本应保留"
+    assert "起至2019年止" in text, "邻行无辜文本应保留"
+    assert "2019" in text, "未选中的其他日期应保留"
+
+
+def test_pdf_inplace_adjacent_entities_both_replaced(tmp_path, _allow_tmp_upload):
+    """同行相邻实体（矩形仅接缝相触）都必须替换——#84 用户成品回归：
+    二轮的矩形相交去重把同行相邻实体整只跳过导致泄漏。"""
+    src = _allow_tmp_upload / "in.pdf"
+    out = tmp_path / "out.pdf"
+    _make_pdf(src, "陈海新、叶辉等5人涉嫌盗窃案", 16)
+    r = TextRedactorMixin()
+    asyncio.run(
+        r._redact_pdf_text(
+            str(src), str(out),
+            [_ent("陈海新", "PERSON"), _ent("叶辉", "PERSON")],
+            _ctx({"陈海新": "[姓名一]", "叶辉": "[姓名二]"}),
+        )
+    )
+    out_doc = fitz.open(str(out))
+    text = out_doc[0].get_text().replace(" ", "").replace("\n", "")
+    out_doc.close()
+    assert "[姓名一]" in text and "[姓名二]" in text, f"相邻实体都应替换: {text!r}"
+    assert "陈海新" not in text and "叶辉" not in text, f"不应残留原文: {text!r}"
+
+
+def test_pdf_inplace_char_precise_no_leak_many_entities(tmp_path, _allow_tmp_upload):
+    """一行多实体密集排布，全部替换且互不误伤。"""
+    src = _allow_tmp_upload / "in.pdf"
+    out = tmp_path / "out.pdf"
+    _make_pdf(src, "叶辉于2018年3月26日在英德市盗窃钢筋。", 14)
+    r = TextRedactorMixin()
+    asyncio.run(
+        r._redact_pdf_text(
+            str(src), str(out),
+            [_ent("叶辉", "PERSON"), _ent("2018年3月26日", "DATE"),
+             _ent("英德市", "LOC")],
+            _ctx({"叶辉": "[姓名一]", "2018年3月26日": "[日期一]",
+                  "英德市": "[地点一]"}),
+        )
+    )
+    out_doc = fitz.open(str(out))
+    text = out_doc[0].get_text().replace(" ", "").replace("\n", "")
+    out_doc.close()
+    for bad in ["叶辉", "2018年3月26日", "英德市"]:
+        assert bad not in text, f"{bad} 应被替换: {text!r}"
+    for good in ["[姓名一]", "[日期一]", "[地点一]", "盗窃钢筋"]:
+        assert good in text, f"{good} 应保留/写入: {text!r}"
