@@ -735,7 +735,7 @@ class TextRedactorMixin:
         residual: set[str] = set()
         lost_absent: set[str] = set()
         lost_dropped: set[str] = set()
-        for old_text, new_text in replacements.items():
+        for old_text in replacements:
             sq = "".join(ch for ch in old_text if ch not in SQUEEZE_CHARS)
             if not sq:
                 continue
@@ -976,7 +976,7 @@ class TextRedactorMixin:
 
         inserts: list[tuple[fitz.Rect, str, float]] = []
         for start, end, new_text in matches:
-            seg = list(zip(char_rects[start:end], char_sizes[start:end]))
+            seg = list(zip(char_rects[start:end], char_sizes[start:end], strict=True))
             # 按基线分行（同行字符 y0 相差 <2pt）
             lines: list[list[tuple[fitz.Rect, float]]] = []
             for rect, size in seg:
