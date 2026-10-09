@@ -424,3 +424,131 @@ def test_pdf_inplace_char_precise_no_leak_many_entities(tmp_path, _allow_tmp_upl
         assert bad not in text, f"{bad} 应被替换: {text!r}"
     for good in ["[姓名一]", "[日期一]", "[地点一]", "盗窃钢筋"]:
         assert good in text, f"{good} 应保留/写入: {text!r}"
+
+
+# ------------------------------------------------- 伪页码→真页脚（#84 四轮）
+
+
+def _make_pdf2docx_like_docx(path, page_contents, numbers=()):
+    """模拟 pdf2docx 产物：每页一个分节（sectPr 在节末段落 pPr 里），
+    页码是节末尾的孤立纯数字段落。"""
+    import copy
+    from docx import Document
+    from docx.oxml.ns import qn
+    from lxml import etree
+
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    d = Document()
+    # 清掉默认空段落
+    for p in list(d.paragraphs):
+        p._p.getparent().remove(p._p)
+    n_sections = max(len(page_contents), len(numbers))
+    for idx in range(n_sections):
+        for text in page_contents[idx] if idx < len(page_contents) else []:
+            d.add_paragraph(text)
+        if idx < len(numbers):
+            d.add_paragraph(str(numbers[idx]))
+        # 节末段落挂 sectPr（深拷贝模板默认 sectPr 再清属性）
+        p = d.add_paragraph("")
+        pPr = p._p.get_or_add_pPr()
+        sect = etree.SubElement(pPr, qn("w:sectPr"))
+        etree.SubElement(sect, qn("w:pgSz"), {qn("w:w"): "11906", qn("w:h"): "16838"})
+    d.save(str(path))
+
+
+def test_promote_page_numbers_removes_fake_and_adds_footer(tmp_path):
+    """伪页码段落被删除，且文档挂上含 PAGE 域的真页脚。"""
+    from docx import Document
+
+    path = tmp_path / "src.docx"
+    _make_pdf2docx_like_docx(
+        path,
+        page_contents=[["第一页正文"], ["第二页正文"], ["第三页正文"]],
+        numbers=[1, 2, 3],
+    )
+    r = TextRedactorMixin()
+    removed = r._promote_docx_page_footers(str(path))
+    assert removed == 3
+
+    d = Document(str(path))
+    texts = [p.text.strip() for p in d.paragraphs if p.text.strip()]
+    assert "1" not in texts and "2" not in texts and "3" not in texts
+    assert "第一页正文" in texts
+    # 页脚含 PAGE 域
+    footer_xml = d.sections[0].footer.paragraphs[0]._p.xml
+    assert "PAGE" in footer_xml
+    assert "fldChar" in footer_xml or "fldSimple" in footer_xml
+
+
+def test_promote_skips_digit_paragraph_mismatching_page_ordinal(tmp_path):
+    """节末纯数字但与页序不符（正文数据，如表格数字 22）不误删。"""
+    from docx import Document
+
+    path = tmp_path / "src.docx"
+    _make_pdf2docx_like_docx(
+        path,
+        page_contents=[["第1页正文"], ["第2页正文结尾是数据："]],
+        numbers=[7, 22],  # 页序应为 1、2，7/22 不匹配 → 保留
+    )
+    r = TextRedactorMixin()
+    removed = r._promote_docx_page_footers(str(path))
+    assert removed == 0
+    d = Document(str(path))
+    texts = [p.text.strip() for p in d.paragraphs if p.text.strip()]
+    assert "7" in texts and "22" in texts
+
+
+def test_promote_tolerates_missing_page_number(tmp_path):
+    """封面页无页码（序号从 2 开始）也能对齐：按首个命中值推导偏移。"""
+    from docx import Document
+
+    path = tmp_path / "src.docx"
+    _make_pdf2docx_like_docx(
+        path,
+        page_contents=[["封面"], ["第二页正文"], ["第三页正文"]],
+        numbers=[2, 3],  # 封面无页码，后续页码比节序大 1
+    )
+    r = TextRedactorMixin()
+    removed = r._promote_docx_page_footers(str(path))
+    assert removed == 2
+    d = Document(str(path))
+    texts = [p.text.strip() for p in d.paragraphs if p.text.strip()]
+    assert "2" not in texts and "3" not in texts
+    assert "封面" in texts
+
+
+def test_promote_page_number_inside_last_table(tmp_path):
+    """末页含表格且页码在表格之后的段落（真实案卷末节以 tbl 收尾）也能删除。"""
+    from docx import Document
+    from docx.oxml.ns import qn
+    from lxml import etree
+
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    path = tmp_path / "src.docx"
+    d = Document()
+    for p in list(d.paragraphs):
+        p._p.getparent().remove(p._p)
+
+    def sect_close():
+        para = d.add_paragraph("")
+        pPr = para._p.get_or_add_pPr()
+        sect = etree.SubElement(pPr, qn("w:sectPr"))
+        etree.SubElement(sect, qn("w:pgSz"), {qn("w:w"): "11906", qn("w:h"): "16838"})
+
+    d.add_paragraph("第一页正文")
+    d.add_paragraph("1")
+    sect_close()
+    tbl = d.add_table(rows=1, cols=1)
+    tbl.cell(0, 0).paragraphs[0].add_run("末页证据表格")
+    d.add_paragraph("2")
+    sect_close()
+    d.save(str(path))
+
+    r = TextRedactorMixin()
+    removed = r._promote_docx_page_footers(str(path))
+    assert removed == 2
+    d2 = Document(str(path))
+    texts = [p.text.strip() for p in d2.paragraphs if p.text.strip()]
+    assert "1" not in texts and "2" not in texts
+    cell_text = "\n".join(c.text for row in d2.tables[0].rows for c in row.cells)
+    assert "末页证据表格" in cell_text

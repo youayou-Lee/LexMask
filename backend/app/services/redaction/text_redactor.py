@@ -560,6 +560,96 @@ class TextRedactorMixin:
 
         return redacted_count
 
+    def _promote_docx_page_footers(self, docx_path: str) -> int:
+        """伪页码→真页脚（Issue #84 四轮，用户实测孤页问题）。
+
+        pdf2docx 把原卷每页的页脚页码转成「每节末尾的孤立纯数字段落」
+        （每原页一个分节）。docx 回转重排后这些段落被挤出节尾、单独成页
+        → 页码孤页、成品页数近乎翻倍。本趟：删掉与页序对齐的伪页码段落，
+        并挂上带 PAGE 域的真页脚——页码恒在页底，随重排自洽递增。
+        仅当纯数字、且数值与页序对齐（允许封面无页码的整体偏移）才删，
+        正文里恰好以数字结尾的数据不受影响。
+        """
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        doc = Document(docx_path)
+        W = "{" + WORD_XML_NS["w"] + "}"
+        body = doc.element.body
+        # 按分节归组段落（节末标志：段落 pPr 内含 sectPr；末节由 body 级 sectPr 收口）
+        sections: list[list] = [[]]
+        for child in body.iterchildren():
+            if child.tag == f"{W}p":
+                sections[-1].append(child)
+                pPr = child.find(f"{W}pPr")
+                if pPr is not None and pPr.find(f"{W}sectPr") is not None:
+                    sections.append([])
+            elif child.tag == f"{W}sectPr":
+                sections.append([])  # body 级 sectPr 之后无正文
+            elif child.tag == f"{W}tbl":
+                sections[-1].append(child)
+        if len(sections) > 1 and not sections[-1]:
+            sections.pop()
+
+        # 每节最后一个非空段落（含表格内嵌段落——末页页码可能挂在表格里），
+        # 若为纯数字短段则记为伪页码候选
+        candidates: list[tuple[int, object, int]] = []  # (节序1基, 段落元素, 数值)
+        for idx, elements in enumerate(sections, start=1):
+            last_nonempty = None
+            for el in elements:
+                if el.tag == f"{W}tbl":
+                    paras_iter = el.findall(f".//{W}p")
+                elif el.tag == f"{W}p":
+                    paras_iter = [el]
+                else:
+                    continue
+                for p in paras_iter:
+                    text = "".join(t.text or "" for t in p.findall(f".//{W}t")).strip()
+                    if text:
+                        last_nonempty = (p, text)
+            if last_nonempty and last_nonempty[1].isdigit() and len(last_nonempty[1]) <= 4:
+                candidates.append((idx, last_nonempty[0], int(last_nonempty[1])))
+        if not candidates:
+            return 0
+
+        # 页序偏移：候选值 - 节序须全体一致（封面无页码等整体偏移可容忍）；
+        # 不一致说明候选里混着正文数据，保守起见一个都不删
+        offsets = {value - ordinal for ordinal, _, value in candidates}
+        if len(offsets) > 1:
+            logger.warning(
+                "[redact:pdf-docx] 伪页码候选页序偏移不一致 %s，放弃删除", sorted(offsets)
+            )
+            return 0
+        removed = 0
+        for _ordinal, p, _value in candidates:
+            p.getparent().remove(p)
+            removed += 1
+        if not removed:
+            return 0
+
+        # 挂真页脚：首页节建页脚（居中 PAGE 域），其余节默认链接同页脚
+        footer = doc.sections[0].footer
+        footer.is_linked_to_previous = False
+        para = footer.paragraphs[0]
+        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = para.add_run()
+        fld_begin = OxmlElement("w:fldChar")
+        fld_begin.set(qn("w:fldCharType"), "begin")
+        instr = OxmlElement("w:instrText")
+        instr.set(qn("xml:space"), "preserve")
+        instr.text = " PAGE "
+        fld_sep = OxmlElement("w:fldChar")
+        fld_sep.set(qn("w:fldCharType"), "separate")
+        sample = OxmlElement("w:t")
+        sample.text = "1"
+        fld_end = OxmlElement("w:fldChar")
+        fld_end.set(qn("w:fldCharType"), "end")
+        for el in (fld_begin, instr, fld_sep, sample, fld_end):
+            run._r.append(el)
+        doc.save(docx_path)
+        return removed
+
     async def _redact_pdf_via_docx(
         self,
         input_path: str,
@@ -639,6 +729,10 @@ class TextRedactorMixin:
                         return await self._redact_pdf_text(
                             input_path, output_path, entities, context
                         )
+                    # 伪页码→真页脚（#84 四轮）：须在回转前处理 docx
+                    await asyncio.to_thread(
+                        self._promote_docx_page_footers, redacted_docx_path
+                    )
                     if not await self._docx_to_pdf(redacted_docx_path, output_path):
                         logger.warning(
                             "[redact:pdf-docx] docx→PDF 回转失败，回退原位替换: %s",
@@ -658,6 +752,10 @@ class TextRedactorMixin:
                         sorted(residual)[:5], sorted(lost_absent)[:5], patched, input_path,
                     )
                     return count + patched
+                # 伪页码→真页脚（#84 四轮）：须在回转前处理 docx
+                await asyncio.to_thread(
+                    self._promote_docx_page_footers, redacted_docx_path
+                )
                 if not await self._docx_to_pdf(redacted_docx_path, output_path):
                     logger.warning(
                         "[redact:pdf-docx] docx→PDF 回转失败，回退原位替换: %s", input_path
