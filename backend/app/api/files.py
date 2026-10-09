@@ -804,10 +804,20 @@ async def get_page_image(
         parser = FileParser()
         try:
             image_bytes = await parser.get_pdf_page_image(file_path, page)
+            # Issue #83：成品预览翻页需要该 PDF 自身真实页数（替换 docx 回转后
+            # 可能与原卷不同），随响应头返回；历史对比消费方可选使用
+            page_count = await parser.get_pdf_page_count(file_path)
         except PdfEncryptedError as exc:
             # Issue #30：加密卷 400+错误码，不落 500
             raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
-        return RawResponse(content=image_bytes, media_type="image/png")
+        except ValueError as exc:
+            # 页码越界（成品/原文翻页快速点击必踩边界）：原实现漏捕成 500，收口 400
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RawResponse(
+            content=image_bytes,
+            media_type="image/png",
+            headers={"X-Page-Count": str(page_count)},
+        )
 
     if ft in ("image", "jpg", "jpeg", "png"):
         # Re-encode to PNG so browser-unsupported formats (TIFF, BMP) preview in the

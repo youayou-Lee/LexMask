@@ -113,6 +113,88 @@ export const TextResultView: FC<{
   );
 };
 
+// Issue #83：成品预览——下载文件（output_path）的实际渲染，页数以响应头
+// X-Page-Count（成品真实页数）为准，未知时先用原文页数占位。
+export const OutputResultView: FC<{
+  url: string;
+  pageCount: number | null;
+  fallbackPageCount: number;
+  loading: boolean;
+  error: string | null;
+  currentPage: number;
+  onPageChange: (page: number) => void;
+  getVisionTypeConfig: (typeId: string) => { name: string; color: string };
+}> = ({
+  url,
+  pageCount,
+  fallbackPageCount,
+  loading,
+  error,
+  currentPage,
+  onPageChange,
+  getVisionTypeConfig,
+}) => {
+  const t = useT();
+  const totalPages = Math.max(1, pageCount ?? fallbackPageCount);
+
+  return (
+    <div
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[20px] border bg-background shadow-[var(--shadow-sm)]"
+      data-testid="playground-output-view"
+    >
+      <div className="flex h-10 flex-shrink-0 items-center gap-2 border-b border-border/60 bg-muted/30 px-4">
+        <span className="truncate text-xs font-semibold">{t('playground.outputPreview.title')}</span>
+        <span className="truncate text-xs text-muted-foreground">
+          {t('playground.outputPreview.hint')}
+        </span>
+      </div>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {error ? (
+          <div className="flex flex-1 items-center justify-center p-6">
+            <div
+              className="mx-6 max-w-md rounded-[20px] border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive shadow-[var(--shadow-sm)]"
+              role="alert"
+              data-testid="output-preview-error"
+            >
+              <p className="line-clamp-2 font-semibold">{error}</p>
+            </div>
+          </div>
+        ) : !url ? (
+          <div className="flex flex-1 items-center justify-center">
+            <div className="mx-6 rounded-[20px] border border-dashed border-border/70 bg-background px-5 py-4 text-center shadow-[var(--shadow-sm)]">
+              <p className="text-sm font-medium text-foreground">
+                {loading ? t('playground.outputPreview.loading') : t('playground.outputPreview.idle')}
+              </p>
+            </div>
+          </div>
+        ) : (
+          <ImageBBoxEditor
+            readOnly
+            imageSrc={url}
+            boxes={[]}
+            onBoxesChange={() => {}}
+            getTypeConfig={getVisionTypeConfig}
+            viewportTopSlot={
+              totalPages > 1 ? (
+                <div className="w-full min-w-[320px]">
+                  <PaginationRail
+                    page={currentPage}
+                    pageSize={1}
+                    totalItems={totalPages}
+                    totalPages={totalPages}
+                    compact
+                    onPageChange={onPageChange}
+                  />
+                </div>
+              ) : null
+            }
+          />
+        )}
+      </div>
+    </div>
+  );
+};
+
 export const ImageResultView: FC<{
   fileInfo: FileInfo | null;
   imageUrl: string;
