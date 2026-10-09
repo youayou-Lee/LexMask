@@ -154,29 +154,27 @@ export function usePlaygroundRecognition() {
   const selectedVisualFeatureTypesRef = useRef(selectedVisualFeatureTypes);
   const [pipelines, setPipelines] = useState<PipelineConfig[]>(cachedPipelines);
   const [typeTab, setTypeTab] = useState<'text' | 'vision'>('text');
-  // 处理方式上层二选一：打码（无子选项，执行固定涂黑框）/ 替换（三方式）
+  // 处理方式上层二选一：打码（默认，走 replacementMode 三选一）/ 替换（化名映射确认）
   const [processingMode, setProcessingMode] = useState<'mask' | 'replace'>('mask');
-  // Issue #79 v2：replacementMode 只在替换分支有意义——mask=掩码替换（化名
-  // 派生 范某1 + 对照表确认，默认+推荐），structured/smart=直出。打码分支不再
-  // 消费此值（执行固定 mask），默认落在 mask 保住「执行前确认对照表」主流程。
   const [replacementMode, setReplacementModeState] = useState<
     'structured' | 'smart' | 'mask' | 'pseudonym'
-  >('mask');
-  // 统一入口：pseudonym（旧预设/快照残留值）等价于替换分支的掩码替换；其余值
-  // 只改子选择、不再跨分支切换——三方式现只渲染在替换分支下，打码无子选项。
+  >('structured');
+  // 统一入口：pseudonym 归入替换分支；其余三值落在打码分支作为子模式。
+  // 预设应用（含 pseudonym）也走这里，自动映射到对应分支。
   const setReplacementMode = useCallback((mode: 'structured' | 'smart' | 'mask' | 'pseudonym') => {
     if (mode === 'pseudonym') {
       setProcessingMode('replace');
-      setReplacementModeState('mask');
       return;
     }
+    setProcessingMode('mask');
     setReplacementModeState(mode);
   }, []);
-  // 切分支时的子模式清洗：pseudonym 是旧数据残留值，归一成掩码替换
+  // 切回「打码」时清掉残留的 pseudonym 子模式（预设带入），保证打码分支
+  // 永远以三种打码方式之一执行，不会以 pseudonym 模式产出化名成品
   const setProcessingModeGuarded = useCallback((mode: 'mask' | 'replace') => {
     setProcessingMode(mode);
     if (mode === 'mask')
-      setReplacementModeState((current) => (current === 'pseudonym' ? 'mask' : current));
+      setReplacementModeState((current) => (current === 'pseudonym' ? 'structured' : current));
   }, []);
   // 成品水印文案（W2-1）：只作用于最终执行输出，预览不加
   const [watermarkText, setWatermarkText] = useState('');

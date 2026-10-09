@@ -18,7 +18,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { ENTITY_GROUPS, getEntityGroupLabel, getEntityTypeName } from '@/config/entityTypes';
-import { computeEntityStats, getModePreview, pickPreviewSample } from '../utils';
+import { computeEntityStats, getModePreview } from '../utils';
 import type { BoundingBox, Entity } from '../types';
 
 export interface PlaygroundEntityPanelProps {
@@ -39,8 +39,6 @@ export interface PlaygroundEntityPanelProps {
   displaySelectedCount?: number;
   displayTotalCount?: number;
   displayStats?: Record<string, { total: number; selected: number }>;
-  replacementMode: 'structured' | 'smart' | 'mask' | 'pseudonym';
-  setReplacementMode: (mode: 'structured' | 'smart' | 'mask' | 'pseudonym') => void;
   maskDisabled?: boolean;
   processingMode: 'mask' | 'replace';
   setProcessingMode: (mode: 'mask' | 'replace') => void;
@@ -80,8 +78,6 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
     displaySelectedCount,
     displayTotalCount,
     displayStats,
-    replacementMode,
-    setReplacementMode,
     processingMode,
     setProcessingMode,
     maskDisabled = false,
@@ -221,32 +217,19 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
               replaceDisabled={replacementLocked}
               maskDisabled={maskDisabled}
             />
-            {/* Issue #79 v2：打码=直接涂黑，无子选项（执行固定 mask）；
-                三种打码方式只属于替换分支——掩码替换=化名对照表确认流（默认
-                +推荐），结构化标签/智能替换直出无对照表 */}
+            {/* Issue #79 v3：打码=直接涂黑，无子选项（执行固定 mask）；
+                替换（化名）分支唯一方案=化名对照表确认流，「打码方式」选择已删除 */}
             {!replacementLocked && processingMode === 'replace' && (
-              <>
-                <MaskModeSelector
-                  entities={entities}
-                  mode={replacementMode === 'pseudonym' ? 'mask' : replacementMode}
-                  onModeChange={(mode) => {
-                    clearPlaygroundTextPresetTracking();
-                    setReplacementMode(mode);
-                  }}
-                />
-                {replacementMode === 'mask' && (
-                  <PseudonymMapSection
-                    entities={mappingEntities ?? entities}
-                    pseudonymMap={pseudonymMap}
-                    onPseudonymChange={onPseudonymChange}
-                    loading={pseudonymMapLoading}
-                    error={pseudonymMapError}
-                    onRetry={onRetryPseudonymLoad}
-                    conflicts={pseudonymConflicts}
-                    typeNameById={typeNameById}
-                  />
-                )}
-              </>
+              <PseudonymMapSection
+                entities={mappingEntities ?? entities}
+                pseudonymMap={pseudonymMap}
+                onPseudonymChange={onPseudonymChange}
+                loading={pseudonymMapLoading}
+                error={pseudonymMapError}
+                onRetry={onRetryPseudonymLoad}
+                conflicts={pseudonymConflicts}
+                typeNameById={typeNameById}
+              />
             )}
 
             <div className="space-y-1">
@@ -478,84 +461,6 @@ const ProcessingModeSelector: FC<{
           {t('playground.processingModeScannedNotice')}
         </p>
       )}
-    </div>
-  );
-};
-
-const MaskModeSelector: FC<{
-  entities: Entity[];
-  mode: 'structured' | 'smart' | 'mask';
-  onModeChange: (mode: 'structured' | 'smart' | 'mask') => void;
-}> = ({ entities, mode, onModeChange }) => {
-  const t = useT();
-  const sampleEntity = pickPreviewSample(entities);
-  const modes: { value: 'structured' | 'smart' | 'mask'; label: string; badge?: string }[] = [
-    { value: 'structured', label: t('mode.structured') },
-    { value: 'smart', label: t('mode.smart') },
-    { value: 'mask', label: t('mode.mask'), badge: t('playground.recommended') },
-  ];
-  // Issue #79 v2：选择器只渲染在替换分支下；掩码替换产出=化名派生（范某1）
-  const exampleFor = (value: 'structured' | 'smart' | 'mask') =>
-    getModePreview(value, sampleEntity);
-
-  return (
-    <div className="space-y-2">
-      <label className="block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {t('playground.redactMode')}
-      </label>
-      <p className="text-[11px] leading-4 text-muted-foreground">
-        {t('playground.redactModeHint')}
-      </p>
-      <div className="grid grid-cols-3 gap-1.5">
-        {modes.map((item) => {
-          const selected = mode === item.value;
-          return (
-            <label
-              key={item.value}
-              title={exampleFor(item.value)}
-              className={ModeOptionCardClasses(selected)}
-            >
-              <div className="flex items-center gap-1.5">
-                <input
-                  type="radio"
-                  name="replacementMode"
-                  value={item.value}
-                  checked={selected}
-                  onChange={() => onModeChange(item.value)}
-                  className="sr-only"
-                />
-                <ModeRadioDot active={selected} />
-                <span className={ModeOptionLabelClasses(selected)}>{item.label}</span>
-              </div>
-              {item.badge && (
-                <Badge
-                  variant="outline"
-                  className="hidden shrink-0 rounded-full px-1.5 py-0 xl:inline-flex"
-                >
-                  {item.badge}
-                </Badge>
-              )}
-            </label>
-          );
-        })}
-      </div>
-      <div className="space-y-1" data-testid="playground-mask-style-examples">
-        {modes.map((item) => {
-          const selected = mode === item.value;
-          return (
-            <p
-              key={item.value}
-              className={cn(
-                'truncate text-[11px] leading-4',
-                selected ? 'font-medium text-foreground' : 'text-muted-foreground',
-              )}
-              data-testid={`playground-mask-style-example-${item.value}`}
-            >
-              {item.label}：{exampleFor(item.value)}
-            </p>
-          );
-        })}
-      </div>
     </div>
   );
 };

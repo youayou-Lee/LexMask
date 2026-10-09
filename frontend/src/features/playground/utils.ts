@@ -130,33 +130,17 @@ export async function locateEntityBoxes(
   }
 }
 
-// 预览样例优先取人名实体：结构化/智能的样例文案是人名口径，拿列表第一个
-// 实体硬拼会出现「英德市人民检察院 -> <人物001>」的机构配人名标签错位
-// （Issue #79）。
-const PERSON_LIKE_TYPE_RE =
-  /(^|_)(person|plaintiff|defendant|attorney|patient|clinician|witness|judge|third_party)($|_)/i;
-
-export function pickPreviewSample(entities?: Entity[]): Entity | undefined {
-  const pool = (entities ?? []).filter((e) => e.selected !== false && !!e.text);
-  return pool.find((e) => PERSON_LIKE_TYPE_RE.test(e.type)) ?? pool[0];
-}
-
-// 掩码替换（替换分支）= 化名派生口径：中文姓+某+序号（范科威→范某1）；
-// 非 CJK 首字走后端 derived 兜底基名「某人」。仅用于示例文案。
-export function maskAliasPreview(name: string): string {
-  const first = (name || '')[0] ?? '';
-  return /[\u4e00-\u9fff]/.test(first) ? `${first}某1` : '某人1';
-}
-
-export function getModePreview(mode: string, sampleEntity?: Entity, pseudonymMap?: Record<string, string>) {
+export function getModePreview(
+  mode: string,
+  sampleEntity?: Entity,
+  pseudonymMap?: Record<string, string>,
+) {
   const name = sampleEntity?.text || t('editor.sampleName');
   switch (mode) {
     case 'smart':
       return `${name} -> [${t('editor.sampleSmart')}]`;
     case 'mask':
-      // Issue #79 v2：掩码替换只存在于替换分支，产出=化名派生（范某1），
-      // 星号是后端定位失败的兜底形态，不作为承诺展示
-      return `${name} -> ${maskAliasPreview(name)}`;
+      return `${name} -> ${name[0]}${'*'.repeat(Math.max(name.length - 1, 1))}`;
     case 'structured':
       return `${name} -> <${t('editor.sampleStructured')}>`;
     case 'pseudonym': {

@@ -1211,10 +1211,6 @@ const enOverrides: Record<string, string> = {
   'playground.loading.visionHybrid': 'Running vision detection (OCR text + image features)...',
   'playground.loading.text': 'Recognizing sensitive text...',
   'playground.startRedact': 'Start redaction',
-  'playground.recommended': 'Recommended',
-  'playground.redactMode': 'Masking style',
-  'playground.redactModeHint':
-    'How content will be replaced. Pick "Mask" to edit each replacement in the table below.',
   'playground.noResultsTitle': 'No redaction-ready results',
   'playground.noResultsDescText':
     'Run recognition again, adjust text recognition items, or select text in the document to add a manual annotation.',

@@ -316,9 +316,7 @@ export function usePlayground() {
     [selectedEntityTexts],
   );
   useEffect(() => {
-    // 对照表只属于替换分支的掩码替换（Issue #79 v2）：结构化/智能直出，无表可载
     if (recognition.processingMode !== 'replace') return;
-    if (recognition.replacementMode !== 'mask') return;
     if (fileCtx.isImageMode) return;
     const sigChanged = pseudonymEntitySigRef.current !== entitySignature;
     // 全部行已补齐且实体集未变化（可能含失败后手动填全的情况）时清掉残留错误
@@ -375,7 +373,6 @@ export function usePlayground() {
     entitySignature,
     missingPseudonymKeys.length,
     recognition.processingMode,
-    recognition.replacementMode,
     fileCtx.isImageMode,
     entityCtx.entities,
     pseudonymRetryTick,
@@ -415,20 +412,17 @@ export function usePlayground() {
   // 的 PSEUDONYM 分支），不存在静默覆盖，别名统一由用户直接在映射表填同一个词，
   // 该门槛随之移除。
 
-  // 替换模式执行门槛（仅掩码替换=化名对照表流）：默认化名仍在生成、生成失败、
-  // 或有已选实体的映射被清空时，不允许执行——避免成品与用户在 UI 确认的映射
-  // 不一致。结构化标签/智能替换直出，无对照表，不受此门槛约束（Issue #79 v2）
+  // 替换模式执行门槛：默认化名仍在生成、生成失败、或有已选实体的映射被清空时，
+  // 不允许执行——避免成品与用户在 UI 确认的映射不一致
   const replaceUnready = useMemo(
     () =>
       recognition.processingMode === 'replace' &&
-      recognition.replacementMode === 'mask' &&
       !fileCtx.isImageMode &&
       (pseudonymMapLoading ||
         Boolean(pseudonymMapError) ||
         selectedEntityTexts.some((text) => !(pseudonymMap[text] ?? '').trim())),
     [
       recognition.processingMode,
-      recognition.replacementMode,
       fileCtx.isImageMode,
       pseudonymMapLoading,
       pseudonymMapError,
@@ -490,19 +484,11 @@ export function usePlayground() {
             selectedEntities.filter((e) => !nerBoxTexts.has(e.text)).length
           : selectedEntities.length;
 
-      // Issue #79 v2：打码分支无子选项，固定 mask（文本型 PDF=栅格化涂黑框）；
-      // 替换分支按所选方式执行——掩码替换=化名词池+对照表确认（pseudonym），
-      // 结构化标签/智能替换直出。state 不会存 pseudonym（统一入口已归一）。
-      const isPseudonym =
-        recognition.processingMode === 'replace' &&
-        recognition.replacementMode === 'mask' &&
-        !fileCtx.isImageMode;
-      const effectiveReplacementMode =
-        recognition.processingMode === 'mask'
-          ? 'mask'
-          : isPseudonym
-            ? 'pseudonym'
-            : recognition.replacementMode;
+      // Issue #79 v3：打码无子选项，固定 mask（文本型 PDF=栅格化涂黑框）；
+      // 替换分支唯一方案=化名词池+对照表确认（pseudonym），「打码方式」选择
+      // 已整体移除。replacementMode 残留值不再参与任何执行决策。
+      const isPseudonym = recognition.processingMode === 'replace' && !fileCtx.isImageMode;
+      const effectiveReplacementMode = isPseudonym ? 'pseudonym' : 'mask';
       const pseudonymReplacements: Record<string, string> = {};
       if (isPseudonym) {
         for (const entity of selectedEntities) {
@@ -762,9 +748,8 @@ export function usePlayground() {
       setPseudonymMapLoading(false);
       setPseudonymMapError(null);
       setConfirmedPseudonymMap(snapshot.confirmedPseudonymMap);
-      // 顺序约束：setReplacementMode 对 'pseudonym' 残留值会连带置
-      // processingMode='replace'，故先调它、最后调 setProcessingMode，
-      // 以快照里的处理方式为准（Issue #79 v2 起非 pseudonym 值不再跨分支）。
+      // 顺序约束：setReplacementMode 对非 'pseudonym' 值会连带置 processingMode='mask'，
+      // 故必须先调它、最后调 setProcessingMode，否则替换模式会话会被恢复成打码模式。
       recognition.setReplacementMode(snapshot.replacementMode);
       recognition.setProcessingMode(snapshot.processingMode);
       recognition.setWatermarkText(snapshot.watermarkText);
