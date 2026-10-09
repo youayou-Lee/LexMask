@@ -599,20 +599,19 @@ class TextRedactorMixin:
                 #   ②转换丢失：源 docx 里就没有该实体（pdf2docx 丢内容）
                 # 设计性保留实体（公共机构原文保留，org_rules #56：替换词
                 # ==原文）豁免残留判定，否则含机关名的文书永远回退原位替换
-                check_texts = {
-                    t for t in unique_texts
-                    if context.entity_map.get(t) != t
+                # 期望值对照校验（评审 I1 演进，Issue #84 二轮）：以同一替换
+                # 语义干跑源 docx 得「应有成品」，实际成品按出现次数对照。
+                # 子串实体落在保留原文的长机构名里/生成值含实体碎片不再误判；
+                # 真漏替（次数超出期望）与转换丢失（次数少于期望）照旧回退。
+                full_map = {
+                    t: context.get_replacement(
+                        next(e for e in entities if e.selected and e.text == t)
+                    )
+                    for t in unique_texts
                 }
-                residual = self._docx_texts_present(redacted_docx_path, check_texts)
-                lost = set()
-                if not residual:
-                    # 全部替换干净时才需要区分「替换成功」vs「转换时就被丢掉」
-                    in_source = self._docx_texts_present(docx_path, check_texts)
-                    lost = check_texts - in_source
-                    # 设计性保留实体（替换词==原文）在成品里消失=被转换丢弃
-                    preserved = unique_texts - check_texts
-                    kept = self._docx_texts_present(redacted_docx_path, preserved)
-                    lost |= preserved - kept
+                residual, lost = self._docx_verify_replacements(
+                    docx_path, redacted_docx_path, full_map
+                )
                 if residual or lost:
                     logger.warning(
                         "[redact:pdf-docx] docx 替换校验失败 residual=%s lost=%s，回退原位替换: %s",
@@ -640,26 +639,78 @@ class TextRedactorMixin:
             shutil.rmtree(workdir, ignore_errors=True)
         return await self._redact_pdf_text(input_path, output_path, entities, context)
 
-    def _docx_texts_present(self, docx_path: str, texts: set[str]) -> set[str]:
-        """返回在 docx 正文中仍以原文形态出现的实体文本集合。
+    def _docx_paragraph_texts(self, docx_path: str) -> list[str]:
+        """读取 docx 全部段落文本（正文/表格/页眉页脚，与替换趟覆盖面一致）。"""
+        doc = Document(docx_path)
+        parts = [p.text or "" for p in self._iter_all_paragraphs(doc)]
+        return parts
 
-        空白字符归一后比对（容忍跨 run 拆分）；读取失败时保守返回全部
-        （调用方会因此回退原位替换，安全方向）。
+    def _simulate_replaced_text(self, text: str, replacements: dict[str, str]) -> str:
+        """文本级干跑：按与真实替换相同的空白归一匹配语义算出替换后文本。"""
+        matches = self._find_replacement_matches(text, replacements)
+        if not matches:
+            return text
+        out: list[str] = []
+        i = 0
+        for start, end, replacement in matches:
+            out.append(text[i:start])
+            out.append(replacement)
+            i = end
+        out.append(text[i:])
+        return "".join(out)
+
+    def _docx_verify_replacements(
+        self,
+        source_docx_path: str,
+        redacted_docx_path: str,
+        replacements: dict[str, str],
+    ) -> tuple[set[str], set[str]]:
+        """残留校验（期望值对照，Issue #84 二轮）。
+
+        旧法按「实体原文是否仍出现在成品」判残留，遇到两类必然误判：
+        ① 子串实体落在设计性保留原文的长机构名里（英德市人民检察院 ⊃ 人民检察院）；
+        ② 实体碎片出现在替换生成值里（生成证件号含 22）。
+        现改为：用同一替换语义对源 docx 干跑出「应有成品文本」，实际成品
+        与期望按出现次数对照——
+          次数超出期望 = 真漏替（residual，泄密方向，回退）
+          次数少于期望 = 替换写入被转换丢弃（lost，回退）
         """
-        if not texts:
-            return set()
         try:
-            doc = Document(docx_path)
-            parts = [p.text or "" for p in self._iter_all_paragraphs(doc)]
-            for tbl in doc.tables:
-                for row in tbl.rows:
-                    for cell in row.cells:
-                        parts.append(cell.text or "")
-            squeezed = "".join(parts).replace(" ", "").replace("\n", "").replace("\t", "")
-            return {t for t in texts if t.replace(" ", "") in squeezed}
+            src_parts = self._docx_paragraph_texts(source_docx_path)
+            act_parts = self._docx_paragraph_texts(redacted_docx_path)
         except Exception:
             logger.exception("[redact:pdf-docx] docx 残留校验读取失败，按全量残留处理")
-            return set(texts)
+            return set(replacements), set()
+
+        def _squeeze_all(parts: list[str]) -> str:
+            return "".join(
+                self._squeeze_with_index(t)[0] for t in parts
+            )
+
+        src_squeezed = _squeeze_all(src_parts)
+        act_squeezed = _squeeze_all(act_parts)
+        exp_squeezed = _squeeze_all(
+            [self._simulate_replaced_text(t, replacements) for t in src_parts]
+        )
+
+        residual: set[str] = set()
+        lost: set[str] = set()
+        for old_text, new_text in replacements.items():
+            sq = "".join(ch for ch in old_text if ch not in SQUEEZE_CHARS)
+            if not sq:
+                continue
+            exp_count = exp_squeezed.count(sq)
+            act_count = act_squeezed.count(sq)
+            if act_count > exp_count:
+                residual.add(old_text)
+            src_count = src_squeezed.count(sq)
+            # pdf2docx 转换丢实体：源 docx 就没有（评审 I1，安全方向回退）
+            if src_count == 0:
+                lost.add(old_text)
+            # 期望中应保留（保留实体/新值）却比期望变少 = 转换或替换丢内容
+            elif act_count < exp_count:
+                lost.add(old_text)
+        return residual, lost
 
     @staticmethod
     def _pdf_to_docx(input_path: str, workdir: str) -> str | None:
@@ -786,6 +837,7 @@ class TextRedactorMixin:
             for page_num in range(len(doc)):
                 page = doc.load_page(page_num)
                 replacement_inserts: list[tuple[fitz.Rect, str, float | None]] = []
+                accepted_rects: list[fitz.Rect] = []
 
                 for old_text, new_text in replacements.items():
                     # 查找文本位置；实体带空格伪影时 MuPDF 可能匹配不上，
@@ -802,9 +854,14 @@ class TextRedactorMixin:
                         # Use a real PDF redaction annotation so original text is
                         # removed from the content stream, not merely covered.
                         rect = fitz.Rect(inst)
+                        # 嵌套/重叠实体（长名与其子串）只写一次，避免双份
+                        # 替换文本叠印（Issue #84 用户成品重影）
+                        if any(rect.intersects(done) for done in accepted_rects):
+                            continue
                         # 原文字号必须在涂红前读（apply_redactions 后原文已删）
                         orig_size = self._span_font_size(page, rect)
                         page.add_redact_annot(rect, fill=(1, 1, 1))
+                        accepted_rects.append(rect)
                         replacement_inserts.append((rect, new_text, orig_size))
 
                         redacted_count += 1

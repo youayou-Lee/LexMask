@@ -200,5 +200,120 @@ def test_docx_path_no_residual_with_space_artifact(tmp_path):
         )
     )
     assert count == 2, "两个空格错位实体都应被替换"
-    residual = r._docx_texts_present(str(out), {e.text for e in ents})
-    assert not residual, f"替换后不应残留原文: {residual}"
+    residual, lost = r._docx_verify_replacements(
+        str(docx_path), str(out),
+        {"2018 年3 月26 日": "【日期1】", "2019 年01 月01 日": "【日期2】"},
+    )
+    assert not residual and not lost, f"替换后不应残留/丢失: {residual} {lost}"
+
+
+# ------------------------------------------------- 残留校验期望值对照（#84 二轮）
+
+
+def test_preserved_host_substring_no_false_residual(tmp_path):
+    """子串实体落在保留原文的长机构名里，不应误判残留（#84 用户实测场景）。
+
+    「英德市人民检察院」按口径保留原文，其子串「人民检察院」被替换；
+    旧校验按「原文是否出现」判定必然误判 → 整档回退兜底乱版。
+    """
+    from docx import Document as Docx
+
+    docx_path = tmp_path / "source.docx"
+    out = tmp_path / "out.docx"
+    d = Docx()
+    d.add_paragraph("英德市人民检察院对犯罪嫌疑人陈海新审查报告")
+    d.save(str(docx_path))
+
+    r = TextRedactorMixin()
+    replacements = {
+        "英德市人民检察院": "英德市人民检察院",  # 设计性保留
+        "人民检察院": "[组织机构一]",
+        "陈海新": "[姓名一]",
+    }
+    from app.models.common import ReplacementMode
+    ctx = RedactionContext(mode=ReplacementMode.CUSTOM)
+    ctx.set_custom_replacements(replacements)
+    ents = [
+        Entity(id="e1", text="英德市人民检察院", type="ORG", start=0, end=8, page=1, selected=True),
+        Entity(id="e2", text="人民检察院", type="ORG", start=0, end=5, page=1, selected=True),
+        Entity(id="e3", text="陈海新", type="PERSON", start=0, end=3, page=1, selected=True),
+    ]
+    asyncio.run(r._redact_docx(str(docx_path), str(out), ents, ctx))
+    residual, lost = r._docx_verify_replacements(str(docx_path), str(out), replacements)
+    assert not residual, f"子串落在保留名里不应判残留: {residual}"
+    assert not lost
+
+
+def test_generated_value_fragment_no_false_residual(tmp_path):
+    """替换生成值里含实体碎片（如新号含 22），不应误判残留。"""
+    from docx import Document as Docx
+
+    docx_path = tmp_path / "source.docx"
+    out = tmp_path / "out.docx"
+    d = Docx()
+    d.add_paragraph("编号22，身份证号110101199001019999确认")
+    d.save(str(docx_path))
+
+    r = TextRedactorMixin()
+    replacements = {
+        "110101199001019999": "110101199001012222",  # 生成号含 22
+        "22": "[编号一]",
+    }
+    from app.models.common import ReplacementMode
+    ctx = RedactionContext(mode=ReplacementMode.CUSTOM)
+    ctx.set_custom_replacements(replacements)
+    ents = [
+        Entity(id="e1", text="110101199001019999", type="ID_CARD", start=0, end=18, page=1, selected=True),
+        Entity(id="e2", text="22", type="NUMBER", start=0, end=2, page=1, selected=True),
+    ]
+    asyncio.run(r._redact_docx(str(docx_path), str(out), ents, ctx))
+    residual, lost = r._docx_verify_replacements(str(docx_path), str(out), replacements)
+    assert not residual, f"生成值中的碎片不应判残留: {residual}"
+    assert not lost
+
+
+def test_true_miss_still_detected(tmp_path):
+    """真漏替（替换代码在某段落失效）必须仍被拦截——安全方向不回退。"""
+    from docx import Document as Docx
+
+    docx_path = tmp_path / "source.docx"
+    out = tmp_path / "out.docx"
+    d = Docx()
+    d.add_paragraph("犯罪嫌疑人陈海新到案")
+    d.save(str(docx_path))
+
+    r = TextRedactorMixin()
+    # 先正常替换生成成品
+    asyncio.run(r._redact_docx(
+        str(docx_path), str(out),
+        [Entity(id="e1", text="陈海新", type="PERSON", start=0, end=3, page=1, selected=True)],
+        _ctx({"陈海新": "[姓名一]"}),
+    ))
+    # 模拟「替换失效」的成品：手工造一份仍含原文的 docx
+    bad = tmp_path / "bad.docx"
+    d2 = Docx()
+    d2.add_paragraph("犯罪嫌疑人陈海新到案")
+    d2.save(str(bad))
+    residual, lost = r._docx_verify_replacements(
+        str(docx_path), str(bad), {"陈海新": "[姓名一]"}
+    )
+    assert "陈海新" in residual
+
+
+def test_pdf_inplace_no_double_insert_on_nested_entities(tmp_path, _allow_tmp_upload):
+    """嵌套实体（长名+其子串）原位替换不重复插入（重叠矩形去重）。"""
+    src = _allow_tmp_upload / "in.pdf"
+    out = tmp_path / "out.pdf"
+    _make_pdf(src, "英德市人民检察院审查报告", 16)
+    r = TextRedactorMixin()
+    asyncio.run(
+        r._redact_pdf_text(
+            str(src), str(out),
+            [_ent("英德市人民检察院", "ORG"), _ent("人民检察院", "ORG")],
+            _ctx({"英德市人民检察院": "某检察院", "人民检察院": "某检察院"}),
+        )
+    )
+    out_doc = fitz.open(str(out))
+    text = out_doc[0].get_text()
+    out_doc.close()
+    assert text.count("某检察院") == 1, f"嵌套实体应只写一次，实际: {text!r}"
