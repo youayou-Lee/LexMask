@@ -67,21 +67,6 @@ def _type_label(entity_type: str) -> str:
     return _TYPE_ZH.get(entity_type, entity_type)
 
 
-def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
-    """同 (原文, 类型) 一行、同占位符；N 按该类型内首次出现顺序从 1 递增。
-
-    终审 I2：每 (原文, 类型) 只出一行——render_outputs 的查找 dict 是 last-row-wins，
-    重复行会让用户对非末行决策被静默忽略；去重后行 id 与 (text,type) 一一对应。
-    """
-    # 第一遍：按 (原文, 类型) 去重，首次出现顺序做类型内全局编号。
-    numbers: dict[tuple[str, str], int] = {}
-    per_type: dict[str, int] = {}
-    for ent in entities:
-        key = (ent.text, ent.type)
-        if key in numbers:
-            continue
-        per_type[ent.type] = per_type.get(ent.type, 0) + 1
-        numbers[key] = per_type[ent.type]
 def _cn_numeral(n: int) -> str:
     """1→一 … 10→十、11→十一、20→二十、21→二十一 … 99；≥100 回退阿拉伯数字。"""
     if n >= 100:

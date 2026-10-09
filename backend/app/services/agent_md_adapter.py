@@ -113,7 +113,7 @@ def _v2_block_to_flat(block: dict, page_idx: int) -> dict:
         primary = content.get(f"{btype}_content") if btype else None
         if isinstance(primary, list):
             sections.append(primary)
-        for key, val in content.items():  # 防御：其他 *_content 变体键
+        for _key, val in content.items():  # 防御：其他 *_content 变体键
             if isinstance(val, list) and val is not primary:
                 sections.append(val)
     elif isinstance(content, list):  # 变体：content 直接是部件列表
