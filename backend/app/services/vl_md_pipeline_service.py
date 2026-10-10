@@ -26,8 +26,8 @@ from dataclasses import dataclass, field
 from app.models.entity_schemas import Entity
 from app.models.schemas import ReplacementMode
 from app.services.redaction.replacement_strategy import (
-    WRAPPING_QUOTE_CHARS,
     RedactionContext,
+    trim_quoted_span,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,24 +47,12 @@ VL_MD_PII_REGEXES = {
 VL_MD_LINKAGE_TRIGGERS = ("ID_CARD", "BANK_CARD")
 VL_MD_LINKAGE_TYPE = "BIRTH_DATE"
 
-# NER/VL 偶尔把包裹性引号并进实体 span(Issue#88):引号属标点不属敏感本体,
-# 若不剥,替换会吞引号(产物「证人某人1证实」)、姓氏派生取到引号退化「某人N」。
-# 字符集正本在 replacement_strategy.WRAPPING_QUOTE_CHARS(顶部 import 别名),勿两处维护。
+# NER/VL 偶尔把包裹性引号并进实体 span(Issue#88):剥引号收口在 replacement_strategy.trim_quoted_span,
+# 喂Agent双路(vl_md / agent_md_ner)共用。
 
 
 def _trim_quoted_span(text: str, start: int, end: int) -> tuple[int, int] | None:
-    """剥 span 首尾引号,返回修正后 (start, end);全 span 皆引号则 None。
-
-    越界/空 span(start>=end)原样放行不剥——只对有效 span 剥引号,
-    越界 span 交给 apply_entities 漂移检查按泄漏面兜底(Issue#88 修订)。
-    """
-    if not (0 <= start < end <= len(text)):
-        return (start, end)
-    while start < end and text[start] in WRAPPING_QUOTE_CHARS:
-        start += 1
-    while end > start and text[end - 1] in WRAPPING_QUOTE_CHARS:
-        end -= 1
-    return None if start >= end else (start, end)
+    return trim_quoted_span(text, start, end)
 
 PLACEHOLDER_RE = re.compile(r"\[[A-Za-z][A-Za-z0-9_]*_\d+\]")
 _PLACEHOLDER_TYPE_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_]*)_\d+\]")

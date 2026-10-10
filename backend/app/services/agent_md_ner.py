@@ -5,9 +5,15 @@
 - build_mapping_draft: 同 (原文, 类型) 同替换值；PERSON 化名「[姓某]」，同姓多个加
   汉字序号「[姓某一]/[姓某二]」，其余类型 [类型_N] 占位符，N 按该类型内首次出现顺序从 1 递增。
 """
+import logging
+
 from app.core.config import settings
 from app.models.schemas import Entity
 from app.services.agent_md_types import Chunk, MappingItem, Seg
+from app.services.redaction.replacement_strategy import (
+    WRAPPING_QUOTE_CHARS,
+    trim_quoted_span,
+)
 
 _SEP = "\n\n"
 # 占位符中文短名；缺省回退 type id。（EntityTypeConfig.name 是全名如「银行卡号」，
@@ -51,13 +57,26 @@ async def run_ner(
     entity_types: list,
     ner,
 ) -> tuple[list[Entity], list[Chunk]]:
-    """逐块顺序 HybridNER；Entity.start/end 平移到全局偏移，page=块首页+1。"""
+    """逐块顺序 HybridNER；Entity.start/end 平移到全局偏移，page=块首页+1。
+
+    Issue#88：NER 偶尔把包裹性引号并进实体 span（「“李四”」），不剥则映射表
+    原文带引号、姓氏派生取到引号退化「[“某]」，确认后替换整 span 吞引号。
+    在此收口剥引号并同步修正全局偏移。
+    """
     entities: list[Entity] = []
     for chunk in chunks:
         ents = await ner.extract(chunk.text, entity_types)
         for ent in ents:
-            ent.start += chunk.base_offset
-            ent.end += chunk.base_offset
+            span = trim_quoted_span(chunk.text, ent.start, ent.end)
+            if span is None:
+                continue
+            if (span[0], span[1]) != (ent.start, ent.end):
+                logging.getLogger(__name__).info(
+                    "[agent-md] quoted span trimmed: %r -> %r",
+                    ent.text[:20], chunk.text[span[0]:span[1]][:20])
+            ent.start = span[0] + chunk.base_offset
+            ent.end = span[1] + chunk.base_offset
+            ent.text = chunk.text[span[0]:span[1]]
             ent.page = chunk.page_idx + 1
             entities.append(ent)
     return entities, chunks
@@ -97,6 +116,7 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
         per_type[ent.type] = per_type.get(ent.type, 0) + 1
         numbers[key] = per_type[ent.type]
     # 同姓 PERSON 实体总数（按唯一 (text,type) 计数），决定唯一不加序号还是加汉字序号。
+    # 姓氏取字前先剥包裹性引号（Issue#88 防御）：「“李四”」取到引号会退化「[“某]」。
     surname_totals: dict[str, int] = {}
     seen_keys: set[tuple[str, str]] = set()
     for ent in entities:
@@ -105,7 +125,8 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
             continue
         seen_keys.add(key)
         if ent.type == "PERSON":
-            surname_totals[ent.text[:1]] = surname_totals.get(ent.text[:1], 0) + 1
+            surname0 = ent.text.strip(WRAPPING_QUOTE_CHARS)[:1]
+            surname_totals[surname0] = surname_totals.get(surname0, 0) + 1
     items: list[MappingItem] = []
     seen: set[tuple[str, str]] = set()
     per_surname: dict[str, int] = {}
@@ -115,7 +136,7 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
             continue
         seen.add(key)
         if ent.type == "PERSON":
-            surname = ent.text[:1]
+            surname = ent.text.strip(WRAPPING_QUOTE_CHARS)[:1]
             per_surname[surname] = per_surname.get(surname, 0) + 1
             if surname_totals[surname] == 1:
                 replacement = f"[{surname}某]"

@@ -60,8 +60,24 @@ MASK_KEEP_SUFFIX_BANK_CARD = 4  # 银行卡保留后4位
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 # 包裹性引号(Issue#88):剥 span 首尾用,不含书名号《》(有语义)。
-# vl_md_pipeline_service 的 span 剥引号与本文件 _derived_base 共用此一份,勿两处维护。
+# vl_md_pipeline_service 与 agent_md_ner 的 span 剥引号及本文件 _derived_base 共用此一份。
 WRAPPING_QUOTE_CHARS = "“”‘’「」『』\"'"
+
+
+def trim_quoted_span(text: str, start: int, end: int) -> tuple[int, int] | None:
+    """剥 span 首尾包裹性引号,返回修正后 (start, end);全 span 皆引号则 None。
+
+    越界/空 span(start>=end)原样放行不剥——只对有效 span 剥引号,
+    越界 span 交由调用方的漂移/偏移检查兜底(Issue#88)。
+    喂Agent双路(vl_md collect_entities / agent_md_ner.run_ner)共用。
+    """
+    if not (0 <= start < end <= len(text)):
+        return (start, end)
+    while start < end and text[start] in WRAPPING_QUOTE_CHARS:
+        start += 1
+    while end > start and text[end - 1] in WRAPPING_QUOTE_CHARS:
+        end -= 1
+    return None if start >= end else (start, end)
 
 # ---------- VL-MD 线（Issue #66/#50）泛化规则版 ----------
 # 口径（#50 门⓪拍板默认表）：BIRTH_DATE 只留年份；ADDRESS 保留省+市、其后行政名词打「某」。
