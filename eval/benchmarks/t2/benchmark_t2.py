@@ -89,6 +89,10 @@ def run_engines(entries: list[dict], engines: dict) -> dict:
                     records.append({"page_id": e["id"], "gt": e["entities"], "pred": pred,
                                     "latency_sec": time.perf_counter() - started})
                 m = nerq.compute_metrics(records)
+                lats = sorted(r["latency_sec"] for r in records)
+                m["latency_sec"]["p50"] = lats[len(lats) // 2] if lats else 0.0
+                m["pred_entities_total"] = sum(
+                    len(v) for r in records for v in r["pred"].values())
                 m.pop("records", None)
                 m["warnings"] = list(getattr(engine, "warnings", []))
                 if hasattr(engine, "warnings"):
@@ -117,12 +121,16 @@ def render_report(result: dict) -> str:
              f"- 引擎：{', '.join(result.get('engines', []))}",
              f"- 生成时间：{result.get('generated_at', '')}",
              f"- 数据目录：{result.get('data_dir', '')}", "",
-             "| 桶 | 引擎 | P | R | F1 | 数字exact |",
-             "|---|---|---|---|---|---|"]
+             "| 桶 | 引擎 | P | R | F1 | 数字exact | 延迟mean/p50(s) |",
+             "|---|---|---|---|---|---|---|"]
+    for ename, meta in (result.get("engine_meta") or {}).items():
+        if meta:
+            bits = [f"{k}={meta[k]}" for k in ("model_name", "device", "load_sec") if k in meta]
+            lines.insert(4, f"- {ename}：{' / '.join(bits)}")
     for bucket, per_engine in result["buckets"].items():
         for ename, m in per_engine.items():
             if m == "N/A":
-                lines.append(f"| {bucket} | {ename} | N/A | N/A | N/A | N/A |")
+                lines.append(f"| {bucket} | {ename} | N/A | N/A | N/A | N/A | N/A |")
             else:
                 dg = m.get("digital", {})
                 if dg:
@@ -130,8 +138,11 @@ def render_report(result: dict) -> str:
                     exact_cell = f"{exact:.4f}"
                 else:
                     exact_cell = "N/A"  # 桶内无数字实体，不显示误导性的 1.0
+                lat = m.get("latency_sec", {})
+                lat_cell = f"{lat.get('mean', 0):.3f}/{lat.get('p50', 0):.3f}"
                 lines.append(f"| {bucket} | {ename} | {m['overall']['precision']:.4f} "
-                             f"| {m['overall']['recall']:.4f} | {m['overall']['f1']:.4f} | {exact_cell} |")
+                             f"| {m['overall']['recall']:.4f} | {m['overall']['f1']:.4f} "
+                             f"| {exact_cell} | {lat_cell} |")
     # 数字三级分级明细：仅含数字实体桶的引擎行（数据来自 json 的 digital 字段）
     detail_lines = []
     for bucket, per_engine in result["buckets"].items():
@@ -148,8 +159,8 @@ def render_report(result: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def parse_engine_arg(value: str) -> HttpEngine:
-    """--engine has=<base> 或 llm=<base>[,model=<m>]。"""
+def parse_engine_arg(value: str):
+    """--engine has=<base> | llm=<base>[,model=<m>] | gliner=<hf模型> | uie=<模型名>。"""
     kind, _, rest = value.partition("=")
     kind = kind.strip()
     parts = rest.split(",")
@@ -163,15 +174,21 @@ def parse_engine_arg(value: str) -> HttpEngine:
         return HttpEngine("has", base)
     if kind == "llm":
         return HttpEngine("llm", base, model=model)
+    if kind in ("gliner", "uie"):  # 本地抽取式引擎（Issue#90 POC）：参数=模型 checkpoint 名
+        import local_engines
+        cls = local_engines.GlinerEngine if kind == "gliner" else local_engines.UieEngine
+        return local_engines.LazyEngine(cls, base)
     raise argparse.ArgumentTypeError(
-        f"invalid --engine '{value}': expected has=<base> or llm=<base>[,model=<m>]")
+        f"invalid --engine '{value}': expected has=<base> or llm=<base>[,model=<m>] "
+        f"or gliner=<hf模型> / uie=<模型名>")
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="T2 benchmark：引擎申报制、桶级明细、无闸门")
     ap.add_argument("--data-dir", required=True, type=Path, help="桶 jsonl 目录（rglob *.jsonl）")
     ap.add_argument("--engine", required=True, action="append", type=parse_engine_arg,
-                    help="引擎申明，可多次：has=<ner_base> 或 llm=<base>[,model=<m>]")
+                    help="引擎申明，可多次：has=<ner_base> 或 llm=<base>[,model=<m>] "
+                         "或 gliner=<hf模型> / uie=<模型名>（本地，Issue#90 POC）")
     ap.add_argument("--buckets", default=None, help="逗号分隔桶名过滤（可选，默认全部）")
     ap.add_argument("--out", type=Path, default=Path("eval/reports"), help="报告输出目录")
     args = ap.parse_args(argv)
@@ -182,12 +199,19 @@ def main(argv: list[str] | None = None) -> int:
         if unknown:
             ap.error(f"unknown --buckets: {', '.join(unknown)}; "
                      f"valid: {', '.join(sorted(spec.BUCKETS))}")  # exit 2，仅参数错误，非闸门
-    engines = dedup_engine_names(list(args.engine))
+    # 本地引擎物化放在 --buckets 校验之后：参数错零加载成本（LazyEngine 仍为代理时跳过）
+    from local_engines import materialize
+    engines = dedup_engine_names([materialize(e) for e in args.engine])
     print(f"engines: {', '.join(engines)}")  # 启动日志：含去重后的引擎清单
     entries = load_entries(args.data_dir, buckets)
     result = run_engines(entries, engines)
     result["generated_at"] = datetime.now().isoformat(timespec="seconds")
     result["data_dir"] = str(args.data_dir)
+    # 引擎元信息：checkpoint / 推理设备 / 加载耗时（延迟口径可比性的前提，Issue#90 A6）
+    result["engine_meta"] = {
+        ename: {k: getattr(eng, k) for k in ("model_name", "device", "load_sec")
+                if hasattr(eng, k)}
+        for ename, eng in engines.items()}
 
     args.out.mkdir(parents=True, exist_ok=True)
     stem = datetime.now().strftime("%Y%m%d-%H%M%S") + "-t2-benchmark"
