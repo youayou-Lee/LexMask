@@ -25,7 +25,10 @@ from dataclasses import dataclass, field
 
 from app.models.entity_schemas import Entity
 from app.models.schemas import ReplacementMode
-from app.services.redaction.replacement_strategy import RedactionContext
+from app.services.redaction.replacement_strategy import (
+    RedactionContext,
+    trim_quoted_span,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,13 @@ VL_MD_PII_REGEXES = {
 # 成对联动(#50 §2.2 硬约束):证件/银行卡在列时出生日期必须处理
 VL_MD_LINKAGE_TRIGGERS = ("ID_CARD", "BANK_CARD")
 VL_MD_LINKAGE_TYPE = "BIRTH_DATE"
+
+# NER/VL 偶尔把包裹性引号并进实体 span(Issue#88):剥引号收口在 replacement_strategy.trim_quoted_span,
+# 喂Agent双路(vl_md / agent_md_ner)共用。
+
+
+def _trim_quoted_span(text: str, start: int, end: int) -> tuple[int, int] | None:
+    return trim_quoted_span(text, start, end)
 
 PLACEHOLDER_RE = re.compile(r"\[[A-Za-z][A-Za-z0-9_]*_\d+\]")
 _PLACEHOLDER_TYPE_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_]*)_\d+\]")
@@ -200,17 +210,31 @@ class VlMdPipelineService:
             if type_id not in resolved_ids:
                 continue
             for m in rx.finditer(text):
+                span = _trim_quoted_span(text, m.start(), m.end())
+                if span is None:
+                    continue
                 seq += 1
                 merged.append(Entity(
-                    id=f"vlmd-rx-{seq}", text=m.group(0), type=type_id,
-                    start=m.start(), end=m.end(), source="regex",
+                    id=f"vlmd-rx-{seq}", text=text[span[0]:span[1]], type=type_id,
+                    start=span[0], end=span[1], source="regex",
                 ))
-                claimed.append((m.start(), m.end()))
+                claimed.append(span)
 
         for e in await self._ner().extract(text, types):
-            if _overlap(e.start, e.end):
+            span = _trim_quoted_span(text, e.start, e.end)
+            if span is None:
+                logger.info("[vl-md] quoted-only span dropped: %r", e.text[:20])
                 continue
-            merged.append(e)
+            if _overlap(*span):
+                continue
+            if span == (e.start, e.end):
+                merged.append(e)
+            else:
+                trimmed = text[span[0]:span[1]]
+                # Issue#88 验收观测点:剥引号发生即留痕,真机验收据此证明机制被触发
+                logger.info("[vl-md] quoted span trimmed: %r -> %r", e.text[:20], trimmed[:20])
+                merged.append(e.model_copy(
+                    update={"text": trimmed, "start": span[0], "end": span[1]}))
         return merged
 
     # ---------- 替换 ----------
