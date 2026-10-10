@@ -74,6 +74,10 @@ PYTHONPATH=$PWD .venv-eval/bin/python eval/benchmarks/t2/benchmark_t2.py \
 
 可选 `--buckets <逗号分隔桶名>` 过滤、`--out` 指定报告目录（默认 `eval/reports`）。
 
+本地抽取式引擎（Issue#90，torch/paddle 依赖各自 venv 内延迟导入、与 HTTP 引擎不可同进程混跑）：
+`--engine gliner=<hf模型名>`（GPU/CPU 直推）、`--engine uie=<模型名>`（PaddleNLP taskflow，如 `uie-m-base`）。
+本地引擎带子串守卫：预测 span 不在原文命中时记告警且不计入预测。
+
 ## 难例沉淀
 
 真实难例入库走工作区 `hardcase-ingest` skill（引导解析实体、确认 preset 类型、调 ingest CLI、拒收即转述原因）。扫描件无文字层时，先取 OCR 转写文本，用 `--text-file` 喂入（条目 text 与实体校验均以转写为准，`--file` 的 PDF 仅做页码溯源）；`--source-ref` / `--verify` 留溯源指针与 GT 互验结论。
