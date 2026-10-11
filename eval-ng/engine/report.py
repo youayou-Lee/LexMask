@@ -49,6 +49,7 @@ def render_report(result: dict, fmt: str) -> str:
             "perf": result.get("perf", {}),
             "gates": [{"name": gr.name, "passed": gr.passed, "details": gr.details}
                       for gr in result.get("gates", [])],
+            "errors": result.get("errors") or [],
             "env": env,
             "generated_at": datetime.now().isoformat(timespec="seconds"),
         }
@@ -82,6 +83,13 @@ def render_report(result: dict, fmt: str) -> str:
         lines += ["", "## 闸门", "| 闸门 | 判定 | 详情 |", "|---|---|---|"]
         for name, verdict, details in _gate_rows(result):
             lines.append(f"| {name} | {verdict} | {details} |")
+        errors = result.get("errors") or []
+        if errors:
+            lines += ["", f"## 错题清单（前 {min(len(errors), 30)} 条 / 共 {len(errors)}）",
+                      "| 题目 | 类型 | 类别 | 期望 | 实际 |", "|---|---|---|---|---|"]
+            for row in errors[:30]:
+                lines.append(f"| {row['page_id']} | {row['type']} | {row['kind']} "
+                             f"| {row['expect']} | {row['actual']} |")
         return "\n".join(lines) + "\n"
     raise ValueError(f"未知报告格式 {fmt!r}（支持 md/json）")
 

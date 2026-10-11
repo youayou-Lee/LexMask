@@ -115,3 +115,19 @@ def test_cli_multi_bucket_with_meta(tmp_path):
     assert "hardcase" in md and "digit-confusion" in md
     assert "真实案卷难例·人工沉淀" in md and "全量：65 条" in md  # 桶说明进报告
     assert "FAIL" in md  # 数字闸逐桶可见
+
+
+def test_cli_hardware_autodetect(tmp_path, monkeypatch, capsys):
+    """用户反馈：--hardware 缺省时机器自读；人工传参以人工为准。"""
+    import evalng_bootstrap as boot
+
+    env_detect = boot.load("engine/env_detect.py")
+    # 注入假命令执行器：模拟 DCU hy_smi 输出
+    fake = env_detect.detect_hardware(
+        run=lambda cmd: "Card series:        K500SM_AI\n" if cmd[0] == "hy_smi" else "")
+    assert fake == "K500SM_AI"
+    fake2 = env_detect.detect_hardware(run=lambda cmd: "")
+    assert fake2 == ""
+    fake3 = env_detect.detect_hardware(
+        run=lambda cmd: "NVIDIA GeForce RTX 5090\n" if cmd[0] == "nvidia-smi" else "")
+    assert fake3 == "NVIDIA GeForce RTX 5090"

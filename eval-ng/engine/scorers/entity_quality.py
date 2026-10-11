@@ -25,3 +25,37 @@ def digital_veto(metrics: dict) -> tuple[bool, list[str]]:
 def compare_baseline(candidate: dict, baseline: dict) -> dict:
     """基线三闸门（R≥基线−1pp / P≥基线 / 数字 exact 100%）。透传 nerq.compare_with_baseline。"""
     return load_backend_nerq().compare_with_baseline(candidate, baseline)
+
+
+def error_rows(records: list[dict], limit: int = 200) -> list[dict]:
+    """错题清单（诊断用，不影响闸门）：数字丢失/数字字符噪声（原串域）+ 漏检/误检（集合域）。
+
+    口径与旧 run_eval error_rows 同构；打分分级走 nerq.grade_digital 单一源。
+    """
+    nerq = load_backend_nerq()
+    rows: list[dict] = []
+    for rec in records:
+        gt = rec.get("gt") or {}
+        pred = rec.get("pred") or {}
+        for etype, gvals in gt.items():
+            gset = {str(v) for v in gvals}
+            pvals = [str(v) for v in (pred.get(etype) or [])]
+            pset = set(pvals)
+            if etype in nerq.DIGITAL_GATE_TYPES or etype in nerq.REFERENCE_STRICT_TYPES:
+                graded = nerq.grade_digital(sorted(gset), pvals)
+                for v in graded["miss"]:
+                    rows.append({"page_id": rec["page_id"], "type": etype,
+                                 "kind": "数字丢失", "expect": v, "actual": "—"})
+                for v, w in graded["near_miss"]:
+                    rows.append({"page_id": rec["page_id"], "type": etype,
+                                 "kind": "数字字符噪声", "expect": v, "actual": w})
+            for v in sorted(gset - pset):
+                rows.append({"page_id": rec["page_id"], "type": etype,
+                             "kind": "漏检", "expect": v, "actual": "—"})
+        for etype, pvals in pred.items():
+            pset = {str(v) for v in pvals}
+            gset = {str(v) for v in (gt.get(etype) or [])}
+            for v in sorted(pset - gset):
+                rows.append({"page_id": rec["page_id"], "type": etype,
+                             "kind": "误检", "expect": "—", "actual": v})
+    return rows[:limit]

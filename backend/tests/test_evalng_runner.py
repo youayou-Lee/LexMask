@@ -111,3 +111,33 @@ def test_report_rejects_missing_env():
         pass
     else:
         raise AssertionError("expected MissingEnvAnnotation")
+
+
+def test_error_rows_and_progress_log(tmp_path, capsys):
+    """用户反馈：错题清单入报告 + 逐题进度日志。"""
+    eq = boot.load("engine/scorers/entity_quality.py")
+    records = [{"page_id": "p1", "gt": {"姓名": ["张三"], "身份证号": ["110101199001010011"]},
+                "pred": {"姓名": ["李四"], "身份证号": ["110101199001010012"]},
+                "latency_sec": 0.1}]
+    rows = eq.error_rows(records)
+    kinds = {(r["kind"], r["type"]) for r in rows}
+    assert ("数字丢失", "身份证号") in kinds or ("数字字符噪声", "身份证号") in kinds
+    assert ("漏检", "姓名") in kinds and ("误检", "姓名") in kinds
+
+    result = runner.run_exam_sync(
+        [protocol.ExamItem(id="p1", exam_id="ex", form=AnswerForm.ENTITY_TABLE,
+                           payload={"text": "x", "types": ["姓名"]},
+                           gt={"姓名": ["张三"], "身份证号": ["110101199001010011"]})],
+        _WrongDigital(), runner.MetricGroup(name="g", runs=1), _env())
+    assert isinstance(result["errors"], list) and result["errors"]
+    out = capsys.readouterr().out
+    assert "[1/1 1/1] p1" in out  # 逐题进度日志
+
+
+class _WrongDigital(FakeEntityParticipant):
+    def __init__(self):
+        super().__init__(wrong_digital=False)
+
+    async def probe(self, item):
+        return protocol.Answer(form=self.answer_form, entities={"姓名": ["李四"]},
+                               latency_sec=0.2)

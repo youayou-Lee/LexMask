@@ -58,16 +58,23 @@ async def run_exam(
     gate_env = gate_env or {}
 
     per_run_metrics: list[dict] = []
+    last_records: list[dict] = []
     pages_detail: list[dict] = []
     gate_results: list = []
     first_run_pairs: list[tuple[ExamItem, Answer]] | None = None
 
     for run_idx in range(group.runs):
         pairs: list[tuple[ExamItem, Answer]] = []
-        for item in exam:
+        n_items = len(exam)
+        for idx, item in enumerate(exam, 1):
             answer = await participant.probe(item)
             if answer.latency_sec is None:
                 answer.latency_sec = 0.0
+            # 逐题进度日志（用户反馈：长桶不再静默）
+            print(f"  [{run_idx + 1}/{group.runs} {idx}/{n_items}] "
+                  f"{item.id} {answer.latency_sec:.2f}s"
+                  + (f" ⚠{answer.warnings[0][:60]}" if answer.warnings else ""),
+                  flush=True)
             pairs.append((item, answer))
         if first_run_pairs is None:
             first_run_pairs = pairs
@@ -80,6 +87,7 @@ async def run_exam(
         ]
         if records:
             per_run_metrics.append(entity_quality.score_entity_quality(records))
+            last_records = records
 
         if run_idx == 0:
             pages_detail = [
@@ -126,6 +134,7 @@ async def run_exam(
         "gates": gate_results,
         "gate_pass": gate_pass,
         "env": env_report,
+        "errors": entity_quality.error_rows(last_records),
         "answers": [ans for _, ans in (first_run_pairs or [])],
     }
 

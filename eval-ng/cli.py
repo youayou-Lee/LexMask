@@ -109,6 +109,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 async def _run(args: argparse.Namespace) -> int:
+    from .engine.env_detect import detect_hardware
+
     if not args.env_label or not args.target_label:
         print("缺 --env-label / --target-label（沿用旧 run_eval 强制惯例）", file=sys.stderr)
         return 2
@@ -116,7 +118,15 @@ async def _run(args: argparse.Namespace) -> int:
     for kv in args.stack_version:
         k, _, v = kv.partition("=")
         stack[k] = v
-    env = EnvReport(hardware=args.hardware or "unspecified",
+    # 硬件自动探测（用户反馈）：人工传了 --hardware 以人工为准，否则机器自读
+    hardware = args.hardware or detect_hardware()
+    if not hardware:
+        print("硬件探测失败且未传 --hardware（AC4 环境标注硬校验）："
+              "请手动指定，如 --hardware K500SM", file=sys.stderr)
+        return 2
+    if not args.hardware:
+        print(f"[eval-ng] 硬件自动探测：{hardware}")
+    env = EnvReport(hardware=hardware,
                     stack_versions=stack,
                     topology=args.topology or "unspecified")
 
@@ -224,6 +234,8 @@ async def _run_single(args: argparse.Namespace, exam: list[ExamItem], exam_id: s
 async def _run_e2e(args: argparse.Namespace) -> int:
     from .engine import e2e as e2e_mod
 
+    from .engine.env_detect import detect_hardware
+
     if not args.env_label or not args.target_label:
         print("缺 --env-label / --target-label（沿用旧 run_eval 强制惯例）", file=sys.stderr)
         return 2
@@ -231,7 +243,11 @@ async def _run_e2e(args: argparse.Namespace) -> int:
     for kv in args.stack_version:
         k, _, v = kv.partition("=")
         stack[k] = v
-    env = {"hardware": args.hardware or "unspecified", "stack_versions": stack,
+    hardware = args.hardware or detect_hardware()
+    if not hardware:
+        print("硬件探测失败且未传 --hardware（AC4）：请手动指定", file=sys.stderr)
+        return 2
+    env = {"hardware": hardware, "stack_versions": stack,
            "topology": args.topology or "unspecified"}
 
     doc = json.loads(Path(args.exam).read_text(encoding="utf-8"))
