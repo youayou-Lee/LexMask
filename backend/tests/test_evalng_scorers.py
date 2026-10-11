@@ -23,7 +23,10 @@ def test_no_scoring_functions_copied():
         src = path.read_text(encoding="utf-8")
         for fn in ("compute_metrics", "digital_gate_pass", "compare_with_baseline", "grade_digital"):
             assert not re.search(rf"def\s+{fn}\s*\(", src), f"eval-ng 复制了打分函数 {fn}"
-            assert re.search(rf"\b{fn}\b", src) or fn in ("grade_digital",), f"未透传 {fn}"
+    # 透传出口必须指向单一 import 源
+    src = (REPO / "eval-ng" / "engine" / "scorers" / "entity_quality.py").read_text(encoding="utf-8")
+    for fn in ("compute_metrics", "digital_gate_pass", "compare_with_baseline"):
+        assert fn in src, f"entity_quality 未透传 {fn}"
 
 
 def _rec(page_id, gt, pred, latency=0.1):

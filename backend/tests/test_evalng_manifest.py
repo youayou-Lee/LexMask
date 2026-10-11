@@ -1,42 +1,12 @@
-"""eval-ng manifest v2 单测：合并、hash 校验、类型映射收敛。
+"""eval-ng manifest v2 单测：合并、hash 校验、类型映射收敛。"""
 
-加载方式：把 eval-ng 目录注册为命名包 `evalng_pkg`，随包加载子模块（相对 import 可用）。
-"""
-
-import importlib.util
+import hashlib
 import json
-import sys
-import types
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
-EVALNG_DIR = REPO / "eval-ng"
+import evalng_bootstrap as boot
 
-if "evalng_pkg" not in sys.modules:
-    _pkg = types.ModuleType("evalng_pkg")
-    _pkg.__path__ = [str(EVALNG_DIR)]
-    sys.modules["evalng_pkg"] = _pkg
-    for sub in ("engine", "datasets"):
-        _sub = types.ModuleType(f"evalng_pkg.{sub}")
-        _sub.__path__ = [str(EVALNG_DIR / sub)]
-        sys.modules[f"evalng_pkg.{sub}"] = _sub
-        setattr(_pkg, sub, _sub)
-    _spec = importlib.util.spec_from_file_location(
-        "evalng_pkg.engine.protocol", EVALNG_DIR / "engine" / "protocol.py"
-    )
-    _protocol = importlib.util.module_from_spec(_spec)
-    sys.modules["evalng_pkg.engine.protocol"] = _protocol
-    _spec.loader.exec_module(_protocol)
-    _pkg.engine.protocol = _protocol
-
-_spec = importlib.util.spec_from_file_location(
-    "evalng_pkg.datasets.manifest_v2", EVALNG_DIR / "datasets" / "manifest_v2.py"
-)
-mv = importlib.util.module_from_spec(_spec)
-sys.modules["evalng_pkg.datasets.manifest_v2"] = mv
-_spec.loader.exec_module(mv)
-
-import hashlib  # noqa: E402
+mv = boot.load("datasets/manifest_v2.py")
 
 
 def _write_exam(tmp: Path, content: bytes) -> Path:
