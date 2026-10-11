@@ -1,0 +1,862 @@
+<!doctype html>
+<!-- GT 工作台单页前端（Issue#56 M3 / Task 5）。零构建、零 CDN、全自包含：
+     CSS/JS 全部内联，仅以 fetch() 访问本服务的相对 /api 与 /img 路径，
+     不引用任何外部 URL。API 契约 = workbench_server.py；关键元素 id 与
+     backend/tests/test_gt_workbench_server.py::test_index_contains_key_element_ids 对齐：
+     stats-bar / mode-toggle / dispute-list / sample-list / trust-card / undo-btn / finalize-btn -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>GT 工作台</title>
+<style>
+  :root{
+    --bg:#f4f5f7; --card:#fff; --ink:#1f2430; --muted:#667085; --line:#e4e7ec;
+    --accent:#2563eb; --ok:#15803d; --ok-bg:#ecfdf3; --bad:#b42318; --bad-bg:#fef3f2;
+    --warn:#b54708; --warn-bg:#fffaeb; --add:#175cd3; --add-bg:#eff8ff; --hot:#d92d20;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.65 -apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+  .hidden{display:none!important}
+  #topbar{position:sticky;top:0;z-index:10;display:flex;flex-wrap:wrap;align-items:center;
+          gap:10px 18px;padding:10px 18px;background:#fff;border-bottom:1px solid var(--line);
+          box-shadow:0 1px 4px rgba(16,24,40,.06)}
+  .brand{font-size:18px;font-weight:700;letter-spacing:.5px;white-space:nowrap}
+  #stats-bar{display:flex;flex-wrap:wrap;gap:6px 16px;flex:1;min-width:260px}
+  .stat{color:var(--muted);font-size:13px;white-space:nowrap}
+  .stat b{font-size:16px;color:var(--ink);margin-right:4px;font-variant-numeric:tabular-nums}
+  .stat.hot b{color:var(--hot)}
+  .stat.good b{color:var(--ok)}
+  .stat.warned b{color:var(--warn)}
+  #mode-toggle{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  #mode-toggle .mode-btn{border:0;background:#fff;padding:7px 20px;font-size:14px;cursor:pointer;color:var(--muted)}
+  #mode-toggle .mode-btn.active{background:var(--accent);color:#fff;font-weight:600}
+  .topbar-actions{display:flex;gap:8px}
+  main{max-width:1280px;margin:0 auto;padding:16px 18px 30px}
+  .btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 16px;
+       font-size:14px;cursor:pointer;color:var(--ink)}
+  .btn:hover{filter:brightness(.97)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn-ok{background:var(--ok-bg);border-color:#abefc6;color:var(--ok);font-weight:600}
+  .btn-bad{background:var(--warn-bg);border-color:#fec84b;color:var(--warn);font-weight:600}
+  .btn-add{background:var(--add-bg);border-color:#b2ddff;color:var(--add);font-weight:600}
+  .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .btn-ghost{background:transparent}
+  #msg-box{max-width:1280px;margin:12px auto 0;padding:10px 16px;border-radius:8px;font-size:14px}
+  #msg-box.ok{background:var(--ok-bg);color:var(--ok);border:1px solid #abefc6}
+  #msg-box.err{background:var(--bad-bg);color:var(--bad);border:1px solid #fecdca}
+  #missing-box{max-width:1280px;margin:12px auto 0;padding:10px 16px;border-radius:8px;
+               background:var(--bad-bg);border:1px solid #fecdca;color:var(--bad);font-size:14px}
+  #missing-box ul{margin:6px 0 0;padding-left:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:14px 16px;margin-bottom:14px;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+  .card-head{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;margin-bottom:10px}
+  .pid{background:#eef4ff;color:var(--accent);border-radius:6px;padding:1px 8px;
+       font-size:13px;font-weight:600;white-space:nowrap}
+  .rule,.models{color:var(--muted);font-size:13px}
+  .card-body{display:flex;gap:16px;align-items:flex-start}
+  .page-panel{flex:0 0 340px;max-width:45%;border:1px solid var(--line);border-radius:8px;
+              overflow:auto;background:#fafafa;min-height:120px;max-height:72vh}
+  .page-img{display:block;width:100%;height:auto}
+  .panel-loading{padding:20px;color:var(--muted);font-size:13px}
+  .transcript-box{padding:10px}
+  .transcript-head{font-size:12px;color:var(--warn);margin-bottom:6px}
+  .transcript{margin:0;white-space:pre-wrap;word-break:break-all;max-height:60vh;overflow:auto;
+              font:13px/1.9 ui-monospace,Menlo,Consolas,monospace}
+  mark{background:#fde68a;padding:0 1px;border-radius:2px}
+  mark.current{background:#fda29b;outline:2px solid var(--hot)}
+  /* v2 高亮联动：争议卡自身的候选读数（蓝色），与黄色「已采纳」区分 */
+  mark.mk-dispute{background:#bfdbfe;outline:2px solid var(--accent)}
+  .info-panel{flex:1;min-width:0}
+  .entity-line{margin:2px 0 10px;font-size:14px}
+  .entity-text{font-size:17px}
+  .warn-text{color:var(--warn)}
+  .chip{display:inline-block;background:#f2f4f7;border:1px solid var(--line);border-radius:999px;
+        padding:0 10px;font-size:12.5px;color:#475467;white-space:nowrap}
+  .cands-title{font-size:12.5px;color:var(--muted);margin:8px 0 6px}
+  .cands{display:flex;gap:10px;flex-wrap:wrap}
+  .cand{flex:1 1 150px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fcfcfd}
+  .cand-label{font-size:12px;color:var(--muted);margin-bottom:4px;font-weight:700;letter-spacing:.5px}
+  .cand-item{font-size:15px;margin:2px 0;word-break:break-all}
+  .cand-empty{color:var(--muted);font-size:13px}
+  .actions{display:flex;gap:10px;margin:12px 0 4px}
+  .fix-form{margin-top:10px;border:1px dashed var(--line);border-radius:8px;padding:10px 12px;background:#f8fafc}
+  .form-title{font-size:13.5px;font-weight:600;margin-bottom:6px}
+  .form-hint{font-size:12.5px;color:var(--muted);margin:0 0 8px}
+  .fix-form label{display:block;font-size:13px;color:var(--muted);margin:6px 0}
+  .fix-form input{display:block;width:100%;max-width:420px;margin-top:3px;padding:7px 10px;
+                  border:1px solid var(--line);border-radius:6px;font-size:14px;color:var(--ink);background:#fff}
+  .manual-span{border:1px dashed #fec84b;border-radius:8px;background:var(--warn-bg);
+               padding:8px 10px;margin:8px 0}
+  .manual-span.hidden{display:none}
+  .manual-span .form-title{color:var(--warn)}
+  .span-pair{display:flex;gap:6px;align-items:center}
+  .span-pair input{width:110px;max-width:110px}
+  .confirm-line{display:flex!important;align-items:center;gap:8px;font-weight:600;color:var(--warn)}
+  .confirm-line input{display:inline-block;width:auto;max-width:none;margin:0}
+  .form-btns{display:flex;gap:8px;margin-top:8px}
+  .form-msg{font-size:13px;color:var(--bad);white-space:pre-wrap;margin-top:6px}
+  .form-msg:empty{display:none}
+  .empty{color:var(--muted);padding:26px;text-align:center;background:var(--card);
+         border:1px dashed var(--line);border-radius:10px}
+  .trust-card{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+  .trust-rate{font-size:38px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums}
+  .trust-line{font-size:14px}
+  .trust-sub{color:var(--muted);font-size:13px}
+  .trust-empty{color:var(--muted)}
+  .sample-head{display:flex;align-items:center;gap:12px;margin:14px 2px;flex-wrap:wrap}
+  .sample-meta{color:var(--muted);font-size:13px;margin-bottom:10px}
+  .sample-main{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .sample-main .entity-text{font-size:15.5px}
+  .state{font-size:12.5px;border-radius:999px;padding:1px 10px;white-space:nowrap}
+  .state.muted{background:#f2f4f7;color:var(--muted)}
+  .state.ok{background:var(--ok-bg);color:var(--ok)}
+  .state.warn{background:var(--warn-bg);color:var(--warn)}
+  .sample-btns{margin-left:auto;display:flex;gap:8px}
+  #journal-panel{max-width:1280px;margin:0 auto;padding:0 18px 46px;color:var(--muted);font-size:13px}
+  #journal-panel summary{cursor:pointer}
+  #journal-list{margin:8px 0 0;padding-left:20px}
+  #journal-list li{margin:2px 0}
+  .j-ts{color:#98a2b3;margin-right:10px;font-variant-numeric:tabular-nums}
+  @media (max-width:900px){
+    .card-body{flex-direction:column}
+    .page-panel{flex:none;width:100%;max-width:none}
+    .sample-btns{margin-left:0}
+  }
+</style>
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">GT 工作台</div>
+  <div id="stats-bar" aria-label="统计"></div>
+  <div id="mode-toggle" role="tablist" aria-label="视图切换">
+    <button type="button" id="mode-dispute" class="mode-btn active">裁决</button>
+    <button type="button" id="mode-sample" class="mode-btn">抽检</button>
+  </div>
+  <div class="topbar-actions">
+    <button type="button" id="undo-btn" class="btn" title="撤销最近一次操作">撤销</button>
+    <button type="button" id="finalize-btn" class="btn btn-primary" title="校验并写出 gt_v1.jsonl">定稿</button>
+  </div>
+</header>
+<div id="msg-box" class="hidden"></div>
+<div id="missing-box" class="hidden"></div>
+<main>
+  <section id="view-dispute">
+    <div id="dispute-list"><div class="empty">加载中…</div></div>
+  </section>
+  <section id="view-sample" class="hidden">
+    <div id="trust-card" class="card trust-card"><span class="trust-empty">加载中…</span></div>
+    <div class="sample-head">
+      <button type="button" id="sample-start-btn" class="btn btn-add">开始抽检</button>
+      <span class="trust-sub">从「双方一致」实体中按比例分层抽样；同一抽样号得到同一清单，可复查</span>
+    </div>
+    <div id="sample-list"><div class="empty">加载中…</div></div>
+  </section>
+</main>
+<div id="journal-panel">
+  <details>
+    <summary>最近操作（操作日志只追加不删除，供撤销前核对）</summary>
+    <ol id="journal-list"></ol>
+  </details>
+</div>
+<datalist id="type-options"></datalist>
+<noscript>本工作台需要启用 JavaScript。</noscript>
+<script>
+"use strict";
+
+// ---- 小工具 -----------------------------------------------------------------
+const el = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const escAttr = esc;
+const chip = (t) => `<span class="chip">${esc(t)}</span>`;
+
+const VERIFY_LABEL = {
+  "consistent":     ["待抽检", "muted"],
+  "arbitrated":     ["已仲裁", "muted"],
+  "user-confirmed": ["已确认", "ok"],
+  "user-corrected": ["已改判", "warn"],
+};
+
+const state = {
+  stats: {}, disputes: {}, trust: null, sample: null, journal: [],
+  packs: new Map(),   // page_id -> pack（refreshAll 时整体失效重取）
+};
+
+async function api(path) {
+  const res = await fetch(path);
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* 非 JSON（理论不发生） */ }
+  return { ok: res.ok, status: res.status, data };
+}
+const jsonPost = (path, body) =>
+  fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body ?? {}) })
+    .then(async (res) => {
+      let data = null;
+      try { data = await res.json(); } catch (e) { /* 忽略 */ }
+      return { ok: res.ok, status: res.status, data };
+    });
+
+const errText = (r) => (r.data && r.data.error) || `HTTP ${r.status}`;
+
+let msgTimer = null;
+function flashMsg(text, isErr) {
+  const box = el("msg-box");
+  box.textContent = text;
+  box.classList.remove("hidden", "ok", "err");
+  box.classList.add(isErr ? "err" : "ok");
+  clearTimeout(msgTimer);
+  msgTimer = setTimeout(() => box.classList.add("hidden"), isErr ? 8000 : 4000);
+}
+function formMsg(form, text) { form.querySelector(".form-msg").textContent = text || ""; }
+function hideMissing() { el("missing-box").classList.add("hidden"); }
+
+// ---- 数据装载 -----------------------------------------------------------------
+async function ensurePack(pid) {
+  if (!state.packs.has(pid)) {
+    const r = await api(`/api/page/${encodeURIComponent(pid)}`);
+    state.packs.set(pid, r.ok ? r.data
+                              : { error: (r.data && r.data.error) || "载入失败" });
+  }
+  return state.packs.get(pid);
+}
+
+async function refreshAll() {
+  state.packs.clear();
+  hideMissing();
+  const [s, d, t, sm, j] = await Promise.all([
+    api("/api/stats"), api("/api/disputes"), api("/api/trust"),
+    api("/api/sample"), api("/api/journal?n=20"),
+  ]);
+  state.stats = s.ok ? s.data : {};
+  state.disputes = d.ok ? d.data : {};
+  state.trust = t.ok ? t.data : null;      // 404（尚未抽样）→ null
+  state.sample = sm.ok ? sm.data : null;   // 404（尚未抽样）→ null
+  state.journal = j.ok ? j.data : [];
+  await Promise.all(Object.keys(state.disputes).map(ensurePack));
+  if (state.sample) {
+    await Promise.all(state.sample.selected.map(([pid]) => ensurePack(pid)));
+  }
+  renderStats(); renderDisputes(); renderTrust(); renderSample(); renderJournal();
+}
+
+// ---- stats 条 -----------------------------------------------------------------
+function renderStats() {
+  const s = state.stats || {};
+  const dCount = Object.values(state.disputes || {})
+    .reduce((n, lst) => n + lst.length, 0);
+  const item = (label, val, cls) =>
+    `<span class="stat ${cls || ""}"><b>${val}</b>${label}</span>`;
+  el("stats-bar").innerHTML =
+    item("待裁决", dCount, dCount ? "hot" : "") +
+    item("双方一致", s.consistent ?? 0) +
+    item("已仲裁", s.arbitrated ?? 0) +
+    item("已确认", s["user-confirmed"] ?? 0, "good") +
+    item("已改判", s["user-corrected"] ?? 0, "warned");
+}
+
+// ---- 裁决视图 -----------------------------------------------------------------
+// 与数据层 _linked_disputed_index 同口径：候选 span_original 精确匹配优先，text 兜底。
+// T5 评审 Critical#1：span 必须逐元素值比较——disputes 与 page 是两次独立的
+// JSON.parse，数组引用比较（===）恒为 false，会退化成 text 兜底；同文两处实体
+// （法律文书常见）时错锚第一处，误确认另一实体后分歧仍被静默关单。
+function spansEqual(a, b) {
+  return Array.isArray(a) && Array.isArray(b) && a.length === b.length
+    && a.every((v, i) => v === b[i]);
+}
+
+function linkedEntity(pack, adj) {
+  const cands = adj.candidates || {};
+  const entries = Object.values(cands).flat().filter((e) => e && typeof e === "object");
+  const ents = (pack && pack.entities) || [];
+  const matchers = {
+    span_original: (ent) => entries.some((e) => spansEqual(e.span_original, ent.span_original)),
+    text: (ent) => entries.some((e) => e.text === ent.text),
+  };
+  for (const key of ["span_original", "text"]) {
+    for (let i = 0; i < ents.length; i++) {
+      if (matchers[key](ents[i])) return i;
+    }
+  }
+  return -1;
+}
+
+function candOrder(cands) {
+  const keys = Object.keys(cands || {});
+  const prefer = ["a", "b", "md"];
+  return [...prefer.filter((k) => keys.includes(k)),
+          ...keys.filter((k) => !prefer.includes(k))];
+}
+
+function renderDisputes() {
+  const list = el("dispute-list");
+  const pids = Object.keys(state.disputes || {});
+  if (!pids.length) {
+    list.innerHTML = `<div class="empty">分歧已全部处理完毕。可切到「抽检」视图抽查，
+      或点右上角「定稿」写出 gt_v1.jsonl。</div>`;
+    return;
+  }
+  list.innerHTML = "";
+  for (const pid of pids) {
+    const pack = state.packs.get(pid);
+    for (const adj of state.disputes[pid]) {
+      list.appendChild(buildDisputeCard(pid, adj, pack));
+    }
+  }
+}
+
+// 争议卡自身主题 = 该条争议的候选读数：candidates 按面坐标携带 span_original，
+// 取第一路有合法 span 的候选（a→b→md 序，与 linkedEntity 同序）；gap 条目
+// （candidates={"detail":[...]}）无候选读数 → null。
+function firstCandidateSpan(adj) {
+  const cands = (adj && adj.candidates) || {};
+  for (const k of candOrder(cands)) {
+    for (const c of (cands[k] || [])) {
+      const sp = c && typeof c === "object" ? c.span_original : null;
+      if (Array.isArray(sp) && sp.length === 2
+          && typeof sp[0] === "number" && typeof sp[1] === "number") return sp;
+    }
+  }
+  return null;
+}
+
+function buildDisputeCard(pid, adj, pack) {
+  const card = document.createElement("article");
+  card.className = "card dispute-card";
+  if (!pack || pack.error) {
+    card.innerHTML = `<div class="card-head"><span class="pid">页 ${esc(pid)}</span>
+      <span class="rule">分歧规则 ${esc(adj.rule || "")}</span></div>
+      <div class="warn-text">页面数据载入失败：${esc((pack && pack.error) || "未知原因")}</div>`;
+    return card;
+  }
+  const idx = linkedEntity(pack, adj);
+  const ent = idx >= 0 ? pack.entities[idx] : null;
+  card.dataset.pid = pid;
+  card.dataset.adj = adj.adjudication_index;
+  card.dataset.entityIndex = idx;
+  // M2 终审修复：gap 条目的 candidates={"detail": [字符串...]}——字符串直出，
+  // 旧逻辑只取 c.text 导致整行空白；对象候选照旧渲染 text+type。
+  const candItem = (c) => (c && typeof c === "object")
+    ? `<div class="cand-item"><b>${esc(c.text)}</b> ${chip(c.type)}</div>`
+    : `<div class="cand-item">${esc(c)}</div>`;
+  const candsHtml = candOrder(adj.candidates).map((k) => {
+    const lst = (adj.candidates && adj.candidates[k]) || [];
+    const items = lst.length
+      ? lst.map(candItem).join("")
+      : '<div class="cand-empty">（无候选）</div>';
+    return `<div class="cand"><div class="cand-label">${esc(k)}</div>${items}</div>`;
+  }).join("");
+  const entHtml = ent
+    ? `<div class="entity-line">实体原文 <b class="entity-text">${esc(ent.text)}</b>
+       &nbsp;类型 ${chip(ent.type)}</div>`
+    : `<div class="entity-line warn-text">未找到与该分歧关联的实体——「对/错」不可用；
+       可用「机器正确」采信机器判断，或「漏」补录实体</div>`;
+  const gapHtml = adj.gap
+    ? `<div class="entity-line warn-text">页级分歧：${esc(adj.gap)}</div>` : "";
+  card.innerHTML = `
+    <div class="card-head">
+      <span class="pid">页 ${esc(pid)}</span>
+      <span class="rule">分歧规则 ${esc(adj.rule || "")}</span>
+      <span class="models">模型 ${esc((adj.models || []).join("、"))} 读数不一致</span>
+    </div>
+    <div class="card-body">
+      <div class="page-panel"><div class="panel-loading">页面图加载中…</div></div>
+      <div class="info-panel">
+        ${entHtml}
+        ${gapHtml}
+        <div class="cands-title">各模型读数</div>
+        <div class="cands">${candsHtml}</div>
+        <div class="actions">
+          <button type="button" class="btn btn-ok" data-act="dui"
+                  title="原判正确" ${ent ? "" : "disabled"}>对</button>
+          <button type="button" class="btn btn-bad" data-act="cuo"
+                  title="有误，需改判" ${ent ? "" : "disabled"}>错</button>
+          <button type="button" class="btn btn-add" data-act="lou"
+                  title="补录被漏掉的实体，并关闭本条分歧">漏</button>
+          <button type="button" class="btn" data-act="ack"
+                  title="机器判断成立（gap 条目/被否读数等），不改动实体，直接关单">机器正确</button>
+        </div>
+        <form class="fix-form hidden" data-form="cuo">
+          <div class="form-title">改判（错）——修正该实体的原文与类型</div>
+          <label>新原文 <input name="text" required value="${escAttr(ent ? ent.text : "")}"></label>
+          <label>类型 <input name="type" required list="type-options" value="${escAttr(ent ? ent.type : "")}"></label>
+          <label>备注（可空） <input name="note" placeholder="选填"></label>
+          ${MANUAL_SPAN_HTML}
+          <div class="form-btns">
+            <button type="submit" class="btn btn-bad">提交改判</button>
+            <button type="button" class="btn btn-ghost" data-act="cancel">取消</button>
+          </div>
+          <div class="form-msg"></div>
+        </form>
+        <form class="fix-form hidden" data-form="lou">
+          <div class="form-title">补漏——补充各方都漏掉的实体</div>
+          <p class="form-hint">补漏会新增实体并关闭本条分歧（判：漏）。若机器判断本就正确、无需补录，请用「机器正确」。</p>
+          <label>原文 <input name="text" required placeholder="转录中被漏掉的原文"></label>
+          <label>类型 <input name="type" required list="type-options" placeholder="选择或输入类型"></label>
+          <label>备注（可空） <input name="note" placeholder="选填"></label>
+          ${MANUAL_SPAN_HTML}
+          <div class="form-btns">
+            <button type="submit" class="btn btn-add">提交补漏</button>
+            <button type="button" class="btn btn-ghost" data-act="cancel">取消</button>
+          </div>
+          <div class="form-msg"></div>
+        </form>
+      </div>
+    </div>`;
+  // v2 高亮联动：把本卡争议候选读数的 span 传给转录兜底视图（蓝色高亮锚点）
+  mountPagePanel(card.querySelector(".page-panel"), pid, idx, firstCandidateSpan(adj));
+  return card;
+}
+
+// 页面图：/img 200 → 展示 PNG；404/网络失败 → 转录高亮兜底（404 原因随面板展示）
+async function mountPagePanel(panel, pid, currentIdx, disputeSpan) {
+  const pack = state.packs.get(pid);
+  try {
+    const res = await fetch(`/img/${encodeURIComponent(pid)}`);
+    if (res.ok) {
+      const blob = await res.blob();
+      const img = document.createElement("img");
+      img.className = "page-img";
+      img.alt = `页 ${pid} 原图`;
+      img.src = URL.createObjectURL(blob);
+      panel.replaceChildren(img);
+      return;
+    }
+    let reason = "";
+    try { const j = await res.json(); reason = (j && j.error) || ""; } catch (e) { /* 忽略 */ }
+    panel.replaceChildren(transcriptBlock(pack, reason, currentIdx, disputeSpan));
+  } catch (e) {
+    panel.replaceChildren(transcriptBlock(pack, "网络请求失败", currentIdx, disputeSpan));
+  }
+}
+
+function transcriptBlock(pack, reason, currentIdx, disputeSpan) {
+  const wrap = document.createElement("div");
+  wrap.className = "transcript-box";
+  const head = document.createElement("div");
+  head.className = "transcript-head";
+  head.textContent = `页面图不可用（${reason || "原因未知"}），以下为转录高亮兜底`;
+  const pre = document.createElement("pre");
+  pre.className = "transcript";
+  pre.appendChild(highlightTranscript(pack, currentIdx, disputeSpan ? [disputeSpan] : []));
+  wrap.appendChild(head);
+  wrap.appendChild(pre);
+  return wrap;
+}
+
+// transcript_gt.text 按 entity span_original 包 <mark>；当前分歧实体加重高亮；
+// 争议卡自身的候选读数 span 以蓝色 mk-dispute 标出（v2 高亮联动：选中卡在
+// 左侧转录中锚定它自己的争议读数，与黄色「已采纳」区分；漏/错采纳后实体
+// 入 pack.entities，照常显示黄色）。
+// 纯函数段构造器（无 DOM，自测可直跑）：返回 [{text, mark, title}]，mark ∈
+// ""（普通文本）| "ent"（已采纳实体，黄）| "current"（当前实体，红）|
+// "mk-dispute"（争议候选读数，蓝）。同字符多重重叠时优先级 蓝 disputes > 红 current > 黄 ent。
+function transcriptSegments(pack, currentIdx, disputeSpans) {
+  disputeSpans = Array.isArray(disputeSpans) ? disputeSpans : [];
+  const text = (pack && pack.transcript_gt && pack.transcript_gt.text) || "";
+  const marks = new Array(text.length).fill(null);
+  ((pack && pack.entities) || []).forEach((ent, i) => {
+    const s = ent.span_original && ent.span_original[0];
+    const e2 = ent.span_original && ent.span_original[1];
+    if (!(typeof s === "number" && typeof e2 === "number" && s >= 0 && e2 <= text.length)) return;
+    for (let k = s; k < e2; k++) {
+      if (!marks[k]) marks[k] = { types: new Set(), current: false, dispute: false };
+      marks[k].types.add(ent.type || "?");
+      if (i === currentIdx) marks[k].current = true;
+    }
+  });
+  disputeSpans.forEach((sp) => {
+    const s = sp && sp[0], e2 = sp && sp[1];
+    if (!(typeof s === "number" && typeof e2 === "number")) return;
+    for (let k = Math.max(0, s); k < Math.min(e2, text.length); k++) {
+      if (!marks[k]) marks[k] = { types: new Set(), current: false, dispute: false };
+      marks[k].dispute = true;
+    }
+  });
+  const segments = [];
+  let buf = "";
+  let sig = "";
+  let title = "";
+  let cls = "";
+  const flush = () => {
+    if (!buf) return;
+    segments.push({ text: buf, mark: cls, title });
+    buf = "";
+  };
+  for (let i = 0; i < text.length; i++) {
+    const mk = marks[i];
+    const s2 = mk ? (mk.dispute ? "mk-dispute" : mk.current ? "current" : "ent") : "";
+    if (s2 !== sig) {
+      flush();
+      sig = s2;
+      cls = s2;
+      title = mk ? [...mk.types].join(" / ") : "";
+    }
+    buf += text[i];
+  }
+  flush();
+  return segments;
+}
+
+function highlightTranscript(pack, currentIdx, disputeSpans) {
+  const frag = document.createDocumentFragment();
+  for (const seg of transcriptSegments(pack, currentIdx, disputeSpans)) {
+    if (!seg.mark) frag.appendChild(document.createTextNode(seg.text));
+    else {
+      const m = document.createElement("mark");
+      if (seg.mark !== "ent") m.className = seg.mark;  // ent = 默认黄，无需类名
+      m.title = seg.title;
+      m.textContent = seg.text;
+      frag.appendChild(m);
+    }
+  }
+  return frag;
+}
+
+// 改判/补漏的 span 计算：文本未改沿用原 span（避免同文重定位）；改了则在转录
+// 文本中重定位（original / normalized 两面各自独立找）。
+// I2 终审修复：找不到**不再静默回退 [0,len]**（旧兜底会指向无关内容）——
+// 返回 located=false，由 settleSpans 弹出手工定位区（span 预填回退值）+
+// 强制勾选「位置确认」后才能提交；最终合法性由后端 validate 兜底。
+function computeSpans(text, ent, pack) {
+  const tg = (pack && pack.transcript_gt) || {};
+  const prevOf = (face) => (ent && Array.isArray(ent[face])) ? ent[face] : null;
+  const face = (hay, prev) => {
+    hay = typeof hay === "string" ? hay : "";
+    if (!text) return { span: [0, Math.min(0, hay.length)], ok: true };
+    if (prev && ent && text === ent.text) return { span: prev.slice(), ok: true };
+    const pos = hay.indexOf(text);
+    if (pos >= 0) return { span: [pos, pos + text.length], ok: true };
+    if (prev) {
+      const s = Math.max(0, Math.min(prev[0], hay.length));
+      return { span: [s, Math.max(s, Math.min(prev[1], hay.length))], ok: false };
+    }
+    return { span: [0, Math.min(text.length, hay.length)], ok: false };
+  };
+  const o = face(tg.text, prevOf("span_original"));
+  const n = face(tg.normalized_text, prevOf("span_normalized"));
+  return { span_original: o.span, span_normalized: n.span, located: o.ok && n.ok };
+}
+
+// 手工定位区（三处表单共用）：原文未自动定位时展开，span 预填回退值，
+// 必须勾选「位置确认」才放行提交（I2 终审修复）
+const MANUAL_SPAN_HTML = `
+  <div class="manual-span hidden">
+    <div class="form-title">手工定位——原文未能自动定位到转录文本</div>
+    <p class="form-hint">可能为 OCR 变体或改写。请核对下列 span 是否指向正确位置（可直接修改），并勾选「位置确认」后再提交。</p>
+    <label>span_original（start / end）
+      <span class="span-pair"><input type="number" name="span-os" min="0" step="1"> / <input type="number" name="span-oe" min="0" step="1"></span></label>
+    <label>span_normalized（start / end）
+      <span class="span-pair"><input type="number" name="span-ns" min="0" step="1"> / <input type="number" name="span-ne" min="0" step="1"></span></label>
+    <label class="confirm-line"><input type="checkbox" name="span-confirm"> 位置确认</label>
+  </div>`;
+
+// 提交前的 span 终裁：自动定位成功 → 直接返回；失败 → 展开手工区（预填回退
+// span），未勾「位置确认」时返回 null 并提示。返回值仅含两 span 键（并入
+// correct 提交，located 标志不外泄）。
+function settleSpans(form, text, ent, pack) {
+  const spans = computeSpans(text, ent, pack);
+  const box = form.querySelector(".manual-span");
+  if (spans.located) {
+    box.classList.add("hidden");
+    return { span_original: spans.span_original, span_normalized: spans.span_normalized };
+  }
+  box.classList.remove("hidden");
+  const prefill = [["span-os", spans.span_original[0]], ["span-oe", spans.span_original[1]],
+                   ["span-ns", spans.span_normalized[0]], ["span-ne", spans.span_normalized[1]]];
+  for (const [name, val] of prefill) {
+    if (form.elements[name].value === "") form.elements[name].value = val;
+  }
+  if (!form.elements["span-confirm"].checked) {
+    formMsg(form, "原文未能在转录文本中定位——请核对/修改 span，勾选「位置确认」后再提交");
+    return null;
+  }
+  const num = (name) => Math.max(0, Math.trunc(Number(form.elements[name].value) || 0));
+  return { span_original: [num("span-os"), num("span-oe")],
+           span_normalized: [num("span-ns"), num("span-ne")] };
+}
+
+// ---- 抽检视图 -----------------------------------------------------------------
+function renderTrust() {
+  const box = el("trust-card");
+  if (!state.trust) {
+    box.innerHTML = '<span class="trust-empty">尚未抽样：点下方「开始抽检」生成抽样清单后开始抽查。</span>';
+    return;
+  }
+  const t = state.trust;
+  const rate = t.checked ? Math.round(t.rate * 1000) / 10 : 0;
+  box.innerHTML = `
+    <div class="trust-rate">${rate}%</div>
+    <div>
+      <div class="trust-line">可信率（抽检中维持原判的比例）</div>
+      <div class="trust-sub">已检 ${t.checked} 条 · 维持原判 ${t.confirmed} 条 · 改判 ${t.corrected} 条` +
+    ` · <b class="${t.unreviewed ? "warn-text" : ""}">未复审 ${t.unreviewed ?? 0} 条</b>（定稿前须全部复审）</div>
+    </div>`;
+}
+
+function renderSample() {
+  const list = el("sample-list");
+  list.innerHTML = "";
+  if (!state.sample) {
+    list.innerHTML = '<div class="empty">尚无抽样清单。点「开始抽检」按默认比例（10%）生成。</div>';
+    return;
+  }
+  const meta = document.createElement("div");
+  meta.className = "sample-meta";
+  meta.textContent = `抽样清单：共 ${state.sample.selected.length} 条` +
+    `（抽样号 ${state.sample.seed}，比例 ${state.sample.ratio}）`;
+  list.appendChild(meta);
+  for (const [pid, idx] of state.sample.selected) {
+    list.appendChild(buildSampleRow(pid, idx));
+  }
+}
+
+function buildSampleRow(pid, idx) {
+  const row = document.createElement("div");
+  row.className = "card sample-row";
+  row.dataset.pid = pid;
+  row.dataset.idx = idx;
+  const pack = state.packs.get(pid);
+  const ent = pack && pack.entities && pack.entities[idx];
+  const [label, cls] = ent
+    ? (VERIFY_LABEL[ent.verify] || [ent.verify, "muted"])
+    : ["状态未知", "muted"];
+  row.innerHTML = `
+    <div class="sample-main">
+      <span class="pid">${esc(pid)}</span>
+      ${ent ? `<b class="entity-text">${esc(ent.text)}</b> ${chip(ent.type)}`
+            : `<span class="warn-text">实体 #${idx} 载入失败</span>`}
+      <span class="state ${cls}">${label}</span>
+      <span class="sample-btns">
+        <button type="button" class="btn btn-ok" data-act="dui" title="抽检无误" ${ent ? "" : "disabled"}>对</button>
+        <button type="button" class="btn btn-bad" data-act="cuo" title="抽检有误，需改判" ${ent ? "" : "disabled"}>错</button>
+      </span>
+    </div>
+    <form class="fix-form hidden" data-form="cuo">
+      <div class="form-title">抽检改判——修正该实体的原文与类型</div>
+      <label>新原文 <input name="text" required value="${escAttr(ent ? ent.text : "")}"></label>
+      <label>类型 <input name="type" required list="type-options" value="${escAttr(ent ? ent.type : "")}"></label>
+      ${MANUAL_SPAN_HTML}
+      <div class="form-btns">
+        <button type="submit" class="btn btn-bad">提交抽检改判</button>
+        <button type="button" class="btn btn-ghost" data-act="cancel">取消</button>
+      </div>
+      <div class="form-msg"></div>
+    </form>`;
+  return row;
+}
+
+// ---- journal ------------------------------------------------------------------
+function renderJournal() {
+  const OP = { resolve: "裁决", "sample-verdict": "抽检", undo: "撤销" };
+  const lines = state.journal || [];
+  el("journal-list").innerHTML = lines.length
+    ? lines.map((ln) => {
+        const t = esc(String(ln.ts || "").slice(0, 19).replace("T", " "));
+        const what = ln.op === "undo"
+          ? `撤销（回退第 ${esc(ln.undo_of)} 行：${OP[ln.undo_of_op] || esc(ln.undo_of_op) || "操作"}）`
+          : `${OP[ln.op] || esc(ln.op)}　页 ${esc(ln.page_id || "")}` +
+            (ln.entity_index === null || ln.entity_index === undefined
+              ? "" : ` 实体#${esc(ln.entity_index)}`) +
+            (ln.adjudication_index === null || ln.adjudication_index === undefined
+              ? "" : ` 分歧#${esc(ln.adjudication_index)}`) +
+            `${ln.verdict ? `　判：${esc(ln.verdict)}` : ""}`;
+        return `<li><span class="j-ts">${t}</span>${what}</li>`;
+      }).join("")
+    : '<li>暂无操作</li>';
+}
+
+// ---- 视图切换 -------------------------------------------------------------------
+function setMode(mode) {
+  el("view-dispute").classList.toggle("hidden", mode !== "dispute");
+  el("view-sample").classList.toggle("hidden", mode !== "sample");
+  el("mode-dispute").classList.toggle("active", mode === "dispute");
+  el("mode-sample").classList.toggle("active", mode === "sample");
+}
+
+// ---- 事件接线（卡片动态重建，统一走容器级委托） ------------------------------------
+function wireEvents() {
+  el("mode-dispute").addEventListener("click", () => setMode("dispute"));
+  el("mode-sample").addEventListener("click", () => setMode("sample"));
+
+  el("undo-btn").addEventListener("click", async () => {
+    if (!confirm("撤销最近一次操作？（从快照还原，可连续撤销）")) return;
+    const r = await jsonPost("/api/undo");
+    if (r.ok) { flashMsg("已撤销最近一次操作"); await refreshAll(); }
+    else flashMsg(`撤销失败：${errText(r)}`, true);
+  });
+
+  el("finalize-btn").addEventListener("click", async () => {
+    if (!confirm("定稿将校验全部页并写出 gt_v1.jsonl，确认定稿？")) return;
+    const r = await jsonPost("/api/finalize");
+    if (r.status === 200) {
+      hideMissing();
+      flashMsg(`已定稿：${r.data.out}（${r.data.pages} 页）`);
+      await refreshAll();
+    } else if (r.status === 409 && r.data && Array.isArray(r.data.missing)) {
+      const box = el("missing-box");
+      box.innerHTML = "<b>定稿前需先完成：</b><ul>" +
+        r.data.missing.map((m) => `<li>${esc(m)}</li>`).join("") + "</ul>";
+      box.classList.remove("hidden");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } else {
+      flashMsg(`定稿失败：${errText(r)}`, true);
+    }
+  });
+
+  el("sample-start-btn").addEventListener("click", async () => {
+    const r = await jsonPost("/api/sample", { ratio: 0.1 });
+    if (r.ok) {
+      flashMsg(`已抽样 ${r.data.selected.length} 条（抽样号 ${r.data.seed}）`);
+      await refreshAll();
+    } else flashMsg(`抽样失败：${errText(r)}`, true);
+  });
+
+  // 裁决卡片：四键 / 取消（每键恒传 adjudication_index——显式关单，控制器终审裁定）
+  el("dispute-list").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn) {
+      // v2 高亮联动：点卡片空白处（非按钮/表单）→ 本卡争议读数蓝色高亮滚动入视野
+      if (e.target.closest("form, input, .fix-form")) return;
+      const card = e.target.closest(".dispute-card");
+      const mk = card && card.querySelector("mark.mk-dispute");
+      if (mk) mk.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
+    const card = btn.closest(".dispute-card");
+    const act = btn.dataset.act;
+    if (act === "cancel") {
+      card.querySelectorAll(".fix-form").forEach((f) => f.classList.add("hidden"));
+      return;
+    }
+    const adjIdx = +card.dataset.adj;
+    if (act === "dui") {
+      btn.disabled = true;
+      const r = await jsonPost("/api/resolve", {
+        page_id: card.dataset.pid, entity_index: +card.dataset.entityIndex,
+        adjudication_index: adjIdx,
+        verdict: "对", correct: null, note: null });
+      btn.disabled = false;
+      if (r.ok) { flashMsg("已确认（对）"); await refreshAll(); }
+      else flashMsg(`裁决失败：${errText(r)}`, true);
+      return;
+    }
+    if (act === "ack") {
+      btn.disabled = true;
+      const r = await jsonPost("/api/resolve", {
+        page_id: card.dataset.pid, entity_index: null,
+        adjudication_index: adjIdx,
+        verdict: "ack", correct: null, note: null });
+      btn.disabled = false;
+      if (r.ok) { flashMsg("已采信机器判断（机器正确），本条分歧已关单"); await refreshAll(); }
+      else flashMsg(`裁决失败：${errText(r)}`, true);
+      return;
+    }
+    const form = card.querySelector(`form[data-form="${act}"]`);
+    if (form) {
+      card.querySelectorAll(".fix-form").forEach((f) => f.classList.toggle("hidden", f !== form));
+      const input = form.querySelector('input[name="text"]');
+      if (input && !input.value) input.focus();
+    }
+  });
+
+  // 裁决卡片：改判（错）/ 补漏（漏）提交
+  el("dispute-list").addEventListener("submit", async (e) => {
+    const form = e.target.closest('form[data-form="cuo"], form[data-form="lou"]');
+    if (!form) return;
+    e.preventDefault();
+    const verdict = form.dataset.form === "cuo" ? "错" : "漏";
+    const text = form.elements.text.value.trim();
+    const type = form.elements.type.value.trim();
+    const note = form.elements.note.value.trim() || null;
+    if (!text || !type) { formMsg(form, "原文与类型均必填"); return; }
+    const card = form.closest(".dispute-card");
+    const pid = card.dataset.pid;
+    const pack = state.packs.get(pid);
+    const entIdx = +card.dataset.entityIndex;
+    // 错：correct 覆盖被裁决实体本身；漏：correct 为新增实体（不带原实体语义）
+    const ent = verdict === "错" && entIdx >= 0 ? (pack.entities[entIdx] || null) : null;
+    const spans = settleSpans(form, text, ent, pack);
+    if (!spans) return;  // 未定位且未勾「位置确认」——已提示，等人工确认
+    const correct = { text, type, ...spans };
+    const r = await jsonPost("/api/resolve", {
+      page_id: pid,
+      entity_index: verdict === "漏" ? null : entIdx,
+      adjudication_index: +card.dataset.adj,
+      verdict, correct, note });
+    if (r.ok) {
+      flashMsg(verdict === "错" ? "已改判（错）" : "已补漏（漏），本条分歧已关单");
+      await refreshAll();
+    } else formMsg(form, errText(r));
+  });
+
+  // 抽检行：对 / 错 / 取消
+  el("sample-list").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn) return;
+    const row = btn.closest(".sample-row");
+    const act = btn.dataset.act;
+    if (act === "cancel") { row.querySelector(".fix-form").classList.add("hidden"); return; }
+    if (act === "dui") {
+      btn.disabled = true;
+      const r = await jsonPost("/api/sample-verdict", {
+        page_id: row.dataset.pid, entity_index: +row.dataset.idx,
+        ok: true, correct: null });
+      btn.disabled = false;
+      if (r.ok) { flashMsg("抽检：维持原判（对）"); await refreshAll(); }
+      else flashMsg(`抽检失败：${errText(r)}`, true);
+      return;
+    }
+    if (act === "cuo") {
+      row.querySelector(".fix-form").classList.toggle("hidden");
+      const input = row.querySelector('input[name="text"]');
+      if (input) input.focus();
+    }
+  });
+
+  // 抽检行：改判提交（ok=False + correct）
+  el("sample-list").addEventListener("submit", async (e) => {
+    const form = e.target.closest('form[data-form="cuo"]');
+    if (!form) return;
+    e.preventDefault();
+    const text = form.elements.text.value.trim();
+    const type = form.elements.type.value.trim();
+    if (!text || !type) { formMsg(form, "原文与类型均必填"); return; }
+    const row = form.closest(".sample-row");
+    const pack = state.packs.get(row.dataset.pid);
+    const ent = (pack && pack.entities && pack.entities[+row.dataset.idx]) || null;
+    const spans = settleSpans(form, text, ent, pack);
+    if (!spans) return;  // 未定位且未勾「位置确认」——已提示，等人工确认
+    const correct = { text, type, ...spans };
+    const r = await jsonPost("/api/sample-verdict", {
+      page_id: row.dataset.pid, entity_index: +row.dataset.idx, ok: false, correct });
+    if (r.ok) { flashMsg("抽检：已改判"); await refreshAll(); }
+    else formMsg(form, errText(r));
+  });
+}
+
+// ---- 启动 -----------------------------------------------------------------------
+(async function boot() {
+  wireEvents();
+  setMode("dispute");
+  try {
+    const tr = await api("/api/preset-types");
+    if (tr.ok && Array.isArray(tr.data)) {
+      const dl = el("type-options");
+      for (const name of tr.data) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        dl.appendChild(opt);
+      }
+    }
+    await refreshAll();
+  } catch (err) {
+    flashMsg(`初始化失败：${err}`, true);
+  }
+})();
+</script>
+</body>
+</html>

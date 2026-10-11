@@ -91,13 +91,119 @@ def test_r2_two_regex_type_names_still_unclear_disputed():
     assert arb["disputed"][0]["rule"] == "R2"
 
 
-def test_r2_cross_side_reading_gap_on_consistent_page():
-    # compare 一致但两侧实体集不合（窗域阈值下的实体级差异）→ 升级，不用 md 仲裁
-    a = [_ent("110122198110227771", "身份证号", 2, 20)]
-    arb = arbitrate.arbitrate_page(_cmp("consistent"), a, [], None, "body")
+def test_r2_rev_single_side_a_only_auto_adopted():
+    # v2 用户裁决（2026-10-08）：一致页上单方独有读数（对方 NER/正则缺席，非冲突）
+    # → 采信读到方 auto_resolved(R2)。v1 此处 pinned disputed——按裁决改写。
+    x = _ent("110122198110227771", "身份证号", 2, 20)
+    arb = arbitrate.arbitrate_page(_cmp("consistent"), [dict(x)], [], None, "body")
+    assert arb["consistent"] == [] and arb["disputed"] == []
+    assert len(arb["auto_resolved"]) == 1
+    entry = arb["auto_resolved"][0]
+    assert entry["rule"] == "R2" and entry["source"] == "a"
+    assert entry["entity"]["text"] == "110122198110227771"
+
+
+def test_r2_rev_single_side_b_only_auto_adopted_source_b():
+    # v2 R2-rev：b(VL) 单方读到 → 采信 b（source 在案）
+    x = _ent("钱明涛", "姓名", 0, 3, origin="ner")
+    arb = arbitrate.arbitrate_page(_cmp("consistent"), [], [dict(x)], None, "body")
+    assert arb["consistent"] == [] and arb["disputed"] == []
+    entry = arb["auto_resolved"][0]
+    assert entry["rule"] == "R2" and entry["source"] == "b"
+    assert entry["entity"]["text"] == "钱明涛"
+
+
+def test_r2_rev_both_sides_unique_readings_stay_disputed():
+    # v2 保守边界：双向各有独有读数（两云各读到对方没有的）→ 逐条 disputed 留人工
+    #（采信面约束：pack 实体须整体落在单一采信面上，双向独有读数无单一承载面）
+    x = _ent("110122198110227771", "身份证号", 2, 20)
+    y = _ent("110122198110229999", "身份证号", 2, 20)
+    arb = arbitrate.arbitrate_page(_cmp("consistent"), [dict(x)], [dict(y)], None, "body")
     assert arb["consistent"] == [] and arb["auto_resolved"] == []
-    assert arb["disputed"][0]["rule"] == "R2"
-    assert arb["disputed"][0]["entity"]["text"] == "110122198110227771"
+    assert len(arb["disputed"]) == 2 and all(d["rule"] == "R2" for d in arb["disputed"])
+    assert {d["entity"]["text"] for d in arb["disputed"]} == {
+        "110122198110227771", "110122198110229999"}
+
+
+def test_r2_rev_single_side_type_conflict_regex_wins_not_lexicographic():
+    # v2.1 评审修复钉：单方键同面类型冲突（regex 银行卡号 + NER 机构名称 两条
+    # 保留，origin=conflict）不按 type 字典序盲采首条——「机构名称」(U+673A)
+    # 排序在「银行卡号」(U+94F6) 前，旧实现会 NER 类型压过正则类型被采信。
+    # 裁定 carve-out：恰一名正则类型在场 → 正则胜（与 _resolve_agreed 同款）。
+    a = [_ent("13800138000112233", "机构名称", 0, 17, origin="conflict"),
+         _ent("13800138000112233", "银行卡号", 0, 17, origin="conflict")]
+    assert [e["type"] for e in sorted(a, key=lambda e: e["type"])] == ["机构名称", "银行卡号"]
+    arb = arbitrate.arbitrate_page(_cmp("consistent"), a, [], None, "body")
+    assert arb["disputed"] == [] and arb["consistent"] == []
+    assert len(arb["auto_resolved"]) == 1
+    entry = arb["auto_resolved"][0]
+    assert entry["rule"] == "R2" and entry["source"] == "a"
+    assert entry["entity"]["type"] == "银行卡号"  # 正则类型胜出，非字典序首条
+
+
+def test_r2_rev_single_side_two_regex_type_names_conflict_disputed():
+    # 单方键同面多型、且 ≥2 个正则类型名在场（电话+银行卡号，通道归属不可辨，
+    # 评审 repro 原形）→ 与 _resolve_agreed「≥2 正则名来源不明」同款 → disputed
+    a = [_ent("13800138000112233", "电话", 0, 17, origin="conflict"),
+         _ent("13800138000112233", "银行卡号", 0, 17, origin="conflict")]
+    arb = arbitrate.arbitrate_page(_cmp("consistent"), a, [], None, "body")
+    assert arb["auto_resolved"] == [] and arb["consistent"] == []
+    assert len(arb["disputed"]) == 1 and arb["disputed"][0]["rule"] == "R2"
+
+
+def test_r2_rev_single_side_ner_vs_ner_type_conflict_disputed():
+    # v2.1 护栏：单方键同面多型且无正则类型（NER 间冲突）→ 真类型冲突无裁决
+    # → disputed（不再盲采首条）
+    a = [_ent("钱明涛", "姓名", 0, 3, origin="conflict"),
+         _ent("钱明涛", "机构名", 0, 3, origin="conflict")]
+    arb = arbitrate.arbitrate_page(_cmp("consistent"), a, [], None, "body")
+    assert arb["auto_resolved"] == [] and arb["consistent"] == []
+    assert len(arb["disputed"]) == 1
+    d = arb["disputed"][0]
+    assert d["rule"] == "R2" and d["entity"]["text"] == "钱明涛"
+    assert {e["type"] for e in d["candidates"]["a"]} == {"姓名", "机构名"}
+
+
+def test_r2_rev_mixed_agreed_and_single_side_no_double_adjudication():
+    # v2.2 回归钉（Fix round 2）：混合页（同读组 + 单方键）——单方臂组必须收敛
+    # 到单方键子集；同读组只裁一次（consistent/R1），单方键采信一次（auto/R2），
+    # 互不重复（v2.1 曾传整面组 → 同读键被 consistent 后又在单方臂 auto 一次）
+    agreed = _ent("110122198110227771", "身份证号", 2, 20)
+    ph = _ent("13800138000", "电话", 40, 51)
+    arb = arbitrate.arbitrate_page(_cmp("consistent"),
+                                   [dict(agreed), dict(ph)], [dict(agreed)],
+                                   None, "body")
+    assert [e["text"] for e in arb["consistent"]] == ["110122198110227771"]
+    assert len(arb["auto_resolved"]) == 1
+    entry = arb["auto_resolved"][0]
+    assert entry["rule"] == "R2" and entry["source"] == "a"
+    assert entry["entity"]["text"] == "13800138000"
+    assert arb["disputed"] == []
+    # 同读键不得被单方臂重复采信
+    assert all(e["entity"]["text"] != "110122198110227771"
+               for e in arb["auto_resolved"])
+
+
+def test_r2_rev_mixed_agreed_and_b_side_single_side():
+    # 对称钉：同读组（两云一致）+ b 单方键 → consistent 一条 + auto:b 一条
+    agreed = _ent("110122198110227771", "身份证号", 2, 20)
+    nm = _ent("钱明涛", "姓名", 40, 43, origin="ner")
+    arb = arbitrate.arbitrate_page(_cmp("consistent"),
+                                   [dict(agreed)], [dict(agreed), dict(nm)],
+                                   None, "body")
+    assert [e["text"] for e in arb["consistent"]] == ["110122198110227771"]
+    assert [(e["rule"], e["source"], e["entity"]["text"])
+            for e in arb["auto_resolved"]] == [("R2", "b", "钱明涛")]
+    assert arb["disputed"] == []
+
+
+def test_r6_rev_partial_verifiable_texts_fail_fast():
+    # v2.1 nit 修复：verifiable_texts 提供时必须双面注入——缺 b 键若被读成空面
+    # 会误触发单方采信；缺键 fail-fast（不核验应传 None = 保守整页升级）
+    ph = _ent("13800138000", "电话", 8, 19)
+    with pytest.raises(ValueError, match="双面"):
+        arbitrate.arbitrate_page(_cmp("dispute", "single_side"), [dict(ph)], [], None,
+                                 "edge", verifiable_texts={"a": _A_NORM})
 
 
 # ---- R3 / R4：两云分歧 + md 佐证单方 -------------------------------------------
@@ -212,8 +318,8 @@ def test_r6_set_mismatch_all_readings_disputed_no_arbitration():
 
 
 def test_r6_md_backing_one_side_still_zero_auto_resolved():
-    # T5 评审 Minor#3 加固：R6 整页升级不吃 md 佐证——md 在场且佐证 a 侧读数，
-    # 仍零采信（auto_resolved 恒空）、全部条目 rule==R6
+    # T5 评审 Minor#3 加固（集合不合路径 v2 仍整页升级）：R6 整页升级不吃 md 佐证——
+    # md 在场且佐证 a 侧读数，仍零采信（auto_resolved 恒空）、全部条目 rule==R6
     x = _ent("110122198110227771", "身份证号", 2, 20)
     y = _ent("110122198110229999", "身份证号", 2, 20)
     arb = arbitrate.arbitrate_page(_cmp("dispute", "set_mismatch", page_type="table"),
@@ -223,6 +329,119 @@ def test_r6_md_backing_one_side_still_zero_auto_resolved():
     assert {d["entity"]["text"] for d in entries} == {
         "110122198110227771", "110122198110229999"}
     assert all(d["rule"] == "R6" for d in arb["disputed"])
+    assert any("gap" in d for d in arb["disputed"])
+
+
+# ---- R6-rev（v2）：单方读到、对方为空、非空页 → 采信读到方 -----------------------
+# v2 用户裁决（2026-10-08）：真实工作目录 1440 条分歧中 1300 条为单方读数，应自动
+# 采信；人工只裁「双方都读到但不一致」。条件：(a) 读数文本能在读到方转录中逐字
+# 找到（防捏造）；(b) 该读数有类型来源（正则命中或任一 NER 给过类型）。
+# 空页（norm<20）单方多字（VL 水印幻觉实证场景）→ 保持 disputed 不变。
+
+_A_NORM = "委托人钱明涛的电话13800138000由被告方负担费用共计三十日为准等内容"  # ≥20 字
+
+
+def test_r6_rev_single_side_typed_verifiable_auto_adopted():
+    # b 侧整面为空、a 侧非空页（norm≥20）→ a 读数逐条采信（rule=R6, source=a）
+    ph = _ent("13800138000", "电话", 8, 19)
+    arb = arbitrate.arbitrate_page(_cmp("dispute", "single_side"), [dict(ph)], [], None,
+                                   "edge", verifiable_texts={"a": _A_NORM, "b": ""})
+    assert arb["consistent"] == []
+    assert len(arb["auto_resolved"]) == 1
+    entry = arb["auto_resolved"][0]
+    assert entry["rule"] == "R6" and entry["source"] == "a"
+    assert entry["entity"]["text"] == "13800138000"
+    assert arb["disputed"] == []  # 全部读数获采信 → 无页级 gap
+
+
+def test_r6_rev_reading_side_b_adopted_source_b():
+    # a 侧整面为空、b(VL) 单方读到 → 采信 b
+    ph = _ent("13800138000", "电话", 8, 19)
+    arb = arbitrate.arbitrate_page(_cmp("dispute", "single_side"), [], [dict(ph)], None,
+                                   "edge", verifiable_texts={"a": "", "b": _A_NORM})
+    assert arb["disputed"] == []
+    entry = arb["auto_resolved"][0]
+    assert entry["rule"] == "R6" and entry["source"] == "b"
+
+
+def test_r6_rev_md_backing_irrelevant_and_md_only_still_escalates():
+    # md 佐证不改变 R6-rev 采信（读到方单方在场即按条件采信）；md 独有读数仍升级
+    ph = _ent("13800138000", "电话", 8, 19)
+    m = _ent("沪A12345", "车牌号", 30, 37)
+    arb = arbitrate.arbitrate_page(_cmp("dispute", "single_side"), [dict(ph)], [], [dict(m)],
+                                   "edge", verifiable_texts={"a": _A_NORM, "b": ""})
+    assert [e["rule"] for e in arb["auto_resolved"]] == ["R6"]
+    assert arb["auto_resolved"][0]["source"] == "a"
+    assert len(arb["disputed"]) == 1
+    assert arb["disputed"][0]["rule"] == "R6"
+    assert arb["disputed"][0]["entity"]["text"] == "沪A12345"
+
+
+def test_r6_rev_no_type_source_stays_disputed():
+    # 条件(b) 反例：类型无通道来源（「姓名」非正则通道名、origin 又无 NER 记录）
+    # → disputed（前端升级为「选类型」轻操作）；零采信时页级 gap 保留
+    nm = _ent("钱明涛", "姓名", 0, 3, origin="regex")
+    arb = arbitrate.arbitrate_page(_cmp("dispute", "single_side"), [dict(nm)], [], None,
+                                   "edge", verifiable_texts={"a": _A_NORM, "b": ""})
+    assert arb["auto_resolved"] == []
+    entity_entries = [d for d in arb["disputed"] if "entity" in d]
+    assert len(entity_entries) == 1 and entity_entries[0]["rule"] == "R6"
+    assert entity_entries[0]["entity"]["text"] == "钱明涛"
+    assert any("gap" in d for d in arb["disputed"])
+
+
+def test_r6_rev_ner_typed_reading_adopted():
+    # 条件(b) 正例：类型来自 NER（origin 含 ner）→ 有类型来源，采信
+    nm = _ent("钱明涛", "姓名", 0, 3, origin="ner")
+    arb = arbitrate.arbitrate_page(_cmp("dispute", "single_side"), [dict(nm)], [], None,
+                                   "edge", verifiable_texts={"a": _A_NORM, "b": ""})
+    assert arb["disputed"] == []
+    assert arb["auto_resolved"][0]["entity"]["text"] == "钱明涛"
+
+
+def test_r6_rev_type_conflict_reading_stays_disputed():
+    # 同键两型（通道冲突，无单一可采类型）→ disputed（前端选类型）
+    a = [_ent("13800138000", "电话", 8, 19, origin="conflict"),
+         _ent("13800138000", "银行卡号", 8, 19, origin="conflict")]
+    arb = arbitrate.arbitrate_page(_cmp("dispute", "single_side"), a, [], None,
+                                   "edge", verifiable_texts={"a": _A_NORM, "b": ""})
+    assert arb["auto_resolved"] == []
+    assert arb["disputed"][0]["rule"] == "R6"
+
+
+def test_r6_rev_unverifiable_text_stays_disputed():
+    # 条件(a) 反例：读数文本不在读到方转录中逐字出现（防捏造）→ disputed
+    ph = _ent("13899999999", "电话", 8, 19)
+    arb = arbitrate.arbitrate_page(_cmp("dispute", "single_side"), [dict(ph)], [], None,
+                                   "edge", verifiable_texts={"a": _A_NORM, "b": ""})
+    assert arb["auto_resolved"] == []
+    assert arb["disputed"][0]["rule"] == "R6"
+
+
+def test_r6_rev_blank_page_stays_disputed():
+    # 空页（norm<20）单方多字：VL 水印幻觉实证场景 → 保持 disputed（整页升级不变）
+    ph = _ent("13800138000", "电话", 0, 11)
+    arb = arbitrate.arbitrate_page(_cmp("dispute", "single_side"), [dict(ph)], [], None,
+                                   "edge", verifiable_texts={"a": "水印13800138000", "b": ""})
+    assert arb["auto_resolved"] == []
+    assert arb["disputed"][0].get("gap")  # 页级 gap 记录在案
+
+
+def test_r6_rev_both_sides_have_text_stays_disputed():
+    # 两侧均有文本（不一致）：双方都读到了 → 留人工（v1 整页升级不变，含共享读数）
+    x = _ent("110122198110227771", "身份证号", 2, 20)
+    arb = arbitrate.arbitrate_page(_cmp("dispute", "single_side"), [dict(x)], [dict(x)], None,
+                                   "edge", verifiable_texts={"a": _A_NORM, "b": _A_NORM + "乙"})
+    assert arb["auto_resolved"] == []
+    assert any("gap" in d for d in arb["disputed"])
+    assert all(d["rule"] == "R6" for d in arb["disputed"])
+
+
+def test_r6_rev_without_verifiable_texts_conservative_disputed():
+    # 未提供转录（无法核验）→ 保守不采信（v1 行为；纯函数对缺省参数稳健）
+    ph = _ent("13800138000", "电话", 8, 19)
+    arb = arbitrate.arbitrate_page(_cmp("dispute", "single_side"), [dict(ph)], [], None, "edge")
+    assert arb["auto_resolved"] == []
     assert any("gap" in d for d in arb["disputed"])
 
 

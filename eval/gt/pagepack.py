@@ -15,8 +15,10 @@ T6 契约形状的 pagepack 并落盘。本模块只做装配与 gate，不做�
 
 关键裁定（实现遵循，详见 task-7-report）：
 
-- **采信面**：仲裁输出含 R3 条目 → 采 b（VL）面；否则（R1/R2/R4/R5/R6/R7）
-  一律采 a（v6）面。R5/R6 页同样采 a 侧——fidelity 恒为 "machine"，
+- **采信面**（v2 修订）：独有采信读数（R3/R4 整面采信、R2-rev/R6-rev 单方
+  采信）落在哪面就采哪面——键只在 b 面（R3 采 VL / 单方采 b）→ 采 b 面，
+  否则一律采 a（v6）面；面无关条目（R1/R2 正则胜/R7 同读组，键两面皆在）
+  不构成面要求。R5/整页升级页同样默认采 a 侧——fidelity 恒为 "machine"，
   定稿由工作台回填（spec §4：human-reviewed 由人工阶段写入）。
 - **实体面归属**：实体 span 是双面的、以各自转录面为坐标（T3/T5 裁定）。
   pack 的 transcript_gt 是单一采信面，故 pack 实体一律以**采信面上的实例**
@@ -289,6 +291,28 @@ def _pack_adjudications(arb: dict, models: list[str]) -> list[dict]:
     return out
 
 
+def _auto_face_requirements(arb: dict, ents_a: list[Entity],
+                            ents_b: list[Entity]) -> set[str]:
+    """auto 采信条目的采信面硬要求集合（⊆ {"a","b"}）。
+
+    条目键在另一面**不在场**（R3/R4 独有采信、R2-rev/R6-rev 单方采信）→
+    必须落在其 source 面；键两面皆在（R1/R2 正则胜/R7 同读组）→ 面无关、
+    不构成要求（沿 v1 默认采 a 面，跨面键由 ``_locate`` 同型优先定位）。
+    """
+    ka = {_entity_key(e) for e in ents_a or []}
+    kb = {_entity_key(e) for e in ents_b or []}
+    need: set[str] = set()
+    for entry in arb.get("auto_resolved") or []:
+        src = entry.get("source")
+        if src not in ("a", "b"):
+            continue
+        key = _entity_key(entry["entity"])
+        other = kb if src == "a" else ka
+        if key not in other:
+            need.add(src)
+    return need
+
+
 def run_page(file_path: str, page_no: int, page_type: str,
              clients: dict[str, TranscriptionClient], ner: NERClient | None,
              work_dir: Path, carrier: str = "scanned", segment: str = "first") -> dict:
@@ -340,12 +364,20 @@ def run_page(file_path: str, page_no: int, page_type: str,
                                  extract_ner(face_md.norm, ner, face_md))
 
     # -- 仲裁（R1-R7）→ 采信面判定 ---------------------------------------
-    arb = arbitrate_page(cmp_result, ents_a, ents_b, ents_md, page_type)
-    adopted_b = any(entry.get("rule") == "R3" for entry in arb.get("auto_resolved") or [])
-    if adopted_b:
+    # verifiable_texts = 各面归一化转录（R6-rev 单方采信的逐字核验依据）
+    verifiable = {"a": face_a.norm, "b": face_b.norm}
+    if face_md is not None:
+        verifiable["md"] = face_md.norm
+    arb = arbitrate_page(cmp_result, ents_a, ents_b, ents_md, page_type, verifiable)
+    need = _auto_face_requirements(arb, ents_a, ents_b)
+    if need == {"b"}:  # 独有采信读数只在 b 面（R3 采 VL / R2-rev、R6-rev 单方采 b）
         text_gt, face_gt, ents_face = text_b, face_b, ents_b
-    else:
+    elif need <= {"a"}:
         text_gt, face_gt, ents_face = text_a, face_a, ents_a
+    else:  # 双向各有独有采信面要求：构造上不可达（仲裁层两向独有不并采）
+        raise ValueError(
+            f"仲裁输出同时要求 a、b 两面承载独有采信读数（{sorted(need)}）"
+            "——无单一采信面，管线不变量破坏")
 
     # -- 组装 pack（T6 契约形状；仲裁输出只读、结构全部新建） -------------
     models = ["v6", "vl"] + (["vl-md"] if md is not None else [])

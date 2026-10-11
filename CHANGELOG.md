@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-10-07
+
+- feat(gt): GT 标注工作台 M3（Issue#56）——三键裁决数据层（快照撤销/journal 审计）、分层抽样与一致集可信率、FastAPI 工作台服务（/img 页面图渲染可选依赖降级 404+转录高亮兜底）、零构建单页前端与 HTTP 层端到端自测；终审修复波：显式 `adjudication_index` 关单 + 第四键「机器正确」（ack 不碰实体，打通真实 M1 引擎 R6 gap 条目/被否 R3R4 读数不在 entities 的卡死形状，94% 分歧不可关单问题根治）、补漏支持 `entity_index=null`（0 实体 R6 页可补）、定稿抽检硬门禁（确认+改判须覆盖全部抽样，报未复审计数）、补漏/改判 span 失配不自动回退（位置确认勾选 + 服务端非致命 warnings）、`python3 -m gt.workbench_server --work` 启动器（host 固定 127.0.0.1）。
+
 ## 2026-10-06
 
 - feat(gt): eval/ 新增 GT 预标引擎（Issue#56 M1/M2）——统一转录接口（云 v6/VL+本地 vl-md）、归一化双面 span、正则+NER 实体通道、R1-R7 仲裁、GT schema 校验、逐页流水线 CLI、A1/A2 合成集验证闸、选卷矩阵脚本。
