@@ -88,3 +88,30 @@ def test_unknown_participant_exits(tmp_path):
     else:
         # build_participant 在 _run 内调用，返回码 2 亦可接受
         pass
+
+
+def test_cli_multi_bucket_with_meta(tmp_path):
+    """用户意见①②：一次跑多桶 + 汇总报告带桶说明（内容/全量抽样）。"""
+    doc = {
+        "exam_id": "t2-multi",
+        "buckets": {
+            "hardcase": {"content": "真实案卷难例·人工沉淀", "sampling": "全量：65 条", "count": 1},
+            "digit-confusion": {"content": "合成·数字陷阱", "sampling": "全量：50 条", "count": 1},
+        },
+        "items": [
+            {"id": "h1", "exam_id": "hardcase", "form": "entity_table", "text": "x",
+             "types": ["姓名"], "gt": {"姓名": ["张三"]}},
+            {"id": "d1", "exam_id": "digit-confusion", "form": "entity_table", "text": "y",
+             "types": ["银行卡号"], "gt": {"银行卡号": ["6222020200112233445"]},
+             "mock_answer": {"银行卡号": ["6222020200112233446"]}},  # 数字错→该桶闸 FAIL
+        ],
+    }
+    exam = tmp_path / "multi.json"
+    exam.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    out = tmp_path / "reports"
+    rc = cli.main(_base_args(exam, out))
+    assert rc == 1  # digit-confusion 桶数字闸 FAIL → 总判定 FAIL
+    md = next(out.glob("*-t2-multi-summary.md")).read_text(encoding="utf-8")
+    assert "hardcase" in md and "digit-confusion" in md
+    assert "真实案卷难例·人工沉淀" in md and "全量：65 条" in md  # 桶说明进报告
+    assert "FAIL" in md  # 数字闸逐桶可见

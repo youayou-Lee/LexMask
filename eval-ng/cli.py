@@ -33,7 +33,7 @@ def load_exam_json(path: Path, exam_id: str | None = None) -> list[ExamItem]:
     """考卷 JSON：{"exam_id": ..., "items": [{id, form, text?, types?, gt?, path?, sidecars?,
     pages?, carrier?, expect_reject?}]}"""
     doc = json.loads(Path(path).read_text(encoding="utf-8"))
-    exam_id = exam_id or doc.get("exam_id", Path(path).stem)
+    doc_exam_id = exam_id or doc.get("exam_id", Path(path).stem)
     items = []
     for raw in doc["items"]:
         form = AnswerForm(raw["form"])
@@ -48,8 +48,8 @@ def load_exam_json(path: Path, exam_id: str | None = None) -> list[ExamItem]:
                        "pages": raw.get("pages"), "sidecars": raw.get("sidecars", {})}
         elif form is AnswerForm.PERF_ONLY:
             payload = {"path": raw.get("path", ""), "text": raw.get("text", "")}
-        items.append(ExamItem(id=raw["id"], exam_id=exam_id, form=form,
-                              payload=payload, gt=raw.get("gt")))
+        items.append(ExamItem(id=raw["id"], exam_id=raw.get("exam_id") or doc_exam_id,
+                              form=form, payload=payload, gt=raw.get("gt")))
     return items
 
 
@@ -121,6 +121,77 @@ async def _run(args: argparse.Namespace) -> int:
                     topology=args.topology or "unspecified")
 
     exam = load_exam_json(Path(args.exam), args.exam_id)
+    # 按桶（exam_id）分组：多桶考卷逐桶出分（用户意见①：一次跑多桶）
+    groups: dict[str, list[ExamItem]] = {}
+    for it in exam:
+        groups.setdefault(it.exam_id, []).append(it)
+
+    bucket_meta = json.loads(Path(args.exam).read_text(encoding="utf-8")).get("buckets") or {}
+
+    results = {}
+    for gexam_id, gitems in groups.items():
+        result = await _run_single(args, gitems, gexam_id, env)
+        if result is None:
+            return 2
+        results[gexam_id] = result
+    if len(results) == 1:
+        res = next(iter(results.values()))
+        print(f"[eval-ng] 闸门总判定：{'PASS' if res['gate_pass'] else 'FAIL'}")
+        return 0 if res["gate_pass"] else 1
+    _write_multi_report(results, bucket_meta, Path(args.out))
+    all_pass = all(r["gate_pass"] for r in results.values())
+    print(f"[eval-ng] 多桶总判定：{'PASS' if all_pass else 'FAIL'}（逐桶见汇总报告）")
+    return 0 if all_pass else 1
+
+
+def _write_multi_report(results: dict, bucket_meta: dict, out_dir: Path) -> Path:
+    """多桶汇总：桶说明（内容/全量抽样）+ 逐桶成绩表（用户意见②）。"""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = out_dir / f"{ts}-t2-multi-summary.json"
+    rows = ["# eval-ng 多桶成绩单", "",
+            "| 桶 | 内容 | 全量/抽样 | 条数 | F1(mean) | P | R | 数字闸 |",
+            "|---|---|---|---|---|---|---|---|"]
+    for gid, res in results.items():
+        meta = bucket_meta.get(gid, {})
+        agg = res.get("aggregated", {})
+        f1 = agg.get("f1", {}).get("mean")
+        o = agg.get("last_run_full", {})
+        dv = next((g for g in res.get("gates", []) if g.name == "digital_veto"), None)
+        rows.append(
+            f"| {gid} | {meta.get('content', '—')} | {meta.get('sampling', '—')} "
+            f"| {meta.get('count', len(res.get('answers', [])))} "
+            f"| {f1 if f1 is None else f'{f1:.4f}'} "
+            f"| {o.get('overall', {}).get('precision', 0):.4f} "
+            f"| {o.get('overall', {}).get('recall', 0):.4f} "
+            f"| {'—' if dv is None else ('PASS' if dv.passed else 'FAIL')} |"
+        )
+    summary = {
+        "buckets": {gid: {
+            "meta": bucket_meta.get(gid, {}),
+            "runs": res["runs"],
+            "aggregated": {k: v for k, v in res["aggregated"].items()
+                           if k != "last_run_full"},
+            "overall_last_run": res["aggregated"].get("last_run_full", {}).get("overall"),
+            "gates": [{"name": g.name, "passed": g.passed, "details": g.details}
+                      for g in res.get("gates", [])],
+            "gate_pass": res["gate_pass"],
+            "perf": res.get("perf"),
+        } for gid, res in results.items()},
+        "env": {"hardware": results and next(iter(results.values()))["env"].hardware,
+                "topology": results and next(iter(results.values()))["env"].topology,
+                "stack_versions": results and next(iter(results.values()))["env"].stack_versions},
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    path.write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
+    md_path = path.with_suffix(".md")
+    md_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    print(f"[eval-ng] 多桶汇总：{md_path}\n[eval-ng] 多桶汇总：{path}")
+    return md_path
+
+
+async def _run_single(args: argparse.Namespace, exam: list[ExamItem], exam_id: str,
+                      env: EnvReport) -> dict | None:
     participant = build_participant(args.participant, args)
 
     gate_names = ["digital_veto"]
@@ -140,15 +211,14 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         result = await run_exam(exam, participant, group, env,
                                 ci_mode=args.ci, gate_env=gate_env,
-                                exam_id=args.exam_id or exam[0].exam_id)
+                                exam_id=exam_id)
     except MissingEnvAnnotation as exc:
         print(str(exc), file=sys.stderr)
-        return 2
+        return None
 
     md_path, json_path = save_report(result, Path(args.out))
-    print(f"[eval-ng] 报告：{md_path}\n[eval-ng] 报告：{json_path}")
-    print(f"[eval-ng] 闸门总判定：{'PASS' if result['gate_pass'] else 'FAIL'}")
-    return 0 if result["gate_pass"] else 1
+    print(f"[eval-ng] {exam_id} 报告：{md_path}")
+    return result
 
 
 async def _run_e2e(args: argparse.Namespace) -> int:
