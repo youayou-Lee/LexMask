@@ -166,7 +166,9 @@ def test_gold_e2e_file_parity(tmp_path):
             assert om["digital"] == nm["digital"], spec["id"]
             assert om["digital_gate"] == nm["digital_gate"], spec["id"]
             assert om["loose"] == nm["loose"], spec["id"]
-            assert om["records"] == nm["records"], spec["id"]
+            # records 含实测 latency_sec（两实现各测各的，数值必不同）——剔除后比较
+            _strip = lambda rs: [{k: v for k, v in r.items() if k != "latency_sec"} for r in rs]
+            assert _strip(om["records"]) == _strip(nm["records"]), spec["id"]
             assert om["file"] == nm["file"], spec["id"]
             # perf 结构一致（实时墙钟数值除外）
             assert om["perf"]["pages_total"] == nm["perf"]["pages_total"]
