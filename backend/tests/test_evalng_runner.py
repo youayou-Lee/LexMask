@@ -141,3 +141,22 @@ class _WrongDigital(FakeEntityParticipant):
     async def probe(self, item):
         return protocol.Answer(form=self.answer_form, entities={"姓名": ["李四"]},
                                latency_sec=0.2)
+
+
+def test_concurrency_same_quality_and_annotated():
+    """--concurrency：质量口径与串行一致；结果带并发标注（速度不与串行对比）。"""
+    exam = [protocol.ExamItem(id=f"p{i}", exam_id="ex", form=AnswerForm.ENTITY_TABLE,
+                              payload={"text": "x", "types": ["姓名"]},
+                              gt={"姓名": ["张三"], "身份证号": ["110101199001010011"]})
+            for i in range(6)]
+    serial = runner.run_exam_sync(exam, FakeEntityParticipant(),
+                                  runner.MetricGroup(name="g", runs=1), _env())
+    conc = runner.run_exam_sync(exam, FakeEntityParticipant(),
+                                runner.MetricGroup(name="g", runs=1), _env(),
+                                concurrency=4)
+    assert serial["per_run_metrics"] == conc["per_run_metrics"]  # 质量逐位一致
+    assert conc["concurrency"] == 4
+    md = report.render_report(conc, "md")
+    assert "并发" in md and "不与串行数据对比" in md
+    mds = report.render_report(serial, "md")
+    assert "不与串行数据对比" not in mds

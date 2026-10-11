@@ -43,6 +43,7 @@ def render_report(result: dict, fmt: str) -> str:
             "participant": result["participant"],
             "exam_id": result["exam_id"],
             "runs": result["runs"],
+            "concurrency": result.get("concurrency", 1),
             "gate_pass": result["gate_pass"],
             "aggregated": {k: v for k, v in agg.items() if k != "last_run_full"},
             "overall_last_run": overall,
@@ -75,10 +76,13 @@ def render_report(result: dict, fmt: str) -> str:
             )
         perf = result.get("perf", {})
         ws = perf.get("wall_s", {})
+        conc = result.get("concurrency", 1)
         if ws:
+            speed_note = (f"（并发 {conc} 路测得，含排队等待，不与串行数据对比）"
+                          if conc > 1 else "")
             lines.append(
                 f"- 速度：mean {ws['mean']:.3f}s / p95 {ws['p95']:.3f}s，"
-                f"吞吐 {perf['throughput_pages_per_min']:.1f} 页/分"
+                f"吞吐 {perf['throughput_pages_per_min']:.1f} 页/分{speed_note}"
             )
         lines += ["", "## 闸门", "| 闸门 | 判定 | 详情 |", "|---|---|---|"]
         for name, verdict, details in _gate_rows(result):

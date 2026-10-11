@@ -82,6 +82,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     run.add_argument("--participant", required=True,
                      help="mock | has | glm-gen4 | backend-pipeline")
     run.add_argument("--runs", type=int, default=3)
+    run.add_argument("--concurrency", type=int, default=1,
+                     help="逐题并发路数（质量口径不变；>1 时速度字段自动标注不与串行对比）")
     run.add_argument("--ci", action="store_true",
                      help="CI 档：只跑绝对红线（数字否决/零泄漏），跳过基线闸门")
     run.add_argument("--ner-base", default="http://127.0.0.1:8080/v1")
@@ -159,7 +161,12 @@ def _write_multi_report(results: dict, bucket_meta: dict, out_dir: Path) -> Path
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     path = out_dir / f"{ts}-t2-multi-summary.json"
-    rows = ["# eval-ng 多桶成绩单", "",
+    first = next(iter(results.values()))
+    env_line = f"- 硬件：{first['env'].hardware}｜拓扑：{first['env'].topology}"
+    conc = first.get("concurrency", 1)
+    if conc > 1:
+        env_line += f"｜并发 {conc} 路（速度含排队等待，不与串行对比）"
+    rows = ["# eval-ng 多桶成绩单", "", env_line, "",
             "| 桶 | 内容 | 全量/抽样 | 条数 | F1(mean) | P | R | 数字闸 |",
             "|---|---|---|---|---|---|---|---|"]
     for gid, res in results.items():
@@ -180,6 +187,7 @@ def _write_multi_report(results: dict, bucket_meta: dict, out_dir: Path) -> Path
         "buckets": {gid: {
             "meta": bucket_meta.get(gid, {}),
             "runs": res["runs"],
+            "concurrency": res.get("concurrency", 1),
             "aggregated": {k: v for k, v in res["aggregated"].items()
                            if k != "last_run_full"},
             "overall_last_run": res["aggregated"].get("last_run_full", {}).get("overall"),
@@ -221,7 +229,8 @@ async def _run_single(args: argparse.Namespace, exam: list[ExamItem], exam_id: s
     try:
         result = await run_exam(exam, participant, group, env,
                                 ci_mode=args.ci, gate_env=gate_env,
-                                exam_id=exam_id)
+                                exam_id=exam_id,
+                                concurrency=getattr(args, "concurrency", 1))
     except MissingEnvAnnotation as exc:
         print(str(exc), file=sys.stderr)
         return None

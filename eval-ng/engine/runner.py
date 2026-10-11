@@ -40,8 +40,14 @@ async def run_exam(
     ci_mode: bool = False,
     gate_env: dict | None = None,
     exam_id: str | None = None,
+    concurrency: int = 1,
 ) -> dict:
-    """执行一次评测。gate_env：闸门所需句柄/基线（baseline_metrics、mapping 所在 env 等）。"""
+    """执行一次评测。gate_env：闸门所需句柄/基线（baseline_metrics、mapping 所在 env 等）。
+
+    concurrency>1 时逐题并发（质量口径与串行完全一致——判分只依赖单题答案）；
+    但速度字段会被排队等待污染，报告层自动标注"并发测速不与串行对比"。
+    与旧引擎做同分对照（验收/回归）必须用默认 N=1。
+    """
     validate_participant(participant)
     missing = env_report.missing_fields()
     if missing:
@@ -54,6 +60,7 @@ async def run_exam(
     print(
         f"[eval-ng] 成本预估：考卷 {exam_id} 题数 {n_items} × 参赛者 {participant.name} "
         f"× runs={group.runs} = {n_items * group.runs} 次调用"
+        + (f"（并发 {concurrency} 路）" if concurrency > 1 else "")
     )
     gate_env = gate_env or {}
 
@@ -64,18 +71,22 @@ async def run_exam(
     first_run_pairs: list[tuple[ExamItem, Answer]] | None = None
 
     for run_idx in range(group.runs):
-        pairs: list[tuple[ExamItem, Answer]] = []
         n_items = len(exam)
-        for idx, item in enumerate(exam, 1):
-            answer = await participant.probe(item)
-            if answer.latency_sec is None:
-                answer.latency_sec = 0.0
-            # 逐题进度日志（用户反馈：长桶不再静默）
-            print(f"  [{run_idx + 1}/{group.runs} {idx}/{n_items}] "
-                  f"{item.id} {answer.latency_sec:.2f}s"
-                  + (f" ⚠{answer.warnings[0][:60]}" if answer.warnings else ""),
-                  flush=True)
-            pairs.append((item, answer))
+        if concurrency > 1:
+            pairs = await _probe_all_concurrent(participant, exam, concurrency,
+                                                run_idx, group.runs)
+        else:
+            pairs = []
+            for idx, item in enumerate(exam, 1):
+                answer = await participant.probe(item)
+                if answer.latency_sec is None:
+                    answer.latency_sec = 0.0
+                # 逐题进度日志（用户反馈：长桶不再静默）
+                print(f"  [{run_idx + 1}/{group.runs} {idx}/{n_items}] "
+                      f"{item.id} {answer.latency_sec:.2f}s"
+                      + (f" ⚠{answer.warnings[0][:60]}" if answer.warnings else ""),
+                      flush=True)
+                pairs.append((item, answer))
         if first_run_pairs is None:
             first_run_pairs = pairs
 
@@ -128,6 +139,7 @@ async def run_exam(
         "participant": participant.name,
         "exam_id": exam_id,
         "runs": group.runs,
+        "concurrency": concurrency,
         "per_run_metrics": per_run_metrics,
         "aggregated": aggregated,
         "perf": perf,
@@ -137,6 +149,29 @@ async def run_exam(
         "errors": entity_quality.error_rows(last_records),
         "answers": [ans for _, ans in (first_run_pairs or [])],
     }
+
+
+async def _probe_all_concurrent(participant, exam: list[ExamItem], concurrency: int,
+                                run_idx: int, runs: int) -> list[tuple[ExamItem, Answer]]:
+    """并发 probe（信号量限流）；完成一题打一行进度（乱序完成，标并发字样）。"""
+    import asyncio
+
+    sem = asyncio.Semaphore(concurrency)
+    n_items = len(exam)
+    done = 0
+
+    async def _one(item: ExamItem) -> tuple[ExamItem, Answer]:
+        nonlocal done
+        async with sem:
+            answer = await participant.probe(item)
+            if answer.latency_sec is None:
+                answer.latency_sec = 0.0
+            done += 1
+            print(f"  [{run_idx + 1}/{runs} {done}/{n_items}] {item.id} "
+                  f"{answer.latency_sec:.2f}s（并发测速，不与串行对比）", flush=True)
+            return item, answer
+
+    return list(await asyncio.gather(*[_one(it) for it in exam]))
 
 
 def run_exam_sync(*args, **kwargs) -> dict:
