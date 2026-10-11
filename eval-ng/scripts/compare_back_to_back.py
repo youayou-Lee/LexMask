@@ -44,11 +44,13 @@ def main() -> int:
         for engine, metrics in m.items():
             if isinstance(metrics, dict):
                 old_runs.append((engine, metrics))
-    # 新：doc["aggregated"]["last_run_full"]["overall"]（单 run 报告，多文件聚合）
+    # 新：报告 JSON 的 overall_last_run 即 overall 本体；多文件聚合
     new_runs = []
     for doc in new_docs:
-        m = doc.get("aggregated", {}).get("last_run_full", {})
-        if m.get("overall"):
+        m = doc.get("overall_last_run") or {"overall": doc.get("aggregated", {}).get("last_run_full", {})}
+        if m.get("overall") or "precision" in m:
+            if "overall" not in m:
+                m = {"overall": doc["overall_last_run"]}
             new_runs.append((_new_engine_name(doc), m))
 
     def agg(runs, key):
