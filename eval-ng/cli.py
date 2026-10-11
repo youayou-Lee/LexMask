@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from .engine.protocol import AnswerForm, EnvReport, ExamItem
@@ -83,21 +84,26 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     run.add_argument("--runs", type=int, default=3)
     run.add_argument("--ci", action="store_true",
                      help="CI 档：只跑绝对红线（数字否决/零泄漏），跳过基线闸门")
-    run.add_argument("--out", default="eval-ng/reports")
-    run.add_argument("--env-label", default=None)
-    run.add_argument("--target-label", default=None)
-    run.add_argument("--hardware", default=None, help="环境自报：硬件")
-    run.add_argument("--topology", default=None, help="环境自报：拓扑")
-    run.add_argument("--stack-version", action="append", default=[],
-                     metavar="NAME=VER", help="环境自报：组件版本，可多次")
     run.add_argument("--ner-base", default="http://127.0.0.1:8080/v1")
     run.add_argument("--model", default=None)
-    run.add_argument("--api-base", default="http://127.0.0.1:8000")
-    run.add_argument("--api-user", default="eval_user")
-    run.add_argument("--api-pass", default="EvalUser!2026")
-    run.add_argument("--timeout", type=float, default=600.0)
     run.add_argument("--max-tokens", type=int, default=4000)
     run.add_argument("--baseline", default=None, help="基线 metrics JSON（非 --ci 才有意义）")
+    e2e = sub.add_parser("run-e2e", help="端到端层评测（镜像旧 run_eval --level e2e 口径）")
+    for p in (run, e2e):
+        p.add_argument("--out", default="eval-ng/reports")
+        p.add_argument("--env-label", default=None)
+        p.add_argument("--target-label", default=None)
+        p.add_argument("--hardware", default=None, help="环境自报：硬件")
+        p.add_argument("--topology", default=None, help="环境自报：拓扑")
+        p.add_argument("--stack-version", action="append", default=[],
+                       metavar="NAME=VER", help="环境自报：组件版本，可多次")
+        p.add_argument("--api-base", default="http://127.0.0.1:8000")
+        p.add_argument("--api-user", default="eval_user")
+        p.add_argument("--api-pass", default="EvalUser!2026")
+        p.add_argument("--timeout", type=float, default=600.0)
+    e2e.add_argument("exam", help="e2e 考卷 JSON（make_exam_from_manifest.py 产物）")
+    e2e.add_argument("--warmup-pages", type=int, default=1)
+    e2e.add_argument("--baseline", default=None)
     args = ap.parse_args(argv)
     return args
 
@@ -145,10 +151,52 @@ async def _run(args: argparse.Namespace) -> int:
     return 0 if result["gate_pass"] else 1
 
 
+async def _run_e2e(args: argparse.Namespace) -> int:
+    from .engine import e2e as e2e_mod
+
+    if not args.env_label or not args.target_label:
+        print("缺 --env-label / --target-label（沿用旧 run_eval 强制惯例）", file=sys.stderr)
+        return 2
+    stack = {"env": args.env_label}
+    for kv in args.stack_version:
+        k, _, v = kv.partition("=")
+        stack[k] = v
+    env = {"hardware": args.hardware or "unspecified", "stack_versions": stack,
+           "topology": args.topology or "unspecified"}
+
+    doc = json.loads(Path(args.exam).read_text(encoding="utf-8"))
+    api = e2e_mod.E2eApi(args.api_base, args.api_user, args.api_pass, timeout=args.timeout)
+    try:
+        result = e2e_mod.run_e2e_level(api, doc["items"], warmup_pages=args.warmup_pages)
+    finally:
+        api.close()
+    result = e2e_mod.strip_heavy(result)
+    result["env"] = env
+    result["config"] = {"api_base": args.api_base, "warmup_pages": args.warmup_pages,
+                        "exam": str(args.exam)}
+    result["gate_pass"] = bool(result["overall"].get("digital_gate", {}).get("pass")) \
+        if result["overall"] else not result["failed"]
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    json_path = out / f"{ts}-{result.get('exam_id', 'e2e')}-e2e.json"
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"[eval-ng] e2e 报告：{json_path}")
+    overall = result.get("overall") or {}
+    if overall:
+        m = overall.get("overall", {})
+        print(f"[eval-ng] e2e 总体 P={m.get('precision'):.3f} R={m.get('recall'):.3f} "
+              f"F1={m.get('f1'):.3f} 数字闸={'PASS' if result['gate_pass'] else 'FAIL'}")
+    print(f"[eval-ng] rejected={result['rejected']} failed={[f['id'] for f in result['failed']]}")
+    return 0 if result["gate_pass"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
     if args.command == "run":
         return asyncio.run(_run(args))
+    if args.command == "run-e2e":
+        return asyncio.run(_run_e2e(args))
     return 2
 
 
