@@ -51,7 +51,8 @@ for i in $(seq 1 "$RUNS"); do
     --hardware "$HARDWARE" \
     --topology "$TOPOLOGY" \
     --stack-version "ner-base=${NER_BASE}" \
-    --out "$OUT_DIR/new-run$i" >/dev/null
+    --out "$OUT_DIR/new-run$i" >/dev/null \
+    || echo "[warn] 新引擎第 $i 轮闸门 FAIL（hardcase 桶数字闸预期不过；AC1 比较 P/R/F1 一致性）"
 done
 
 echo "== 汇总（P/R/F1 对照）=="
