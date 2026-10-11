@@ -32,13 +32,14 @@ def detect_hardware(run=None) -> str:
     out = run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
     if out.strip():
         return out.strip().splitlines()[0].strip()
-    for cmd in ([["hy_smi", "--showproductname"]]
+    # DCU（本项目唯一部署平台，默认走 hy-smi-wrapper——输出干净且 Card Series 即具体型号；
+    # hy_smi.py 为兜底）。优先级：型号/产品名 > 系列名。
+    for cmd in ([["hy-smi-wrapper", "--showproductname"]]
                 + [["python3", p, "--showproductname"]
                    for p in sorted(_glob("/opt/dtk-*/bin/hy_smi.py"))]):
         out = run(cmd)
         lines = out.splitlines()
-        # 优先级：Card model（具体型号）> Product Name > Card series（系列名）
-        for want in ("card model", "product name", "卡型号", "series"):
+        for want in ("card model", "product name", "卡型号", "card series", "series"):
             for line in lines:
                 if ":" in line and want in line.lower():
                     return line.rsplit(":", 1)[1].strip()
