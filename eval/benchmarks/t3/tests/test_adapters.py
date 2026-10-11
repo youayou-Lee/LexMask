@@ -166,10 +166,13 @@ def _zip_result(content_list: list[dict]) -> bytes:
 
 
 def test_mineru_seal_full_flow(mock_server, page_image):
+    """真实结构（T0 冒烟实证）：list-of-pages，seal 块 {"type":"seal","bbox":[...]}。"""
     cl = [
-        {"type": "image", "sub_type": "seal", "bbox": [10, 20, 110, 120]},
-        {"type": "image", "sub_type": "seal", "bbox": [1, 1, 1, 1]},  # 退化框丢弃
-        {"type": "text", "text": "正文"},
+        [  # 每页 = list of blocks
+            {"type": "seal", "bbox": [10, 20, 110, 120]},
+            {"type": "seal", "bbox": [1, 1, 1, 1]},  # 退化框丢弃
+            {"type": "text", "text": "正文"},
+        ]
     ]
     result = _zip_result(cl)
     ReplayingHandler.routes["/tasks"] = [(202, {"task_id": "t1"}, 0)]
@@ -181,9 +184,25 @@ def test_mineru_seal_full_flow(mock_server, page_image):
     preds = adapters.run_mineru_seal(page_image, base_url=mock_server, poll_interval=0.01)
     assert len(preds) == 1
     assert preds[0]["kind"] == "seal"
-    # TODO(T2.1) 口径：bbox 按页像素直取
+    # 页像素直取（T2.1 已由冒烟实证落定）
     assert preds[0]["box"] == {"x": 10.0, "y": 20.0, "w": 100.0, "h": 100.0}
     assert preds[0]["confidence"] == 1.0  # 块无分数，写死 1.0
+    # 请求形态对齐 T0 probe_mineru.py（不带 zip 开关 + lang_list=ch）
+    body = ReplayingHandler.requests[0]["body"]
+    assert b"lang_list" in body and b"return_content_list" in body
+
+
+def test_mineru_flat_list_and_v1_content_list(mock_server, page_image):
+    """扁平 list 也处理；zip 只有 *_content_list.json（无 v2）时回退取 v1。"""
+    cl = [{"type": "seal", "bbox": [0, 0, 50, 50]}]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("doc/pipeline/doc_content_list.json", json.dumps(cl))
+    ReplayingHandler.routes["/tasks"] = [(202, {"task_id": "t9"}, 0)]
+    ReplayingHandler.routes["/tasks/t9"] = [(200, {"state": "done"}, 0)]  # state 键 + done 终态
+    ReplayingHandler.routes["/tasks/t9/result"] = [(200, buf.getvalue(), 0)]
+    preds = adapters.run_mineru_seal(page_image, base_url=mock_server)
+    assert preds[0]["box"] == {"x": 0.0, "y": 0.0, "w": 50.0, "h": 50.0}
 
 
 def test_mineru_failed_task_raises(mock_server, page_image):
@@ -258,15 +277,19 @@ def _clean_pipeline_cache():
     adapters._PIPELINE_CACHE.clear()
 
 
-def test_paddlex_t4_schema_and_default_pipeline_name(page_image, monkeypatch):
-    """默认产线 seal_recognition；T4 实测 boxes=[{x,y,w,h,confidence}] 页像素零换算。"""
+def test_paddlex_real_result_schema_and_default_pipeline_name(page_image, monkeypatch):
+    """真实输出 SealRecognitionResult（云端含章页 p11 实测）：
+    layout_det_res.boxes 里 label=="seal" → coordinate 页像素 + score。"""
     pipeline = _FakePipeline(
         [
             {
-                "width": PAGE_W,
-                "height": PAGE_H,
-                "coordinate_system": "page-pixel-top-left",
-                "boxes": [{"x": 779, "y": 859, "w": 278, "h": 280, "confidence": 0.959}],
+                "layout_det_res": {
+                    "boxes": [
+                        {"label": "seal", "score": 0.96, "coordinate": [1874, 0, 2474, 405]},
+                        {"label": "text", "score": 0.9, "coordinate": [0, 0, 100, 50]},
+                    ]
+                },
+                "seal_res_list": [{"dt_polys": [[[1874, 10], [2470, 20]]], "rec_texts": ["XX局"]}],
             }
         ]
     )
@@ -274,15 +297,33 @@ def test_paddlex_t4_schema_and_default_pipeline_name(page_image, monkeypatch):
     monkeypatch.delenv("T3_PADDLEX_PIPELINE", raising=False)
     preds = adapters.run_paddlex_seal(page_image)
     assert counts["create"] == 1
-    assert counts["names"] == ["seal_recognition"]  # T4 实测官方产线名
+    assert counts["names"] == ["seal_recognition"]  # 官方产线名
     assert preds == [
-        {"kind": "seal", "box": {"x": 779.0, "y": 859.0, "w": 278.0, "h": 280.0},
-         "confidence": 0.959, "raw": ""}
+        {"kind": "seal", "box": {"x": 1874.0, "y": 0.0, "w": 600.0, "h": 405.0},
+         "confidence": 0.96, "raw": "layout:seal"}
     ]
 
 
+def test_paddlex_fallback_dt_polys(page_image, monkeypatch):
+    """layout 无 seal → 回退 seal_res_list dt_polys 外接矩形并集。"""
+    pipeline = _FakePipeline(
+        [
+            {
+                "layout_det_res": {"boxes": [{"label": "text", "score": 0.9, "coordinate": [0, 0, 10, 10]}]},
+                "seal_res_list": [
+                    {"dt_polys": [[[100, 100], [200, 100], [200, 180], [100, 180]]], "score": 0.5}
+                ],
+            }
+        ]
+    )
+    _install_fake_paddlex(monkeypatch, pipeline)
+    preds = adapters.run_paddlex_seal(page_image, pipeline_name="seal_recognition")
+    assert preds[0]["box"] == {"x": 100.0, "y": 100.0, "w": 100.0, "h": 80.0}
+    assert preds[0]["raw"] == "dt_polys"
+
+
 def test_paddlex_native_coordinate_form(page_image, monkeypatch):
-    """兼容 PaddleX 原生 coordinate 四元组形态（x1,y1,x2,y2 + score）。"""
+    """兼容旧 res["boxes"] coordinate 四元组形态（score）。"""
     pipeline = _FakePipeline(
         [{"boxes": [{"coordinate": [10, 20, 110, 120], "score": 0.7}]}]
     )

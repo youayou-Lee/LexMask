@@ -13,20 +13,26 @@
   的 0-1 归一化结构化 boxes × 页宽高。confidence：HF 模式无分数 → 按 1.0
   （与 MinerU「无分数填 1.0」口径一致，非测量值）；vLLM logprobs 分数有则透传。
 
-- mineru_seal   MinerU sidecar（16581，契约见 backend/app/services/mineru_parse_client.py
-  头注释）：POST /tasks（multipart `files`，backend=pipeline）→ 轮询
-  GET /tasks/{id} → GET /tasks/{id}/result 取 zip → 解析
-  `*_content_list_v2.json`，取 `type=="image" && sub_type=="seal"` 块的
-  `bbox`（[x0,y0,x1,y1]）。**TODO(T2.1)：bbox 坐标系先按页像素假定，云端
-  对拍确认后定死**（MinerU 文档不保证，真实 PDF 页面像素 vs 归一化待实测）。
-  块无分数 → confidence 恒 1.0（写死，非测量值）。
+- mineru_seal   MinerU sidecar（16581）。请求/响应形态全部对齐 T0
+  probe_mineru.py 实证契约（perf-work/issue92-t0/）：POST /tasks（multipart
+  data={"return_content_list":"true","backend":"pipeline","lang_list":"ch"}）
+  → 202 {task_id} → 轮询 GET /tasks/{id}（status|state 键；终态
+  completed/done/finished，失败 failed/error）→ GET /tasks/{id}/result 取
+  zip，优先 *_content_list_v2.json、无则 *_content_list.json。content 是
+  list-of-pages（每页=list of blocks）或扁平 list（两种都处理），seal 块
+  `{"type":"seal","bbox":[x0,y0,x1,y1]}` → 页像素（云端冒烟实证，T2.1 落定），
+  confidence 恒 1.0（块无分数，写死非测量值）。
 
 - paddlex_seal  本地函数式封装 paddlex seal_recognition 产线（env
-  T3_PADDLEX_PIPELINE，默认 "seal_recognition"，PaddleX 3.7.2 官方产线名，
-  T4 实测）。输出 boxes=[{x,y,w,h,confidence}] 已是页像素零换算（T4 实证
-  坐标系=输入图页像素左上原点）；confidence=版面模型 PP-DocLayout-L seal
-  类分数。pipeline 实例按名 lazy 单例缓存（冷启动 35-40s/次）。paddlex
-  未安装时 raise RuntimeError（明确报错，由跑批层记 failed）。
+  T3_PADDLEX_PIPELINE，默认 "seal_recognition"，PaddleX 3.7.2 官方产线名）。
+  真实输出 SealRecognitionResult（云端含章页 p11 实测）：
+  `res["layout_det_res"]["boxes"]` 里 label=="seal" 的项
+  {"label","score","coordinate":[x1,y1,x2,y2]}（页像素，与 LA 框对得上）为
+  主路径；layout 无 seal 时回退 `res["seal_res_list"][i]["dt_polys"]`
+  （弯曲文本多边形 N×2）外接矩形并集。confidence = layout score（版面模型
+  分数，非 seal_det 框置信）。pipeline 实例按名 lazy 单例缓存（冷启动
+  35-40s/次）。paddlex 未安装时 raise RuntimeError（明确报错，由跑批层记
+  failed）。
 
 - sigdet        sigdet /detect（signature_detector_server.py, 端口 28150）。请求
   `{"image_base64":..., "threshold"?}`；响应 boxes 为 **0-1 归一化**
@@ -215,31 +221,54 @@ def run_la(
 def _mineru_poll_once(
     base_url: str, task_id: str, timeout: float, transport: httpx.BaseTransport | None
 ) -> str:
+    """终态归一：响应 status 或 state 键（T0 probe_mineru.py 实证两者皆可能）；
+    终态字面值 completed/done/finished，failed/error 为失败。"""
     try:
         resp = _http_get(f"{base_url}/tasks/{task_id}", timeout, transport)
     except httpx.HTTPError as exc:
         raise ArmError(f"mineru poll 失败: {exc!r}") from exc
     if resp.status_code >= 400:
         raise ArmError(f"mineru poll HTTP {resp.status_code}: {resp.text[:200]}")
-    return str(resp.json().get("status") or "")
+    payload = resp.json()
+    return str(payload.get("status") or payload.get("state") or "")
 
 
-def _extract_seal_preds_from_content_list(
-    content_list: list[dict], page_w: int, page_h: int
-) -> list[dict]:
-    # TODO(T2.1): bbox 坐标系按页像素假定，云端对拍确认后定死（见模块 docstring）。
+_MINERU_DONE = {"completed", "done", "finished"}
+_MINERU_FAILED = {"failed", "error"}
+
+
+def _extract_seal_preds_from_content_list(content: Any, page_w: int, page_h: int) -> list[dict]:
+    """content_list → seal 预测（真实块形态，T0 冒烟实证，勿再猜）。
+
+    JSON 两种形态都处理：list-of-pages（每页=list of blocks，T0 实证）或扁平
+    list。block 形如 ``{"type": "seal", "bbox": [x0, y0, x1, y1], ...}``——
+    type=="seal" 直取（冒烟实证页像素，T2.1 落定）；兼容旧 sub_type=="seal"。
+    confidence 恒 1.0（块无分数）。
+    """
     preds: list[dict] = []
-    for item in content_list or []:
-        if item.get("type") != "image" or item.get("sub_type") != "seal":
-            continue
-        bbox = item.get("bbox")
-        if not isinstance(bbox, list) or len(bbox) != 4:
-            continue
-        x0, y0, x1, y1 = (float(v) for v in bbox)
-        w, h = max(0.0, x1 - x0), max(0.0, y1 - y0)
-        if w <= 0 or h <= 0:
-            continue
-        preds.append(_pred("seal", (x0, y0, w, h), 1.0, "sub_type=seal"))
+    if not isinstance(content, list):
+        return preds
+    page_lists: list[Any] = (
+        content if (content and isinstance(content[0], list)) else [content]
+    )
+    for blocks in page_lists:
+        for item in blocks or []:
+            if not isinstance(item, dict):
+                continue
+            btype = str(item.get("type") or "")
+            is_seal = btype == "seal" or (
+                btype == "image" and item.get("sub_type") == "seal"
+            )
+            if not is_seal:
+                continue
+            bbox = item.get("bbox")
+            if not isinstance(bbox, list) or len(bbox) != 4:
+                continue
+            x0, y0, x1, y1 = (float(v) for v in bbox)
+            w, h = max(0.0, x1 - x0), max(0.0, y1 - y0)
+            if w <= 0 or h <= 0:
+                continue
+            preds.append(_pred("seal", (x0, y0, w, h), 1.0, f"type={btype}"))
     return preds
 
 
@@ -251,7 +280,14 @@ def run_mineru_seal(
     poll_interval: float = DEFAULT_MINERU_POLL_INTERVAL_S,
     transport: httpx.BaseTransport | None = None,
 ) -> list[dict]:
-    """提交单页图像给 MinerU sidecar，轮询到终态后从 zip content_list 取 seal 块。"""
+    """提交单页图像给 MinerU sidecar，轮询到终态后从 zip content_list 取 seal 块。
+
+    请求/响应形态全部对齐 T0 probe_mineru.py 实证契约（勿改回猜的键）：
+    POST /tasks multipart data={"return_content_list":"true","backend":"pipeline",
+    "lang_list":"ch"}（不带 zip 开关，result 端点本来就回 zip）→ 202 {task_id}；
+    GET /tasks/{id} 看 status|state；GET /tasks/{id}/result 取 zip，优先
+    *_content_list_v2.json、无则 *_content_list.json。
+    """
     url = base_url or env_url("T3_MINERU_URL", "http://127.0.0.1:16581")
     page_w, page_h = image_size(image_path)
     with open(image_path, "rb") as fh:
@@ -259,11 +295,9 @@ def run_mineru_seal(
     resp = _post_with_retry(
         f"{url}/tasks",
         data={
-            "backend": "pipeline",
-            "response_format_zip": "true",
-            "return_md": "true",
             "return_content_list": "true",
-            "return_images": "true",
+            "backend": "pipeline",
+            "lang_list": "ch",
         },
         files={"files": (os.path.basename(image_path), image_bytes, "image/png")},
         timeout=timeout,
@@ -277,9 +311,9 @@ def run_mineru_seal(
     deadline = time.monotonic() + poll_timeout
     while True:
         status = _mineru_poll_once(url, task_id, timeout, transport)
-        if status == "completed":
+        if status in _MINERU_DONE:
             break
-        if status == "failed":
+        if status in _MINERU_FAILED:
             raise ArmError(f"mineru task failed: {task_id}")
         if time.monotonic() > deadline:
             raise ArmError(f"mineru task 轮询超时: {task_id}")
@@ -294,7 +328,9 @@ def run_mineru_seal(
     with zipfile.ZipFile(io.BytesIO(result.content)) as zf:
         names = [n for n in zf.namelist() if n.endswith("_content_list_v2.json")]
         if not names:
-            raise ArmError("mineru zip 内无 *_content_list_v2.json")
+            names = [n for n in zf.namelist() if n.endswith("_content_list.json")]
+        if not names:
+            raise ArmError("mineru zip 内无 *_content_list(_v2).json")
         preds: list[dict] = []
         for name in names:
             content = json_loads(zf.read(name))
@@ -324,16 +360,70 @@ def _get_paddlex_pipeline(name: str):
 
 
 def _parse_paddlex_seal_output(outputs: Any) -> list[dict]:
-    """解析 seal_recognition 产线输出 → 统一契约（T4 实测 schema，页像素零换算）。
+    """解析 SealRecognitionResult → 统一契约（真实结构，云端含章页 p11 实测，勿再猜）。
 
-    T4 实测（PaddleX 3.7.2，页像素、左上原点，见 task-t4-report.md）：
-    每个结果对象 boxes=[{x,y,w,h,confidence}]（整章页级框）。confidence 语义
-    = PP-DocLayout-L 版面模型 seal 类分数（0~1），**非** seal_det 框置信。
-    兼容 PaddleX 原生 `coordinate` 四元组形态（x1,y1,x2,y2）。
+    主路径：``res["layout_det_res"]["boxes"]`` 里 label=="seal" 的项
+    ``{"label":"seal","score":0.96,"coordinate":[x1,y1,x2,y2]}``（页像素，
+    与 LA 框对得上）。
+    回退：layout 无 seal 时取 ``res["seal_res_list"][i]["dt_polys"]``（弯曲
+    文本多边形 N×2）的外接矩形并集。
+    兼容：旧 ``res["boxes"]`` 的 {x,y,w,h,confidence} / coordinate 形态。
+    confidence = layout score（版面模型分数，非 seal_det 框置信）。
     """
     preds: list[dict] = []
     for res in outputs or []:
-        for box_item in (res.get("boxes") if isinstance(res, dict) else None) or []:
+        if not isinstance(res, dict):
+            continue
+        # 主路径：layout_det_res.boxes 里 label=="seal"
+        for box_item in (res.get("layout_det_res") or {}).get("boxes") or []:
+            if str(box_item.get("label") or "") != "seal":
+                continue
+            coord = box_item["coordinate"]
+            x1, y1 = float(coord[0]), float(coord[1])
+            x2, y2 = float(coord[2]), float(coord[3])
+            w, h = max(0.0, x2 - x1), max(0.0, y2 - y1)
+            if w <= 0 or h <= 0:
+                continue
+            score = box_item.get("score")
+            preds.append(_pred("seal", (x1, y1, w, h), 1.0 if score is None else float(score), "layout:seal"))
+        if preds:
+            continue
+        # 回退：seal_res_list 各项 dt_polys 外接矩形并集
+        for seal_item in res.get("seal_res_list") or []:
+            polys = seal_item.get("dt_polys") or []
+            # dt_polys 形态兼容：单个 N×2 多边形 [[x,y],...]，或多边形列表 [[[x,y],...],...]
+            points: list[tuple[float, float]] = []
+
+            def _add_point(q) -> None:
+                points.append((float(q[0]), float(q[1])))
+
+            for p in polys:
+                if not p:
+                    continue
+                if isinstance(p[0], (list, tuple)):
+                    if p[0] and isinstance(p[0][0], (list, tuple)):
+                        for q in p:  # 多边形列表：每个 q 是 N×2 多边形
+                            for r in q:
+                                _add_point(r)
+                    else:  # p 本身是 N×2 多边形
+                        for q in p:
+                            _add_point(q)
+                else:
+                    _add_point(p)
+            if not points:
+                continue
+            xs = [pt[0] for pt in points]
+            ys = [pt[1] for pt in points]
+            x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+            w, h = max(0.0, x2 - x1), max(0.0, y2 - y1)
+            if w <= 0 or h <= 0:
+                continue
+            score = seal_item.get("score")
+            preds.append(_pred("seal", (x1, y1, w, h), 1.0 if score is None else float(score), "dt_polys"))
+        if preds:
+            continue
+        # 兼容：旧 res["boxes"] 形态（{x,y,w,h,confidence} 或 coordinate 四元组）
+        for box_item in res.get("boxes") or []:
             if "coordinate" in box_item:  # 原生 layout 结果形态
                 coord = box_item["coordinate"]
                 x1, y1 = float(coord[0]), float(coord[1])
