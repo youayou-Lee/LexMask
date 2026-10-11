@@ -157,6 +157,6 @@ def test_concurrency_same_quality_and_annotated():
     assert serial["per_run_metrics"] == conc["per_run_metrics"]  # 质量逐位一致
     assert conc["concurrency"] == 4
     md = report.render_report(conc, "md")
-    assert "并发" in md and "不与串行数据对比" in md
+    assert "并发" in md and "同分对照须用 N=1" in md
     mds = report.render_report(serial, "md")
-    assert "不与串行数据对比" not in mds
+    assert "同分对照须用 N=1" not in mds

@@ -44,8 +44,9 @@ async def run_exam(
 ) -> dict:
     """执行一次评测。gate_env：闸门所需句柄/基线（baseline_metrics、mapping 所在 env 等）。
 
-    concurrency>1 时逐题并发（质量口径与串行完全一致——判分只依赖单题答案）；
-    但速度字段会被排队等待污染，报告层自动标注"并发测速不与串行对比"。
+    concurrency>1 时逐题并发。⚠实测（hardcase 24 题，vLLM 连续批处理）：并发会改变批组成，
+    LLM 参赛者即使 temp=0 分数也可能与串行有微差（tp ±1 级别）——同分对照（AC1/回归）必须 N=1；
+    速度含排队等待亦不可比。报告层自动双重标注。
     与旧引擎做同分对照（验收/回归）必须用默认 N=1。
     """
     validate_participant(participant)

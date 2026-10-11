@@ -78,8 +78,8 @@ def render_report(result: dict, fmt: str) -> str:
         ws = perf.get("wall_s", {})
         conc = result.get("concurrency", 1)
         if ws:
-            speed_note = (f"（并发 {conc} 路测得，含排队等待，不与串行数据对比）"
-                          if conc > 1 else "")
+            speed_note = (f"（并发 {conc} 路测得：速度含排队等待、LLM 分数可能因批处理调度微差——"
+                          f"同分对照须用 N=1）" if conc > 1 else "")
             lines.append(
                 f"- 速度：mean {ws['mean']:.3f}s / p95 {ws['p95']:.3f}s，"
                 f"吞吐 {perf['throughput_pages_per_min']:.1f} 页/分{speed_note}"
