@@ -63,14 +63,16 @@ class ReplayingHandler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         if len(queue) > 1:
-            status, payload, delay = queue.pop(0)
+            item = queue.pop(0)
         else:
-            status, payload, delay = queue[0]
+            item = queue[0]
+        status, payload, delay = item[0], item[1], item[2]
+        ctype = item[3] if len(item) > 3 else "application/json"
         if delay:
             time.sleep(delay)
         data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -165,8 +167,47 @@ def _zip_result(content_list: list[dict]) -> bytes:
     return buf.getvalue()
 
 
-def test_mineru_seal_full_flow(mock_server, page_image):
-    """真实结构（T0 冒烟实证）：list-of-pages，seal 块 {"type":"seal","bbox":[...]}。"""
+def _mineru_task_routes(mock_server, result_bytes_or_json, *, ct="application/zip"):
+    ReplayingHandler.routes["/tasks"] = [(202, {"task_id": "t1"}, 0)]
+    ReplayingHandler.routes["/tasks/t1"] = [(200, {"status": "completed"}, 0)]
+    if isinstance(result_bytes_or_json, bytes):
+        ReplayingHandler.routes["/tasks/t1/result"] = [(200, result_bytes_or_json, 0, ct)]
+    else:
+        body = json.dumps(result_bytes_or_json).encode()
+        ReplayingHandler.routes["/tasks/t1/result"] = [(200, body, 0, ct)]
+
+
+def test_mineru_json_result_branch(mock_server, page_image):
+    """单文件任务实测形态：result=application/json，content_list 是**字符串**要再 loads；
+    seal 块 type=="image" && sub_type=="seal"，bbox 0-1000 归一化 ×页宽高。"""
+    cl = [[
+        {"type": "image", "sub_type": "seal", "bbox": [698, 9, 895, 158], "page_idx": 0},
+        {"type": "text", "text": "正文"},
+    ]]
+    payload = {
+        "backend": "pipeline", "version": "3.x",
+        "results": {"p11": {"md_content": "", "content_list": json.dumps(cl, ensure_ascii=False)}},
+    }
+    _mineru_task_routes(mock_server, payload, ct="application/json")
+    preds = adapters.run_mineru_seal(page_image, base_url=mock_server)
+    # 页 1000×500：698/1000×1000=698, 9/1000×500=4.5, w=(895-698)/1000×1000=197, h=(158-9)/1000×500=74.5
+    assert preds[0]["box"] == {"x": 698.0, "y": 4.5, "w": 197.0, "h": 74.5}
+    assert preds[0]["confidence"] == 1.0  # 块无分数，写死 1.0
+    assert preds[0]["raw"] == "type=image"  # 实证形态是 type=image + sub_type=seal
+
+
+def test_mineru_json_result_content_list_already_list(mock_server, page_image):
+    """content_list 已是 list（非字符串）时容错直用；type=="seal" 兼容匹配。"""
+    payload = {
+        "results": {"s": {"content_list": [{"type": "seal", "bbox": [500, 500, 600, 600]}]}}
+    }
+    _mineru_task_routes(mock_server, payload, ct="application/json")
+    preds = adapters.run_mineru_seal(page_image, base_url=mock_server)
+    assert preds[0]["box"] == {"x": 500.0, "y": 250.0, "w": 100.0, "h": 50.0}
+
+
+def test_mineru_zip_branch_still_works(mock_server, page_image):
+    """多文件任务 zip 分支保留：list-of-pages + v2 命名，bbox 0-1000 换算。"""
     cl = [
         [  # 每页 = list of blocks
             {"type": "seal", "bbox": [10, 20, 110, 120]},
@@ -176,17 +217,14 @@ def test_mineru_seal_full_flow(mock_server, page_image):
     ]
     result = _zip_result(cl)
     ReplayingHandler.routes["/tasks"] = [(202, {"task_id": "t1"}, 0)]
-    ReplayingHandler.routes["/tasks/t1"] = [
-        (200, {"status": "processing"}, 0),
-        (200, {"status": "completed"}, 0),
-    ]
-    ReplayingHandler.routes["/tasks/t1/result"] = [(200, result, 0)]
+    ReplayingHandler.routes["/tasks/t1"] = [(200, {"status": "completed"}, 0)]
+    ReplayingHandler.routes["/tasks/t1/result"] = [(200, result, 0, "application/zip")]
     preds = adapters.run_mineru_seal(page_image, base_url=mock_server, poll_interval=0.01)
     assert len(preds) == 1
     assert preds[0]["kind"] == "seal"
-    # 页像素直取（T2.1 已由冒烟实证落定）
-    assert preds[0]["box"] == {"x": 10.0, "y": 20.0, "w": 100.0, "h": 100.0}
-    assert preds[0]["confidence"] == 1.0  # 块无分数，写死 1.0
+    # 0-1000 × 页 1000×500：x=10, y=10, w=100, h=50
+    assert preds[0]["box"] == {"x": 10.0, "y": 10.0, "w": 100.0, "h": 50.0}
+    assert preds[0]["confidence"] == 1.0
     # 请求形态对齐 T0 probe_mineru.py（不带 zip 开关 + lang_list=ch）
     body = ReplayingHandler.requests[0]["body"]
     assert b"lang_list" in body and b"return_content_list" in body
@@ -200,9 +238,9 @@ def test_mineru_flat_list_and_v1_content_list(mock_server, page_image):
         zf.writestr("doc/pipeline/doc_content_list.json", json.dumps(cl))
     ReplayingHandler.routes["/tasks"] = [(202, {"task_id": "t9"}, 0)]
     ReplayingHandler.routes["/tasks/t9"] = [(200, {"state": "done"}, 0)]  # state 键 + done 终态
-    ReplayingHandler.routes["/tasks/t9/result"] = [(200, buf.getvalue(), 0)]
+    ReplayingHandler.routes["/tasks/t9/result"] = [(200, buf.getvalue(), 0, "application/zip")]
     preds = adapters.run_mineru_seal(page_image, base_url=mock_server)
-    assert preds[0]["box"] == {"x": 0.0, "y": 0.0, "w": 50.0, "h": 50.0}
+    assert preds[0]["box"] == {"x": 0.0, "y": 0.0, "w": 50.0, "h": 25.0}  # h: 50/1000×500
 
 
 def test_mineru_failed_task_raises(mock_server, page_image):
@@ -375,6 +413,28 @@ def test_sigdet_01_to_pixel(mock_server, page_image):
 def test_sigdet_connection_error_retries(dead_url, page_image):
     with pytest.raises(adapters.ArmError, match="重试"):
         adapters.run_sigdet(page_image, base_url=dead_url, timeout=0.2)
+
+
+def test_sigdet_timeout_env_override(mock_server, page_image, monkeypatch):
+    """真实扫描页 CPU 分块 >120s：sigdet 臂默认超时 300s，T3_SIGDET_TIMEOUT 可覆盖。"""
+    captured = {}
+    real_post = adapters._post_with_retry
+
+    def fake_post(url, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return real_post(url, **kwargs)
+
+    monkeypatch.setattr(adapters, "_post_with_retry", fake_post)
+    ReplayingHandler.routes["/detect"] = [(200, {"boxes": [], "mode": "full"}, 0)]
+    monkeypatch.delenv("T3_SIGDET_TIMEOUT", raising=False)
+    adapters.run_sigdet(page_image, base_url=mock_server)
+    assert captured["timeout"] == 300.0
+    monkeypatch.setenv("T3_SIGDET_TIMEOUT", "7.5")
+    adapters.run_sigdet(page_image, base_url=mock_server)
+    assert captured["timeout"] == 7.5
+    # 显式入参最优先
+    adapters.run_sigdet(page_image, base_url=mock_server, timeout=0.2)
+    assert captured["timeout"] == 0.2
 
 
 # ---- 统一入口 ---------------------------------------------------------------

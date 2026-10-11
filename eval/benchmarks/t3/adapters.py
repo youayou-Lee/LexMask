@@ -238,12 +238,13 @@ _MINERU_FAILED = {"failed", "error"}
 
 
 def _extract_seal_preds_from_content_list(content: Any, page_w: int, page_h: int) -> list[dict]:
-    """content_list → seal 预测（真实块形态，T0 冒烟实证，勿再猜）。
+    """content_list → seal 预测（真实块形态，2026-10-11 云端单文件任务实证，勿再猜）。
 
-    JSON 两种形态都处理：list-of-pages（每页=list of blocks，T0 实证）或扁平
-    list。block 形如 ``{"type": "seal", "bbox": [x0, y0, x1, y1], ...}``——
-    type=="seal" 直取（冒烟实证页像素，T2.1 落定）；兼容旧 sub_type=="seal"。
-    confidence 恒 1.0（块无分数）。
+    JSON 两种形态都处理：list-of-pages（每页=list of blocks）或扁平 list。
+    seal 块匹配 = (type=="seal") 或 (type=="image" 且 sub_type=="seal")；
+    真实块形如 ``{"type":"image","sub_type":"seal","bbox":[698,9,895,158],
+    "page_idx":0}``。bbox **0-1000 归一化已实证**（2026-10-11 云端对拍 LA
+    同页框吻合）→ ×页宽/页高换算像素。confidence 恒 1.0（块无分数）。
     """
     preds: list[dict] = []
     if not isinstance(content, list):
@@ -264,11 +265,10 @@ def _extract_seal_preds_from_content_list(content: Any, page_w: int, page_h: int
             bbox = item.get("bbox")
             if not isinstance(bbox, list) or len(bbox) != 4:
                 continue
-            x0, y0, x1, y1 = (float(v) for v in bbox)
-            w, h = max(0.0, x1 - x0), max(0.0, y1 - y0)
-            if w <= 0 or h <= 0:
+            px = convert_1000_box(*bbox, page_w, page_h)
+            if px[2] <= 0 or px[3] <= 0:
                 continue
-            preds.append(_pred("seal", (x0, y0, w, h), 1.0, f"type={btype}"))
+            preds.append(_pred("seal", px, 1.0, f"type={btype}"))
     return preds
 
 
@@ -280,13 +280,16 @@ def run_mineru_seal(
     poll_interval: float = DEFAULT_MINERU_POLL_INTERVAL_S,
     transport: httpx.BaseTransport | None = None,
 ) -> list[dict]:
-    """提交单页图像给 MinerU sidecar，轮询到终态后从 zip content_list 取 seal 块。
+    """提交单页图像给 MinerU sidecar，轮询到终态后取 content_list 的 seal 块。
 
-    请求/响应形态全部对齐 T0 probe_mineru.py 实证契约（勿改回猜的键）：
-    POST /tasks multipart data={"return_content_list":"true","backend":"pipeline",
-    "lang_list":"ch"}（不带 zip 开关，result 端点本来就回 zip）→ 202 {task_id}；
-    GET /tasks/{id} 看 status|state；GET /tasks/{id}/result 取 zip，优先
-    *_content_list_v2.json、无则 *_content_list.json。
+    请求/响应形态全部对齐云端实测契约（2026-10-11 单文件 PNG 任务全流程，
+    勿改回猜的键）：POST /tasks multipart data={"return_content_list":"true",
+    "backend":"pipeline","lang_list":"ch"} → 202 {task_id}；GET /tasks/{id}
+    看 status|state；GET /tasks/{id}/result **两种形态**：
+    - 单文件任务实测回 application/json：
+      ``{"backend","version","results":{<stem>:{"md_content","content_list"}}}``
+      其中 content_list 是**要再 json.loads 的字符串**（兼容已是 list 的形态）；
+    - 多文件任务回 zip：优先 *_content_list_v2.json、无则 *_content_list.json。
     """
     url = base_url or env_url("T3_MINERU_URL", "http://127.0.0.1:16581")
     page_w, page_h = image_size(image_path)
@@ -325,13 +328,29 @@ def run_mineru_seal(
         raise ArmError(f"mineru result 拉取失败: {exc!r}") from exc
     if result.status_code >= 400:
         raise ArmError(f"mineru result HTTP {result.status_code}")
-    with zipfile.ZipFile(io.BytesIO(result.content)) as zf:
+    body = result.content
+    if "json" in (result.headers.get("content-type") or "").lower() or body.lstrip()[:1] == b"{":
+        # 单文件任务实测形态：JSON results.{stem}.content_list（字符串要再 loads）
+        try:
+            payload = json_loads(body)
+            results = payload.get("results") or {}
+        except (ValueError, AttributeError) as exc:
+            raise ArmError(f"mineru result JSON 解析失败: {exc!r}") from exc
+        preds: list[dict] = []
+        for stem, item in results.items():
+            content = item.get("content_list") if isinstance(item, dict) else None
+            if isinstance(content, str):
+                content = json_loads(content.encode("utf-8"))
+            preds.extend(_extract_seal_preds_from_content_list(content, page_w, page_h))
+        return preds
+    # 多文件任务：zip 分支
+    with zipfile.ZipFile(io.BytesIO(body)) as zf:
         names = [n for n in zf.namelist() if n.endswith("_content_list_v2.json")]
         if not names:
             names = [n for n in zf.namelist() if n.endswith("_content_list.json")]
         if not names:
             raise ArmError("mineru zip 内无 *_content_list(_v2).json")
-        preds: list[dict] = []
+        preds = []
         for name in names:
             content = json_loads(zf.read(name))
             preds.extend(_extract_seal_preds_from_content_list(content, page_w, page_h))
@@ -464,10 +483,15 @@ def run_paddlex_seal(image_path: str, pipeline_name: str | None = None) -> list[
 def run_sigdet(
     image_path: str,
     base_url: str | None = None,
-    timeout: float = DEFAULT_TIMEOUT_S,
+    timeout: float | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> list[dict]:
+    """sigdet /detect。真实扫描页 CPU 分块推理 >120s（tiled 模式 2480×3500
+    分钟级），默认超时 300s（env T3_SIGDET_TIMEOUT 覆盖）；其余臂仍 120s。
+    CPU 慢是评测要如实报的事实——不改阈值以外的任何提速参数。"""
     url = (base_url or env_url("T3_SIGDET_URL", "http://127.0.0.1:28150")) + "/detect"
+    if timeout is None:
+        timeout = float(os.environ.get("T3_SIGDET_TIMEOUT", "300"))
     page_w, page_h = image_size(image_path)
     resp = _post_with_retry(
         url, json_body={"image_base64": _encode_image(image_path)}, timeout=timeout, transport=transport
