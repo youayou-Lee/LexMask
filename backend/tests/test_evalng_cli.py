@@ -122,9 +122,10 @@ def test_cli_hardware_autodetect(tmp_path, monkeypatch, capsys):
     import evalng_bootstrap as boot
 
     env_detect = boot.load("engine/env_detect.py")
-    # 注入假命令执行器：模拟 DCU hy_smi 输出
+    # 注入假命令执行器：模拟 DCU hy_smi.py 输出（Card model 行）
     fake = env_detect.detect_hardware(
-        run=lambda cmd: "Card series:        K500SM_AI\n" if cmd[0] == "hy_smi" else "")
+        run=lambda cmd: "" if cmd[0] == "nvidia-smi" else
+        "HCU[0] \t\t: Card model:\t\tK500SM_AI\n")
     assert fake == "K500SM_AI"
     fake2 = env_detect.detect_hardware(run=lambda cmd: "")
     assert fake2 == ""

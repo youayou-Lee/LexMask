@@ -9,6 +9,12 @@ from __future__ import annotations
 import subprocess
 
 
+def _glob(pattern: str) -> list[str]:
+    import glob as _g
+
+    return _g.glob(pattern)
+
+
 def _run(cmd: list[str], timeout: float = 10.0) -> str:
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -26,12 +32,15 @@ def detect_hardware(run=None) -> str:
     out = run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
     if out.strip():
         return out.strip().splitlines()[0].strip()
-    for cmd in (["hy_smi", "--showproductname"],):
+    for cmd in ([["hy_smi", "--showproductname"]]
+                + [["python3", p, "--showproductname"]
+                   for p in sorted(_glob("/opt/dtk-*/bin/hy_smi.py"))]):
         out = run(cmd)
         for line in out.splitlines():
             if ":" in line and ("product name" in line.lower() or "卡型号" in line
-                                or "series" in line.lower()):
-                return line.split(":", 1)[1].strip()
+                                or "series" in line.lower() or "card model" in line.lower()):
+                # 行内可能有多个冒号（如 "HCU[0]\t: Card model:\tK500SM_AI"）取最后一段
+                return line.rsplit(":", 1)[1].strip()
         if out.strip():
             first = out.strip().splitlines()[0].strip()
             if first:
