@@ -98,6 +98,14 @@ def aggregate(
                 cell = cells[(arm, bucket, kind)]
                 for key in ("tp", "fp", "fn"):
                     cell[key] += score[key]
+        # 无 GT 的 (page, kind) 上的预测全是 FP（GT 说没有，臂却框了）
+        covered = set(by_page_kind)
+        for (page_id, arm, kind), preds in pred_rows.items():
+            if (page_id, kind) in covered:
+                continue
+            buckets = page_buckets.get(page_id) or ["(all)"]
+            for bucket in list(buckets) + ["(all)"]:
+                cells[(arm, bucket, kind)]["fp"] += len(preds)
     arm_latency = {
         arm: round(
             sum(t for (a, _), t in page_time.items() if a == arm)
@@ -133,19 +141,27 @@ def render_markdown(
     lines.append("")
     buckets = sorted({b for (_, b, _) in cells})
     kinds = list(spec.KINDS)
+    # 分桶 FP 只展示（判读一律用全局 FP/页，见 spec.is_fp_excessive）
+    bucket_pages: dict[str, int] = {}
+    for page_id, blist in page_buckets.items():
+        for b in blist:
+            bucket_pages[b] = bucket_pages.get(b, 0) + 1
     for kind in kinds:
         lines.append(f"### kind = {kind}")
         lines.append("")
-        lines.append("| 桶 | " + " | ".join(f"{arm} 召回 / 误报率" for arm in arms) + " |")
+        lines.append("| 桶 | " + " | ".join(f"{arm} 召回 / 误报率 / FP/页" for arm in arms) + " |")
         lines.append("|---|" + "---|" * len(arms))
         for bucket in buckets:
             row = [bucket]
+            b_pages = bucket_pages.get(bucket, 0)
             for arm in arms:
                 cell = cells.get((arm, bucket, kind), {"tp": 0, "fp": 0, "fn": 0})
                 tp, fp, fn = cell["tp"], cell["fp"], cell["fn"]
                 recall = _pct(tp, tp + fn)
                 fp_rate = _pct(fp, tp + fp)
-                row.append(f"{recall} / {fp_rate} (TP={tp},FP={fp},FN={fn})")
+                fp_pp = spec.fp_per_page(fp, b_pages) if bucket != "(all)" else None
+                fp_txt = f"{fp_pp:.2f}" if fp_pp is not None else "-"
+                row.append(f"{recall} / {fp_rate} / {fp_txt} (TP={tp},FP={fp},FN={fn})")
             lines.append("| " + " | ".join(row) + " |")
         lines.append("")
 
@@ -193,14 +209,26 @@ def render_markdown(
                         f"**桶塌方** {kind}/{bucket}：召回 {b_recall:.1f}% 比整体 "
                         f"{overall_recall:.1f}% 低 ≥{spec.COLLAPSE_DROP_PP:.0f}pp"
                     )
-            if spec.is_fp_excessive(all_cell["tp"], all_cell["fp"]):
-                notes.append(
-                    f"**误报上界** {kind}：FP={all_cell['fp']} vs TP={all_cell['tp']}"
-                    f"（cap {spec.FALSE_POS_RATIO_CAP}）"
-                )
+            # 误报上界：候选臂 FP/页 vs LA 基线 FP/页（LA 自身不判）
+            if arm != "la" and "la" in m:
+                la_cell = cells.get(("la", "(all)", kind), {"tp": 0, "fp": 0, "fn": 0})
+                if spec.is_fp_excessive(
+                    all_cell["fp"], stats.get("pages", 0),
+                    la_cell["fp"], m["la"].get("pages", 0),
+                ):
+                    cap = spec.fp_cap_per_page(la_cell["fp"], m["la"].get("pages", 0))
+                    notes.append(
+                        f"**误报上界** {kind}：FP/页 "
+                        f"{spec.fp_per_page(all_cell['fp'], stats.get('pages', 0)):.2f}"
+                        f" > 上界 {cap:.2f}"
+                        f"（LA 基线 {spec.fp_per_page(la_cell['fp'], m['la'].get('pages', 0)):.2f}）"
+                    )
         lines.append(f"- **{arm}**：" + ("；".join(notes) if notes else "通过全部预注册阈值"))
     lines.append("")
-    lines.append("> 阈值：塌方 ≥15pp、FP/TP > 2.0、失败页 > 10% 判臂无效（eval/benchmarks/t3/spec.py 预注册）。")
+    lines.append(
+        "> 阈值：塌方 ≥15pp、候选臂误报/页 ≤ 2×LA 误报/页（LA 基线为 0 时绝对上限 0.5/页）、"
+        "失败页 > 10% 判臂无效（eval/benchmarks/t3/spec.py 预注册）。"
+    )
     lines.append("")
     return "\n".join(lines)
 

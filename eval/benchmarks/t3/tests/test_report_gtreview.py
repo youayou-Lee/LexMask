@@ -87,9 +87,37 @@ class TestRender:
         assert "sig_hard" in md and "seal_clean" in md
         # seal_hard 召回 0% vs (all) 50% → 差 50pp ≥15 → 塌方判读出现
         assert "桶塌方" in md and "seal_hard" in md
-        # FP=1, TP=1 → ratio 1.0 ≤ 2.0 不触发
+        # 只有 la：LA 是基线自身，误报上界判读跳过
         assert "误报上界" not in md
+        # 分桶 FP 只展示：seal_clean 桶行有 FP/页 列
+        assert "FP/页" in md
         assert "每臂接入成本" in md and "**la**" in md
+
+    def test_fp_verdict_against_la_baseline(self, synthetic):
+        """候选臂 FP/页 > 2 × LA FP/页 → 判读触发；≤ 上界不触发。"""
+        gt, details, metrics, manifest = synthetic
+        # la: FP=1/3 页 = 0.333/页 → 上界 0.667；sigdet 给 3 FP/3 页 = 1.0 → 破
+        sigdet_details = [
+            row("v#p1", "sigdet", "seal", 900, 900, 30, 30),
+            row("v#p2", "sigdet", "seal", 900, 900, 30, 30),
+            row("v#p3", "sigdet", "seal", 900, 900, 30, 30),
+        ]
+        metrics = {
+            "metrics": {
+                "la": metrics["metrics"]["la"],
+                "sigdet": {**metrics["metrics"]["la"], "pages": 3},
+            }
+        }
+        buckets = {m["page_id"]: m["buckets"] for m in manifest}
+        cells, _ = report_t3.aggregate(sigdet_details + details, gt, buckets)
+        md = report_t3.render_markdown(cells, {"la": 1.0, "sigdet": 1.0}, metrics, buckets, None)
+        assert "**误报上界** seal" in md and "sigdet" in md
+
+        # sigdet 降到 1 FP/3 页 ≈ 0.333 ≤ 上界 0.667 → 不触发
+        sigdet_details2 = sigdet_details[:1]
+        cells2, _ = report_t3.aggregate(sigdet_details2 + details, gt, buckets)
+        md2 = report_t3.render_markdown(cells2, {"la": 1.0, "sigdet": 1.0}, metrics, buckets, None)
+        assert "**误报上界**" not in md2
 
     def test_end_to_end_cli(self, synthetic, tmp_path):
         gt, details, metrics, manifest = synthetic
@@ -132,6 +160,21 @@ class TestGtReview:
         html_text = out.read_text(encoding="utf-8")
         assert "v#p1" in html_text and '"seal"' in html_text
         assert "exportGt" in html_text
+
+    def test_build_html_src_relative_to_out(self, tmp_path):
+        """Important2：HTML 落 pages 目录外时 src 必须是相对 out 的路径（不 404）。"""
+        from PIL import Image
+
+        pages = tmp_path / "pages"
+        pages.mkdir()
+        Image.new("RGB", (100, 80), "white").save(pages / "v#p1.png")
+        out = tmp_path / "review" / "gt_review.html"
+        out.parent.mkdir()
+        html_text = gt_review.build_html(str(pages), {}, out_path=str(out))
+        assert '"src": "../pages/v#p1.png"' in html_text
+        # 不传 out_path（向后兼容）：src 相对 pages 目录本身
+        html2 = gt_review.build_html(str(pages), {})
+        assert '"src": "v#p1.png"' in html2
 
     def test_prefill_arm_filter_skips_failed(self, tmp_path):
         rows = [

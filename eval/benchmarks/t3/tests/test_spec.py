@@ -190,11 +190,30 @@ class TestJudgments:
         assert spec.is_bucket_collapsed(50.0, 64.9) is False
         assert spec.is_bucket_collapsed(80.0, 65.0) is False  # 反向不算塌方
 
-    def test_fp_cap(self):
-        assert spec.is_fp_excessive(10, 20) is False  # 恰 2.0 不算突破
-        assert spec.is_fp_excessive(10, 21) is True
-        assert spec.is_fp_excessive(0, 1) is True
-        assert spec.is_fp_excessive(0, 0) is False
+    def test_fp_cap_vs_la_baseline(self):
+        """口径：候选臂误报/页 > 2 × LA 误报/页 → 突破；恰等不算。"""
+        # LA 5 FP/20 页 = 0.25/页 → 上界 0.5/页；候选 9/20=0.45 过，11/20=0.55 破
+        assert spec.is_fp_excessive(9, 20, 5, 20) is False
+        assert spec.is_fp_excessive(11, 20, 5, 20) is True
+        # 与 LA 同误报率 → 恰 2×，不算突破
+        assert spec.is_fp_excessive(4, 20, 2, 20) is False
+        # candidate_pages=0 → FP/页按 0 计
+        assert spec.is_fp_excessive(0, 0, 5, 20) is False
+
+    def test_fp_cap_la_zero_baseline_absolute_cap(self):
+        """LA 误报/页=0 → 绝对上限 0.5/页（≤0.5 判过，>0.5 破）。"""
+        assert spec.fp_cap_per_page(0, 20) == spec.FP_ABSOLUTE_CAP_PER_PAGE
+        assert spec.is_fp_excessive(1, 20, 0, 20) is False  # 0.05 ≤ 0.5
+        assert spec.is_fp_excessive(10, 20, 0, 20) is False  # 0.5 恰等上限 → 判过
+        assert spec.is_fp_excessive(11, 20, 0, 20) is True  # 0.55 > 0.5
+        assert spec.is_fp_excessive(9, 20, 0, 20) is False
+        # LA 页数 0 → 基线按 0 → 绝对上限；0.5/4=0.5 恰等 → 判过
+        assert spec.is_fp_excessive(2, 4, 0, 0) is False
+        assert spec.is_fp_excessive(3, 4, 0, 0) is True
+
+    def test_fp_per_page(self):
+        assert spec.fp_per_page(6, 3) == 2.0
+        assert spec.fp_per_page(6, 0) == 0.0
 
     def test_arm_invalid_at_10pct(self):
         assert spec.is_arm_invalid(11, 100) is True

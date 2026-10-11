@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -189,8 +190,11 @@ render();
 """
 
 
-def build_html(pages_dir: str, prefill: dict[str, list[dict]]) -> str:
+def build_html(pages_dir: str, prefill: dict[str, list[dict]], out_path: str | None = None) -> str:
+    """生成标注核对 HTML；图片 src 用页图相对 out 文件的相对路径
+    （HTML 通常落在 pages 目录之外，用文件名会导致图片 404）。"""
     data = []
+    base_dir = Path(out_path).resolve().parent if out_path else Path(pages_dir).resolve()
     for path in page_images(pages_dir):
         from PIL import Image
 
@@ -198,8 +202,9 @@ def build_html(pages_dir: str, prefill: dict[str, list[dict]]) -> str:
             w, h = im.size
         stem = path.stem  # 约定页图文件名 = page_id
         boxes = prefill.get(stem, [])
+        src = os.path.relpath(path.resolve(), base_dir)
         data.append(
-            {"page_id": stem, "src": path.name, "w": w, "h": h, "boxes": boxes}
+            {"page_id": stem, "src": src, "w": w, "h": h, "boxes": boxes}
         )
     return _HTML_TEMPLATE.replace("__PAGES_DATA__", json.dumps(data, ensure_ascii=False))
 
@@ -207,7 +212,7 @@ def build_html(pages_dir: str, prefill: dict[str, list[dict]]) -> str:
 def cmd_build(args: argparse.Namespace) -> int:
     prefill = collect_prefill(args.prefill, args.prefill_arm) if args.prefill else {}
     out = Path(args.out)
-    out.write_text(build_html(args.pages_dir, prefill), encoding="utf-8")
+    out.write_text(build_html(args.pages_dir, prefill, out_path=str(out)), encoding="utf-8")
     print(f"[ok] {out}（浏览器打开，核对后点「导出 gt.jsonl」）")
     return 0
 

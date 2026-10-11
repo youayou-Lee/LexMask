@@ -23,7 +23,10 @@
 ## 预注册阈值（写代码前先定，防事后挑阈值）
 
 - COLLAPSE_DROP_PP = 15：某桶召回比该臂整体召回低 ≥15 个百分点 → 桶塌方。
-- FALSE_POS_RATIO_CAP = 2.0：FP/TP > 2.0 → 误报上界突破（TP=0 且 FP>0 也算）。
+- FALSE_POS_RATIO_CAP = 2.0：**候选臂误报/页 ≤ 2 × LA 臂误报/页**（与 LA
+  基线臂逐页对比、按页均 FP）；LA 误报/页 = 0 时退化为绝对上限
+  FP_ABSOLUTE_CAP_PER_PAGE = 0.5/页（0.5 × 0 = 0 过严，等价放宽一句：候选臂
+  误报/页 ≤ 0.5 判过）。突破 → 误报上界。
 - ARM_FAIL_PAGE_RATIO = 0.10：失败页占比 > 10% → 该臂无效。
 - 匹配：IoU ≥ 0.5 贪心（预测按 confidence 降序，GT 一经命中即占用）。
 """
@@ -42,6 +45,8 @@ KINDS = ("seal", "signature")
 
 COLLAPSE_DROP_PP = 15.0
 FALSE_POS_RATIO_CAP = 2.0
+# LA 基线误报/页 = 0 时的绝对上限（见 docstring 预注册段）
+FP_ABSOLUTE_CAP_PER_PAGE = 0.5
 ARM_FAIL_PAGE_RATIO = 0.10
 IOU_MATCH_THRESHOLD = 0.5
 
@@ -187,11 +192,27 @@ def is_bucket_collapsed(bucket_recall_pct: float, arm_overall_recall_pct: float)
     return (arm_overall_recall_pct - bucket_recall_pct) >= COLLAPSE_DROP_PP
 
 
-def is_fp_excessive(tp: int, fp: int) -> bool:
-    """误报上界：FP/TP > FALSE_POS_RATIO_CAP（TP=0 时任何 FP 都算突破）。"""
-    if tp <= 0:
-        return fp > 0
-    return fp / tp > FALSE_POS_RATIO_CAP
+def fp_per_page(fp: int, pages: int) -> float:
+    """按页均 FP；pages=0（没跑成任何页）返回 0.0（臂无效判定另有兜底）。"""
+    return fp / pages if pages > 0 else 0.0
+
+
+def fp_cap_per_page(la_fp: int, la_pages: int) -> float:
+    """候选臂的误报上界（每页）：2 × LA 误报/页；LA 基线为 0 时绝对上限 0.5。"""
+    la_rate = fp_per_page(la_fp, la_pages)
+    return FALSE_POS_RATIO_CAP * la_rate if la_rate > 0 else FP_ABSOLUTE_CAP_PER_PAGE
+
+
+def is_fp_excessive(
+    candidate_fp: int, candidate_pages: int, la_fp: int, la_pages: int
+) -> bool:
+    """误报上界：候选臂误报/页 > 上界（= 2 × LA 臂误报/页）。
+
+    LA 误报/页 = 0 时上界退化为绝对上限 FP_ABSOLUTE_CAP_PER_PAGE = 0.5/页
+    （见 docstring 预注册段）。candidate_pages=0 → 误报/页按 0 计（页缺失由
+    is_arm_invalid 兜底）。
+    """
+    return fp_per_page(candidate_fp, candidate_pages) > fp_cap_per_page(la_fp, la_pages)
 
 
 def is_arm_invalid(failed_pages: int, total_pages: int) -> bool:
