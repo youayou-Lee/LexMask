@@ -77,7 +77,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     ap = argparse.ArgumentParser(prog="eval_ng", description="eval-ng 统一评测引擎")
     sub = ap.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="执行一次评测（四元组）")
-    run.add_argument("exam", help="考卷 JSON 路径（或 manifest v2 路径）")
+    run.add_argument("exam", help="考卷 JSON 路径（manifest v2 接线为后续迭代）")
     run.add_argument("--exam-id", default=None)
     run.add_argument("--participant", required=True,
                      help="mock | has | glm-gen4 | backend-pipeline")
@@ -132,13 +132,17 @@ async def _run(args: argparse.Namespace) -> int:
                     stack_versions=stack,
                     topology=args.topology or "unspecified")
 
+    raw_doc = json.loads(Path(args.exam).read_text(encoding="utf-8"))
     exam = load_exam_json(Path(args.exam), args.exam_id)
     # 按桶（exam_id）分组：多桶考卷逐桶出分（用户意见①：一次跑多桶）
     groups: dict[str, list[ExamItem]] = {}
     for it in exam:
         groups.setdefault(it.exam_id, []).append(it)
 
-    bucket_meta = json.loads(Path(args.exam).read_text(encoding="utf-8")).get("buckets") or {}
+    if not groups:
+        print("考卷无任何条目", file=sys.stderr)
+        return 2
+    bucket_meta = raw_doc.get("buckets") or {}
 
     results = {}
     for gexam_id, gitems in groups.items():
@@ -224,6 +228,7 @@ async def _run_single(args: argparse.Namespace, exam: list[ExamItem], exam_id: s
     if args.baseline:
         base_doc = json.loads(Path(args.baseline).read_text(encoding="utf-8"))
         gate_env["baseline_metrics"] = base_doc
+        gate_env["env_label"] = args.env_label
 
     group = MetricGroup(name="default", gates=gate_names, runs=args.runs)
     try:

@@ -82,9 +82,9 @@ def gate(answer: Answer, item: ExamItem, env: dict) -> GateResult:
     details: dict = {
         "checked_originals": len(rows),
         "findings": findings,
-        "rescan": None,
+        "rescan_plan": None,
     }
     # 步骤②成品复扫：需要 api 句柄（非 --ci、真服务环境）才跑
     if env.get("api_handles"):
-        details["rescan"] = {"skipped": "复扫在实例验收阶段由背靠背脚本调用 run_rescan 语义执行"}
+        details["rescan_plan"] = {"not_implemented": True, "skipped": "复扫在实例验收阶段由背靠背脚本调用 run_rescan 语义执行"}
     return GateResult("leak_free", passed, details)

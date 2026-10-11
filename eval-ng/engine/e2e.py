@@ -223,17 +223,18 @@ def run_e2e_file(api: E2eApi, spec: dict, warmup_pages: int = 1) -> dict:
 
     if spec["carrier"] == "encrypted_pdf":
         started = time.perf_counter()
+        import httpx as _httpx
+
         try:
             file_id = api.upload(file_path)
-        except Exception as exc:  # noqa: BLE001 — 明确报错拒绝=通过
-            detail = getattr(exc, "response", None)
-            code = detail.status_code if detail is not None else type(exc).__name__
+        except _httpx.HTTPStatusError as exc:  # 只认明确 4xx/5xx 拒绝（评审 I3：
+            # 网络超时/连接错误不得误判为"正确拒绝"——宽度与旧 run_eval 对齐）
+            detail = exc.response
             return {"file": {"id": spec["id"], "carrier": spec["carrier"],
                              "doc_type": spec.get("doc_type"), "density": spec.get("density"),
                              "gt_entities": 0},
                     "robustness": {"outcome": "rejected",
-                                   "detail": f"{code if not isinstance(code, int) else f'HTTP {code}'}"
-                                             f"（{str(detail.text)[:80] if detail is not None else exc}）",
+                                   "detail": f"HTTP {detail.status_code}（{detail.text[:80]}）",
                                    "wall_s": round(time.perf_counter() - started, 3)},
                     "perf": None}
         try:

@@ -14,10 +14,9 @@ class MockParticipant:
     supports = None
 
     def __init__(self, entities_by_item: dict[str, dict] | None = None,
-                 latency_sec: float = 0.01, reject_all: bool = True):
+                 latency_sec: float = 0.01):
         self.entities_by_item = entities_by_item or {}
         self.latency_sec = latency_sec
-        self.reject_all = reject_all
 
     async def probe(self, item: ExamItem) -> Answer:
         if item.form is AnswerForm.ROBUSTNESS:

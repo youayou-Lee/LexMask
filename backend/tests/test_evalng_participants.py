@@ -102,17 +102,18 @@ class _ApiMock:
         if path.endswith("/auth/login"):
             return httpx.Response(200, json={"access_token": "tok"})
         if path.endswith("/files/upload"):
-            return httpx.Response(200, json={"id": "f1"})
+            return httpx.Response(200, json={"file_id": "f1"})  # 生产契约：FileUploadResponse.file_id
         if "/vision" in path:
+            # 生产契约：query params + bounding_boxes[].text（type 为英文 ID）
+            assert request.url.params.get("force") == "true"
             return httpx.Response(
                 self.vision_status,
-                json={"bounding_boxes": [{"type": "姓名", "original_text": "张三"}]},
+                json={"bounding_boxes": [{"type": "PERSON", "text": "张三"}]},
             )
         if path.endswith("/parse"):
             return httpx.Response(200, json={"pages": []})
         if path.endswith("/ner/hybrid"):
-            body = {"status": self.ner_status}
-            return httpx.Response(200, json=body)
+            return httpx.Response(200, json={"recognition_failed": self.ner_status == "recognition_failed"})
         if path.startswith("/api/v1/files/") and request.method == "DELETE":
             return httpx.Response(200, json={"ok": True})
         return httpx.Response(404, json={})
@@ -149,7 +150,7 @@ def test_backend_pdf_pages_vision():
     answer = asyncio.run(p.probe(
         protocol.ExamItem(id="f1", exam_id="ex", form=AnswerForm.ENTITY_TABLE,
                           payload={"path": path, "pages": 2, "carrier": "pdf"})))
-    assert answer.entities == {"姓名": ["张三", "张三"]}  # 2 页聚合
+    assert answer.entities == {"姓名": ["张三", "张三"]}  # 2 页聚合（PERSON_NAME→姓名 归一）
     vision_calls = [1 for m, path in mock.calls if "/vision" in path]
     assert len(vision_calls) == 2
 

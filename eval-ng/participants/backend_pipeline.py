@@ -1,15 +1,20 @@
 """backend 生产管线参赛者：HTTP 调用生产 API，不改 backend。
 
-语义对齐旧 eval/scripts/common_api.py + run_eval.py e2e 层（旧文件冻结只读）：
-- pdf：逐页 vision（force=True）→ 每页一个 Answer（ENTITY_TABLE / PERF_ONLY）
-- docx/txt：parse + hybrid NER → 单个 Answer（ARTIFACT_FILE，产出成品路径由调用方给）
-- encrypted_pdf：期望拒绝 → ROBUSTNESS 形态
+契约对齐（评审 C1 修复，以真机验证过的 E2eApi/旧 common_api 为基准）：
+- upload 响应键 = file_id（backend/app/models/file_schemas.py FileUploadResponse）；
+- vision 走 query params（page/force/include_result_image），bounding_boxes 字段 = text；
+- ner/hybrid 顶层布尔 recognition_failed；
+- 类型 ID 归一中文名（TYPE_ID_TO_NAME，与 e2e 层同源）。
+
+注意：docx/txt 的 ARTIFACT_FILE 答案只回耗时（成品文件回传未实现）——
+artifact_path 恒 None，零泄漏闸会以"缺成品"显式 FAIL，绝不拿原文档冒充成品。
 """
 
 from __future__ import annotations
 
 import httpx
 
+from ..engine.e2e import TYPE_ID_TO_NAME
 from ..engine.protocol import Answer, AnswerForm, ExamItem
 
 
@@ -49,10 +54,11 @@ class BackendPipelineParticipant:
     async def _upload(self, path: str) -> str:
         await self._ensure_login()
         with open(path, "rb") as fh:
-            resp = await self._client.post(f"{self.base_url}/api/v1/files/upload",
-                                           files={"file": (path.rsplit("/", 1)[-1], fh)})
+            resp = await self._client.post(
+                f"{self.base_url}/api/v1/files/upload",
+                files={"file": (path.rsplit("/", 1)[-1], fh, "application/octet-stream")})
         resp.raise_for_status()
-        return resp.json()["id"]
+        return resp.json()["file_id"]
 
     async def _delete(self, file_id: str):
         try:
@@ -78,15 +84,18 @@ class BackendPipelineParticipant:
             try:
                 parse = await self._client.get(f"{self.base_url}/api/v1/files/{file_id}/parse")
                 parse.raise_for_status()
-                ner = await self._client.post(f"{self.base_url}/api/v1/files/{file_id}/ner/hybrid")
+                ner = await self._client.post(f"{self.base_url}/api/v1/files/{file_id}/ner/hybrid",
+                                              json={})
                 ner.raise_for_status()
-                if ner.json().get("status") == "recognition_failed":
+                if ner.json().get("recognition_failed"):
                     raise RuntimeError("recognition_failed")
             finally:
                 await self._delete(file_id)
             latency = time.perf_counter() - started
             return Answer(form=AnswerForm.ARTIFACT_FILE,
-                          artifact_path=path, latency_sec=latency)
+                          artifact_path=None,  # 成品回传未实现——leak 闸须显式 FAIL
+                          latency_sec=latency,
+                          warnings=["artifact_path=None（成品文件回传未实现，零泄漏闸不适用）"])
         except Exception as exc:  # noqa: BLE001
             return Answer(form=item.form, latency_sec=0.0, warnings=[f"error: {exc}"])
 
@@ -94,14 +103,15 @@ class BackendPipelineParticipant:
         """上传后首个请求 4xx/5xx = 拒绝。"""
         file_id = await self._upload(path)
         try:
-            resp = await self._client.post(f"{self.base_url}/api/v1/redaction/{file_id}/vision",
-                                           json={"page": 1, "force": True})
+            resp = await self._client.post(
+                f"{self.base_url}/api/v1/redaction/{file_id}/vision",
+                params={"page": 1, "force": "true", "include_result_image": "false"})
             return resp.status_code >= 400
         finally:
             await self._delete(file_id)
 
     async def _probe_pdf(self, path: str, item: ExamItem) -> Answer:
-        """逐页 vision；单文件一个 Answer，实体聚合+逐页耗时在 pages 内。"""
+        """逐页 vision；单文件一个 Answer，实体聚合+逐页耗时。类型 ID 归一中文名。"""
         import time
 
         total_pages = int(item.payload.get("pages") or 0) or 1
@@ -113,14 +123,14 @@ class BackendPipelineParticipant:
                 started = time.perf_counter()
                 resp = await self._client.post(
                     f"{self.base_url}/api/v1/redaction/{file_id}/vision",
-                    json={"page": page, "force": True})
+                    params={"page": page, "force": "true", "include_result_image": "false"})
                 resp.raise_for_status()
                 walls.append(time.perf_counter() - started)
                 for box in resp.json().get("bounding_boxes", []):
-                    value = box.get("original_text") or ""
-                    etype = box.get("type") or ""
-                    if value and etype:
-                        entities.setdefault(etype, []).append(value)
+                    value = str(box.get("text") or "").strip()
+                    type_id = str(box.get("type") or "")
+                    if value and type_id:
+                        entities.setdefault(TYPE_ID_TO_NAME.get(type_id, type_id), []).append(value)
         finally:
             await self._delete(file_id)
         return Answer(form=AnswerForm.ENTITY_TABLE, entities=entities,

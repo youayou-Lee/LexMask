@@ -114,7 +114,8 @@ def load_manifest_v2(
         payload: dict = {"path": str(resolved)}
         if form is AnswerForm.ENTITY_TABLE:
             # 考卷文本由数据文件提供（jsonl/json 单条 entry），此处仅记录路径；
-            # types 由 runner 从 gt 派生（gt=None 时由 runner 填全类型清单）。
+            # types 派生由 make_exam_from_t2 在生成考卷时完成（manifest v2 直连 runner
+            # 的接线为后续迭代，见 Issue#93）。
             payload["source_path"] = str(resolved)
         if entry.get("sidecars"):
             payload["sidecars"] = entry["sidecars"]

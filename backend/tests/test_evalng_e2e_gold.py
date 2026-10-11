@@ -211,3 +211,40 @@ def test_gold_e2e_level_parity(tmp_path):
     assert oo["digital"] == no["digital"]
     assert oo["digital_gate"] == no["digital_gate"]
     assert oo["loose"] == no["loose"]
+
+
+def test_encrypted_upload_network_error_not_rejection(tmp_path):
+    """评审 I3：网络故障 ≠ 正确拒绝——ConnectError 不得归类为 outcome=rejected。"""
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/files/upload"):
+            raise httpx.ConnectError("network down")
+        return httpx.Response(404, json={})
+
+    old = _load_old()
+    enc = tmp_path / "enc.pdf"
+    enc.write_bytes(b"enc")
+    spec = {"id": "enc2", "path": str(enc), "carrier": "encrypted_pdf",
+            "doc_type": "x", "density": "mid", "pages": 1, "gt_pages": []}
+    def _mk_api(cls):
+        api = cls.__new__(cls)
+        api.client = httpx.Client(base_url="http://mock", trust_env=False,
+                                  transport=httpx.MockTransport(handler))
+        api.client.headers["Authorization"] = "Bearer tok"
+        return api
+
+    api_old = _mk_api(old.common_api.EvalApi)
+    api_new = _mk_api(e2e.E2eApi)
+    try:
+        old.run_e2e_file(api_old, dict(spec), _args())
+        raised_old = None
+    except Exception as exc:  # noqa: BLE001
+        raised_old = type(exc).__name__
+    try:
+        e2e.run_e2e_file(api_new, spec, warmup_pages=1)
+        raised_new = None
+    except Exception as exc:  # noqa: BLE001
+        raised_new = type(exc).__name__
+    # 两线一致：网络错误都向上抛（进失败隔离），绝不算 robustness 通过
+    assert raised_old is not None and raised_new == raised_old, (raised_old, raised_new)

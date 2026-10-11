@@ -46,7 +46,7 @@ def test_cli_full_pass(tmp_path):
     files = list(out.glob("*.md")) + list(out.glob("*.json"))
     assert len(files) == 2
     md = next(out.glob("*.md")).read_text(encoding="utf-8")
-    assert "runs" in md and "K" or "cpu" in md
+    assert "runs" in md and "cpu" in md  # 环境硬件标注必须出现
 
 
 def test_cli_missing_labels_exit2(tmp_path):
@@ -132,3 +132,16 @@ def test_cli_hardware_autodetect(tmp_path, monkeypatch, capsys):
     fake3 = env_detect.detect_hardware(
         run=lambda cmd: "NVIDIA GeForce RTX 5090\n" if cmd[0] == "nvidia-smi" else "")
     assert fake3 == "NVIDIA GeForce RTX 5090"
+
+
+def test_baseline_gate_reachable_via_cli(tmp_path):
+    """评审 C2 回归：--baseline 全链路可达（runner 注入 candidate_metrics）。"""
+    exam = _write_exam(tmp_path)  # mock 回放 gt → 全对
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps(
+        {"overall": {"f1": 0.0, "precision": 0.0, "recall": 0.0}, "digital": {}}),
+        encoding="utf-8")
+    out = tmp_path / "reports"
+    rc = cli.main(_base_args(exam, out, extra=[
+        "--runs", "1", "--baseline", str(baseline)]))
+    assert rc == 0  # 候选全对 vs 零基线 → 三闸门全过（此前该路径恒 FAIL）

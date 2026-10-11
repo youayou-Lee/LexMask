@@ -131,6 +131,9 @@ async def run_exam(
                 if item.form is AnswerForm.ARTIFACT_FILE:
                     gate_results.append(gmod.gate(answer, item, gate_env))
         elif gname == "baseline_gate":
+            # 候选成绩注入（评审 C2）：闸门与 CLI 全链路可达
+            gate_env.setdefault("candidate_metrics",
+                                per_run_metrics[-1] if per_run_metrics else None)
             gate_results.append(gmod.gate(None, None, gate_env))
         else:
             raise ValueError(f"未知闸门 {gname!r}")
@@ -155,7 +158,6 @@ async def run_exam(
 async def _probe_all_concurrent(participant, exam: list[ExamItem], concurrency: int,
                                 run_idx: int, runs: int) -> list[tuple[ExamItem, Answer]]:
     """并发 probe（信号量限流）；完成一题打一行进度（乱序完成，标并发字样）。"""
-    import asyncio
 
     sem = asyncio.Semaphore(concurrency)
     n_items = len(exam)
