@@ -1,9 +1,21 @@
-"""eval-ng 唯一 CLI 入口：python -m eval_ng run <考卷> --participant <名> [--ci]。
+"""eval-ng 唯一 CLI 入口：python eval-ng/cli.py run <考卷> --participant <名> [--ci]。
 
 exit code：0 全过；1 闸门 FAIL；2 用法/环境标注错误。
+（目录名 eval-ng 带连字符，无法 python -m eval_ng；脚本直跑时自举注册包名 evalng。）
 """
 
 from __future__ import annotations
+
+if __package__ in (None, ""):  # 脚本直跑：注册包上下文使相对 import 生效
+    import sys
+    import types
+    from pathlib import Path as _Path
+
+    _pkg_dir = _Path(__file__).resolve().parent
+    _pkg = types.ModuleType("evalng")
+    _pkg.__path__ = [str(_pkg_dir)]
+    sys.modules["evalng"] = _pkg
+    __package__ = "evalng"
 
 import argparse
 import asyncio

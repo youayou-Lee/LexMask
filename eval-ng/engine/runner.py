@@ -28,7 +28,7 @@ class MetricGroup:
 
 
 def _gate_module(name: str):
-    return importlib.import_module(f"evalng_pkg.engine.gates.{name}")
+    return importlib.import_module(f"{__package__}.gates.{name}")
 
 
 async def run_exam(
