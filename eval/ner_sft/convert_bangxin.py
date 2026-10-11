@@ -54,6 +54,47 @@ def convert(records: list[dict]) -> tuple[list[dict], Counter]:
     return out, stats
 
 
+def convert_concat(records: list[dict], segments_per_doc: int, seed: int,
+                   joiner: str = "\n") -> tuple[list[dict], Counter]:
+    """v2（round2）：多段拼接成 400~800 字长文 + 同类型实体合并进单样本
+    （result_list 多 span，匹配考场「一个 prompt 一次抽全部」的调用方式）。"""
+    rng = random.Random(seed)
+    shuffled = list(records)
+    rng.shuffle(shuffled)
+    out, stats = [], Counter()
+    for base in range(0, len(shuffled), segments_per_doc):
+        group = shuffled[base:base + segments_per_doc]
+        if len(group) < 2:
+            continue
+        parts, spans_by_prompt = [], {}
+        offset = 0
+        for rec in group:
+            text = rec["text"]
+            parts.append(text)
+            for s, e, typ in rec["label"]:
+                if typ in DROP_TYPES:
+                    continue
+                prompts = TYPE_MAP.get(typ) or (map_org(text, s, e) if typ == "org" else None)
+                if not prompts:
+                    continue
+                span = text[s:e]
+                if not span or span not in text[s:e]:
+                    continue
+                for p in prompts:
+                    spans_by_prompt.setdefault(p, []).append(
+                        {"text": span, "start": offset + s, "end": offset + e})
+                    stats[p] += 1
+            offset += len(text) + len(joiner)
+        content = joiner.join(parts)
+        for p, spans in spans_by_prompt.items():
+            # 段落拼接口坐标必须真实可命中（换行 joiner 已计入 offset）
+            for sp in spans:
+                assert content[sp["start"]:sp["end"]] == sp["text"], \
+                    f"拼接坐标漂移: {sp['text']!r}"
+            out.append({"content": content, "prompt": p, "result_list": spans})
+    return out, stats
+
+
 def split_dev(samples: list[dict], dev_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
     """按「段落」留出 dev：同一 content 的所有样本同进同出，防 span 拆散泄漏。"""
     by_content: dict[str, list[dict]] = {}
@@ -76,11 +117,19 @@ def main() -> int:
     ap.add_argument("--out-dev", required=True, type=Path)
     ap.add_argument("--dev-ratio", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=90)
+    ap.add_argument("--concat-v2", action="store_true",
+                    help="round2：段落拼长文+同类型合并（对照 v1 单段单实体）")
+    ap.add_argument("--segments-per-doc", type=int, default=10)
     args = ap.parse_args()
 
     records = [json.loads(l) for l in args.src.read_text(encoding="utf-8").splitlines() if l.strip()]
-    samples, stats = convert(records)
-    train, dev = split_dev(samples, args.dev_ratio, args.seed)
+    if args.concat_v2:
+        samples, stats = convert_concat(records, args.segments_per_doc, args.seed)
+        # dev 按拼接文留出（每条样本 content 唯一，按 content 哈希分组即可）
+        train, dev = split_dev(samples, args.dev_ratio, args.seed)
+    else:
+        samples, stats = convert(records)
+        train, dev = split_dev(samples, args.dev_ratio, args.seed)
     args.out_train.parent.mkdir(parents=True, exist_ok=True)
     args.out_train.write_text("\n".join(json.dumps(s, ensure_ascii=False) for s in train) + "\n", encoding="utf-8")
     args.out_dev.write_text("\n".join(json.dumps(s, ensure_ascii=False) for s in dev) + "\n", encoding="utf-8")

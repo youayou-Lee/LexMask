@@ -174,9 +174,11 @@ def parse_engine_arg(value: str):
         return HttpEngine("has", base)
     if kind == "llm":
         return HttpEngine("llm", base, model=model)
-    if kind in ("gliner", "uie"):  # 本地抽取式引擎（Issue#90 POC）：参数=模型 checkpoint 名
+    if kind in ("gliner", "uie", "uie-dynamic"):  # 本地抽取式引擎（Issue#90 POC）：参数=模型名/路径
         import local_engines
-        cls = local_engines.GlinerEngine if kind == "gliner" else local_engines.UieEngine
+        cls = {"gliner": local_engines.GlinerEngine,
+               "uie": local_engines.UieEngine,
+               "uie-dynamic": local_engines.UieDynamicEngine}[kind]
         return local_engines.LazyEngine(cls, base)
     raise argparse.ArgumentTypeError(
         f"invalid --engine '{value}': expected has=<base> or llm=<base>[,model=<m>] "
