@@ -36,11 +36,12 @@ def detect_hardware(run=None) -> str:
                 + [["python3", p, "--showproductname"]
                    for p in sorted(_glob("/opt/dtk-*/bin/hy_smi.py"))]):
         out = run(cmd)
-        for line in out.splitlines():
-            if ":" in line and ("product name" in line.lower() or "卡型号" in line
-                                or "series" in line.lower() or "card model" in line.lower()):
-                # 行内可能有多个冒号（如 "HCU[0]\t: Card model:\tK500SM_AI"）取最后一段
-                return line.rsplit(":", 1)[1].strip()
+        lines = out.splitlines()
+        # 优先级：Card model（具体型号）> Product Name > Card series（系列名）
+        for want in ("card model", "product name", "卡型号", "series"):
+            for line in lines:
+                if ":" in line and want in line.lower():
+                    return line.rsplit(":", 1)[1].strip()
         if out.strip():
             first = out.strip().splitlines()[0].strip()
             if first:
