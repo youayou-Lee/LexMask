@@ -26,7 +26,7 @@ from eval.benchmarks.t3 import spec
 ARM_INTEGRATION_COST = {
     "la": "复用现役 LA 服务（vLLM/HF，GPU），/detect 一次双通道请求；部署面零新增。",
     "mineru_seal": "复用喂Agent MinerU sidecar（16581），一页一任务（提交+轮询+zip），延迟受 pipeline 引擎主导。",
-    "paddlex_seal": "本地 paddlex seal_detection pipeline，需独立装 paddlex（云端 DCU 适配待 T4）。",
+    "paddlex_seal": "本地 paddlex seal_recognition 产线（PaddleX 3.7.2，T4 已实测页像素坐标），pipeline 实例按名缓存避免 35-40s 冷启动逐页重付。",
     "sigdet": "独立 conditional-detr 小模型常驻（28150），CPU/GPU 皆可，~ms 级。",
 }
 

@@ -9,7 +9,7 @@
 |---|---|---|---|
 | `la` | LA `/detect`（`T3_LA_URL`，默认 127.0.0.1:8090） | raw_answer 0-1000 → 页像素（回退：0-1 归一化结构化框） | seal+signature |
 | `mineru_seal` | MinerU sidecar（`T3_MINERU_URL`，默认 16581）一页一任务 | content_list seal 块 bbox 按页像素假定（**TODO(T2.1) 云端对拍后定死**） | seal |
-| `paddlex_seal` | 本地 paddlex `seal_detection`（`T3_PADDLEX_PIPELINE`） | 页像素 | seal |
+| `paddlex_seal` | 本地 paddlex `seal_recognition` 产线（`T3_PADDLEX_PIPELINE`，实例按名缓存） | 页像素（T4 实证零换算） | seal |
 | `sigdet` | sigdet `/detect`（`T3_SIGDET_URL`，默认 28150） | 0-1 归一化 → 页像素 | signature |
 
 统一接口 `run_arm(arm, image_path) -> list[PredBox]`（adapters.py）；页像素、

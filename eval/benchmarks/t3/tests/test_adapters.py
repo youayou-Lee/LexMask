@@ -219,6 +219,96 @@ def test_paddlex_missing_raises_clear(page_image, monkeypatch):
         adapters.run_paddlex_seal(page_image)
 
 
+class _FakePipeline:
+    """seal_recognition 产线 fake：predict 回放 T4 实测 schema（task-t4-report.md）。"""
+
+    def __init__(self, results):
+        self.results = results
+        self.calls = []
+
+    def predict(self, image_path):
+        self.calls.append(image_path)
+        return self.results
+
+
+def _install_fake_paddlex(monkeypatch, pipeline):
+    """注入 fake paddlex 模块，统计 create_pipeline 调用次数。"""
+    import sys
+    import types
+
+    counts = {"create": 0}
+
+    def fake_create_pipeline(name):
+        counts["create"] += 1
+        counts.setdefault("names", []).append(name)
+        return pipeline
+
+    mod = types.ModuleType("paddlex")
+    mod.create_pipeline = fake_create_pipeline
+    monkeypatch.setitem(sys.modules, "paddlex", mod)
+    adapters._PIPELINE_CACHE.clear()
+    return counts
+
+
+@pytest.fixture(autouse=True)
+def _clean_pipeline_cache():
+    """模块级 pipeline 缓存跨测试持久，逐测清防串。"""
+    adapters._PIPELINE_CACHE.clear()
+    yield
+    adapters._PIPELINE_CACHE.clear()
+
+
+def test_paddlex_t4_schema_and_default_pipeline_name(page_image, monkeypatch):
+    """默认产线 seal_recognition；T4 实测 boxes=[{x,y,w,h,confidence}] 页像素零换算。"""
+    pipeline = _FakePipeline(
+        [
+            {
+                "width": PAGE_W,
+                "height": PAGE_H,
+                "coordinate_system": "page-pixel-top-left",
+                "boxes": [{"x": 779, "y": 859, "w": 278, "h": 280, "confidence": 0.959}],
+            }
+        ]
+    )
+    counts = _install_fake_paddlex(monkeypatch, pipeline)
+    monkeypatch.delenv("T3_PADDLEX_PIPELINE", raising=False)
+    preds = adapters.run_paddlex_seal(page_image)
+    assert counts["create"] == 1
+    assert counts["names"] == ["seal_recognition"]  # T4 实测官方产线名
+    assert preds == [
+        {"kind": "seal", "box": {"x": 779.0, "y": 859.0, "w": 278.0, "h": 280.0},
+         "confidence": 0.959, "raw": ""}
+    ]
+
+
+def test_paddlex_native_coordinate_form(page_image, monkeypatch):
+    """兼容 PaddleX 原生 coordinate 四元组形态（x1,y1,x2,y2 + score）。"""
+    pipeline = _FakePipeline(
+        [{"boxes": [{"coordinate": [10, 20, 110, 120], "score": 0.7}]}]
+    )
+    _install_fake_paddlex(monkeypatch, pipeline)
+    preds = adapters.run_paddlex_seal(page_image, pipeline_name="seal_recognition")
+    assert preds[0]["box"] == {"x": 10.0, "y": 20.0, "w": 100.0, "h": 100.0}
+    assert preds[0]["confidence"] == 0.7
+
+
+def test_paddlex_pipeline_cached_across_pages(page_image, monkeypatch):
+    """lazy 单例：同 pipeline 名两次调用只 create 一次（冷启动 35-40s 不逐页重付）。"""
+    pipeline = _FakePipeline([{"boxes": [{"x": 1, "y": 2, "w": 3, "h": 4, "confidence": 0.9}]}])
+    counts = _install_fake_paddlex(monkeypatch, pipeline)
+    adapters._PIPELINE_CACHE.clear()
+    try:
+        adapters.run_paddlex_seal(page_image, pipeline_name="seal_recognition")
+        adapters.run_paddlex_seal(page_image, pipeline_name="seal_recognition")
+        assert counts["create"] == 1
+        assert len(pipeline.calls) == 2  # predict 逐页执行
+        # 不同名各建各的
+        adapters.run_paddlex_seal(page_image, pipeline_name="other")
+        assert counts["create"] == 2
+    finally:
+        adapters._PIPELINE_CACHE.clear()
+
+
 # ---- sigdet -----------------------------------------------------------------
 
 

@@ -21,10 +21,12 @@
   对拍确认后定死**（MinerU 文档不保证，真实 PDF 页面像素 vs 归一化待实测）。
   块无分数 → confidence 恒 1.0（写死，非测量值）。
 
-- paddlex_seal  本地函数式封装 paddlex seal_detection pipeline（env
-  T3_PADDLEX_PIPELINE 指定 pipeline 名/配置，默认 "seal_detection"）。
-  paddlex 未安装时 raise RuntimeError（明确报错，由跑批层记 failed）。
-  T4 云端就绪前该臂预期抛错 → 上层标失败，属预期行为。
+- paddlex_seal  本地函数式封装 paddlex seal_recognition 产线（env
+  T3_PADDLEX_PIPELINE，默认 "seal_recognition"，PaddleX 3.7.2 官方产线名，
+  T4 实测）。输出 boxes=[{x,y,w,h,confidence}] 已是页像素零换算（T4 实证
+  坐标系=输入图页像素左上原点）；confidence=版面模型 PP-DocLayout-L seal
+  类分数。pipeline 实例按名 lazy 单例缓存（冷启动 35-40s/次）。paddlex
+  未安装时 raise RuntimeError（明确报错，由跑批层记 failed）。
 
 - sigdet        sigdet /detect（signature_detector_server.py, 端口 28150）。请求
   `{"image_base64":..., "threshold"?}`；响应 boxes 为 **0-1 归一化**
@@ -306,31 +308,64 @@ def json_loads(data: bytes) -> Any:
     return json.loads(data.decode("utf-8"))
 
 
-# ---- 臂 3：PaddleX seal_detection -----------------------------------------
+# ---- 臂 3：PaddleX seal_recognition ----------------------------------------
+
+# pipeline 实例按名缓存（lazy 单例）：create_pipeline 冷启动 35-40s/次
+# （T4 实测，模型加载占大头），逐页新建整批要白烧几十分钟。
+_PIPELINE_CACHE: dict[str, Any] = {}
+
+
+def _get_paddlex_pipeline(name: str):
+    from paddlex import create_pipeline
+
+    if name not in _PIPELINE_CACHE:
+        _PIPELINE_CACHE[name] = create_pipeline(name)
+    return _PIPELINE_CACHE[name]
+
+
+def _parse_paddlex_seal_output(outputs: Any) -> list[dict]:
+    """解析 seal_recognition 产线输出 → 统一契约（T4 实测 schema，页像素零换算）。
+
+    T4 实测（PaddleX 3.7.2，页像素、左上原点，见 task-t4-report.md）：
+    每个结果对象 boxes=[{x,y,w,h,confidence}]（整章页级框）。confidence 语义
+    = PP-DocLayout-L 版面模型 seal 类分数（0~1），**非** seal_det 框置信。
+    兼容 PaddleX 原生 `coordinate` 四元组形态（x1,y1,x2,y2）。
+    """
+    preds: list[dict] = []
+    for res in outputs or []:
+        for box_item in (res.get("boxes") if isinstance(res, dict) else None) or []:
+            if "coordinate" in box_item:  # 原生 layout 结果形态
+                coord = box_item["coordinate"]
+                x1, y1 = float(coord[0]), float(coord[1])
+                x2, y2 = float(coord[2]), float(coord[3])
+                w, h = max(0.0, x2 - x1), max(0.0, y2 - y1)
+                score = box_item.get("score")
+            else:  # T4 CLI 实测形态：x/y/w/h 已是页像素
+                x1, y1 = float(box_item["x"]), float(box_item["y"])
+                w, h = float(box_item["w"]), float(box_item["h"])
+                score = box_item.get("confidence")
+            if w <= 0 or h <= 0:
+                continue
+            preds.append(_pred("seal", (x1, y1, w, h), 1.0 if score is None else float(score), ""))
+    return preds
 
 
 def run_paddlex_seal(image_path: str, pipeline_name: str | None = None) -> list[dict]:
-    """本地函数式调用 paddlex seal_detection。paddlex 缺失 → 明确 RuntimeError。"""
-    name = pipeline_name or os.environ.get("T3_PADDLEX_PIPELINE", "seal_detection")
+    """本地函数式调用 paddlex seal_recognition 产线（T4 实测，勿改回裸模型直调——
+    PP-OCRv4_server_seal_det 全页直跑假阳性暴涨，必须经版面 seal 区域裁剪）。
+
+    paddlex 缺失 → 明确 RuntimeError；pipeline 实例按名缓存（冷启动 35-40s，
+    见 _PIPELINE_CACHE）。confidence = 版面模型分数（语义见 _parse_paddlex_seal_output）。
+    """
+    name = pipeline_name or os.environ.get("T3_PADDLEX_PIPELINE", "seal_recognition")
     try:
-        from paddlex import create_pipeline
+        pipeline = _get_paddlex_pipeline(name)
     except ImportError as exc:
         raise RuntimeError(
             "paddlex 未安装（pip install paddlex 后重试，或该臂按预期标 failed）"
         ) from exc
-    pipeline = create_pipeline(name)
     outputs = pipeline.predict(image_path)
-    preds: list[dict] = []
-    for res in outputs:
-        for box_item in res.get("boxes") or []:
-            x1, y1 = float(box_item["coordinate"][0]), float(box_item["coordinate"][1])
-            x2, y2 = float(box_item["coordinate"][2]), float(box_item["coordinate"][3])
-            w, h = max(0.0, x2 - x1), max(0.0, y2 - y1)
-            if w <= 0 or h <= 0:
-                continue
-            score = box_item.get("score")
-            preds.append(_pred("seal", (x1, y1, w, h), 1.0 if score is None else float(score), ""))
-    return preds
+    return _parse_paddlex_seal_output(outputs)
 
 
 # ---- 臂 4：sigdet ----------------------------------------------------------
