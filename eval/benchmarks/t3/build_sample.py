@@ -66,7 +66,7 @@ def _probe_entry_from_la_record(record: dict, probe_stem: str = "") -> dict | No
             has_signature = count > 0
             la_boxes += count
     source = str(record.get("source") or "")
-    stem = probe_stem or Path(source).stem if source else Path(str(record.get("json_path") or "")).stem
+    stem = (probe_stem or Path(source).stem) if source else Path(str(record.get("json_path") or "")).stem
     page_id, page = _page_id_from_probe_name(stem)
     page = int(record.get("page_index") or page)
     return {

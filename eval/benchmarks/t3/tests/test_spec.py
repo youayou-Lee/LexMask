@@ -108,6 +108,15 @@ class TestGreedyMatch:
         matched, up, ug = spec.greedy_match([pred(0, 0, 1, 1)], [])
         assert matched == [] and up == [0] and ug == []
 
+    def test_confidence_none_sorts_as_one(self):
+        """confidence=None（MinerU/GT 无分数）按 1.0 参与降序，压过 0.5。"""
+        g = [{"box": box(0, 0, 10, 10)}]
+        half = pred(0, 0, 10, 10, conf=0.5)
+        none_conf = {"box": box(0, 0, 10, 10), "confidence": None}
+        matched, up, ug = spec.greedy_match([half, none_conf], g)
+        assert matched == [(1, 0)]  # None(=1.0) 先挑
+        assert up == [0] and ug == []
+
     def test_no_confidence_key_defaults_high(self):
         """MinerU/GT 无分数字段也参与匹配（预测侧缺 confidence 视为 1.0）。"""
         p = [{"box": box(0, 0, 10, 10)}]

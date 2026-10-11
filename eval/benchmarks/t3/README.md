@@ -8,7 +8,7 @@
 | 臂 | 服务 | 坐标系（原始） | kind |
 |---|---|---|---|
 | `la` | LA `/detect`（`T3_LA_URL`，默认 127.0.0.1:8090） | raw_answer 0-1000 → 页像素（回退：0-1 归一化结构化框） | seal+signature |
-| `mineru_seal` | MinerU sidecar（`T3_MINERU_URL`，默认 16581）一页一任务 | content_list seal 块 bbox 按页像素假定（**TODO(T2.1) 云端对拍后定死**） | seal |
+| `mineru_seal` | MinerU sidecar（`T3_MINERU_URL`，默认 16581）一页一任务 | content_list seal 块 bbox=0-1000 归一化 ×页宽高（**云端对拍已实证，T2.1 定案**） | seal |
 | `paddlex_seal` | 本地 paddlex `seal_recognition` 产线（`T3_PADDLEX_PIPELINE`，实例按名缓存） | 页像素（T4 实证零换算） | seal |
 | `sigdet` | sigdet `/detect`（`T3_SIGDET_URL`，默认 28150） | 0-1 归一化 → 页像素 | signature |
 
@@ -30,8 +30,8 @@
 
 ## 预注册阈值（spec.py，先于出数锁定）
 
-- `COLLAPSE_DROP_PP = 15`：桶召回低于臂整体 ≥15pp → 桶塌方；
-- `FALSE_POS_RATIO_CAP = 2.0`：FP/TP > 2.0 → 误报上界突破；
+- `COLLAPSE_DROP_PP = 15`：候选臂桶召回较 **LA 同桶召回**下降 >15pp → 桶塌方（LA 为基线，自身不判）；
+- `FALSE_POS_RATIO_CAP = 2.0`：候选臂 FP/页 > 2×LA FP/页（LA=0 时绝对上限 0.5/页）→ 误报上界突破；
 - `ARM_FAIL_PAGE_RATIO = 0.10`：失败页 >10% → 臂无效；
 - 匹配：IoU ≥ 0.5 贪心（预测按 confidence 降序，GT 命中即占用）。
 

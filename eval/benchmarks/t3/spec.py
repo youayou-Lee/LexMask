@@ -161,9 +161,15 @@ def greedy_match(
     返回 (matched[(pred_idx, gt_idx)], unmatched_pred_idx, unmatched_gt_idx)。
     confidence 缺失按 1.0 处理（MinerU/GT 无分数）。
     """
+    # 排序与 docstring 口径一致：confidence 缺失(None)视同 1.0 参与降序
+    # （显式 is None 分支，避免 None 数值比较的 TypeError/歧义）
     pred_order = sorted(
         range(len(predictions)),
-        key=lambda i: -float(predictions[i].get("confidence", 1.0) or 0.0),
+        key=lambda i: -float(
+            predictions[i]["confidence"]
+            if predictions[i].get("confidence") is not None
+            else 1.0
+        ),
     )
     claimed: set[int] = set()
     matched: list[tuple[int, int]] = []
