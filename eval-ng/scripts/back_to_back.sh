@@ -58,6 +58,6 @@ done
 echo "== 汇总（P/R/F1 对照）=="
 python "${REPO}/eval-ng/scripts/compare_back_to_back.py" \
   --old "$OUT_DIR"/old-run*/[0-9]*-t2-benchmark.json \
-  --new "$OUT_DIR"/new-run*/reports/*.json \
+  --new "$OUT_DIR"/new-run*/*.json \
   --exam "$EXAM" --out "$OUT_DIR/summary.md"
 echo "完成：$OUT_DIR/summary.md"
