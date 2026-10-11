@@ -27,7 +27,7 @@ ARM_INTEGRATION_COST = {
     "la": "复用现役 LA 服务（vLLM/HF，GPU），/detect 一次双通道请求；部署面零新增。",
     "mineru_seal": "复用喂Agent MinerU sidecar（16581），一页一任务（提交+轮询+zip），延迟受 pipeline 引擎主导。",
     "paddlex_seal": "本地 paddlex seal_recognition 产线（PaddleX 3.7.2，T4 已实测页像素坐标），pipeline 实例按名缓存避免 35-40s 冷启动逐页重付。",
-    "sigdet": "独立 conditional-detr 小模型常驻（28150），CPU/GPU 皆可，~ms 级。",
+    "sigdet": "独立 conditional-detr 小模型常驻（28150），CPU/GPU 皆可；CPU 扫描页分块推理分钟级（实测单页均值见下），延迟是选型权重的一部分。",
 }
 
 
@@ -178,7 +178,10 @@ def render_markdown(
     lines.append("")
     for arm, text in ARM_INTEGRATION_COST.items():
         if arm in arms:
-            lines.append(f"- **{arm}**：{text}")
+            # 实测单页均值动态带出（metrics avg_page_elapsed_s），不写死形容词
+            avg = m[arm].get("avg_page_elapsed_s")
+            avg_txt = f"（实测单页均值 {avg * 1000:.0f} ms）" if avg is not None else ""
+            lines.append(f"- **{arm}**：{text}{avg_txt}")
     lines.append("")
 
     # ---- 自动判读（预注册阈值，spec.py） -----------------------------------
@@ -194,21 +197,25 @@ def render_markdown(
             )
         for kind in kinds:
             all_cell = cells.get((arm, "(all)", kind), {"tp": 0, "fp": 0, "fn": 0})
-            total_gt = all_cell["tp"] + all_cell["fn"]
-            overall_recall = 100 * all_cell["tp"] / total_gt if total_gt else 0.0
-            for bucket in buckets:
-                if bucket == "(all)":
-                    continue
-                cell = cells.get((arm, bucket, kind), {"tp": 0, "fp": 0, "fn": 0})
-                b_gt = cell["tp"] + cell["fn"]
-                if not b_gt:
-                    continue
-                b_recall = 100 * cell["tp"] / b_gt
-                if spec.is_bucket_collapsed(b_recall, overall_recall):
-                    notes.append(
-                        f"**桶塌方** {kind}/{bucket}：召回 {b_recall:.1f}% 比整体 "
-                        f"{overall_recall:.1f}% 低 ≥{spec.COLLAPSE_DROP_PP:.0f}pp"
-                    )
+            # 桶塌方：候选臂 vs **LA 同桶召回**（LA 为基线；LA 自身不判，只给数据行）
+            if arm != "la" and "la" in m:
+                for bucket in buckets:
+                    if bucket == "(all)":
+                        continue
+                    cell = cells.get((arm, bucket, kind), {"tp": 0, "fp": 0, "fn": 0})
+                    b_gt = cell["tp"] + cell["fn"]
+                    la_cell = cells.get(("la", bucket, kind), {"tp": 0, "fp": 0, "fn": 0})
+                    la_gt = la_cell["tp"] + la_cell["fn"]
+                    if not b_gt or not la_gt:
+                        continue  # 任一侧同桶无 GT 召回不可比
+                    b_recall = 100 * cell["tp"] / b_gt
+                    la_recall = 100 * la_cell["tp"] / la_gt
+                    if spec.is_bucket_collapsed(b_recall, la_recall):
+                        notes.append(
+                            f"**桶塌方** {kind}/{bucket}：召回 {b_recall:.1f}% 较 LA 同桶 "
+                            f"{la_recall:.1f}% 下降 {la_recall - b_recall:.1f}pp"
+                            f"（> {spec.COLLAPSE_DROP_PP:.0f}pp）"
+                        )
             # 误报上界：候选臂 FP/页 vs LA 基线 FP/页（LA 自身不判）
             if arm != "la" and "la" in m:
                 la_cell = cells.get(("la", "(all)", kind), {"tp": 0, "fp": 0, "fn": 0})
@@ -226,7 +233,8 @@ def render_markdown(
         lines.append(f"- **{arm}**：" + ("；".join(notes) if notes else "通过全部预注册阈值"))
     lines.append("")
     lines.append(
-        "> 阈值：塌方 ≥15pp、候选臂误报/页 ≤ 2×LA 误报/页（LA 基线为 0 时绝对上限 0.5/页）、"
+        "> 阈值：候选臂桶召回较 LA 同桶下降 >15pp 判塌方（LA 为基线，自身不判）、"
+        "候选臂误报/页 ≤ 2×LA 误报/页（LA 基线为 0 时绝对上限 0.5/页）、"
         "失败页 > 10% 判臂无效（eval/benchmarks/t3/spec.py 预注册）。"
     )
     lines.append("")

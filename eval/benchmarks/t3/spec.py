@@ -22,7 +22,8 @@
 
 ## 预注册阈值（写代码前先定，防事后挑阈值）
 
-- COLLAPSE_DROP_PP = 15：某桶召回比该臂整体召回低 ≥15 个百分点 → 桶塌方。
+- COLLAPSE_DROP_PP = 15：候选臂某（难例）桶召回较 **LA 同桶召回**下降
+  > 15 个百分点 → 桶塌方（同桶对比、LA 为基线；LA 自身不参与塌方判定）。
 - FALSE_POS_RATIO_CAP = 2.0：**候选臂误报/页 ≤ 2 × LA 臂误报/页**（与 LA
   基线臂逐页对比、按页均 FP）；LA 误报/页 = 0 时退化为绝对上限
   FP_ABSOLUTE_CAP_PER_PAGE = 0.5/页（0.5 × 0 = 0 过严，等价放宽一句：候选臂
@@ -187,9 +188,13 @@ def greedy_match(
 # ---- 判定函数（阈值全部预注册于本文件顶部） -------------------------------
 
 
-def is_bucket_collapsed(bucket_recall_pct: float, arm_overall_recall_pct: float) -> bool:
-    """桶塌方：该桶召回比臂整体召回低 ≥ COLLAPSE_DROP_PP 个百分点。"""
-    return (arm_overall_recall_pct - bucket_recall_pct) >= COLLAPSE_DROP_PP
+def is_bucket_collapsed(candidate_bucket_recall_pct: float, la_bucket_recall_pct: float) -> bool:
+    """桶塌方：候选臂某桶召回较 **LA 同桶召回**下降 > COLLAPSE_DROP_PP 个百分点。
+
+    同桶对比、LA 为基线入参（预注册口径）；LA 自身不参与塌方判定
+    （report 判读段跳过 arm=="la"）。
+    """
+    return (la_bucket_recall_pct - candidate_bucket_recall_pct) > COLLAPSE_DROP_PP
 
 
 def fp_per_page(fp: int, pages: int) -> float:

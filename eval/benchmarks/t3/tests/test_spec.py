@@ -185,10 +185,13 @@ class TestSchema:
 
 
 class TestJudgments:
-    def test_collapse_at_15pp(self):
-        assert spec.is_bucket_collapsed(50.0, 65.0) is True
-        assert spec.is_bucket_collapsed(50.0, 64.9) is False
-        assert spec.is_bucket_collapsed(80.0, 65.0) is False  # 反向不算塌方
+    def test_collapse_vs_la_same_bucket(self):
+        """预注册口径：候选臂桶召回较 **LA 同桶**召回下降 >15pp（同桶、LA 基线）。"""
+        # LA 同桶 65%，候选 50% → 降 15pp 恰等 → 不算（>15 才算）
+        assert spec.is_bucket_collapsed(50.0, 65.0) is False
+        assert spec.is_bucket_collapsed(50.0, 65.1) is True
+        assert spec.is_bucket_collapsed(80.0, 65.0) is False  # 候选更高不算塌方
+        assert spec.is_bucket_collapsed(0.0, 100.0) is True
 
     def test_fp_cap_vs_la_baseline(self):
         """口径：候选臂误报/页 > 2 × LA 误报/页 → 突破；恰等不算。"""

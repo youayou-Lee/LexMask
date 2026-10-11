@@ -85,13 +85,38 @@ class TestRender:
         )
         assert "分桶 × 臂 × kind" in md
         assert "sig_hard" in md and "seal_clean" in md
-        # seal_hard 召回 0% vs (all) 50% → 差 50pp ≥15 → 塌方判读出现
-        assert "桶塌方" in md and "seal_hard" in md
-        # 只有 la：LA 是基线自身，误报上界判读跳过
+        # 只有 la：LA 是基线，塌方/误报上界判读均跳过（只给数据行）
+        assert "桶塌方" not in md
         assert "误报上界" not in md
         # 分桶 FP 只展示：seal_clean 桶行有 FP/页 列
         assert "FP/页" in md
         assert "每臂接入成本" in md and "**la**" in md
+
+    def test_collapse_verdict_vs_la_same_bucket(self, synthetic):
+        """塌方判读：候选臂 vs LA 同桶（>15pp 降）；LA 自身行不判。"""
+        gt, details, metrics, manifest = synthetic
+        # la 命中 p3（seal_hard 桶召回 100%），sigdet 全漏（seal_hard 0%）→ 降 100pp
+        la_hit_p3 = row("v#p3", "la", "seal", 42, 42, 46, 46, conf=0.9)
+        sigdet_details = [
+            row("v#p1", "sigdet", "seal", 900, 900, 30, 30),
+        ]
+        metrics = {
+            "metrics": {
+                "la": {**metrics["metrics"]["la"], "avg_page_elapsed_s": 4.476},
+                "sigdet": {**metrics["metrics"]["la"], "pages": 3, "avg_page_elapsed_s": 100.439},
+            }
+        }
+        buckets = {m["page_id"]: m["buckets"] for m in manifest}
+        cells, _ = report_t3.aggregate(sigdet_details + details + [la_hit_p3], gt, buckets)
+        md = report_t3.render_markdown(cells, {"la": 1.0, "sigdet": 1.0}, metrics, buckets, None)
+        assert "**桶塌方** seal/seal_hard" in md
+        assert "较 LA 同桶 100.0% 下降 100.0pp" in md
+        # LA 自身行不判塌方（判读段 la 行直接通过）
+        assert "- **la**：通过全部预注册阈值" in md
+        # 接入成本：实测单页均值动态带出，sigdet 不再写死 ~ms 级
+        assert "实测单页均值 4476 ms" in md
+        assert "实测单页均值 100439 ms" in md
+        assert "~ms 级" not in md
 
     def test_fp_verdict_against_la_baseline(self, synthetic):
         """候选臂 FP/页 > 2 × LA FP/页 → 判读触发；≤ 上界不触发。"""
