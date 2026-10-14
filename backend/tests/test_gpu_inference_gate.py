@@ -67,18 +67,54 @@ def test_validator_clamps():
     assert settings_cls(HAS_NER_GLOBAL_MAX_INFLIGHT=0).HAS_NER_GLOBAL_MAX_INFLIGHT == 1
 
 
-def test_default_inflight_is_four():
-    """Issue#33 PR-A：默认闸门从 1 放开到 4（多并发是闸门注释明示的预期用法）。"""
+def test_default_inflight_is_eight():
+    """Issue#103：默认闸门 4 → 8（同一条 DCU 实测并发曲线；validator 上限即 8）。
+
+    历史：Issue#33 PR-A 把默认从 1 放开到 4。Issue#103 按实测曲线继续放开——
+    短文本到 k=16 仍近似线性（13~14×），长 prompt 甜点 k≈8（k=16 起转差）。
+    """
     settings_cls = type(settings)
-    assert settings_cls.model_fields["HAS_NER_GLOBAL_MAX_INFLIGHT"].default == 4
+    assert settings_cls.model_fields["HAS_NER_GLOBAL_MAX_INFLIGHT"].default == 8
 
 
 def test_verify_knobs_defaults_and_clamps():
-    """Issue#33 PR-B：验证段并发上限独立于闸门（旁路下仍有界）；批量自证默认关。"""
+    """Issue#33 PR-B：验证段并发上限独立于闸门（旁路下仍有界）；批量自证默认关。
+
+    Issue#103：VERIFY_PARALLEL_CAP 默认 4 → 8——生产台账 9845 次带槽位调用里
+    9743 次（99%）是 residual verify，扫描件逐页耗时几乎全由本窗口决定。
+    """
     settings_cls = type(settings)
-    assert settings_cls.model_fields["HAS_NER_VERIFY_PARALLEL_CAP"].default == 4
+    assert settings_cls.model_fields["HAS_NER_VERIFY_PARALLEL_CAP"].default == 8
     assert settings_cls.model_fields["HAS_NER_VERIFY_BATCH_SIZE"].default == 0
     assert settings_cls(HAS_NER_VERIFY_PARALLEL_CAP=99).HAS_NER_VERIFY_PARALLEL_CAP == 12
     assert settings_cls(HAS_NER_VERIFY_PARALLEL_CAP=0).HAS_NER_VERIFY_PARALLEL_CAP == 1
     assert settings_cls(HAS_NER_VERIFY_BATCH_SIZE=-3).HAS_NER_VERIFY_BATCH_SIZE == 0
     assert settings_cls(HAS_NER_VERIFY_BATCH_SIZE=99).HAS_NER_VERIFY_BATCH_SIZE == 32
+
+
+def test_issue103_knob_matrix_defaults():
+    """Issue#103 闸门矩阵：3 个并发闸门 + 2 个缓存项 + 闸门总开关的默认值。
+
+    这是"改后目标值"的单点断言，防止任何一处被回退而没人发现。
+    上限（validator 静默钳制，非报错）：MAX_PARALLEL 8 / GLOBAL 12 /
+    VERIFY_CAP 12 / CACHE_TTL 3600 / CACHE_MAX_ITEMS 4096。
+    """
+    settings_cls = type(settings)
+    fields = settings_cls.model_fields
+
+    assert fields["HAS_NER_MAX_PARALLEL_REQUESTS"].default == 8
+    assert fields["HAS_NER_GLOBAL_MAX_INFLIGHT"].default == 8
+    assert fields["HAS_NER_VERIFY_PARALLEL_CAP"].default == 8
+    assert fields["HAS_NER_CACHE_TTL_SEC"].default == 1800.0
+    assert fields["HAS_NER_CACHE_MAX_ITEMS"].default == 2048
+    # 闸门被旁路时上述并发全部失效（验收必须显式断言其为 True）
+    assert fields["SERIALIZE_SHARED_GPU_MODELS"].default is True
+
+
+def test_issue103_knob_clamps_are_silent():
+    """超上限是**静默钳制**而非报错——验收要按钳制后的值断言，不是按 env 写的值。"""
+    settings_cls = type(settings)
+    assert settings_cls(HAS_NER_MAX_PARALLEL_REQUESTS=99).HAS_NER_MAX_PARALLEL_REQUESTS == 8
+    assert settings_cls(HAS_NER_MAX_PARALLEL_REQUESTS=-1).HAS_NER_MAX_PARALLEL_REQUESTS == 1
+    assert settings_cls(HAS_NER_GLOBAL_MAX_INFLIGHT=99).HAS_NER_GLOBAL_MAX_INFLIGHT == 12
+    assert settings_cls(HAS_NER_VERIFY_PARALLEL_CAP=99).HAS_NER_VERIFY_PARALLEL_CAP == 12

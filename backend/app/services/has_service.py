@@ -339,6 +339,43 @@ class HaSService:
         # Open vocabulary: keep the model's raw label as the type (识别出来是啥就是啥).
         return result_type_name
 
+    def _preplan_completion_batches(
+        self,
+        batches: list[list[EntityTypeConfig]],
+        content: str,
+    ) -> list[list[EntityTypeConfig]]:
+        """Issue#103：按完成帽容量把类型批预切细，供本层并发派发。
+
+        背景：`HaSClient.ner` 是**同步**方法，其帽驱动分批是一个普通 `for`
+        串行循环；而调用它的 `run_batch` 只取**一次**
+        `shared_gpu_inference_slot`，所以闸位内那几次串行子调用不受闸门放宽
+        影响。19 型 / 1600 字页 → `capacity=(2048-1577//2)//160=7` → 7+7+5
+        共 3 次串行（生产日志实测 `types=7`）。
+
+        这里用与客户端**同一个** `plan_completion_batches` 先把类型表切好，
+        交给既有的 `asyncio.gather` + `Semaphore` 并发跑，每个子批各取闸位。
+
+        切分安全边界：`_convert_entity_types_to_chinese` 已按名字去重，
+        `_expand_query_type_names` 无隐藏别名扩展，故"批内中文名数"≤"类型项数"；
+        按子批容量切**类型项**只会让子批的中文名数更少，绝不会超出容量 ⇒
+        `has_client.ner` 内部幂等不再切；且各子批并集恒等于原批，无类型丢失。
+        切不动（单类型 / 超长页豁免 / 帽=0 关闭）时原样返回。
+        """
+        expanded: list[list[EntityTypeConfig]] = []
+        for batch in batches:
+            if len(batch) <= 1:
+                expanded.append(batch)
+                continue
+            chinese_types = self._convert_entity_types_to_chinese(batch)
+            plan = self.client.plan_completion_batches(chinese_types, content)
+            if len(plan) <= 1:
+                expanded.append(batch)
+                continue
+            size = max(1, len(plan[0]))
+            for start in range(0, len(batch), size):
+                expanded.append(batch[start : start + size])
+        return expanded
+
     async def extract_entities(
         self,
         content: str,
@@ -371,6 +408,13 @@ class HaSService:
 
             ner_result: dict[str, list[str]] = {}
             batches = self._iter_ner_type_batches(entity_types)
+            # Issue#103：把 Issue#41 的帽容量分批从 has_client.ner（**同步**方法、
+            # 普通 for 串行、且整串跑在调用方已占住的那一个 GPU 闸位里）上移到
+            # 这一层——这里已经是 Semaphore + asyncio.gather，预切后的子批各自
+            # 去取闸位，闸门调大才真正吃得到收益。预切后 has_client.ner 内部用
+            # 同一个 plan_completion_batches，切分幂等（批长 ≤ capacity 不再切），
+            # 因此直接调 client.ner 的旧调用方（视觉线）行为零变化。
+            batches = self._preplan_completion_batches(batches, content)
             max_parallel = max(1, int(settings.HAS_NER_MAX_PARALLEL_REQUESTS))
             semaphore = asyncio.Semaphore(max_parallel)
 
