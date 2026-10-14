@@ -315,7 +315,10 @@ export async function runVisionDetectionPages({
 }: RunVisionDetectionPagesOptions): Promise<{ boxes: BoundingBox[]; totalBoxes: number }> {
   const pages = Array.from({ length: Math.max(1, totalPages) }, (_unused, index) => index + 1);
   const mergedVisualFeatureTypes = Array.from(new Set(visualFeatureTypes));
-  const effectiveConcurrency = mergedVisualFeatureTypes.length > 0 ? 1 : concurrency;
+  // Issue#106：勾选视觉特征时不再把页并发压成 1（原为 `? 1 : concurrency`）。
+  // 云端 DCU 实测：同样勾选印章/签名时 k=3 相对串行 2.15~2.47×，逐页识别框在噪声带内；
+  // 低显存部署把 PLAYGROUND_VISION_PAGE_CONCURRENCY 置 1 即可恢复串行。
+  const effectiveConcurrency = concurrency;
   const maxWorkers = Math.max(1, Math.min(effectiveConcurrency, pages.length));
   const boxesByPage = new Map<number, BoundingBox[]>();
   let nextIndex = 0;
