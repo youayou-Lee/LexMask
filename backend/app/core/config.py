@@ -413,13 +413,15 @@ class Settings(BaseSettings):
     # 组间类型按构造不相交；未映射类型（自定义/扩展）全部落入兜底批。
     HAS_NER_TYPE_GROUPING: str = "off"
     # 全进程 HaS NER 并发闸门（shared_gpu_inference_slot 的信号量大小）。
-    # 1 = 历史串行行为（单卡小显存部署安全默认）；vLLM 多实例部署可放开
-    # （双卡 5090 生产 = 6：双实例 × 每实例 ~3，受 KV cache 预算约束）。
+    # 1 = 历史串行行为（单卡小显存部署安全默认）；vLLM 多实例部署可放开。
     # Issue#33: 默认 4——vLLM 服务端 continuous batching 需要看到并发请求；
     # inflight registry 保证同负载不重复计算。
     # Issue#103：4 → 8，与 HAS_NER_MAX_PARALLEL_REQUESTS 同源同值（同一条实测
     # 曲线）。这是**唯一真正绑定并发**的闸门（shared_gpu_inference_slot 的信号量），
     # 但 SERIALIZE_SHARED_GPU_MODELS=False 时整闸被旁路。
+    # 注意：8 的证据来自 DCU 云实例（单卡专跑 HaS）。**双卡 5090 生产机的 KV cache
+    # 预算更紧**（双实例 × 每实例 ~3），该部署在 deploy/dual-5090/backend_g0.sh 里
+    # 显式钉住改前档位——未在该机实测前，不要跟随本默认值放开。
     HAS_NER_GLOBAL_MAX_INFLIGHT: int = 8
     # residual verify 段的页内并发窗口（Issue#33 PR-B）。独立于闸门的硬界：
     # 闸门旁路（SERIALIZE_SHARED_GPU_MODELS=False）时防止 N 个值同时砸 vLLM。

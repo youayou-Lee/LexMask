@@ -349,19 +349,22 @@ class HaSService:
         背景：`HaSClient.ner` 是**同步**方法，其帽驱动分批是一个普通 `for`
         串行循环；而调用它的 `run_batch` 只取**一次**
         `shared_gpu_inference_slot`，所以闸位内那几次串行子调用不受闸门放宽
-        影响。19 型 / 1600 字页 → `capacity=(2048-1577//2)//160=7` → 7+7+5
-        共 3 次串行（生产日志实测 `types=7`）。
+        影响。例：19 型 / 1600 字页 → `capacity=(2048-1577//2)//160=7`
+        → 7+7+5 共 3 次**串行**子调用（生产日志里该页的 `types=7` 是拆批结果，
+        不是请求的类型总数）。
 
         这里用与客户端**同一个** `plan_completion_batches` 先把类型表切好，
         交给既有的 `asyncio.gather` + `Semaphore` 并发跑，每个子批各取闸位。
 
         切分安全边界：`_convert_entity_types_to_chinese` 已按名字去重，
-        `_expand_query_type_names` 无隐藏别名扩展，故"批内中文名数"≤"类型项数"；
-        按子批容量切**类型项**只会让子批的中文名数更少，绝不会超出容量 ⇒
-        `has_client.ner` 内部幂等不再切；且各子批并集恒等于原批，无类型丢失。
+        `_expand_query_type_names` 无隐藏别名扩展（源码注明 "No hidden alias
+        expansion"），故"批内中文名数"≤"类型项数"；按子批容量切**类型项**只会让
+        子批的中文名数更少，绝不会超出容量 ⇒ `has_client.ner` 内部幂等不再切；
+        且各子批并集恒等于原批，无类型丢失。
         切不动（单类型 / 超长页豁免 / 帽=0 关闭）时原样返回。
         """
         expanded: list[list[EntityTypeConfig]] = []
+        split_sub_batches = 0
         for batch in batches:
             if len(batch) <= 1:
                 expanded.append(batch)
@@ -371,14 +374,16 @@ class HaSService:
             if len(plan) <= 1:
                 expanded.append(batch)
                 continue
+            split_sub_batches += len(plan)
             size = max(1, len(plan[0]))
             for start in range(0, len(batch), size):
                 expanded.append(batch[start : start + size])
-        if len(expanded) > len(batches):
+        if split_sub_batches:
             # Issue#103：预切之后 has_client.ner 内部不再命中分批分支，
             # Issue#41 S1 的 `has_text_ner_rebatch_batches` 观测键若不由这一层补记
-            # 就会静默消失（评审 M2），帽路径的可观测性会丢。
-            _record_ner_metrics(rebatch_batches=len(expanded))
+            # 就会静默消失（评审 M2）。口径与改前一致：只累加**真正发生切分**的
+            # 那些调用的子批数（未切分的外层批不计入）。
+            _record_ner_metrics(rebatch_batches=split_sub_batches)
         return expanded
 
     async def extract_entities(

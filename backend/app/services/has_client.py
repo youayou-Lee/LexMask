@@ -435,6 +435,10 @@ class HaSClient:
             return [items]
         if per_type is None:
             per_type = cls._effective_tokens_per_type(settings)
+        if per_type <= 0:
+            # 显式传 0/负数时退化为"不按类型预留"，避免除零；调用方若真要关帽
+            # 应传 hard_cap<=0（上面已短路）。
+            per_type = _NER_TOKENS_PER_TYPE
         text_budget = len(str(text or "")) // _NER_TEXT_CHARS_PER_TOKEN
         desired_budget = cls._ner_completion_budget(len(items), text, per_type)
         capacity = (hard_cap - text_budget) // per_type

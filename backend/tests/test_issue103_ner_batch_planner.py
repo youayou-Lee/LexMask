@@ -48,9 +48,12 @@ class _ConcurrencyProbe:
         self._lock = threading.Lock()
 
     @staticmethod
-    def plan_completion_batches(types, text):
-        # 被测服务层必须与客户端用同一个规划器
-        return HaSClient.plan_completion_batches(types, text)
+    def plan_completion_batches(types, text, *, hard_cap=None, per_type=None):
+        # 被测服务层必须与客户端用同一个规划器；签名与真实实现保持一致，
+        # 否则将来出现显式帽值调用点会在替身上 TypeError（评审 Nit-6）。
+        return HaSClient.plan_completion_batches(
+            types, text, hard_cap=hard_cap, per_type=per_type
+        )
 
     def is_available(self) -> bool:
         return True
@@ -139,3 +142,32 @@ def test_plan_accepts_explicit_knobs_without_touching_settings():
     assert [len(b) for b in plan] == [3] * 6 + [1]
     # 显式入参不依赖全局配置：把全局帽调成 0 也不影响显式传值的结果
     assert HaSClient.plan_completion_batches(types, _TEXT_1577, hard_cap=2048, per_type=320) == plan
+
+
+def test_plan_zero_per_type_falls_back_instead_of_dividing_by_zero():
+    """评审 Nit-5：显式 per_type<=0 不得触发 ZeroDivisionError。
+
+    真要关闭分批应传 `hard_cap<=0`（该分支在读取 per_type 之前短路）；
+    传 0/负数则退化为 `_NER_TOKENS_PER_TYPE` 的保守预留。
+    """
+    types = [f"类型{i}" for i in range(19)]
+    for bad in (0, -5):
+        plan = HaSClient.plan_completion_batches(types, _TEXT_1577, hard_cap=2048, per_type=bad)
+        # 与不传 per_type（走 _NER_TOKENS_PER_TYPE=160）的容量一致
+        assert [len(b) for b in plan] == [7, 7, 5]
+    # 仍可用 hard_cap=0 关闭
+    assert HaSClient.plan_completion_batches(types, _TEXT_1577, hard_cap=0, per_type=0) == [types]
+
+
+def test_convert_types_to_chinese_never_expands_type_count():
+    """评审 Nit-6：幂等性与「不二次切分」的论证依赖「中文名数 ≤ 类型项数」。
+
+    这里把 `_convert_entity_types_to_chinese` 的"无隐藏别名扩展"钉成回归断言：
+    若将来引入别名扩展（一个类型项展开成多个查询标签），本用例立刻失败，
+    提醒同步修正 `_preplan_completion_batches` 的切分安全论证。
+    """
+    service = HaSService(base_url="http://stub:0")
+    types = _types(19)
+    chinese = service._convert_entity_types_to_chinese(types)
+    assert len(chinese) <= len(types)
+    assert len(set(chinese)) == len(chinese), "中文类型名必须已去重"
