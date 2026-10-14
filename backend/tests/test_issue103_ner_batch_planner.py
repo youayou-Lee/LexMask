@@ -123,3 +123,19 @@ def test_plan_respects_configured_capacity_knobs(monkeypatch):
     monkeypatch.setattr(settings, "HAS_NER_TOKENS_PER_TYPE", 320, raising=False)
     # text_budget=788 → capacity=(2048-788)//320=3
     assert [len(b) for b in HaSClient.plan_completion_batches(types, _TEXT_1577)] == [3] * 6 + [1]
+
+
+def test_plan_accepts_explicit_knobs_without_touching_settings():
+    """评审 N1：帽值可显式入参，单测无需 monkeypatch 全局 settings。
+
+    显式入参必须优先于全局配置；`hard_cap=0` 表示关闭分批（整页单发），
+    不能被 `None` 的"读配置"分支吞掉。
+    """
+    types = [f"类型{i}" for i in range(19)]
+    # 显式 hard_cap=0 → 关闭分批
+    assert HaSClient.plan_completion_batches(types, _TEXT_1577, hard_cap=0) == [types]
+    # 显式 per_type 决定 capacity：text_budget=788 → (2048-788)//320=3
+    plan = HaSClient.plan_completion_batches(types, _TEXT_1577, hard_cap=2048, per_type=320)
+    assert [len(b) for b in plan] == [3] * 6 + [1]
+    # 显式入参不依赖全局配置：把全局帽调成 0 也不影响显式传值的结果
+    assert HaSClient.plan_completion_batches(types, _TEXT_1577, hard_cap=2048, per_type=320) == plan

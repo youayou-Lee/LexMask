@@ -30,7 +30,10 @@ export DATA_DIR=/data/ubuntu/lh/projects/LexMask/backend/data
 export UPLOAD_DIR=/data/ubuntu/lh/projects/LexMask/backend/uploads
 export OUTPUT_DIR=/data/ubuntu/lh/projects/LexMask/backend/outputs
 mkdir -p "$DATA_DIR" "$UPLOAD_DIR" "$OUTPUT_DIR"
-export HAS_NER_GLOBAL_MAX_INFLIGHT=6
+# Issue#103：HaS 闸门统一到 8（原 6），与代码默认值/云实例口径一致
+export HAS_NER_GLOBAL_MAX_INFLIGHT=8
+export HAS_NER_MAX_PARALLEL_REQUESTS=8
+export HAS_NER_VERIFY_PARALLEL_CAP=8
 export BATCH_VISUAL_MERGE_PAGE_CONCURRENCY=2
 export GPU_SATURATION_RATIO=0.95
 export LOCATE_ANYTHING_CONSENSUS_SAMPLES=1

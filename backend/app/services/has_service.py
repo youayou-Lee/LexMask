@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 from app.core.gpu_inference_gate import shared_gpu_inference_slot
 from app.models.schemas import Entity
 from app.models.type_mapping import canonical_type_id
-from app.services.has_client import HaSClient
+from app.services.has_client import HaSClient, _record_ner_metrics
 
 # 类型别名，兼容 EntityTypeConfig 和 CustomEntityType
 EntityTypeConfig = Any
@@ -374,6 +374,11 @@ class HaSService:
             size = max(1, len(plan[0]))
             for start in range(0, len(batch), size):
                 expanded.append(batch[start : start + size])
+        if len(expanded) > len(batches):
+            # Issue#103：预切之后 has_client.ner 内部不再命中分批分支，
+            # Issue#41 S1 的 `has_text_ner_rebatch_batches` 观测键若不由这一层补记
+            # 就会静默消失（评审 M2），帽路径的可观测性会丢。
+            _record_ner_metrics(rebatch_batches=len(expanded))
         return expanded
 
     async def extract_entities(

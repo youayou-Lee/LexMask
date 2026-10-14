@@ -401,7 +401,14 @@ class HaSClient:
             return 0
 
     @classmethod
-    def plan_completion_batches(cls, types: list[str] | None, text: str) -> list[list[str]]:
+    def plan_completion_batches(
+        cls,
+        types: list[str] | None,
+        text: str,
+        *,
+        hard_cap: int | None = None,
+        per_type: int | None = None,
+    ) -> list[list[str]]:
         """Issue#41 帽驱动分批决策；Issue#103 上移为可复用的**纯函数**入口。
 
         为什么需要这个入口：`ner` 里的容量分批是**同步串行**的，而且整串跑在
@@ -420,10 +427,14 @@ class HaSClient:
         items = list(types or [])
         if not items:
             return []
-        hard_cap = cls._effective_completion_hard_cap(settings)
+        # 显式入参优先（便于单测直接钉死帽值，不必 monkeypatch 全局 settings）；
+        # 缺省仍读全局配置，保持生产调用点零改动。
+        if hard_cap is None:
+            hard_cap = cls._effective_completion_hard_cap(settings)
         if hard_cap <= 0:
             return [items]
-        per_type = cls._effective_tokens_per_type(settings)
+        if per_type is None:
+            per_type = cls._effective_tokens_per_type(settings)
         text_budget = len(str(text or "")) // _NER_TEXT_CHARS_PER_TOKEN
         desired_budget = cls._ner_completion_budget(len(items), text, per_type)
         capacity = (hard_cap - text_budget) // per_type

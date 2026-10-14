@@ -251,7 +251,7 @@ def chat_completions(req: ChatRequest):
         "pad_token_id": tok.eos_token_id,
         "eos_token_id": _stop_token_ids(tok),
     })
-    with _s["lock"]:  # 串行推理，与 backend HAS_NER_MAX_PARALLEL_REQUESTS=1 一致
+    with _s["lock"]:  # transformers 单卡自持推理锁，与 backend 闸门无关（Issue#103：backend 默认已为 8）
         with torch.no_grad():
             out = model.generate(**inputs, **gen_kwargs)
     task = _Task(prompt, max_new, sampling)
