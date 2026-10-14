@@ -315,12 +315,20 @@ export async function runVisionDetectionPages({
 }: RunVisionDetectionPagesOptions): Promise<{ boxes: BoundingBox[]; totalBoxes: number }> {
   const pages = Array.from({ length: Math.max(1, totalPages) }, (_unused, index) => index + 1);
   const mergedVisualFeatureTypes = Array.from(new Set(visualFeatureTypes));
-  const effectiveConcurrency = mergedVisualFeatureTypes.length > 0 ? 1 : concurrency;
+  // Issue#106：勾选视觉特征时不再把页并发压成 1（原为 `? 1 : concurrency`）。
+  // 云端 DCU 实测：同样勾选印章/签名时 k=3 相对串行 2.15~2.47×，逐页识别框在噪声带内；
+  // 低显存部署把 PLAYGROUND_VISION_PAGE_CONCURRENCY 置 1 即可恢复串行。
+  const effectiveConcurrency = concurrency;
   const maxWorkers = Math.max(1, Math.min(effectiveConcurrency, pages.length));
   const boxesByPage = new Map<number, BoundingBox[]>();
   let nextIndex = 0;
   let completedPages = 0;
   let totalBoxes = 0;
+  // Issue#106：页并发由 1 放开到 3 之后，某个 worker 抛错不再自动让兄弟 worker 停下
+  // （原先勾选视觉特征时 maxWorkers=1，只有一条 worker，抛错即自然终止取页）。
+  // 这里显式置停止标志，保持「一页失败即不再取新页」的 fail-fast 语义，
+  // 避免错误提示已经弹出后仍在后台继续占用 GPU。
+  let stopRequested = false;
   setLoadingMessage?.(`${label} (0/${pages.length})`);
 
   const runPage = async (page: number) => {
@@ -362,10 +370,15 @@ export async function runVisionDetectionPages({
   };
 
   async function worker() {
-    while (nextIndex < pages.length) {
+    while (nextIndex < pages.length && !stopRequested) {
       const page = pages[nextIndex];
       nextIndex += 1;
-      await runPage(page);
+      try {
+        await runPage(page);
+      } catch (error) {
+        stopRequested = true;
+        throw error;
+      }
     }
   }
 
