@@ -399,22 +399,37 @@ class Settings(BaseSettings):
     HAS_NER_TYPE_BATCH_TARGET_TOKENS: int = 8072
     HAS_NER_SINGLE_PASS_MAX_TYPES: int = 96
     HAS_NER_SINGLE_PASS_MAX_TEXT_CHARS: int = 1600
-    HAS_NER_MAX_PARALLEL_REQUESTS: int = 4
+    # Issue#103：4 → 8。同款 prompt 直压 vLLM 实测（2026-10-15 DCU，
+    # HaS_Text_0209_0.6B @ 8192 ctx）：短文本 1600 字 7 型 k=1 3.62s→k=16 4.26s
+    # （0.28→3.76 req/s，13.4×）、19 型 13.7×、38 型 14.1×；长 prompt 6000 字/38 型
+    # k=1 8.15s / k=4 9.23s / k=8 10.38s（甜点）/ k=16 20.41s / k=32 32.61s
+    # —— 长 prompt 在 k≈8 之后转差，故统一取 8（validator 上限亦为 8）。
+    # 同卷 A/B：78 页文本卷闸门 4→8 = 53.30s→33.03s（1.61×），36 次调用与 1468
+    # 实体逐条不变（同工作量、仅更并行）。
+    HAS_NER_MAX_PARALLEL_REQUESTS: int = 8
     # Issue #23 轴A：类型语义分组并发。off = 现状（token 预算单批/自适应分批）；
     # semantic = 按 G1 人员/组织、G2 标识号码、G3 时空固定映射拆组并发，每组
     # 输出 token 少（60~100），配合服务端 batch（轴B）摊薄 decode 带宽。
     # 组间类型按构造不相交；未映射类型（自定义/扩展）全部落入兜底批。
     HAS_NER_TYPE_GROUPING: str = "off"
     # 全进程 HaS NER 并发闸门（shared_gpu_inference_slot 的信号量大小）。
-    # 1 = 历史串行行为（单卡小显存部署安全默认）；vLLM 多实例部署可放开
-    # （双卡 5090 生产 = 6：双实例 × 每实例 ~3，受 KV cache 预算约束）。
+    # 1 = 历史串行行为（单卡小显存部署安全默认）；vLLM 多实例部署可放开。
     # Issue#33: 默认 4——vLLM 服务端 continuous batching 需要看到并发请求；
     # inflight registry 保证同负载不重复计算。
-    HAS_NER_GLOBAL_MAX_INFLIGHT: int = 4
+    # Issue#103：4 → 8，与 HAS_NER_MAX_PARALLEL_REQUESTS 同源同值（同一条实测
+    # 曲线）。这是**唯一真正绑定并发**的闸门（shared_gpu_inference_slot 的信号量），
+    # 但 SERIALIZE_SHARED_GPU_MODELS=False 时整闸被旁路。
+    # 注意：8 的证据来自 DCU 云实例（单卡专跑 HaS）。**双卡 5090 生产机的 KV cache
+    # 预算更紧**（双实例 × 每实例 ~3），该部署在 deploy/dual-5090/backend_g0.sh 里
+    # 显式钉住改前档位——未在该机实测前，不要跟随本默认值放开。
+    HAS_NER_GLOBAL_MAX_INFLIGHT: int = 8
     # residual verify 段的页内并发窗口（Issue#33 PR-B）。独立于闸门的硬界：
     # 闸门旁路（SERIALIZE_SHARED_GPU_MODELS=False）时防止 N 个值同时砸 vLLM。
     # 实际并发 = min(CAP, GLOBAL_MAX_INFLIGHT, 待验证值数)。
-    HAS_NER_VERIFY_PARALLEL_CAP: int = 4
+    # Issue#103：4 → 8。生产台账 9845 次带槽位调用里 9743 次（99.0%）是
+    # `OCR HaS Text residual verify NER`，即扫描件逐页耗时几乎全由本窗口决定；
+    # verify 是"单值单类型"短 prompt，实测短文本曲线支持到 k=16，取 8 留余量。
+    HAS_NER_VERIFY_PARALLEL_CAP: int = 8
     # 批量自证（第二级杠杆，默认关）。>0 时同类型待验证值按 N 个一批合并问。
     # 长列表召回稀释正是 residual 机制诞生的原因（0712 实证），开启前必须
     # 在真实案卷页 A/B 实证。
@@ -450,8 +465,13 @@ class Settings(BaseSettings):
     STRUCTURED_MAX_EXPORT_ROWS: int = 5_000_000  # 库表导出硬护栏：超限报错，绝不静默截断
     STRUCTURED_MAX_FILE_SIZE: int = 200 * 1024**2  # /structured/files 上传上限
     HAS_NER_BUILTIN_GUIDANCE_ENABLED: bool = False
-    HAS_NER_CACHE_TTL_SEC: float = 300.0
-    HAS_NER_CACHE_MAX_ITEMS: int = 256
+    # Issue#103：300/256 → 1800/2048。单文件页反复预览、同文件重识别、同一
+    # 页在批量向导里被多次触达时命中率显著提高；TTL 取 30min 覆盖一次人工
+    # 复核节奏，容量 2048 覆盖多卷并发。注意 config.py 另有 inflight 去重
+    # （_begin_ner_request），它只是"同负载合并计算"，不改变调用次数台账——
+    # 验收必须用调用次数**精确相等**取证，防拿去重当提速。
+    HAS_NER_CACHE_TTL_SEC: float = 1800.0
+    HAS_NER_CACHE_MAX_ITEMS: int = 2048
     # Structured table profiling uses HaS only as an enrichment layer. Keep it
     # short so a cold or busy text model cannot block table review and delivery.
     STRUCTURED_HAS_TIMEOUT: float = 6.0

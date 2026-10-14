@@ -400,6 +400,55 @@ class HaSClient:
         except (TypeError, ValueError):
             return 0
 
+    @classmethod
+    def plan_completion_batches(
+        cls,
+        types: list[str] | None,
+        text: str,
+        *,
+        hard_cap: int | None = None,
+        per_type: int | None = None,
+    ) -> list[list[str]]:
+        """Issue#41 帽驱动分批决策；Issue#103 上移为可复用的**纯函数**入口。
+
+        为什么需要这个入口：`ner` 里的容量分批是**同步串行**的，而且整串跑在
+        调用方已经占住的那一个 `shared_gpu_inference_slot` 里（见 `has_service.
+        extract_entities`），所以闸门抬再高也覆盖不到闸位内那几次子调用。把
+        「怎么切」这件事抽成本函数后，异步服务层可以在**派发前**先切好，交给
+        既有的 `asyncio.gather` + 信号量并发跑，每个子批各取一个闸位。
+
+        返回值：`[list(types)]`（单批）表示"整页单次调用"；多批表示前置分批。
+        判据与 `ner` 内完全同源（同一个 capacity 公式），因此调用方预切之后，
+        `ner` 内部再切一次是**幂等**的（预切批长 ≤ capacity → 不再切），
+        直接调 `ner` 的旧调用方（如视觉线 `has_text_analysis`）行为零变化。
+        """
+        from app.core.config import settings
+
+        items = list(types or [])
+        if not items:
+            return []
+        # 显式入参优先（便于单测直接钉死帽值，不必 monkeypatch 全局 settings）；
+        # 缺省仍读全局配置，保持生产调用点零改动。
+        if hard_cap is None:
+            hard_cap = cls._effective_completion_hard_cap(settings)
+        if hard_cap <= 0:
+            return [items]
+        if per_type is None:
+            per_type = cls._effective_tokens_per_type(settings)
+        if per_type <= 0:
+            # 显式传 0/负数时退化为"不按类型预留"，避免除零；调用方若真要关帽
+            # 应传 hard_cap<=0（上面已短路）。
+            per_type = _NER_TOKENS_PER_TYPE
+        text_budget = len(str(text or "")) // _NER_TEXT_CHARS_PER_TOKEN
+        desired_budget = cls._ner_completion_budget(len(items), text, per_type)
+        capacity = (hard_cap - text_budget) // per_type
+        if desired_budget <= hard_cap or len(items) <= 1 or capacity < 1:
+            # 预算装得下 / 单类型 / 页面超长豁免：整页单次
+            return [items]
+        if len(items) <= capacity:
+            return [items]
+        return [items[i : i + capacity] for i in range(0, len(items), capacity)]
+
     @staticmethod
     def _estimate_prompt_tokens(text: str) -> int:
         """Conservative local estimate for vLLM context budgeting.
@@ -577,21 +626,17 @@ class HaSClient:
         # 预算公式仍用 HAS_NER_TOKENS_PER_TYPE 基线（=新全局基线，≠preview 72）。
         hard_cap = self._effective_completion_hard_cap(settings)
         if hard_cap > 0:
-            per_type = self._effective_tokens_per_type(settings)
-            text_budget = len(str(text or "")) // _NER_TEXT_CHARS_PER_TOKEN
-            desired_budget = self._ner_completion_budget(len(types), text, per_type)
             # 容量 = 帽减去文本份额后每类型可容批大小；<1（页长到连单类型都
             # 超帽）→ 页面级豁免：整页单发走既有截断补救（评审 Important-1，
             # chunk=1 悬崖——拆成 N 个仍截断的串行调用零收益纯浪费）。
-            capacity = (hard_cap - text_budget) // per_type
-            if desired_budget <= hard_cap or len(types) <= 1 or capacity < 1:
-                # 预算装得下 / 单类型 / 页面超长豁免：整页单次
-                pass
-            elif len(types) > capacity:
-                batches = [types[i : i + capacity] for i in range(0, len(types), capacity)]
+            # Issue#103：切分方案改由 plan_completion_batches 单点给出（同一
+            # capacity 公式），避免"调用方预切"与"客户端内切"两处公式漂移；
+            # 判据与原先逐字等价（desired<=cap / 单类型 / capacity<1 → 单批）。
+            planned_batches = self.plan_completion_batches(types, text)
+            if len(planned_batches) > 1:
                 guidance_by_type = {str(item.get("type") or ""): item for item in (type_guidance or [])}
                 merged: dict[str, list[str]] = {}
-                for batch in batches:
+                for batch in planned_batches:
                     batch_guidance = (
                         [guidance_by_type[t] for t in batch if t in guidance_by_type] or None
                     )
@@ -609,7 +654,7 @@ class HaSClient:
                         for value in values:
                             if value not in bucket:
                                 bucket.append(value)
-                _record_ner_metrics(rebatch_batches=len(batches))
+                _record_ner_metrics(rebatch_batches=len(planned_batches))
                 self._set_cached_ner(cache_key, merged)
                 return merged
             # desired ≤ 帽（或单类型）→ 整页单次：不落入 legacy 预分批
