@@ -155,3 +155,11 @@ def test_wan_yi_scale():
     assert value_norm.parse_chinese_number("五千亿") == 500_000_000_000
     v = value_norm._eval_scaled("3万亿")
     assert v == 3_000_000_000_000
+
+def test_yi_wan_compound_forms():
+    """评审复审要求的亿…万…复合形态（第一轮修复曾把这三例算坏）。"""
+    assert value_norm.parse_chinese_number("三亿五千万") == 350_000_000
+    assert value_norm.parse_chinese_number("十二亿三千万") == 1_230_000_000
+    assert value_norm.parse_chinese_number("三万亿") == 3_000_000_000_000
+    assert value_norm._eval_scaled("3亿5000万") == 350_000_000
+    assert value_norm._eval_scaled("3万亿") == 3_000_000_000_000

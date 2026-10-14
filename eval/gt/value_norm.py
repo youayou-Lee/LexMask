@@ -101,9 +101,17 @@ def parse_chinese_number(tok: str) -> int | None:
                 number = _CN_DIGITS[ch]
             elif ch in _CN_UNITS:
                 unit = _CN_UNITS[ch]
-                if unit >= 10000:
-                    # 万/亿档：已有累计一并进位（三万亿 = (3)*1e4*1e8，漏乘 total 会得 30000）
+                # 缺省乘数仅在全空时取 1（三亿五千万的万位不能凭空多 1 万）
+                default = 1 if not (total or section) else 0
+                if unit >= 100000000:
+                    # 亿：更高量级，折入 total（三亿 → 3e8）
                     total = (total + section + number) * unit
+                    section = 0
+                elif unit >= 10000:
+                    # 万：section 进位后并入 total（三万亿 = 3e4 * 1e8；
+                    # 亿…万… 复合形态里万只并入 total、不再乘大）
+                    section = (section + number) * unit
+                    total += section
                     section = 0
                 else:
                     section += (number or 1) * unit
@@ -156,10 +164,15 @@ def _eval_scaled(tok: str) -> Decimal | None:
             continue
         if ch in _CN_UNITS:
             unit = Decimal(_CN_UNITS[ch])
-            if unit >= 10000:
-                # 万/亿档：已有累计一并进位；缺省乘数仅在全空时取 1（"3万亿"的亿位不能凭空多 1 万）
-                default = Decimal(0) if (total or section) else Decimal(1)
+            default = Decimal(0) if (total or section) else Decimal(1)
+            if unit >= 100000000:
+                # 亿：折入 total（评审复审：亿…万… 复合形态里万不能再乘大）
                 total = (total + section + (number if number is not None else default)) * unit
+                section = Decimal(0)
+            elif unit >= 10000:
+                # 万：section 进位后并入 total
+                section = (section + (number if number is not None else Decimal(1))) * unit
+                total += section
                 section = Decimal(0)
             else:
                 section += (number if number is not None else Decimal(1)) * unit
