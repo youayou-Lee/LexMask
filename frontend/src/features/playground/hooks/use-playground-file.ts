@@ -405,6 +405,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
             label: vLabel,
             setLoadingMessage,
             onPageComplete: ({ pageBoxes }) => {
+              // Issue#106：页并发 1→3 之后，切文件/取消时在飞页最多 3 个，
+              // 已返回的页可能在 abort 之后才回调；与下方 :416 的 `if (signal.aborted) return;`
+              // 同源守卫，避免旧会话的框被 append 进新会话。
+              if (signal.aborted) return;
               startTransition(() => {
                 opts.setBoundingBoxes((prev) => [...prev, ...pageBoxes]);
               });

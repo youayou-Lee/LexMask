@@ -324,6 +324,11 @@ export async function runVisionDetectionPages({
   let nextIndex = 0;
   let completedPages = 0;
   let totalBoxes = 0;
+  // Issue#106：页并发由 1 放开到 3 之后，某个 worker 抛错不再自动让兄弟 worker 停下
+  // （原先勾选视觉特征时 maxWorkers=1，只有一条 worker，抛错即自然终止取页）。
+  // 这里显式置停止标志，保持「一页失败即不再取新页」的 fail-fast 语义，
+  // 避免错误提示已经弹出后仍在后台继续占用 GPU。
+  let stopRequested = false;
   setLoadingMessage?.(`${label} (0/${pages.length})`);
 
   const runPage = async (page: number) => {
@@ -365,10 +370,15 @@ export async function runVisionDetectionPages({
   };
 
   async function worker() {
-    while (nextIndex < pages.length) {
+    while (nextIndex < pages.length && !stopRequested) {
       const page = pages[nextIndex];
       nextIndex += 1;
-      await runPage(page);
+      try {
+        await runPage(page);
+      } catch (error) {
+        stopRequested = true;
+        throw error;
+      }
     }
   }
 
