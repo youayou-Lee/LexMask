@@ -35,6 +35,7 @@ import sys
 from pathlib import Path
 
 from gt.export_exam import build_exam, exam_summary, write_exam_jsonl
+from gt.quality_metrics import build_quality_report
 
 STAGES = ("render", "compare", "reduce", "gate", "export")
 
@@ -172,7 +173,10 @@ def export_stage(results_dir: Path, out_path: Path, types: set[str] | None,
 # ---- CLI ----------------------------------------------------------------------
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="单案 GT/评测集产线一键编排")
+    ap = argparse.ArgumentParser(
+        description="单案 GT/评测集产线一键编排",
+        epilog="注意：--report-only 的 agent_error 抽检由会话侧填入，"
+               "CLI 报告里该项恒 available:false，不代表抽检通过。")
     ap.add_argument("--case-dir", required=True)
     ap.add_argument("--results-dir", default=None,
                     help="逐页结果目录（默认 <case-dir>/self-ner-eval/results）")
@@ -185,6 +189,8 @@ def main() -> int:
     ap.add_argument("--exam-version", default="v0")
     ap.add_argument("--flow-scope-file", default=None,
                     help="人工圈定的流水域清单（phase1-scope.json，与内容签名取并集）")
+    ap.add_argument("--report-only", action="store_true",
+                    help="只出质量三数报告（G5），不执行任何阶段")
     a = ap.parse_args()
 
     eval_dir = Path(a.out) if a.out else Path(a.case_dir) / "self-ner-eval"
@@ -197,6 +203,30 @@ def main() -> int:
         for line in open(report_path, encoding="utf-8"):
             r = json.loads(line)
             violations += len(r.get("invalid", []))
+    if a.report_only:
+        adjudications = []
+        adj_path = eval_dir / "adjudications.jsonl"
+        if adj_path.exists():
+            adjudications = [json.loads(l) for l in open(adj_path, encoding="utf-8")]
+        # 上游关停数 = 总实体 - 软层前残留数；pre_soft 缺失 → 如实缺数（评审：
+        # 报"100% 消化"是最危险的编造）
+        pre_soft = eval_dir / "human_review.pre_soft.jsonl"
+        upstream_closed = None
+        total_ents = sum(len(json.load(open(f, encoding="utf-8")).get("entities", []))
+                         for f in glob.glob(str(results_dir / "*" / "*.json")))
+        if pre_soft.exists():
+            residual = sum(1 for _ in open(pre_soft, encoding="utf-8"))
+            upstream_closed = max(total_ents - residual, 0)
+        rep = build_quality_report(
+            adjudications=adjudications,
+            upstream_closed=upstream_closed,
+            total_entities=total_ents,
+            spot_check=[],  # 抽检结果由会话侧填入时走 quality_metrics.build_quality_report
+            same_source=None,
+        )
+        print(json.dumps({"quality_report": rep}, ensure_ascii=False, indent=1))
+        return 0
+
     stages = plan_stages(a.from_step, a.to_step, violations=violations)
     forced_recheck = violations > 0 and stages == ["compare"]
     for stage in stages:
