@@ -64,12 +64,50 @@ def _norm(s: str) -> str:
 
 # ---- 各阶段实现 ---------------------------------------------------------------
 
-def compare_stage(results_dir: Path, vl_md_template: str | None) -> dict:
-    """零幻觉门 + （可选）异源对照一致率。返回统计并写 compare_report.jsonl。"""
+def _page_parts(f: str) -> tuple[str, int]:
+    """``.../results/<stem>/pNNN.json`` → ``(stem, 0起页码)``（页号用正则，位数不限）。"""
+    parts = Path(f).parts
+    m = re.fullmatch(r"p(\d+)\.json", parts[-1])
+    if not m:
+        raise ValueError(f"结果文件名不符合契约 pNNN.json：{f}")
+    return parts[-2], int(m.group(1)) - 1
+
+
+def render_stage(case_dir: Path, out_dir: Path) -> dict:
+    """PDF → pages/<stem>/pNNN.png（150dpi，已存在跳过）+ manifest.json。"""
+    import subprocess
+    pages_dir = out_dir / "pages"
+    pages_dir.mkdir(parents=True, exist_ok=True)
+    manifest = []
+    for pdf in sorted(glob.glob(str(Path(case_dir) / "*.pdf"))):
+        stem = Path(pdf).stem
+        n = int(subprocess.check_output(["pdfinfo", pdf]).decode()
+                .split("Pages:")[1].split()[0])
+        for i in range(1, n + 1):
+            png = pages_dir / stem / f"p{i:03d}.png"
+            png.parent.mkdir(parents=True, exist_ok=True)
+            if not png.exists():
+                subprocess.run(["pdftoppm", "-f", str(i), "-l", str(i), "-r", "150",
+                                "-png", "-singlefile", pdf, str(png)[:-4]],
+                               check=True)
+            manifest.append({"pdf": Path(pdf).name, "stem": stem, "page_no": i - 1,
+                             "png": str(png),
+                             "result": str(results_dir_for(out_dir) / stem / f"p{i:03d}.json")})
+    (out_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
+    return {"pdfs": len(manifest) and len({m['pdf'] for m in manifest}),
+            "pages": len(manifest), "manifest": str(out_dir / "manifest.json")}
+
+
+def results_dir_for(out_dir: Path) -> Path:
+    return out_dir / "results"
+
+
+def compare_stage(results_dir: Path, vl_md_template: str | None = None) -> dict:
+    """零幻觉门（实体=本页转写逐字子串）。返回统计并写 compare_report.jsonl。"""
     rows, stats = [], collections.Counter()
     for f in sorted(glob.glob(str(results_dir / "*" / "*.json"))):
-        parts = f.split("/")
-        stem, page = parts[-2], parts[-1][:-5]
+        stem, page = _page_parts(f)
         try:
             d = json.load(open(f, encoding="utf-8"))
         except Exception as e:
@@ -99,8 +137,9 @@ def reduce_and_gate_stages(results_dir: Path, out_dir: Path) -> dict:
     """
     review = out_dir / "human_review.jsonl"
     n = sum(1 for _ in open(review, encoding="utf-8")) if review.exists() else 0
-    return {"human_review_entries": n,
-            "note": "逐条判定由 gt.reduce/gate 纯函数承担；批编排按产物文件接续"}
+    return {"human_review_entries": n, "executed": False,
+            "note": "本阶段未执行逐条判定——逐条判定由 gt.reduce/gate 纯函数承担，"
+                    "批编排按产物文件接续（会话侧波次产出 human_review/adjudications 后此处只校验计数）"}
 
 
 def export_stage(results_dir: Path, out_path: Path, types: set[str] | None,
@@ -115,12 +154,10 @@ def export_stage(results_dir: Path, out_path: Path, types: set[str] | None,
     if flow_scope_file and Path(flow_scope_file).exists():
         scope = json.load(open(flow_scope_file, encoding="utf-8"))
         for rel in scope.get("phase1_excluded", []):
-            parts = Path(rel).parts
-            explicit.add((parts[-2], int(parts[-1][1:4]) - 1))
+            explicit.add(_page_parts(str(results_dir.parent / rel)))
     pages, excluded = [], set()
     for f in sorted(glob.glob(str(results_dir / "*" / "*.json"))):
-        parts = f.split("/")
-        stem, page_no = parts[-2], int(parts[-1][1:4]) - 1
+        stem, page_no = _page_parts(f)
         d = json.load(open(f, encoding="utf-8"))
         if is_flow_page(d.get("text", "")) or (stem, page_no) in explicit:
             excluded.add((stem, page_no))
@@ -146,8 +183,6 @@ def main() -> int:
     ap.add_argument("--types", nargs="*", default=None,
                     help="考卷勾选类型（缺省=全类型）")
     ap.add_argument("--exam-version", default="v0")
-    ap.add_argument("--gt-version-file", default=None,
-                    help="对照 MD 通配模板（compare 阶段可选）")
     ap.add_argument("--flow-scope-file", default=None,
                     help="人工圈定的流水域清单（phase1-scope.json，与内容签名取并集）")
     a = ap.parse_args()
@@ -163,18 +198,21 @@ def main() -> int:
             r = json.loads(line)
             violations += len(r.get("invalid", []))
     stages = plan_stages(a.from_step, a.to_step, violations=violations)
-    if not stages:
-        print(f"熔断：存在 {violations} 条零幻觉违规，拒绝执行 {a.from_step}→{a.to_step}；"
-              f"先修复 results 再重跑。", file=sys.stderr)
-        return 2
-
+    forced_recheck = violations > 0 and stages == ["compare"]
     for stage in stages:
-        if stage == "compare":
-            rep = compare_stage(results_dir, a.gt_version_file)
+        if stage == "render":
+            rep = render_stage(Path(a.case_dir), eval_dir)
+            print(json.dumps({"stage": stage, **rep}, ensure_ascii=False))
+        elif stage == "compare":
+            rep = compare_stage(results_dir)
             print(json.dumps({"stage": stage, **rep}, ensure_ascii=False))
             if not rep["zero_hallucination"]:
                 print("零幻觉门未过，链路停止。", file=sys.stderr)
                 return 2
+            if forced_recheck and (a.from_step, a.to_step) != ("compare", "compare"):
+                print("复检通过（旧报告违规已被修复）。请重跑原命令继续后续阶段。",
+                      file=sys.stderr)
+                return 0
         elif stage in ("reduce", "gate"):
             print(json.dumps({"stage": stage,
                               **reduce_and_gate_stages(results_dir, eval_dir)},

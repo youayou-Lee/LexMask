@@ -134,3 +134,24 @@ def test_parse_chinese_number_shared_primitive():
     assert value_norm.parse_chinese_number("一百零五") == 105
     assert value_norm.parse_chinese_number("很多") is None
     assert value_norm.parse_chinese_number("") is None
+# ---- 评审修复回归（PR#110 REVISE 意见） --------------------------------------
+
+def test_dollar_prefix_not_treated_as_yuan():
+    """外币前缀符号必须保留独立单位：$100 ≠ 100元（无汇率不得判等）。"""
+    v = value_norm.normalize_number("$100", kind="amount")
+    assert v["unit"] == "美元"
+    assert value_norm.value_equal("$100", "100元", kind="amount")["verdict"] == "different"
+
+
+def test_rmb_prefix_still_stripped():
+    """人民币/RMB 是本币标记，剥离后照常判等。"""
+    assert value_norm.value_equal("RMB100", "100元", kind="amount")["verdict"] == "same"
+
+
+def test_wan_yi_scale():
+    """万/亿连续进位：已有累计必须一并乘（评审 Minor#6）。"""
+    assert value_norm.parse_chinese_number("三万亿") == 3_000_000_000_000
+    assert value_norm.parse_chinese_number("三万五千") == 35000
+    assert value_norm.parse_chinese_number("五千亿") == 500_000_000_000
+    v = value_norm._eval_scaled("3万亿")
+    assert v == 3_000_000_000_000

@@ -62,8 +62,10 @@ _UNIT_ALIASES: dict[str, str] = {
 
 #: 尾部噪声（「10000元整」的「整」）
 _TRAILING_NOISE = ("整", "正", "左右", "余")
-#: 前缀货币标记（全角已在 normalize_text 里转半角）
-_CURRENCY_PREFIXES = ("人民币", "RMB", "¥", "￥", "$")
+#: 本币前缀（=「元」，剥离后不影响判等）
+_CURRENCY_PREFIXES = ("人民币", "RMB", "¥", "￥")
+#: 外币前缀（无汇率不得判等——前缀符号型外币同样适用，评审 Important#1）
+_FOREIGN_CURRENCY_PREFIXES = ("US$", "$", "＄", "美元 ", "港元 ", "港币 ")
 
 _CN_DIGITS: dict[str, int] = {
     "〇": 0, "零": 0,
@@ -100,8 +102,8 @@ def parse_chinese_number(tok: str) -> int | None:
             elif ch in _CN_UNITS:
                 unit = _CN_UNITS[ch]
                 if unit >= 10000:
-                    section = (section + number) * unit
-                    total += section
+                    # 万/亿档：已有累计一并进位（三万亿 = (3)*1e4*1e8，漏乘 total 会得 30000）
+                    total = (total + section + number) * unit
                     section = 0
                 else:
                     section += (number or 1) * unit
@@ -155,8 +157,9 @@ def _eval_scaled(tok: str) -> Decimal | None:
         if ch in _CN_UNITS:
             unit = Decimal(_CN_UNITS[ch])
             if unit >= 10000:
-                section = (section + (number if number is not None else Decimal(1))) * unit
-                total += section
+                # 万/亿档：已有累计一并进位；缺省乘数仅在全空时取 1（"3万亿"的亿位不能凭空多 1 万）
+                default = Decimal(0) if (total or section) else Decimal(1)
+                total = (total + section + (number if number is not None else default)) * unit
                 section = Decimal(0)
             else:
                 section += (number if number is not None else Decimal(1)) * unit
@@ -217,9 +220,19 @@ def normalize_number(raw: str, kind: str | None = None) -> dict | None:
     s = normalize_text(raw)
     if not s:
         return None
-    for prefix in _CURRENCY_PREFIXES:
+    foreign_unit: str | None = None
+    for prefix in _FOREIGN_CURRENCY_PREFIXES:
         if s.startswith(prefix):
+            # 外币：符号转成独立单位保留，绝不折算成「元」（无汇率不得判等）
+            foreign_unit = {"$": "美元", "US$": "美元", "＄": "美元",
+                            "美元 ": "美元", "港元 ": "港元", "港币 ": "港元"}[prefix]
             s = s[len(prefix):]
+            break
+    if foreign_unit is None:
+        for prefix in _CURRENCY_PREFIXES:
+            if s.startswith(prefix):
+                s = s[len(prefix):]
+                break
     if not s:
         return None
 
@@ -241,7 +254,11 @@ def normalize_number(raw: str, kind: str | None = None) -> dict | None:
     elif unit is not None and kind != "amount":
         # 认不出的单位：只有金额域保留（外币），其余按不可解析处理
         return None
-    if unit is None and kind == "amount":
+    if unit is None and foreign_unit is not None:
+        unit = foreign_unit
+    elif unit is not None and foreign_unit is not None:
+        unit = f"{foreign_unit}{unit}"  # 如 $100万 → 美元万（不折算，保序即可判不等）
+    elif unit is None and kind == "amount":
         unit = "元"
 
     return {"value": _dec_str(value), "unit": unit}

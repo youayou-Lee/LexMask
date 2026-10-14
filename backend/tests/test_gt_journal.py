@@ -3,6 +3,7 @@
 #
 # AC4（审计完整）：每条争议在 journal 有完整记录——对账 = 争议数与 journal 条目数
 # 可互相核对，漏一条都能被 reconcile 抓出来。
+import json
 import sys
 import time
 from pathlib import Path
@@ -101,3 +102,14 @@ def test_elapsed_s_monotonic_walls(tmp_path):
     t0 = time.time()
     e = j.record(**_entry())
     assert e["ts"][:4] == time.strftime("%Y", time.localtime(t0))
+
+def test_load_rejects_tampered_entry(tmp_path):
+    """审计文件缺契约字段时拒绝载入（评审 Minor#10）。"""
+    p = tmp_path / "j.jsonl"
+    j = gt_journal.Journal(p)
+    j.record(**_entry())
+    good = p.read_text(encoding="utf-8").splitlines()
+    bad = json.loads(good[0]); del bad["input_hash"]
+    p.write_text("\n".join([good[0], json.dumps(bad, ensure_ascii=False)]), encoding="utf-8")
+    with pytest.raises(ValueError, match="审计链不完整"):
+        gt_journal.Journal.load(p)

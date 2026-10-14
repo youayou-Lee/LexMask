@@ -355,3 +355,7 @@ def test_quantity_gate_uses_value_norm():
     assert r["verdict"] == "auto_pass" and r["situation"] == "normalized_equal"
     r2 = gate.gate_verdict("金额", "10000元", "100000元", level="S1-internal")
     assert r2["verdict"] == "human_pending" and r2["situation"] == "quantity_mismatch"
+def test_single_char_canonical_no_corroboration():
+    """单字 canonical 不计佐证（评审 Minor#5：偶然命中率太高）。"""
+    assert gate._corroboration("李", [("a", "李四在此"), ("b", "李四也在此")]) == 0
+    assert gate._corroboration("李四", [("a", "李四在此"), ("b", "李四也在此")]) == 2

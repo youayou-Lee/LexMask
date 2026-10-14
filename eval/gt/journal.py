@@ -89,10 +89,18 @@ class Journal:
     def load(cls, path: str | Path) -> "Journal":
         entries = []
         with open(path, encoding="utf-8") as f:
-            for line in f:
+            for line_no, line in enumerate(f, 1):
                 line = line.strip()
-                if line:
-                    entries.append(JournalEntry(json.loads(line)))
+                if not line:
+                    continue
+                data = json.loads(line)
+                missing = [k for k in FIELDS if k not in data]
+                if missing:
+                    # 审计文件被截断/篡改时大声失败（评审 Minor#10：静默载入 = AC4 对账可信度归零）
+                    raise ValueError(
+                        f"journal 文件第 {line_no} 行缺契约字段 {missing}，"
+                        f"审计链不完整，拒绝载入")
+                entries.append(JournalEntry(data))
         j = cls(None)
         j.entries = entries
         return j

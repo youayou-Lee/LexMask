@@ -17,8 +17,8 @@ identifier       归一化后必须逐位相等；不等即值差              �
 datetime         归一到日期元组；粒度差容忍（§7.3）              规则，不用模型
 quantity         归一到 (数值, 单位) 后必须相等，无粒度容忍       规则，不用模型
 text/enum        归一化到枚举值后必须相等                      规则，不用模型
-text/name        语义等价；**近形字警惕**                      软层分诊 + 证据闸门
-text/passage     实体对齐 + 内容重叠率，不按逐字                 软层分诊 + 证据闸门
+text/name        语义等价；**近形字警惕**                      规则（重叠率+数字守卫+≥2 异源佐证）
+text/passage     实体对齐 + 内容重叠率，不按逐字                 规则（重叠率+数字守卫）
 ===============  ==========================================  ==================
 
 **三种输出**：``auto_pass``（自动定案）/ ``needs_soft``（须调软层，流程信号）/
@@ -200,8 +200,12 @@ def _diff_regions(a: str, b: str) -> tuple[bool, list[dict]]:
 
 
 def _corroboration(canonical_norm: str, transcripts) -> int:
-    """``canonical`` 在多少个**异源**通道文本里逐字出现（同源只计一次）。"""
-    if not canonical_norm or not transcripts:
+    """``canonical`` 在多少个**异源**通道文本里逐字出现（同源只计一次）。
+
+    单字/空串不计数（评审 Minor#5）：极短 canonical 偶然命中率高，
+    「多数佐证」会被稀释——名称型实体 canonical 归一后至少 2 字才计佐证。
+    """
+    if not canonical_norm or len(canonical_norm) < 2 or not transcripts:
         return 0
     seen: set[str] = set()
     for source_id, text in transcripts:
