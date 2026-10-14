@@ -35,6 +35,7 @@ import sys
 from pathlib import Path
 
 from gt.export_exam import build_exam, exam_summary, write_exam_jsonl
+from gt.quality_metrics import build_quality_report
 
 STAGES = ("render", "compare", "reduce", "gate", "export")
 
@@ -185,6 +186,8 @@ def main() -> int:
     ap.add_argument("--exam-version", default="v0")
     ap.add_argument("--flow-scope-file", default=None,
                     help="人工圈定的流水域清单（phase1-scope.json，与内容签名取并集）")
+    ap.add_argument("--report-only", action="store_true",
+                    help="只出质量三数报告（G5），不执行任何阶段")
     a = ap.parse_args()
 
     eval_dir = Path(a.out) if a.out else Path(a.case_dir) / "self-ner-eval"
@@ -197,6 +200,29 @@ def main() -> int:
         for line in open(report_path, encoding="utf-8"):
             r = json.loads(line)
             violations += len(r.get("invalid", []))
+    if a.report_only:
+        adjudications = []
+        adj_path = eval_dir / "adjudications.jsonl"
+        if adj_path.exists():
+            adjudications = [json.loads(l) for l in open(adj_path, encoding="utf-8")]
+        # 上游（字符/语义归一）关停数 = 总实体 - 软层前残留数
+        pre_soft = eval_dir / "human_review.pre_soft.jsonl"
+        upstream_total = 0
+        if pre_soft.exists():
+            upstream_total = sum(1 for _ in open(pre_soft, encoding="utf-8"))
+        total_ents = sum(len(json.load(open(f, encoding="utf-8")).get("entities", []))
+                         for f in glob.glob(str(results_dir / "*" / "*.json")))
+        upstream_closed = max(total_ents - upstream_total, 0)
+        rep = build_quality_report(
+            adjudications=adjudications,
+            upstream_closed=upstream_closed,
+            upstream_total=total_ents,
+            spot_check=[],  # 抽检结果由会话侧填入时走 quality_metrics.build_quality_report
+            same_source=None,
+        )
+        print(json.dumps({"quality_report": rep}, ensure_ascii=False, indent=1))
+        return 0
+
     stages = plan_stages(a.from_step, a.to_step, violations=violations)
     forced_recheck = violations > 0 and stages == ["compare"]
     for stage in stages:
