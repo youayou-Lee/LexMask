@@ -173,7 +173,10 @@ def export_stage(results_dir: Path, out_path: Path, types: set[str] | None,
 # ---- CLI ----------------------------------------------------------------------
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="单案 GT/评测集产线一键编排")
+    ap = argparse.ArgumentParser(
+        description="单案 GT/评测集产线一键编排",
+        epilog="注意：--report-only 的 agent_error 抽检由会话侧填入，"
+               "CLI 报告里该项恒 available:false，不代表抽检通过。")
     ap.add_argument("--case-dir", required=True)
     ap.add_argument("--results-dir", default=None,
                     help="逐页结果目录（默认 <case-dir>/self-ner-eval/results）")
@@ -205,18 +208,19 @@ def main() -> int:
         adj_path = eval_dir / "adjudications.jsonl"
         if adj_path.exists():
             adjudications = [json.loads(l) for l in open(adj_path, encoding="utf-8")]
-        # 上游（字符/语义归一）关停数 = 总实体 - 软层前残留数
+        # 上游关停数 = 总实体 - 软层前残留数；pre_soft 缺失 → 如实缺数（评审：
+        # 报"100% 消化"是最危险的编造）
         pre_soft = eval_dir / "human_review.pre_soft.jsonl"
-        upstream_total = 0
-        if pre_soft.exists():
-            upstream_total = sum(1 for _ in open(pre_soft, encoding="utf-8"))
+        upstream_closed = None
         total_ents = sum(len(json.load(open(f, encoding="utf-8")).get("entities", []))
                          for f in glob.glob(str(results_dir / "*" / "*.json")))
-        upstream_closed = max(total_ents - upstream_total, 0)
+        if pre_soft.exists():
+            residual = sum(1 for _ in open(pre_soft, encoding="utf-8"))
+            upstream_closed = max(total_ents - residual, 0)
         rep = build_quality_report(
             adjudications=adjudications,
             upstream_closed=upstream_closed,
-            upstream_total=total_ents,
+            total_entities=total_ents,
             spot_check=[],  # 抽检结果由会话侧填入时走 quality_metrics.build_quality_report
             same_source=None,
         )

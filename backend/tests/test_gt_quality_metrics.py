@@ -84,7 +84,7 @@ def test_circuit_breaker():
 def test_build_quality_report():
     rep = qm.build_quality_report(
         adjudications=[{"verdict": "auto_closed"}],
-        upstream_closed=3, upstream_total=4,  # 实体总数 4：上游 3/4 + 软层 1/4 = 全链 100%
+        upstream_closed=3, total_entities=4,  # 实体总数 4：上游 3/4 + 软层 1/4 = 全链 100%
         spot_check=[{"confirmed": True}] * 9 + [{"confirmed": False}],
         same_source=(None, None),
         thresholds={"agent_error": 0.10},
@@ -93,3 +93,14 @@ def test_build_quality_report():
     assert rep["agent_error"]["error_rate"] == pytest.approx(0.1)
     assert rep["circuit_break"]["tripped"] is False
     assert rep["same_source"]["available"] is False
+
+
+def test_upstream_missing_artifact_reports_unavailable():
+    """上游产物缺失时如实缺数（评审 Important#1：报 100% 消化=最危险的编造）。"""
+    m = qm.auto_digest_rate([{"verdict": "auto_closed"}],
+                            upstream_closed=None, total_entities=10)
+    assert m["available"] is False and m["overall"] == 0.0
+    rep = qm.build_quality_report(adjudications=[], upstream_closed=None,
+                                  total_entities=10, spot_check=[],
+                                  same_source=None)
+    assert rep["digest"]["available"] is False

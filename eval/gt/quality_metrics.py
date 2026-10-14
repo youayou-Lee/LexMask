@@ -18,13 +18,17 @@ from __future__ import annotations
 
 # ---- 1. 自动消化率 -----------------------------------------------------------
 
-def auto_digest_rate(adjudications: list[dict], upstream_closed: int,
+def auto_digest_rate(adjudications: list[dict], upstream_closed: int | None,
                      total_entities: int) -> dict:
     """三层消化率，分母统一 = 实体总数（不是残留数，否则比率会 >1）。
 
     ``adjudications``：soft_gate 裁定条目（verdict 字段）；
-    ``upstream_closed``：字符/语义归一关停数；``total_entities``：实体总数。
+    ``upstream_closed``：字符/语义归一关停数（None = 上游产物缺失，
+    如实缺数不编 100%）；``total_entities``：实体总数。
     """
+    if upstream_closed is None:
+        return {"available": False, "upstream": 0.0, "soft_layer": 0.0,
+                "overall": 0.0}
     soft_total = len(adjudications)
     soft_closed = sum(1 for a in adjudications
                       if a.get("verdict") == "auto_closed")
@@ -32,7 +36,8 @@ def auto_digest_rate(adjudications: list[dict], upstream_closed: int,
     soft = soft_closed / total_entities if total_entities else 0.0
     overall = ((upstream_closed + soft_closed) / total_entities
                if total_entities else 0.0)
-    return {"upstream": upstream, "soft_layer": soft, "overall": overall}
+    return {"available": True, "upstream": upstream,
+            "soft_layer": soft, "overall": overall}
 
 
 # ---- 2. Agent 错误率 ----------------------------------------------------------
@@ -90,13 +95,13 @@ def circuit_breaker(error_rate: float, threshold: float,
 
 # ---- 汇总 ---------------------------------------------------------------------
 
-def build_quality_report(adjudications: list[dict], upstream_closed: int,
-                         upstream_total: int, spot_check: list[dict],  # noqa: ARG001 upstream_total=实体总数
+def build_quality_report(adjudications: list[dict], upstream_closed: int | None,
+                         total_entities: int, spot_check: list[dict],
                          same_source: tuple | None,
                          thresholds: dict | None = None) -> dict:
     """三数一次出齐 + 熔断判定（report.md 与停批决策的唯一数据源）。"""
     th = {"agent_error": 0.10, **(thresholds or {})}
-    digest = auto_digest_rate(adjudications, upstream_closed, upstream_total)
+    digest = auto_digest_rate(adjudications, upstream_closed, total_entities)
     err = agent_error_rate(spot_check)
     ss = (same_source_agreement(*same_source)
           if same_source else {"available": False, "pages_compared": 0,
