@@ -648,6 +648,44 @@ class HaSClient:
 
         Returns:
             {类型: [实体列表]}
+
+        ⚠️ 返回值不含「这次到底有没有拿到结论」的信息：HTTP 错/超时/输出不可解析
+        全被吞成 `{}`，与「模型合法地回答这页没有实体」在返回值上完全同形。
+        需要该判据（例如决定要不要把结果写进缓存）的调用方请用 `ner_checked()`。
+        """
+        return self.ner_checked(
+            text,
+            entity_types,
+            type_guidance,
+            temperature=temperature,
+            sample_index=sample_index,
+            _allow_truncation_retry=_allow_truncation_retry,
+        )[0]
+
+    def ner_checked(
+        self,
+        text: str,
+        entity_types: list[str] | None = None,
+        type_guidance: list[dict[str, Any]] | None = None,
+        *,
+        temperature: float | None = None,
+        sample_index: int = 0,
+        _allow_truncation_retry: bool = True,
+    ) -> tuple[dict[str, list[str]], bool]:
+        """`ner()` + **显式解析成功标志**（Issue#108 ⑥ 评审 C1/C2）。
+
+        返回 `(结果, ok)`。`ok=True` 表示本次请求的**每一个**类型都落在一份
+        **解析成功**的模型响应里；`ok=False` 表示至少一个类型的结论只是「没拿到」
+        （HTTP 错/超时被吞、输出不可解析、截断修复后整表缺失）。
+
+        为什么必须显式给：`ner()` 把失败吞成 `{}`，与合法的空答案在返回值上无法
+        区分，而 `asyncio.gather(return_exceptions=True)` 也看不到被吞掉的异常
+        （`isinstance(batch_result, Exception)` 分支永不进入）。写侧若拿「没抛异常」
+        当成功判据，部分并集/空结果会污染缓存键并在 TTL 内固化成永久漏检
+        （评审已复现：C1 部分并集 12/19 桶、C2 整页 0 实体固化）。
+
+        判据是**解析成功**，不是**结果非空**：提示词明确「无匹配就回 `{}`」，所以
+        合法空对象算成功（否则合法空页会被反复重推）。
         """
         types = self._normalize_ner_types(entity_types)
         guidance = self._normalize_type_guidance(types, type_guidance)
@@ -655,7 +693,8 @@ class HaSClient:
         cache_key = self._ner_cache_key_for(text, types, guidance_text, sample_index)
         cached = self._get_cached_ner(cache_key)
         if cached is not None:
-            return cached
+            # 命中即视为成功：写回口只收「解析成功」的结果（见下方各 return）。
+            return cached, True
 
         from app.core.config import settings
 
@@ -682,17 +721,19 @@ class HaSClient:
             if len(planned_batches) > 1:
                 guidance_by_type = {str(item.get("type") or ""): item for item in (type_guidance or [])}
                 merged: dict[str, list[str]] = {}
+                all_confirmed = True
                 for batch in planned_batches:
                     batch_guidance = (
                         [guidance_by_type[t] for t in batch if t in guidance_by_type] or None
                     )
-                    part = self.ner(
+                    part, part_confirmed = self.ner_checked(
                         text,
                         batch,
                         batch_guidance,
                         temperature=temperature,
                         sample_index=sample_index,
                     )
+                    all_confirmed = all_confirmed and part_confirmed
                     for key, values in (part or {}).items():
                         if not values:
                             continue
@@ -701,8 +742,12 @@ class HaSClient:
                             if value not in bucket:
                                 bucket.append(value)
                 _record_ner_metrics(rebatch_batches=len(planned_batches))
-                self._set_cached_ner(cache_key, merged)
-                return merged
+                # Issue#108 ⑥ 评审 C1/C2：全类型键是各子批的**并集**，只有每个子批
+                # 都解析成功时它才是完整结论。若有子批只是「没拿到」，写进去的部分
+                # 并集会被读侧（视觉线只探全类型键）当成命中，在 TTL 内固化成漏检。
+                if all_confirmed:
+                    self._set_cached_ner(cache_key, merged)
+                return merged, all_confirmed
             # desired ≤ 帽（或单类型）→ 整页单次：不落入 legacy 预分批
 
         if hard_cap <= 0 and type_guidance is None:
@@ -723,14 +768,16 @@ class HaSClient:
                     batch_size,
                 )
                 merged: dict[str, list[str]] = {}
+                all_confirmed = True
                 for start in range(0, len(types), batch_size):
-                    part = self.ner(
+                    part, part_confirmed = self.ner_checked(
                         text,
                         types[start:start + batch_size],
                         None,
                         temperature=temperature,
                         sample_index=sample_index,
                     )
+                    all_confirmed = all_confirmed and part_confirmed
                     for key, values in (part or {}).items():
                         if not values:
                             continue
@@ -738,8 +785,11 @@ class HaSClient:
                         for value in values:
                             if value not in bucket:
                                 bucket.append(value)
-                self._set_cached_ner(cache_key, merged)
-                return merged
+                # Issue#108 ⑥ 评审 C1/C2：同「帽驱动预分批」——并集只有在每个子批都
+                # 解析成功时才是完整结论，否则不得写全类型键。
+                if all_confirmed:
+                    self._set_cached_ner(cache_key, merged)
+                return merged, all_confirmed
 
         owns_request, request_event = self._begin_ner_request(cache_key)
         if not owns_request:
@@ -747,9 +797,10 @@ class HaSClient:
                 request_event.wait(timeout=self.timeout.read or None)
             cached = self._get_cached_ner(cache_key)
             if cached is not None:
-                return cached
+                return cached, True
+            # 同 payload 的并发请求跑完却没留下缓存 ⇒ 它也没拿到确认结论。
             logger.warning("HaS NER duplicate request finished without cacheable result")
-            return {}
+            return {}, False
         types_str = json.dumps(types, ensure_ascii=False, separators=(",", ":"))
         guidance_block = f"\nType guidance:{guidance_text}" if guidance_text else ""
 
@@ -817,14 +868,16 @@ If nothing matches, return {{}}.
                     target = max(_NER_TYPE_BATCH_TARGET_TOKENS_FLOOR, int(settings.HAS_NER_TYPE_BATCH_TARGET_TOKENS))
                     batch_size = max(_NER_BATCH_MIN_TYPES, min(_NER_BATCH_MAX_TYPES, target // _NER_BATCH_TOKENS_PER_TYPE))
                     merged: dict[str, list[str]] = {}
+                    all_confirmed = True
                     for start in range(0, len(types), batch_size):
-                        part = self.ner(
+                        part, part_confirmed = self.ner_checked(
                             text,
                             types[start:start + batch_size],
                             None,
                             temperature=temperature,
                             sample_index=sample_index,
                         )
+                        all_confirmed = all_confirmed and part_confirmed
                         for key, values in (part or {}).items():
                             if not values:
                                 continue
@@ -832,33 +885,42 @@ If nothing matches, return {{}}.
                             for value in values:
                                 if value not in bucket:
                                     bucket.append(value)
-                    if merged:
+                    if all_confirmed and merged:
                         self._set_cached_ner(cache_key, merged)
-                        return merged
-                return {}
+                    return merged, all_confirmed
+                # Issue#108 ⑥ 评审 C1/C2：整段输出不可解析 ≠ 模型答「无实体」，
+                # 必须报 ok=False，否则这个空结果会被写侧当成完整结论缓存起来。
+                return {}, False
             logger.info(
                 "HaS NER parsed %d type buckets via %s in %dms",
                 len(result),
                 parse_mode,
                 round((time.perf_counter() - started) * 1000),
             )
+            confirmed = True
             if parse_mode.startswith("json_repair"):
                 # 输出被截断/损坏（如日期桶复读循环耗尽 max_tokens）：
                 # ①末桶的截断残值丢弃；②整桶丢失的请求类型补查一次并合并。
                 result = self._trim_truncated_tail_value(result)
-                if _allow_truncation_retry:
+                if not _allow_truncation_retry:
+                    # 补查层（调用方正在补查）自己也被腰斩：修复出的残缺结果不可信。
+                    confirmed = False
+                else:
                     missing = [t for t in types if t not in result]
                     if len(missing) == len(types):
                         # 修复后的结果不含任何请求类型：重查 = 同 payload 同预算
                         # 原样重发（必然同结局），且补查 key 与本调用相同——会
                         # 自连接本调用尚未释放的 inflight 事件、白等满超时
                         # （e2e 复现：批调用 3×120s 挂起）。返回修复的部分结果。
+                        # Issue#108 ⑥ 评审 C1/C2：这一支仍按原样写子键（e2e 加固过
+                        # 的死锁规避路径，不改动它），但 ok=False——调用方据此拒绝
+                        # 把这条残缺结果提升成全类型键。
                         logger.warning(
                             "HaS NER output recovered via %s but lacks every requested type; skipping self-retry",
                             parse_mode,
                         )
                         self._set_cached_ner(cache_key, result)
-                        return result
+                        return result, False
                     if missing:
                         _record_ner_metrics(truncation_retries=1)
                         logger.warning(
@@ -872,7 +934,7 @@ If nothing matches, return {{}}.
                             item for item in (type_guidance or [])
                             if str(item.get("type") or "") in missing_set
                         ] or None
-                        retry_result = self.ner(
+                        retry_result, retry_confirmed = self.ner_checked(
                             text,
                             missing,
                             retry_guidance,
@@ -887,11 +949,15 @@ If nothing matches, return {{}}.
                             for value in values:
                                 if value and value not in bucket:
                                     bucket.append(value)
-            self._set_cached_ner(cache_key, result)
-            return result
+                        confirmed = retry_confirmed
+            # Issue#108 ⑥ 评审 C1/C2：只有确认过解析成功的结果才进缓存；残缺结果
+            # 仍原样返回给调用方（尽力而为的容忍语义不变），但不落键。
+            if confirmed:
+                self._set_cached_ner(cache_key, result)
+            return result, confirmed
         except Exception as e:
             logger.error("HaS NER 失败: %s", e)
-            return {}
+            return {}, False
         finally:
             self._finish_ner_request(cache_key, request_event)
 
