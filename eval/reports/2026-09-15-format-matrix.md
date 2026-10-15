@@ -3,12 +3,12 @@
 
 # 格式 × 处理方式实测矩阵报告（2026-09-15，原 Issue #46）
 
-- 环境：`scnet-main`（http://127.0.0.1:18000）　suite：full　执行：2026-09-15T16:42:56 → 2026-09-15T16:47:54
+- 环境：`scnet-main`（后端经 SSH 隧道映射到本机 `127.0.0.1:18000`；实例内后端端口为 8000）　suite：full　执行：2026-09-15T16:42:56 → 2026-09-15T16:47:54
 - 结果：21/25 格 PASS，3 FAIL，1 SKIP，0 ERROR；异常例 2/5 PASS
 - 语料：`eval/datasets/formats/` **全合成样张**（报告内出现的身份证号 / 手机号等"残留原文"均为合成造值，非真实个人信息；实例任务文件已清理）
 
 > [!summary] 一句话诊断
-> **15 类格式可承诺支持**（bmp、docx、gif、htm、html、jpeg、jpg、md、png、scanned_pdf、text_pdf、tif、tiff、txt、webp）；**2 类建议前端禁用**（doc、rtf）。异常路径 2/5 通过。
+> **15 类格式在合成样张上端到端通过**（bmp、docx、gif、htm、html、jpeg、jpg、md、png、scanned_pdf、text_pdf、tif、tiff、txt、webp）；**2 类合成样张即失败、建议前端禁用**（doc、rtf）。⚠️ 本结论的证据强度限于**全合成小样张**，**不构成对真实案卷的格式支持承诺**（真实案卷以多页扫描件为主，见白皮书 §3.5）。异常路径 2/5 通过。
 
 ## 三档结论速览
 
