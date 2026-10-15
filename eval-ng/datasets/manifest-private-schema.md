@@ -34,8 +34,8 @@
 
 ```bash
 python eval-ng/scripts/make_exam_from_manifest.py \
-  --repo-root <本仓绝对路径> --suite real --out /tmp/exam_real_speed.json
-python eval-ng/cli.py speed /tmp/exam_real_speed.json \
+  --repo-root <本仓绝对路径> --suite real --out ./exam_real_speed.json
+python eval-ng/cli.py speed ./exam_real_speed.json \
   --driver single --arm <私有臂 JSON> --out <私有目录>/speed-real
 ```
 

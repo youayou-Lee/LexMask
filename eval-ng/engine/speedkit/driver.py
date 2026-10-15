@@ -32,6 +32,8 @@ import threading
 import time
 from pathlib import Path
 
+import httpx
+
 from ..e2e import E2eApi, percentile
 from . import collect
 
@@ -61,6 +63,12 @@ SIDECAR_KEYS: tuple[str, ...] = (
 )
 # D4② 双墙钟一致性上界
 WALL_AGREEMENT_TOLERANCE = 0.05
+# D4② 墙钟口径（评审 I6）：两条线的 `file_wall_s` 覆盖范围**不同**，必须在报告里言明，
+# 否则「single 比 batch 慢」的结论会把上传/解析耗时误算进被测对象。
+FILE_WALL_SEMANTICS: dict[str, str] = {
+    "single": "single 线：file_wall_s = 上传 + /parse + 逐页 /vision 全过程墙钟（含上传与解析）",
+    "batch": "batch 线：file_wall_s = 自 job submit 起至全部条目进终态（上传发生在 submit 之前，不计入）",
+}
 
 
 def payload_sha256(payload: dict) -> str:
@@ -216,19 +224,38 @@ class _InFlight:
             self.current -= 1
 
 
+def _merge_sidecar(acc: dict, incoming: dict) -> None:
+    """旁证聚合：计数类累加（`*_count(s)`/`*_retries`/`*_batches`），状态类取最近值。
+
+    D8① 要求所有旁证来自响应且**不得结构性丢弃**：数值计数与字符串状态都要留。
+    """
+    for key, value in (incoming or {}).items():
+        if value is None:
+            continue
+        if not collect.is_number(value):
+            acc[key] = value
+            continue
+        value = float(value)
+        if key.endswith(("_count", "_counts", "_retries", "_batches", "_boxes", "_entities")):
+            acc[key] = float(acc.get(key) or 0.0) + value
+        else:
+            acc[key] = value
+
+
 def sidecar_from_response(resp: dict) -> dict:
-    """质量旁证 + 计数（全部从响应取；D8①）。"""
+    """质量旁证 + 计数（全部从响应取；D8①）。数值计数与字符串状态**都保留**。"""
     boxes = resp.get("bounding_boxes")
     box_count = len(boxes) if isinstance(boxes, list) else None
     entity_count = None
     if isinstance(boxes, list):
         entity_count = sum(1 for b in boxes if isinstance(b, dict) and str(b.get("text") or "").strip())
-    stage = {}
+    stage: dict = {}
     for _name, block in (resp.get("pipeline_status") or {}).items():
-        if isinstance(block, dict) and isinstance(block.get("stage_duration_ms"), dict):
-            for key, value in block["stage_duration_ms"].items():
-                if key in SIDECAR_KEYS and not collect.is_number(value):
-                    stage.setdefault(key, value)
+        if not isinstance(block, dict):
+            continue
+        for key, value in (block.get("stage_duration_ms") or {}).items():
+            if key in SIDECAR_KEYS and value is not None:
+                stage.setdefault(key, value)
     return {"box_count": box_count, "entity_count": entity_count, **stage}
 
 
@@ -301,13 +328,7 @@ def measure_single_round(
                 for key in ("box_count", "entity_count"):
                     if collect.is_number(side.get(key)):
                         _totals[key] += int(side[key])
-                for key, value in side.items():
-                    if value is not None:
-                        sidecars.setdefault(key, value)
-                        if collect.is_number(value):
-                            sidecars[key] = max(sidecars.get(key, 0), value) if key.endswith("_count") \
-                                else sidecars.get(key, 0) + value if key.endswith(("_retries", "_batches")) \
-                                else sidecars[key]
+                _merge_sidecar(sidecars, side)
 
         if page_concurrency <= 1:
             for page in range(1, pages + 1):
@@ -419,7 +440,7 @@ def measure_batch_round(
         for key in SIDECAR_KEYS:
             value = recognition.get(key) if isinstance(recognition, dict) else None
             if value is not None:
-                sidecar[key] = value
+                _merge_sidecar(sidecar, {key: value})
         for key in ("box_count", "entity_count"):
             value = recognition.get(key) if isinstance(recognition, dict) else None
             if collect.is_number(value):
@@ -485,7 +506,7 @@ def wall_stats(values: list[float]) -> dict:
     values = [float(v) for v in values]
     if not values:
         return {"n": 0, "mean": None, "p50": None, "p95": None, "min": None, "max": None,
-                "discretion_ratio": None}
+                "iqr": None, "discretion_ratio": None}
     ordered = sorted(values)
     mean = statistics.fmean(ordered)
     spread = (ordered[-1] - ordered[0]) / mean if mean else 0.0
@@ -496,6 +517,8 @@ def wall_stats(values: list[float]) -> dict:
         "p95": round(percentile(ordered, 95), 3),
         "min": round(ordered[0], 3),
         "max": round(ordered[-1], 3),
+        # IQR：小样本（n=3）下的稳健离散度，与极差/均值口径并列给出，避免单看 p95 被单轮拉偏
+        "iqr": round(percentile(ordered, 75) - percentile(ordered, 25), 3),
         "discretion_ratio": round(spread, 6),
     }
 
@@ -514,18 +537,37 @@ def wall_agreement(walls: list[tuple[float, float]]) -> dict:
     }
 
 
-def timing_rounds_needed(stats: dict) -> tuple[bool, str]:
-    """D2③：n<3 或离散 >20% ⇒ 需补轮；补满上限仍 >20% ⇒ UNVERIFIED。"""
+def timing_rounds_needed(stats: dict) -> tuple[bool, str, str]:
+    """D2③：返回 `(needs_more, status, detail)`。**status 直接进报告**——
+
+    n<3 或离散 >20% 时结论只能是 UNVERIFIED（既非 PASS 也非 FAIL），调用方不得把它映射成 PASS。
+    """
     n = stats.get("n") or 0
     ratio = stats.get("discretion_ratio")
     if n < MIN_TIMING_ROUNDS:
-        return True, f"计时轮 {n} < {MIN_TIMING_ROUNDS}"
+        return True, "UNVERIFIED", f"计时轮 {n} < {MIN_TIMING_ROUNDS}，不足以判 PASS"
     if ratio is not None and ratio > MAX_DISCRETION_RATIO:
         if n < MAX_TIMING_ROUNDS:
-            return True, f"跨轮离散 {ratio:.1%} > {MAX_DISCRETION_RATIO:.0%}，需补到总 {MAX_TIMING_ROUNDS + WARMUP_ROUNDS} 轮"
-        return False, (f"补满 {MAX_TIMING_ROUNDS} 个计时轮后离散仍 {ratio:.1%} > {MAX_DISCRETION_RATIO:.0%}"
-                       " ⇒ UNVERIFIED（既非 PASS 也非 FAIL）")
-    return False, f"计时轮 n={n}，离散 {ratio:.1%} ≤ {MAX_DISCRETION_RATIO:.0%}"
+            return True, "UNVERIFIED", (f"跨轮离散 {ratio:.1%} > {MAX_DISCRETION_RATIO:.0%}，"
+                                        f"需补到总 {MAX_TIMING_ROUNDS + WARMUP_ROUNDS} 轮")
+        return False, "UNVERIFIED", (f"补满 {MAX_TIMING_ROUNDS} 个计时轮后离散仍 "
+                                     f"{ratio:.1%} > {MAX_DISCRETION_RATIO:.0%} ⇒ UNVERIFIED（既非 PASS 也非 FAIL）")
+    return False, "PASS", f"计时轮 n={n}，离散 {ratio:.1%} ≤ {MAX_DISCRETION_RATIO:.0%}"
+
+
+def measurement_failure_kind(exc: BaseException) -> tuple[str, str]:
+    """D6④/§7：区分「装置不可得」(BLOCKED) 与「被测对象主动拒收」(FAIL)。
+
+    413（请求体过大）/504（网关超时）是被测链路的性能事实，必须判 FAIL，不得洗成 BLOCKED。
+    """
+    status_code = None
+    if isinstance(exc, VisionRejected):
+        status_code = exc.status_code
+    elif isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+        status_code = exc.response.status_code
+    if status_code in (413, 504):
+        return "FAIL", f"HTTP {status_code}（请求体过大/网关超时 ⇒ 被测对象拒收，D6④ 判 FAIL）"
+    return "BLOCKED", f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
 # ── 冷跑证据（D2②）与并发双证（D2①） ──────────────────────────────────────
@@ -572,14 +614,24 @@ def cold_evidence_checks(evidence: dict, rounds: list[dict], *, cache_policy: st
                                    "value": None})
                     break
             else:
-                pids = [(_entry_for(evidence, int(r.get("round") or 0)) or {}).get("pid") for r in timing]
-                if len(set(pids)) != len(pids):
+                entries = [(_entry_for(evidence, int(r.get("round") or 0)) or {}) for r in timing]
+                pids = [e.get("pid") for e in entries]
+                starts = [e.get("start_time") for e in entries]
+                dup_pid = len(set(pids)) != len(pids)
+                dup_start = len(set(starts)) != len(starts)
+                if dup_pid:
                     checks.append({"id": "D2.cold_evidence", "status": "FAIL",
                                    "detail": f"计时轮 pid 出现重复（{pids}）⇒ 未逐轮重启，冷跑不成立",
                                    "value": pids})
+                elif dup_start:
+                    checks.append({"id": "D2.cold_evidence", "status": "FAIL",
+                                   "detail": f"计时轮 start_time 出现重复（{starts}）⇒ 进程未真正换过"
+                                             "（pid 复用/伪重启），冷跑不成立",
+                                   "value": starts})
                 else:
                     checks.append({"id": "D2.cold_evidence", "status": "PASS",
-                                   "detail": f"{len(timing)} 个计时轮各带 pid/start_time/时间戳，pid 互不相同：{pids}",
+                                   "detail": f"{len(timing)} 个计时轮各带 pid/start_time/时间戳，"
+                                             f"pid 与 start_time 均互不相同：{pids}",
                                    "value": len(timing)})
         if not restart_cmd:
             checks.append({"id": "D2.restart_cmd", "status": "UNVERIFIED",
@@ -670,9 +722,19 @@ def expect_reject_checks(rounds: list[dict], corpus_items: list[dict]) -> list[d
 
 
 def quality_sidecar_check(sidecar: dict, rounds: list[dict]) -> list[dict]:
-    """D8①：旁证字段全部来自响应（这里断言其存在与数值一致性由单测锁定）。"""
-    keys = [k for k in sidecar if sidecar.get(k) is not None]
+    """D8①：旁证字段全部来自响应，且**不得结构性丢弃**——响应回吐过的键必须在聚合里。"""
+    observed: set[str] = set()
+    for entry in rounds or []:
+        if entry.get("warmup"):
+            continue
+        observed.update(k for k, v in (entry.get("sidecar") or {}).items() if v is not None)
+    missing = sorted(k for k in observed if sidecar.get(k) is None)
+    if missing:
+        return [{"id": "D8.sidecar_from_response", "status": "FAIL",
+                 "detail": f"响应回吐过的旁证字段在聚合中丢失：{', '.join(missing)}"
+                           "（旁证不得被结构性过滤）", "value": len(missing)}]
+    keys = sorted(k for k, v in (sidecar or {}).items() if v is not None)
     return [{"id": "D8.sidecar_from_response",
              "status": "PASS" if keys else "UNVERIFIED",
-             "detail": (f"旁证字段取自响应：{', '.join(sorted(keys))}") if keys
+             "detail": (f"旁证字段取自响应且完整保留：{', '.join(keys)}") if keys
                        else "本轮未取到旁证字段（响应未回吐）", "value": len(keys)}]

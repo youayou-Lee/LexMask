@@ -15,8 +15,28 @@ report = boot.load("engine/speedkit/report.py")
 arms = boot.load("engine/speedkit/arms.py")
 cli = boot.load("cli.py")
 redact = boot.load("scripts/check_report_redaction.py")
+REAL_SPEED_API = driver.SpeedApi  # autouse fixture 会把模块属性替换成抛错版本，这里留真类引用
 
 RING_LEAVES = {"prepare": 100.0, "ocr": 300.0, "has_ner": 400.0, "match": 80.0, "draw": 120.0}
+
+
+@pytest.fixture(autouse=True)
+def _no_real_backend(monkeypatch):
+    """单元测试永不连真后端。
+
+    云实例上 `127.0.0.1:8000` 是**活的**：若 CLI 用例走默认 `--api-base`，本地「连接被拒 ⇒ 秒退 BLOCKED」
+    在实例上会变成「真的登录 + 真的上传 + 真的跑测量」——既不确定、又慢，还对真实后端做了意外写入
+    （2026-10-16 在实例上跑本文件时实测：`test_admits_valid_command` 卡住不返回）。
+    这里把 `SpeedApi` 的构造直接改成抛错：任何未显式替换 API 的用例都立刻走「装置不可得 ⇒ BLOCKED」。
+    """
+    attempted: list = []
+
+    def _boom(*args, **kwargs):
+        attempted.append((args, kwargs))
+        raise ConnectionError("单元测试禁止真实建连（约定：零网络）")
+
+    monkeypatch.setattr(driver, "SpeedApi", _boom)
+    return attempted
 
 
 def _single_resp(total: float = 1000.0, ring: dict | None = None) -> dict:
@@ -115,6 +135,61 @@ class TestCollect:
         checks = {c["id"]: c for c in collect.closure_checks(
             agg, harness_seq=[2000.0], backend_seq=[1000.0])}
         assert checks["D3.cross_clock_not_copied"]["status"] == "FAIL"
+
+    def test_no_suffix_merge_is_falsifiable(self):
+        """C1：`D3.no_suffix_merge` 必须真读输入——两管线同名叶子各成独立键，归并即 FAIL。
+
+        判别性来自「把 aggs 手动改成归并形态」这一负例：只断言正例 PASS 是自证
+        （③ 第一轮冷评审实测：把该行改成写死 PASS 后 64 条单测全绿）。
+        """
+        two = {
+            "page": 1,
+            "duration_ms": {"total": 2000.0},
+            "pipeline_status": {
+                "ocr_has": {"stage_duration_ms": {"prepare": 100.0, "ocr": 300.0, "has_ner": 400.0,
+                                                  "match": 80.0, "draw": 120.0, "total": 1000.0}},
+                "text_layer_doc": {"stage_duration_ms": {"prepare": 0.0, "ocr": 0.0, "has_ner": 800.0,
+                                                         "match": 80.0, "draw": 120.0, "total": 1000.0}},
+            },
+        }
+        agg = collect.sum_pages([collect.page_signal(two, wall_s=2.0, page_no=1)])
+        assert agg["pipelines_seen"] == ["ocr_has", "text_layer_doc"]
+        assert {"ocr_has.ocr", "text_layer_doc.ocr"} <= set(agg["rings_by_key_ms"])
+        ok = {c["id"]: c for c in collect.key_placement_checks(agg, "single")}
+        assert ok["D3.no_suffix_merge"]["status"] == "PASS", ok["D3.no_suffix_merge"]
+
+        merged = dict(agg)
+        merged["rings_by_key_ms"] = {  # 模拟「跨管线按同名叶子归并」的坏实现
+            "ocr_has.prepare": 100.0, "ocr_has.ocr": 0.0, "ocr_has.has_ner": 400.0,
+            "ocr_has.match": 80.0, "ocr_has.draw": 120.0,
+        }
+        bad = {c["id"]: c for c in collect.key_placement_checks(merged, "single")}
+        assert bad["D3.no_suffix_merge"]["status"] == "FAIL"
+        assert "text_layer_doc" in bad["D3.no_suffix_merge"]["detail"]
+
+        flat = dict(agg)
+        flat["rings_by_key_ms"] = {"prepare": 100.0, "ocr": 300.0, "has_ner": 1200.0,
+                                   "match": 160.0, "draw": 240.0}
+        bare = {c["id"]: c for c in collect.key_placement_checks(flat, "single")}
+        assert bare["D3.no_suffix_merge"]["status"] == "FAIL"
+        assert "无管线前缀" in bare["D3.no_suffix_merge"]["detail"]
+
+    def test_closure_checks_enforces_two_percent_bound(self):
+        """CLOSURE_TOLERANCE=0.02 的上界必须有判别力（改大阈值 ⇒ M-C 变异逃生）。"""
+        ring = {k: v * 0.97 for k, v in RING_LEAVES.items()}  # 环和 970 vs 页总 1000 ⇒ 3%
+        agg = collect.sum_pages([_signal(total=1000.0, wall_s=1.0, ring=ring)])
+        checks = {c["id"]: c for c in collect.closure_checks(agg)}
+        assert checks["D3.closure_same_clock"]["status"] == "FAIL"
+        assert checks["D3.closure_same_clock"]["value"] == 0.03
+        assert checks["D3.residual_two_sided"]["status"] == "PASS", "3% 仍在 10% 残差带内"
+
+    def test_closure_checks_enforces_residual_ten_percent_bound(self):
+        """MAX_RESIDUAL_RATIO=0.10 两侧都要钉住：9% 放行、11% 判 FAIL。"""
+        for factor, status in ((0.91, "PASS"), (0.89, "FAIL")):
+            ring = {k: v * factor for k, v in RING_LEAVES.items()}
+            agg = collect.sum_pages([_signal(total=1000.0, wall_s=1.0, ring=ring)])
+            checks = {c["id"]: c for c in collect.closure_checks(agg)}
+            assert checks["D3.residual_two_sided"]["status"] == status, (factor, checks)
 
     def test_ring_keys_present(self):
         agg = collect.sum_pages([_signal()])
@@ -265,7 +340,8 @@ class TestReport:
         assert report.hardware_raw().strip() != ""    # 无 GPU 工具时必须退到 CPU/机器原始输出
 
     def test_verdict_order(self):
-        assert report.verdict_from_checks([]) == "PASS"
+        assert report.verdict_from_checks([]) == "FAIL", "空报告不得伪装通过（I9）"
+        assert report.verdict_from_checks([{"status": "WAT"}]) == "FAIL", "未知状态同样不得读作通过"
         assert report.verdict_from_checks([{"status": "UNVERIFIED"}]) == "UNVERIFIED"
         assert report.verdict_from_checks(
             [{"status": "UNVERIFIED"}, {"status": "BLOCKED"}]) == "BLOCKED"
@@ -276,6 +352,33 @@ class TestReport:
         doc = {"summary": {"file_wall_s": 1.0, "mystery_metric": 42.0}}
         errors = report.numeric_whitelist_errors(doc)
         assert any("mystery_metric" in err for err in errors)
+
+    def test_whitelist_catches_path_level_rename(self):
+        """D5① 反「改名绕过」：把已放行叶子改成同语义别名，路径表必须点名拦住。"""
+        doc = {"rounds": [{"round": 2, "agg": {"pages_measured": 2, "agg_value": 1.0}}]}
+        errors = report.numeric_whitelist_errors(doc)
+        assert any("agg_value" in err for err in errors), errors
+        # 未改名时同一路径不得报错（判别性来自改名本身，不是「有数值就报」）
+        ok = {"rounds": [{"round": 2, "agg": {"pages_measured": 2}}]}
+        assert report.numeric_whitelist_errors(ok) == []
+
+    def test_whitelist_allows_rejected_http_status(self):
+        """D6③ 的拒收证据（HTTP 状态码）是声明载体，必须放行；同位置的新增指标仍须被抓。"""
+        doc = {"rounds": [{"rejected_items": [
+            {"id": "f1", "unsupported": True, "reason": "HTTP 413", "http_status": 413}]}]}
+        assert report.numeric_whitelist_errors(doc) == []
+        doc["rounds"][0]["rejected_items"][0]["bytes_sent"] = 9000000
+        assert any("bytes_sent" in err for err in report.numeric_whitelist_errors(doc))
+
+    def test_no_data_checks_downgraded_without_timing_rounds(self):
+        """E1：装置不可得（0 计时轮）时「无数据可判」类 FAIL 降 BLOCKED；有轮次则保留 FAIL。"""
+        checks = [{"id": "D3.closure_same_clock", "status": "FAIL", "detail": "无数据", "value": None}]
+        downgraded = report.downgrade_no_data_checks(checks, measured=False)
+        assert downgraded[0]["status"] == "BLOCKED"
+        assert "装置不可得" in downgraded[0]["detail"]
+        assert report.downgrade_no_data_checks(checks, measured=True)[0]["status"] == "FAIL"
+        assert report.has_timing_rounds({"rounds": [{"warmup": False, "invalid": False}]}) is True
+        assert report.has_timing_rounds({"rounds": [{"warmup": True}, {"invalid": True}]}) is False
 
     def test_quality_key_errors(self):
         doc = {"metrics": {"f1": 0.9}}
@@ -288,6 +391,19 @@ class TestReport:
         assert "speedkit 报告" in md
         assert "k=`3`" in md
         assert report.md_consistency_errors(doc, md) == []
+
+    def test_markdown_consistency_flags_stale_md(self):
+        """D4③ 的反向用例：md 与 JSON 不一致必须点名报错（只测正例等于恒真判据）。"""
+        doc = _report_envelope()
+        md = report.render_markdown(doc)
+        assert report.md_consistency_errors(doc, md) == []
+        doc["summary"]["pages_per_min"] = 999.0  # JSON 改了而 md 没重渲染 ⇒ 必须点名
+        assert any("pages_per_min" in err for err in report.md_consistency_errors(doc, md))
+        stale_note = _report_envelope()
+        stale_note["footnote"]["manifest_hash"] = "f" * 12
+        assert any("manifest_hash" in err
+                   for err in report.md_consistency_errors(stale_note, md))
+        assert report.md_consistency_errors(_report_envelope(), "") == ["md 产物为空（D4③）"]
 
     def test_write_outputs(self, tmp_path):
         doc = _report_envelope()
@@ -317,6 +433,61 @@ class TestDriver:
                         encoding="utf-8")
         with pytest.raises(ValueError):
             driver.effective_payload(str(path))
+
+    def test_ac24_payload_captured_on_the_wire(self, tmp_path, monkeypatch):
+        """AC24：`single` 线真正发出的 body/query 必须与声明载荷同一（禁落到回落默认类型集）。
+
+        判别性来自 MockTransport 抓到的**原始请求**：只断言 `mode.payload_*` 等于常量是自证——
+        把 `SpeedApi.vision(json=payload)` 改成 `json=None` 时，本用例必须红。
+        """
+        import httpx  # 局部导入：只有这条用例需要 mock transport
+
+        seen: list = []
+
+        def handler(request):
+            seen.append(request)
+            path = request.url.path
+            if path.endswith("/auth/login"):
+                return httpx.Response(200, json={"access_token": "tok"})
+            if path.endswith("/files/upload"):
+                return httpx.Response(200, json={"file_id": "fid-1"})
+            if path.endswith("/vision"):
+                return httpx.Response(200, json=_single_resp(1000.0))
+            if path.endswith("/parse"):
+                return httpx.Response(200, json={"file_type": "pdf", "is_scanned": True, "total_pages": 1})
+            if request.method == "DELETE":
+                return httpx.Response(200, json={})
+            return httpx.Response(404, json={})
+
+        real_client = httpx.Client
+        monkeypatch.setattr(driver, "SpeedApi", REAL_SPEED_API)  # 撤销 autouse 的「禁建连」替换
+        monkeypatch.setattr(
+            httpx, "Client",
+            lambda *a, **kw: real_client(*a, **{**kw, "transport": httpx.MockTransport(handler)}),
+        )
+        corpus = tmp_path / "卷.txt"
+        corpus.write_text("x" * 10, encoding="utf-8")
+        payload, _source, payload_sha = driver.effective_payload(None)
+        api = driver.SpeedApi(base_url="http://127.0.0.1:8000", username="u", password="p")
+        try:
+            record = driver.measure_single_round(
+                api, [{"id": "c1", "path": str(corpus), "pages": 1, "carrier": "text"}],
+                payload=payload, page_concurrency=1, cleanup=True,
+            )
+        finally:
+            api.close()
+
+        vision = [r for r in seen if r.url.path.endswith("/vision")]
+        assert len(vision) == 1
+        assert vision[0].content, "请求必须带 body —— 空 body 即 has_request=False 回落路径"
+        body = json.loads(vision[0].content.decode("utf-8"))
+        assert body["selected_ocr_has_types"] == list(driver.ANCHOR_OCR_TYPES)
+        assert body["selected_visual_feature_types"] == list(driver.ANCHOR_VISUAL_TYPES)
+        params = dict(vision[0].url.params)
+        assert params["force"] == "true"
+        assert params["include_result_image"] == "false"
+        assert len(payload_sha) == 64
+        assert record["pages"][0]["root_total_ms"] == 1000.0
 
     def test_wall_stats(self):
         stats = driver.wall_stats([1.0, 2.0, 3.0])
@@ -471,6 +642,34 @@ class TestArms:
         assert any(c["status"] == "BLOCKED" for c in blocked)
 
 
+def test_patch_effect_checks_require_marks_on_disk(tmp_path):
+    """D8：臂声明「已生效」必须真在文件里——静默未生效是 FAIL，不是放过。
+
+    判别性说明：`patches[].to` 的语义是「打完补丁后文件里应有这段」，所以文档里
+    用**现树真含的标记**（`timing.ts:57` 的 `= 3;`）构造 PASS 例，用幻影标记构造 FAIL 例。
+    """
+    env_arm = arms.load_arm(str(_write_json(tmp_path, {"name": "env", "kind": "env"})))
+    assert [c["status"] for c in arms.patch_effect_checks(env_arm)] == ["UNVERIFIED"]
+    timing = "frontend/src/constants/timing.ts"
+    present = arms.load_arm(str(_write_json(tmp_path, {
+        "name": "k3", "kind": "patch",
+        "patches": [{"file": timing, "from": "= 1;", "to": "PLAYGROUND_VISION_PAGE_CONCURRENCY = 3;"}],
+        "expect": [{"file": timing, "contains": "= 3;"}]})))
+    assert [c["status"] for c in arms.patch_effect_checks(present)] == ["PASS", "PASS"]
+    absent = arms.load_arm(str(_write_json(tmp_path, {
+        "name": "k1", "kind": "patch",
+        "patches": [{"file": timing, "from": "= 3;", "to": "PLAYGROUND_VISION_PAGE_CONCURRENCY = 1;"}],
+        # 幻影标记必须写全：`= 1;` 这种短串会撞上同文件的其它常量（本轮实测撞过，改用全名）
+        "expect": [{"file": timing, "contains": "PLAYGROUND_VISION_PAGE_CONCURRENCY = 1;"}]})))
+    checks = arms.patch_effect_checks(absent)
+    assert [c["status"] for c in checks] == ["FAIL", "FAIL"]
+    assert all("静默未生效" in c["detail"] for c in checks)
+    ghost = arms.load_arm(str(_write_json(tmp_path, {
+        "name": "ghost", "kind": "patch",
+        "patches": [{"file": "frontend/src/nope.ts", "from": "a", "to": "b"}]})))
+    assert [c["status"] for c in arms.patch_effect_checks(ghost)] == ["FAIL"]
+
+
 # ── CLI：用法错误与退出码（零网络） ────────────────────────────────────────
 def _cli_fixtures(tmp_path):
     corpus = tmp_path / "卷.txt"
@@ -495,11 +694,18 @@ def _speed_argv(exam, arm, evidence, tmp_path, **overrides):
 
 
 class TestCliUsage:
-    def test_admits_valid_command(self, tmp_path, capsys):
+    def test_admits_valid_command(self, tmp_path, capsys, _no_real_backend):
+        """合法命令行必须一路走到**测量阶段**，然后因装置不可得判 BLOCKED（exit 3）。
+
+        判别性来自 `_no_real_backend.attempted`：**构造被调用过**才算走到了测量阶段——
+        只看 exit != 2 的话，「在前面某个前置校验里早退」也能骗过这条断言。
+        """
         corpus, exam, arm, evidence = _cli_fixtures(tmp_path)
         code = cli.main(_speed_argv(exam, arm, evidence, tmp_path))
-        assert code in (0, 1, 3)  # 进到测量阶段后因无后端而 BLOCKED（非用法错）
-        assert code != 2
+        assert _no_real_backend, "未走到测量阶段：SpeedApi 从未被构造"
+        assert code == 3  # 装置不可得 ⇒ BLOCKED（四态里的第三态，不是用法错、也不是 FAIL）
+        captured = capsys.readouterr()
+        assert "BLOCKED" in (captured.out + captured.err)
 
     def test_page_concurrency_zero(self, tmp_path):
         _, exam, arm, evidence = _cli_fixtures(tmp_path)
@@ -560,6 +766,108 @@ class TestCliUsage:
         assert str(corpus) not in json.dumps(view, ensure_ascii=False)
 
 
+# ── CLI：真跑装配（假驱动，零网络）——白名单/引用表在两线报告上必须自足 ─────
+def _canned_pages(pages: int = 2) -> list[dict]:
+    out = []
+    for page_no in range(1, pages + 1):
+        resp = {
+            "page": page_no,
+            "duration_ms": {"total": 1000.0, "request_total_ms": 1010.0},
+            "pipeline_status": {"ocr_has": {"stage_duration_ms": {
+                "prepare": 100.0, "ocr": 200.0, "has_ner": 600.0, "match": 50.0, "draw": 40.0,
+                "total": 990.0, "has_text_cache_status": "miss"}}},
+        }
+        out.append(collect.page_signal(resp, wall_s=1.2, harness_span=(0.0, 1.2), page_no=page_no))
+    return out
+
+
+def _canned_round(*, with_batch: bool = False) -> dict:
+    pages = _canned_pages()
+    agg = collect.sum_pages(pages)
+    agg["observed_page_concurrency"] = 2  # driver 在 single 线真实写入（driver.py:347）
+    record = {
+        "pages": pages, "agg": agg, "file_wall_s": 1.2, "driver_self_wall_s": 1.21,
+        "items": [{  # 形状对齐 driver._parse_view + items_view，逐个数值叶子都会被白名单过一遍
+            "id": "f1", "pages": 2, "file_id": "fid-1", "unsupported": False, "reason": None,
+            "md5": None, "parse": {"file_type": "pdf", "is_scanned": True, "total_pages": 2},
+            "box_count": 12.0, "entity_count": 3.0,
+        }],
+        "rejected_items": [],
+        "sidecar": {"box_count": 12.0, "entity_count": 3.0},
+        "cache": {"histogram": agg.get("cache_histogram"), "hits": agg.get("cache_hits")},
+    }
+    if with_batch:
+        record["batch"] = {
+            "job_id": "job-1", "job_status": "completed", "item_statuses": {"completed": 1},
+            "items_total": 1, "items_terminal": 1, "failed_items": 0, "upload_sec": 0.5,
+            "max_upload_bytes": 9000000, "recognition_page_concurrency": 3.0,
+            "recognition_page_concurrency_configured": 3.0, "recognition_wall_ms": 2400.0,
+            "recognition_page_duration_sum_ms": 2200.0, "recognition_parallelism_ratio": 1.5,
+            "job_queue_wait_ms": 12.0,
+        }
+    return record
+
+
+class _StubApi:
+    """替身客户端：不建连；只补 CLI 会调用的两个面。"""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def close(self):
+        pass
+
+    def default_type_ids(self):
+        return ["type-1"]
+
+
+def _run_cli_with_stub(monkeypatch, tmp_path, *, driver_name: str, with_batch: bool = False):
+    _, exam, arm, evidence = _cli_fixtures(tmp_path)
+    monkeypatch.setattr(driver, "SpeedApi", _StubApi)
+    canned = _canned_round(with_batch=with_batch)
+    target = "measure_single_round" if driver_name == "single" else "measure_batch_round"
+    monkeypatch.setattr(driver, target, lambda *a, **kw: dict(canned))
+    code = cli.main(_speed_argv(exam, arm, evidence, tmp_path, driver=driver_name,
+                                cache_policy="warm", rounds=2, warmup_rounds=1))
+    doc = json.loads((tmp_path / "report" / "unit.json").read_text(encoding="utf-8"))
+    return code, doc
+
+
+class TestCliReportCompleteness:
+    """整条装配链（cli → build_report → finalize）跑通后，白名单/引用表必须自足。
+
+    这两条的价值在于：**逐页/逐轮/批作业的每个数值叶子都真的过一遍路径表**——
+    单测 fixture 手搓的报告结构覆盖不到 cli 现场拼出来的字段，漏一个就在门④ 变 FAIL。
+    """
+
+    @staticmethod
+    def _failed(doc: dict) -> set[str]:
+        return {c["id"] for c in doc["checks"] if c["status"] == "FAIL"}
+
+    def test_single_report_is_whitelist_clean(self, tmp_path, monkeypatch):
+        code, doc = _run_cli_with_stub(monkeypatch, tmp_path, driver_name="single")
+        assert code != 2, "合法命令不得判用法错"
+        assert doc["rounds"], "报告必须落进轮次"
+        assert doc["rounds"][-1]["sidecar"]["box_count"] == 12.0, "D8① 旁证必须落进报告"
+        assert "batch" not in doc["rounds"][-1], "single 报告不得含 batch 键（D2④）"
+        failed = self._failed(doc)
+        assert "D5.numeric_whitelist" not in failed, [c for c in doc["checks"]
+                                                     if c["id"] == "D5.numeric_whitelist"]
+        assert "D4.criteria_refs" not in failed
+        assert "D5.no_quality_fields" not in failed
+
+    def test_batch_report_keeps_job_evidence_and_is_whitelist_clean(self, tmp_path, monkeypatch):
+        code, doc = _run_cli_with_stub(monkeypatch, tmp_path, driver_name="batch", with_batch=True)
+        assert code != 2
+        batch = doc["rounds"][-1]["batch"]
+        assert batch["max_upload_bytes"] == 9000000, "D6④ 请求体上限证据必须落进报告"
+        assert batch["job_queue_wait_ms"] == 12.0, "D2④ 排队等待必须落进报告"
+        failed = self._failed(doc)
+        assert "D5.numeric_whitelist" not in failed, [c for c in doc["checks"]
+                                                     if c["id"] == "D5.numeric_whitelist"]
+        assert "D2.batch_key_set" not in failed
+
+
 # ── 脱敏扫描器（D5④） ──────────────────────────────────────────────────────
 class TestRedactionScanner:
     def test_self_test_positive_control(self):
@@ -567,13 +875,13 @@ class TestRedactionScanner:
         assert redact.main(["--self-test"]) == 0
 
     def test_scan_rules(self):
-        hits = redact.scan("ip 10.1.2.3 path /root/ab/d3.json win C:\\Users\\dev\\a.txt",
+        hits = redact.scan("ip 10.1.2.3 path /root/ab/d3.json win C:\\Users\\dev\\a.txt",  # public-tree-scan: ignore-line
                            denylist=[], allow_prefixes=[])
         rules = {rule for rule, _ in hits}
         assert {"ip", "abs_path", "win_path"} <= rules
         assert redact.scan("ip 127.0.0.1 ok", denylist=[], allow_prefixes=[]) == []
-        assert redact.scan("path /root/ab/d3.json", denylist=[],
-                           allow_prefixes=["/root/ab"]) == []
+        assert redact.scan("path /root/ab/d3.json", denylist=[],  # public-tree-scan: ignore-line
+                           allow_prefixes=["/root/ab"]) == []  # public-tree-scan: ignore-line
         assert redact.scan("卷 苏A-某某公司", denylist=["苏A-某某公司"], allow_prefixes=[])
         assert redact.scan("rev abc123", denylist=["re:^rev"], allow_prefixes=[])
 

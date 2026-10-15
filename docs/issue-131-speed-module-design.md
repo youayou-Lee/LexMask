@@ -342,14 +342,15 @@ wall_s
 
 - `eval-ng/cli.py`：新增 `speed` 子命令（复用共享参数与环境组装，照 `_run_e2e` 模板）
 - `eval-ng/engine/speedkit/__init__.py`（**包名 `speedkit`，避开既有 `engine/scorers/speed.py`**）
-- `eval-ng/engine/speedkit/driver.py`：`SingleFileDriver` / `BatchDriver`（`--page-concurrency`、`--cache-policy`、`--restart-cmd`、`--ready-timeout`、`--payload-file`、`--cleanup`）
+- `eval-ng/engine/speedkit/driver.py`：`SpeedApi`（vision 带 body + jobs 面）+ `measure_single_round` / `measure_batch_round`（`--page-concurrency`、`--cache-policy`、`--round-restart-cmd`、`--round-evidence`、`--payload-file`、`--cleanup`）
 - `eval-ng/engine/speedkit/collect.py`：**逐条键路径**抽取 / 两线统一压平 / `unclassified_ms` 反推 / 闭合校验 / 两时钟同粒度校验
 - `eval-ng/engine/speedkit/report.py`：speed md/json 渲染 + 八项脚注硬校验 + 配置快照自足性校验；汇总裁**复用** `eval-ng/engine/scorers/speed.py:22 score_speed`
 - `eval-ng/engine/speedkit/arms.py`：臂 schema + `env`/`patch` 应用与**还原保证**（跑前 dirty 中止）
 - `eval-ng/arms/*.json`：公开示例臂（**真实开关名**，见 §6）
 - `eval-ng/datasets/manifest-private-schema.md`：真卷清单契约（公开）
-- `eval-ng/scripts/check_report_redaction.py`：报告泄密扫描器（AC17）
-- `backend/tests/test_evalng_speed_{collect,report,driver,cli,redaction}.py`（mock API + 点名反向用例）
+- `eval-ng/scripts/check_report_redaction.py`：报告泄密扫描器（AC17 / D5④）
+- `eval-ng/scripts/check_public_tree.py`：公开树红线扫描器（G4；公网 IP / 绝对路径 / Windows 盘符 / 凭据形态 / `--denylist`，含阳性对照自检）
+- `backend/tests/test_evalng_speed.py`（mock API + 点名反向用例；**零网络**：夹具把 `SpeedApi` 构造替换成抛错版本，AC24 用 `httpx.MockTransport` 抓原始请求）
 - 私有：`LexMask-workspace/scripts/speed/*`（编排 + 真卷清单 + 实例臂 + 探针 payload）
 
 步骤顺序（先无争议的，后碰网络/进程的）：

@@ -41,28 +41,71 @@ FOOTNOTE_PLACEHOLDERS = frozenset({
 
 VERDICT_ORDER = ("FAIL", "BLOCKED", "UNVERIFIED", "PASS")
 
-# 数值字段白名单（D5①：**按键名**，非按区域）——任何数值叶子的键名必须匹配其一
-NUMERIC_LEAF_EXACT = frozenset({
-    "n", "mean", "median", "min", "max", "std", "var", "value", "index", "level", "code",
-    "status", "pid", "exit_code", "timestamp", "ts", "epoch", "start_time", "round", "rounds",
-    "attempts", "hits", "concurrency", "peak", "total", "subtotal", "size",
-})
-NUMERIC_LEAF_SUFFIX = (
-    "_ms", "_s", "_sec", "_seconds", "_min", "_bytes", "_pages", "_page", "_count", "_counts",
-    "_total", "_items", "_item", "_ratio", "_efficiency", "_hits", "_rounds", "_round",
-    "_attempts", "_index", "_code", "_status", "_concurrency", "_peak", "_n", "_ts", "_epoch",
-    "_timestamp", "_pid", "_size", "_level", "_per_min", "_per_sec", "_calls",
-    "_diff", "_measured", "_workers", "_limit", "_chars", "_terminal", "_configured",
-    "_done", "_failed", "_value", "_ms_total",
-)
-NUMERIC_LEAF_RE = re.compile(r"^p\d+$")
-# 判定表 / 引用表内的载数值字段显式放行（它们是判据载体，不是指标）
-NUMERIC_PATH_ALLOW_PREFIX = ("checks[", "criteria_refs[")
-# 后端回吐的时序/计数映射：其叶子键名由后端定义（如 `ocr_has.prepare`），路径段命中即放行
-NUMERIC_PATH_ALLOW_CONTAINS = (
-    "rings_by_key", "ring_leaves_ms", "pipeline_totals_ms", "by_key_ms",
-    "cache_histogram", "cache_status", "histogram", "item_statuses", "duration_ms",
-)
+# 数值字段白名单（D5①）：**按完整键路径**逐段钉死，**不做任何后缀匹配**。
+# 旧实现按叶子键名后缀放行（`_value`/`_total`/`_ms`…）等于给「改个名字就能溜过」开后门，
+# 冷评审第一轮 M12 用 `summary.agg_value` 实证；故改为显式路径表：新增/改名任何测量字段
+# 都必须同步改本表，否则 D5.numeric_whitelist 判 FAIL（宁可判告白、不许静默通过）。
+# `[i]` 归一为 `[]` 后匹配。放行的「区域」只有两类：判定/引用表（判据载体）与
+# 后端回吐的键映射（其叶子键名由后端定义，如 `ocr_has.prepare`）。
+_NUMERIC_ALLOW_RES = tuple(re.compile(pattern) for pattern in (
+    # ── 判定表 / 判据引用表（value 是判据载体，不是指标） ──────────────────
+    r"^checks\[\d+\]\.value$",
+    r"^criteria_refs\..*\.value$",
+    # ── 运行参数（声明值，非测量值） ──────────────────────────────────────
+    r"^mode\.(rounds|warmup_rounds|timing_rounds|page_concurrency|timeout|upload_workers)$",
+    r"^mode\.(job_timeout_min|payload_ocr_types|payload_visual_types)$",
+    # ── 臂定义（声明值：期望值/patch 数量/探针字段） ──────────────────────
+    r"^arm\.(expect|patches|probe)\..*$",
+    # ── 机读轮次证据（pid / 时间戳 / 就绪等待与静置实测） ──────────────────
+    r"^cold_evidence\[\d+\]\.(round|pid|exit_code|timestamp|start_time)$",
+    r"^cold_evidence\[\d+\]\.(ready_wait_s|ready_wait_sec|settle_sec)$",
+    r"^readiness\.(ready_wait_sec|settle_sec)$",
+    # ── 考卷视图（卷页数 / 文本层字符数，现场机检） ────────────────────────
+    r"^exam\.corpus\[\d+\]\.(pages|text_chars)$",
+    # ── 缓存两级（D8） ───────────────────────────────────────────────────
+    r"^cache\.hits$",
+    r"^cache\.per_round\[\d+\]\.(round|hits)$",
+    r"^cache(\.per_round\[\d+\])?\.histogram\.[^.]+$",
+    # ── summary：测量值逐个点名 ──────────────────────────────────────────
+    r"^summary\.(pages_total|pages_measured_timing|pages_measured_all_rounds|steady_pages)$",
+    r"^summary\.(files_total|files_timed)$",
+    r"^summary\.(sum_backend_pages_ms|sum_harness_pages_ms|sum_rings_ms|unclassified_ms)$",
+    r"^summary\.(residual_ratio|closure_ratio|harness_ratio|cache_hits|page_ms_p50)$",
+    r"^summary\.(pages_per_min|files_per_min|parallel_efficiency|page_concurrency_peak)$",
+    r"^summary\.(file_wall_s|driver_self_wall_s)\.[a-z0-9_]+$",
+    r"^summary\.wall_agreement\.[a-z0-9_]+$",
+    r"^summary\.wall_agreement\.pairs\[\d+\]\.(file_wall_s|driver_self_wall_s)$",
+    r"^summary\.(rings_by_key_ms|cache_histogram)\..+$",
+    # ── 逐轮聚合（与 summary 同口径） ────────────────────────────────────
+    r"^rounds\[\d+\]\.(round|file_wall_s|driver_self_wall_s|pages_measured)$",
+    r"^rounds\[\d+\]\.agg\.(pages_measured|pages_with_backend_total)$",
+    r"^rounds\[\d+\]\.agg\.(sum_backend_pages_ms|sum_harness_pages_ms|sum_rings_ms|unclassified_ms)$",
+    r"^rounds\[\d+\]\.agg\.(residual_ratio|harness_ratio|cache_hits|page_concurrency_peak)$",
+    r"^rounds\[\d+\]\.agg\.(observed_page_concurrency|page_concurrency_values)(\[\d+\])?$",
+    r"^rounds\[\d+\]\.agg\.(rings_by_key_ms|cache_histogram|pipelines_seen)\..+$",
+    r"^rounds\[\d+\]\.cache\.(round|hits)$",
+    r"^rounds\[\d+\]\.cache\.histogram\..+$",
+    r"^rounds\[\d+\]\.sidecar\.(box_count|entity_count)$",
+    # ── 逐卷视图（文件级页数/解析元数据/旁证计数） ────────────────────────
+    r"^rounds\[\d+\]\.items\[\d+\]\.(pages|box_count|entity_count)$",
+    r"^rounds\[\d+\]\.items\[\d+\]\.parse\.total_pages$",
+    r"^rounds\[\d+\]\.rejected_items\[\d+\]\.http_status$",
+    # ── 逐页信号（两线同构） ─────────────────────────────────────────────
+    r"^rounds\[\d+\]\.pages\[\d+\]\.(page|wall_s|root_total_ms|request_total_ms|cache_hits)$",
+    r"^rounds\[\d+\]\.pages\[\d+\]\.(harness_start|harness_end)$",
+    r"^rounds\[\d+\]\.pages\[\d+\]\.(page_concurrency|page_concurrency_configured)$",
+    r"^rounds\[\d+\]\.pages\[\d+\]\.(box_count|entity_count)$",
+    r"^rounds\[\d+\]\.pages\[\d+\]\.(ring_leaves_ms|pipeline_totals_ms|duration_breakdown_ms)\..+$",
+    r"^rounds\[\d+\]\.pages\[\d+\]\.cache_status\..+$",
+    # ── batch 作业元数据（D2④/D6④ 证据；键集合在 driver 侧钉死） ──────────
+    r"^rounds\[\d+\]\.batch\.(items_total|items_terminal|failed_items|upload_sec|max_upload_bytes)$",
+    r"^rounds\[\d+\]\.batch\.(job_queue_wait_ms|job_poll_count|job_upload_sec)$",
+    r"^rounds\[\d+\]\.batch\.(job_items_total|job_items_done|job_http_status|upload_files_per_min)$",
+    r"^rounds\[\d+\]\.batch\.(recognition_page_concurrency|recognition_page_concurrency_configured)$",
+    r"^rounds\[\d+\]\.batch\.(recognition_page_duration_sum_ms|recognition_wall_ms)$",
+    r"^rounds\[\d+\]\.batch\.(recognition_parallelism_ratio|page_ms_p50|pages_per_min)$",
+    r"^rounds\[\d+\]\.batch\.item_statuses\.[^.]+$",
+))
 # 质量类键名：出现（无论数值或字符串）即 FAIL
 QUALITY_KEY_RE = re.compile(
     r"(^|[_.])(precision|recall|f1|f1_score|accuracy|quality|score|per_type|entity_quality|"
@@ -266,17 +309,8 @@ def _leaf_name(path: str) -> str:
 
 
 def numeric_leaf_allowed(path: str) -> bool:
-    """D5①：数值叶子的键名必须命中白名单（计时/计数/比值/体积/轮次）或判定表显式放行。"""
-    if path.startswith(NUMERIC_PATH_ALLOW_PREFIX):
-        return True
-    if any(marker in path for marker in NUMERIC_PATH_ALLOW_CONTAINS):
-        return True
-    leaf = _leaf_name(path)
-    if leaf in NUMERIC_LEAF_EXACT:
-        return True
-    if NUMERIC_LEAF_RE.match(leaf):
-        return True
-    return any(leaf.endswith(suffix) for suffix in NUMERIC_LEAF_SUFFIX)
+    """D5①：数值叶子的**完整键路径**必须命中白名单（不做后缀匹配，防「改名绕过」）。"""
+    return any(pattern.match(path) for pattern in _NUMERIC_ALLOW_RES)
 
 
 def numeric_whitelist_errors(report: dict) -> list[str]:
@@ -290,6 +324,11 @@ def numeric_whitelist_errors(report: dict) -> list[str]:
 def quality_key_errors(report: dict) -> list[str]:
     errors: list[str] = []
     for path in _key_paths(report):
+        if path == "quality_eval":
+            # D5① 的**必填声明位**（值必须恒为 "not_run"），不是质量指标本身
+            if report.get("quality_eval") != "not_run":
+                errors.append(f"quality_eval 必须为 'not_run'，实为 {report.get('quality_eval')!r}（D5①）")
+            continue
         if QUALITY_SUBTREE_RE.search(path):
             errors.append(f"报告出现质量/指标子树 {path}（D5①）")
             continue
@@ -300,12 +339,42 @@ def quality_key_errors(report: dict) -> list[str]:
 
 
 # ── 判定 ────────────────────────────────────────────────────────────────────
+# 「无数据可判」类判据（E1）：装置不可得 ⇒ 0 个计时轮，这些判据**没有被测对象可判**。
+# 此时若保持 FAIL，会把「装置连不上」误报成「被测系统不达标」（且 exit 1 而非 3）；
+# 故降为 BLOCKED。一旦存在合法计时轮，一律照原样保留 FAIL（判别力不得被降级稀释）。
+NO_DATA_CHECK_IDS = frozenset({
+    "D2.batch_key_set", "D3.closure_same_clock", "D3.residual_two_sided",
+    "D4.wall_agreement", "D5.readiness_probe",
+})
+
+
+def downgrade_no_data_checks(checks: list[dict], *, measured: bool) -> list[dict]:
+    """无计时轮时把「无数据可判」类 FAIL 降为 BLOCKED（明细里点名原因，不改判据名）。"""
+    if measured:
+        return list(checks)
+    out: list[dict] = []
+    for check in checks:
+        if str(check.get("status")) == "FAIL" and check.get("id") in NO_DATA_CHECK_IDS:
+            out.append({**check, "status": "BLOCKED",
+                        "detail": f"{check.get('detail')}｜装置不可得：无计时轮，该项无数据可判（E1）"})
+        else:
+            out.append(check)
+    return out
+
+
 def verdict_from_checks(checks: list[dict]) -> str:
-    statuses = {str(c.get("status")) for c in (checks or [])}
+    """四态归并：`FAIL` > `BLOCKED` > `UNVERIFIED` > `PASS`。
+
+    空集合判 **FAIL**（③ 第一轮冷评审 I9）：`[]` 返回 `PASS` 会让「压根没跑 / 报告被截断 /
+    checks 被清空」伪装成通过——这是恒真判据的一种形态，不放行。
+    """
+    if not checks:
+        return "FAIL"
+    statuses = {str(c.get("status")) for c in checks}
     for verdict in VERDICT_ORDER:
         if verdict in statuses:
             return verdict
-    return "PASS"
+    return "FAIL"  # 有检查项但状态全是未知字串：同样不得读作通过
 
 
 def build_report(
@@ -316,7 +385,7 @@ def build_report(
 ) -> dict:
     round_views = []
     for entry in rounds:
-        round_views.append({
+        view = {
             "round": entry.get("round"),
             "warmup": bool(entry.get("warmup")),
             "invalid": bool(entry.get("invalid")),
@@ -324,11 +393,18 @@ def build_report(
             "harness_start_ts": entry.get("harness_start_ts"),
             "harness_end_ts": entry.get("harness_end_ts"),
             "file_wall_s": entry.get("file_wall_s"),
+            "driver_self_wall_s": entry.get("driver_self_wall_s"),
             "pages_measured": len(entry.get("pages") or []),
             "agg": entry.get("agg") or {},
             "cache": entry.get("cache") or {},
+            "sidecar": entry.get("sidecar") or {},
             "pages": entry.get("pages") or [],
-        })
+        }
+        # batch 线证据（job_queue_wait_ms / max_upload_bytes / 识别面并发）必须落进报告：
+        # D2④ 与 D6④ 要求它可核验；single 线不得出现该键（留 None 会与 D2④ 键集合判据混淆）。
+        if entry.get("batch"):
+            view["batch"] = entry["batch"]
+        round_views.append(view)
     report = {
         "schema_version": SCHEMA_VERSION,
         "module": {"name": "eval-ng speedkit", "entry": "eval-ng/cli.py speed"},
@@ -356,29 +432,50 @@ def build_report(
     return report
 
 
+def has_timing_rounds(report: dict) -> bool:
+    """报告里是否存在**可核验的计时轮**（非预热、非非法）。"""
+    return any(
+        not round_view.get("warmup") and not round_view.get("invalid")
+        for round_view in (report.get("rounds") or [])
+    )
+
+
 def finalize(report: dict, *, api_base: str, live_code_rev: str | None = None) -> dict:
     """装配派生判据（自足/白名单/引用表）并落四态判定。"""
     live_rev = live_code_rev if live_code_rev is not None else runtime_code_rev()
     derived: list[dict] = []
+    # 装置不可得/全部轮次非法 ⇒ 报告里没有被测对象，派生判据无处可查：判 UNVERIFIED 而非 FAIL
+    # （验收方案 E1：装置不可得是 BLOCKED 语义；BLOCKED 在四态顺序里先于 UNVERIFIED，终态仍为 BLOCKED）。
+    # 有计时轮时一律按 FAIL——「改个名字就能溜过」「缺脚注」「混入质量字段」都不许洗白。
+    measured = has_timing_rounds(report)
+
+    def _status(err: str, *, always_unverified: str | None = None) -> str:
+        if not measured:
+            return "UNVERIFIED"
+        if always_unverified and always_unverified in err:
+            return "UNVERIFIED"
+        return "FAIL"
 
     fp_errors = validate_fingerprints(report.get("fingerprints") or {})
     for err in fp_errors:
-        status = "UNVERIFIED" if "dtk_version_raw 为空" in err else "FAIL"
-        derived.append({"id": "D5.fingerprints", "status": status, "detail": err, "value": None})
+        derived.append({"id": "D5.fingerprints",
+                        "status": _status(err, always_unverified="dtk_version_raw 为空"),
+                        "detail": err, "value": None})
     for err in validate_footnote(
         report.get("footnote") or {}, api_base=api_base, live_code_rev=live_rev,
         fingerprints=report.get("fingerprints") or None, readiness=report.get("readiness") or None,
     ):
-        status = "UNVERIFIED" if "就绪等待/静置实测缺失" in err else "FAIL"
-        derived.append({"id": "D5.footnote", "status": status, "detail": err, "value": None})
+        derived.append({"id": "D5.footnote",
+                        "status": _status(err, always_unverified="就绪等待/静置实测缺失"),
+                        "detail": err, "value": None})
     for err in quality_key_errors(report):
-        derived.append({"id": "D5.no_quality_fields", "status": "FAIL", "detail": err, "value": None})
+        derived.append({"id": "D5.no_quality_fields", "status": _status(err), "detail": err, "value": None})
     for err in numeric_whitelist_errors(report):
-        derived.append({"id": "D5.numeric_whitelist", "status": "FAIL", "detail": err, "value": None})
+        derived.append({"id": "D5.numeric_whitelist", "status": _status(err), "detail": err, "value": None})
     for err in collect.validate_criteria_refs(report):
-        derived.append({"id": "D4.criteria_refs", "status": "FAIL", "detail": err, "value": None})
+        derived.append({"id": "D4.criteria_refs", "status": _status(err), "detail": err, "value": None})
 
-    checks = list(report.get("checks") or []) + derived
+    checks = downgrade_no_data_checks(list(report.get("checks") or []), measured=measured) + derived
     report["checks"] = checks
     report["verdict"] = verdict_from_checks(checks)
     return report
@@ -443,7 +540,8 @@ def render_markdown(report: dict) -> str:
         f"- 驱动：`{mode.get('driver')}`　页并发 k=`{mode.get('page_concurrency')}`　"
         f"缓存策略：`{mode.get('cache_policy')}`（计时轮 {mode.get('timing_rounds')} 轮）",
         f"- 文件墙钟 p50：{_fmt(wall.get('p50'))} s／均值 {_fmt(wall.get('mean'))} s"
-        f"（n={wall.get('n')}；舍弃轮 {mode.get('warmup_rounds')}）",
+        f"（n={wall.get('n')}；IQR {_fmt(wall.get('iqr'))} s；舍弃轮 {mode.get('warmup_rounds')}）",
+        f"- 墙钟口径：{mode.get('file_wall_s_semantics') or '（未声明）'}",
         f"- 页吞吐：{_fmt(summary.get('pages_per_min'))} 页/min；文件吞吐：{_fmt(summary.get('files_per_min'))} 文件/min",
         f"- Σ 后端逐页 {_fmt(summary.get('sum_backend_pages_ms'))} ms／Σ 环 {_fmt(summary.get('sum_rings_ms'))} ms",
         f"- 残差 unclassified={_fmt(summary.get('unclassified_ms'))} ms（{_fmt(summary.get('residual_ratio'))}）"

@@ -501,7 +501,7 @@ def _run_speed(args: argparse.Namespace) -> int:
             abort_reason = f"装置不可得（登录失败）：{type(exc).__name__}: {str(exc)[:160]}"
             print(f"[speed] {abort_reason}", file=sys.stderr)
         try:
-            if args.driver == "batch":
+            if args.driver == "batch" and not abort_reason:
                 try:
                     type_ids = api.default_type_ids()
                 except Exception as exc:  # noqa: BLE001
@@ -538,13 +538,17 @@ def _run_speed(args: argparse.Namespace) -> int:
                             cleanup=args.cleanup,
                         )
                 except Exception as exc:  # noqa: BLE001
-                    # 装置不可得（后端未起 / 认证失败 / 网络不通）不是被测对象的性能结论 ⇒ BLOCKED，不判 FAIL
-                    checks.append({"id": "D1.measurement_reachable", "status": "BLOCKED",
-                                   "detail": f"{args.driver} 线第 {round_no} 轮测量中断（装置不可得 ⇒ BLOCKED，"
-                                             f"不判 FAIL）：{type(exc).__name__}: {str(exc)[:200]}",
-                                   "value": None})
-                    abort_reason = f"测量不可得（{type(exc).__name__}）：{str(exc)[:160]}"
-                    print(f"[speed] {abort_reason}", file=sys.stderr)
+                    # 装置不可得（后端未起 / 认证失败 / 网络不通）⇒ BLOCKED；被测对象主动拒收
+                    # （413 请求体过大 / 504 网关超时）⇒ FAIL（D6④/§7），不得把 FAIL 洗成 BLOCKED。
+                    status, detail = sk_driver.measurement_failure_kind(exc)
+                    checks.append({"id": "D1.measurement_reachable", "status": status,
+                                   "detail": f"{args.driver} 线第 {round_no} 轮测量中断（{detail}）",
+                                   "value": getattr(exc, "status_code", None)})
+                    if status == "BLOCKED":
+                        abort_reason = f"测量不可得（{type(exc).__name__}）：{str(exc)[:160]}"
+                        print(f"[speed] {abort_reason}", file=sys.stderr)
+                    else:
+                        print(f"[speed] 第 {round_no} 轮测量判 FAIL：{detail}", file=sys.stderr)
                     break
                 round_finished = sk_report.utcnow()
                 warmup = round_no <= args.warmup_rounds
@@ -552,21 +556,19 @@ def _run_speed(args: argparse.Namespace) -> int:
                     record, driver=args.driver, expected_pages=expected_pages,
                 )
                 record.update({
-                    "round": round_no, "warmup": warmup, "invalid": bool(warmup and not valid),
+                    "round": round_no, "warmup": warmup, "invalid": bool(not valid),
                     "invalid_reason": None if valid else invalid_reason,
                     "harness_start_ts": round_started, "harness_end_ts": round_finished,
                     "driver_self_wall_s": record.get("driver_self_wall_s"),
                 })
-                if warmup:
-                    record["invalid"] = False
-                    record["invalid_reason"] = None
                 page_agg = record.get("agg") or {}
                 record["cache"] = {"histogram": page_agg.get("cache_histogram"),
                                    "hits": page_agg.get("cache_hits")}
                 rounds.append(record)
                 if not valid and not warmup:
                     checks.append({"id": "D1.round_validity", "status": "FAIL",
-                                   "detail": f"计时轮 {round_no} 不合法：{invalid_reason}", "value": round_no})
+                                   "detail": f"计时轮 {round_no} 不合法（已从聚合中排除）：{invalid_reason}",
+                                   "value": round_no})
         finally:
             try:
                 api.close()
@@ -642,8 +644,8 @@ def _run_speed(args: argparse.Namespace) -> int:
                   f"{wall_agreement.get('max_abs_ratio_diff')}（阈值 ≤{sk_driver.WALL_AGREEMENT_TOLERANCE}）",
         "value": wall_agreement.get("max_abs_ratio_diff"),
     })
-    needs, why = sk_driver.timing_rounds_needed(wall_stats)
-    checks.append({"id": "D2.timing_rounds", "status": "PASS" if not needs else "UNVERIFIED",
+    _needs, timing_status, why = sk_driver.timing_rounds_needed(wall_stats)
+    checks.append({"id": "D2.timing_rounds", "status": timing_status,
                    "detail": why, "value": wall_stats.get("n")})
     checks.extend(_speed_parity_checks(args.baseline, summary))
     checks.extend(sk_driver.quality_sidecar_check(_merge_sidecars(rounds), rounds))
@@ -687,6 +689,8 @@ def _run_speed(args: argparse.Namespace) -> int:
         "install": args.install or _install_label(),
         "upload_workers": args.upload_workers,
         "job_timeout_min": args.job_timeout_min,
+        # I6：两条线的 file_wall_s 覆盖范围不同，口径随报告落档（跨线比较前必须先读这一行）
+        "file_wall_s_semantics": sk_driver.FILE_WALL_SEMANTICS.get(args.driver),
     }
     cache = {
         "policy": args.cache_policy,

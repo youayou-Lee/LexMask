@@ -183,9 +183,12 @@ def sum_pages(pages: list[dict]) -> dict:
     rings_by_key: dict[str, float] = {}
     concurrency_peaks: list[int] = []
     histogram: dict[str, int] = {}
+    pipelines_seen: set[str] = set()
     hits = 0
     for page in pages:
-        ring_total += sum(float(v) for v in (page.get("pipeline_totals_ms") or {}).values())
+        totals = page.get("pipeline_totals_ms") or {}
+        pipelines_seen.update(str(k) for k in totals)
+        ring_total += sum(float(v) for v in totals.values())
         for key, value in (page.get("ring_leaves_ms") or {}).items():
             rings_by_key[key] = rings_by_key.get(key, 0.0) + float(value)
         for status, count in (page.get("cache_status") or {}).items():
@@ -207,6 +210,7 @@ def sum_pages(pages: list[dict]) -> dict:
         "residual_ratio": (round(unclassified / sum_backend, 6) if sum_backend > 0 else None),
         "harness_ratio": (round(sum_harness / sum_backend, 6) if sum_backend > 0 else None),
         "rings_by_key_ms": {k: round(v, 3) for k, v in sorted(rings_by_key.items())},
+        "pipelines_seen": sorted(pipelines_seen),
         "cache_histogram": dict(sorted(histogram.items())),
         "cache_hits": hits,
         "page_concurrency_peak": (max(concurrency_peaks) if concurrency_peaks else None),
@@ -291,8 +295,26 @@ def key_placement_checks(agg: dict, driver: str) -> list[dict]:
                          "ocr_has.prepare/ocr/has_ner/match/draw 全在", len(leaves)))
     # 文本层页（prepare/ocr 恒 0 正确）——只在扫描页上要求 OCR 路径非零，故此处只断言键存在，
     # 非零性由收卷人用 cache_status=="miss" 的页集合单独核对（见验收方案 D3⑤）。
-    checks.append(_check("D3.no_suffix_merge", "PASS",
-                         "键路径均由 <pipeline>.<key> 拼接，未使用 endswith 后缀归并", None))
+    # D3④：键路径必须按 `<pipeline>.<leaf>` **压平**，两管线的同名叶子（如 `text_layer_doc.ocr`
+    # vs `ocr_has.ocr`）各成独立键。判别力来自两处交叉核对：
+    #   ① 任何环键都必须带 `.` 前缀（裸叶子 = 被后缀归并过的痕迹）；
+    #   ② 环键的前缀集合必须与页级 `pipeline_status` 实际出现的管线集合**逐管线相等**
+    #      （跨管线按同名叶子归并，会让两集合不等 —— 见单测 test_no_suffix_merge_is_falsifiable）。
+    pipelines = sorted(str(p) for p in (agg.get("pipelines_seen") or []))
+    ring_prefixes = sorted({k.split(".", 1)[0] for k in leaves if "." in k})
+    flat_violations = sorted(k for k in leaves if "." not in k)
+    unmapped = sorted(set(ring_prefixes) ^ set(pipelines))
+    problems: list[str] = []
+    if flat_violations:
+        problems.append("无管线前缀（疑似后缀归并）：" + ", ".join(flat_violations))
+    if unmapped:
+        problems.append(f"环键管线 {ring_prefixes or '∅'} 与实际管线 {pipelines or '∅'} 不一致："
+                        f"{', '.join(unmapped)}")
+    checks.append(_check("D3.no_suffix_merge", "FAIL" if problems else "PASS",
+                         "；".join(problems) if problems else
+                         f"{len(ring_prefixes)} 条管线的同名叶子各成独立键，键路径均为 <pipeline>.<leaf>"
+                         f"（管线：{', '.join(ring_prefixes)}）",
+                         len(leaves)))
     return checks
 
 
@@ -301,10 +323,19 @@ def _check(cid: str, status: str, detail: str, value) -> dict:
 
 
 def criteria_refs(report: dict, spec: dict[str, str]) -> dict[str, dict]:
-    """D3⑦：判据 ↔ json 键路径引用表。`spec` = {判据名: 点号路径}；路径不存在即抛错。"""
+    """D3⑦：判据 ↔ json 键路径引用表。`spec` = {判据名: 点号路径}。
+
+    路径不存在**不得抛错崩掉整次测量**（评审 I3）：逐条捕获并记 `error`，
+    由 `validate_criteria_refs` 在同一次 finalize 里判 FAIL——「引用表取不到」必须是
+    一条可读的判据失败，而不是 traceback。
+    """
     refs: dict[str, dict] = {}
     for name, path in spec.items():
-        value = resolve_path(report, path)
+        try:
+            value = resolve_path(report, path)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            refs[name] = {"path": path, "value": None, "error": f"{type(exc).__name__}: {exc}"}
+            continue
         refs[name] = {"path": path, "value": value}
     return refs
 

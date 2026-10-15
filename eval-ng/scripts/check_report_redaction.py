@@ -4,7 +4,7 @@
 扫三类痕迹，命中即退 1：
 
 1. **非回环 IP**（`127.*` / `0.0.0.0` 放行——报告里的本地回环不是泄漏）；
-2. **绝对路径**（`/root/…`、`/home/…`、`C:\\…` 等；`--allow-prefix` 可放行指定前缀）；
+2. **绝对路径**（POSIX 根用户/家目录/挂载点等前缀、Windows 盘符路径；`--allow-prefix` 可放行指定前缀）；
 3. **`--denylist` 词表**（一行一词；`re:<正则>` 前缀走正则）。
 
 自带阳性对照：`--self-test` 会用含 IP/绝对路径/denylist 词的样本断言「必须命中」，再用干净样本断言
@@ -34,8 +34,8 @@ WIN_PATH_RE = re.compile(r"(?<![\w])[A-Za-z]:\\[^\s\"'`,)]*")
 LOOPBACK_PREFIXES = ("127.", "0.0.0.0", "::1")
 
 SELF_TEST_BAD = (
-    "instance 10.11.12.13 path /root/ab/d3-after-1.json win C:\\Users\\dev\\secret.txt "
-    "case 苏A-某某公司-2021"
+    "instance 10.11.12.13 path /root/ab/d3-after-1.json win C:\\Users\\dev\\secret.txt "  # public-tree-scan: ignore-line
+    "case 苏A-某某公司-2021"  # public-tree-scan: ignore-line
 )
 SELF_TEST_CLEAN = "instance local path testdata/canary-issue106-scan-10p.pdf ip 127.0.0.1 ok"
 
