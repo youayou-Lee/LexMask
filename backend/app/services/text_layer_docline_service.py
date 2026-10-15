@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 import fitz  # PyMuPDF
 
 from app.core.config import settings
+from app.core.gpu_inference_gate import shared_gpu_inference_slot
 
 logger = logging.getLogger(__name__)
 
@@ -277,11 +278,26 @@ def _fold(value: str) -> str:
     )
 
 
-def find_value_spans(normalized: str, index_map: list[int], value: str) -> list[tuple[int, int]]:
-    """在归一化流里找 value 的全部出现，返回原流坐标区间。"""
+def find_value_spans(
+    normalized: str,
+    index_map: list[int],
+    value: str,
+    *,
+    word_starts: set[int] | None = None,
+    word_ends: set[int] | None = None,
+    stream: str | None = None,
+) -> list[tuple[int, int]]:
+    """在归一化流里找 value 的全部出现，返回原流坐标区间。
+
+    `word_starts` / `word_ends` / `stream` 三件套给定时启用**词边界校验**
+    （Issue#115 评审 I-4）：只在「匹配起点落在某个词的开头」且「匹配终点落在
+    某个词的结尾」时才算命中。没有这层校验时 `str.find` 会把 `张三` 匹配进
+    `张三丰` 内部——框会盖住半个词，且脱敏会把不该涂的字一起涂掉。
+    """
     needle = _fold(value)
     if not needle:
         return []
+    check_bounds = word_starts is not None and word_ends is not None and stream is not None
     spans: list[tuple[int, int]] = []
     cursor = 0
     while True:
@@ -290,9 +306,26 @@ def find_value_spans(normalized: str, index_map: list[int], value: str) -> list[
             break
         start = index_map[pos]
         end = index_map[pos + len(needle) - 1] + 1
+        cursor = pos + 1  # 允许重叠匹配（如「张三」与「张三丰」），由边界校验筛选
+        if check_bounds and not _aligned_to_words(
+            start, end, stream, word_starts, word_ends  # type: ignore[arg-type]
+        ):
+            continue
         spans.append((start, end))
-        cursor = pos + len(needle)
     return spans
+
+
+def _aligned_to_words(
+    start: int,
+    end: int,
+    stream: str,
+    word_starts: set[int],
+    word_ends: set[int],
+) -> bool:
+    """匹配区间是否恰好落在词边界上（首字在词首、末字在词尾）。"""
+    left_ok = start in word_starts or (start > 0 and stream[start - 1].isspace())
+    right_ok = end in word_ends or (end < len(stream) and stream[end].isspace())
+    return left_ok and right_ok
 
 
 def map_values(
@@ -304,12 +337,21 @@ def map_values(
     """值 → (页号, 归一化并集框)。返回 (实体, 映射失败清单)。"""
     normalized, index_map = _normalized_stream(stream)
     page_meta = {page.no: page for page in pages}
+    word_starts = {span.start for span in word_spans}
+    word_ends = {span.end for span in word_spans}
     entities: list[DocLineEntity] = []
     failures: list[dict] = []
-    seen: set[tuple[int, str, str, int]] = set()
+    seen: set[tuple[int, str, str, int, int]] = set()
     for type_id, values in values_by_type.items():
         for value in sorted(values):
-            spans = find_value_spans(normalized, index_map, value)
+            spans = find_value_spans(
+                normalized,
+                index_map,
+                value,
+                word_starts=word_starts,
+                word_ends=word_ends,
+                stream=stream,
+            )
             if not spans:
                 failures.append({"type": type_id, "value": value, "reason": "not_found_in_stream"})
                 continue
@@ -336,7 +378,9 @@ def map_values(
                         min(1.0, x1 / meta.width),
                         min(1.0, y1 / meta.height),
                     )
-                    key = (page_no, type_id, value, int(bbox[0] * 10000))
+                    # 去重键含 y（Issue#115 评审 I-4）：同一列同 x0 的两个不同出现
+                    # 是两个必须分别打码的位置，不能因为只按 x0 判重而丢掉第二个。
+                    key = (page_no, type_id, value, int(bbox[0] * 10000), int(bbox[1] * 10000))
                     if key in seen:
                         continue
                     seen.add(key)
@@ -397,7 +441,11 @@ async def run_document_ner(
             return {}
         async with semaphore:
             try:
-                result = await asyncio.to_thread(has_client.ner, text, use_labels)
+                # 块级派发同样要经过全局 GPU 闸门：本链是**新增的并发入口**，
+                # 若自建信号量就会绕开 HAS_NER_GLOBAL_MAX_INFLIGHT 的全局上限
+                # （Issue#115 评审 I-5）。
+                async with shared_gpu_inference_slot("TextLayerDocLine NER"):
+                    result = await asyncio.to_thread(has_client.ner, text, use_labels)
             except Exception as exc:  # noqa: BLE001 - 单块失败不得拖垮整卷
                 logger.warning("docline NER chunk failed: %s", exc)
                 async with lock:

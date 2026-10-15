@@ -493,10 +493,21 @@ class Settings(BaseSettings):
     TEXT_LAYER_DOCLINE_CHUNK_CHARS: int = 2_000
     # 相邻块重叠：保证跨块边界的实体不被切碎（验收 D9）。
     TEXT_LAYER_DOCLINE_CHUNK_OVERLAP: int = 200
-    # 文档级并发（块级）。沿用 shared_gpu_inference_slot，不会绕开既有闸门。
+    # 文档级并发（块级）。块级派发走 shared_gpu_inference_slot，不绕开既有闸门。
     TEXT_LAYER_DOCLINE_CONCURRENCY: int = 4
-    # 单卷上限：超过则分段落盘，不把整卷文本层与词框常驻内存（验收 G9）。
+    # 单卷上限：超过则**只处理前 N 页**（不做分段落盘，见 Issue#115 评审 M-3）。
+    # 注意：<=0 表示无上限（不推荐，长卷会把整卷词框常驻内存）。
     TEXT_LAYER_DOCLINE_MAX_PAGES: int = 1_000
+    # **页级**覆盖下限（评审 C-2）：该页自身文本层的字符数低于此值就**不算被覆盖**，
+    # 该页回落 OCR+HaS 旧路径。卷级平均（TEXT_LAYER_MIN_CHARS_PER_PAGE）不能代替
+    # 页级判据——薄挂层页会被卷平均「救」进来，从而被永久摘出 OCR 链。
+    TEXT_LAYER_PAGE_MIN_CHARS: int = 60
+    # 覆盖页若**一个实体都没出**，是否回落旧路径（评审 C-1）。默认 True：
+    # 宁可多跑一趟 OCR，也不允许「0 框 = 这页没内容」这种静默丢检。
+    TEXT_LAYER_EMPTY_PAGE_FALLBACK: bool = True
+    # 块级模型调用失败数上限（评审 I-5）。超过即**整卷回落**旧路径，
+    # 不允许「部分块失败」表现为「成功且覆盖 100%」。
+    TEXT_LAYER_MAX_BLOCK_ERRORS: int = 0
     # --- 文本层质量判定阈值（Issue#115 C1）---
     # 不对称代价（用户 2026-10-15 拍板）：漏用可用层的代价可接受，
     # **错用不可用层不可接受**，因此阈值偏保守。
@@ -675,6 +686,31 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_pdf_text_layer_min_chars(cls, v: int) -> int:
         return max(0, min(10_000, v))
+
+    @field_validator("TEXT_LAYER_DOCLINE_CHUNK_CHARS")
+    @classmethod
+    def _validate_text_layer_chunk_chars(cls, v: int) -> int:
+        return max(200, min(20_000, v))
+
+    @field_validator("TEXT_LAYER_DOCLINE_CHUNK_OVERLAP")
+    @classmethod
+    def _validate_text_layer_chunk_overlap(cls, v: int) -> int:
+        return max(0, min(4_000, v))
+
+    @field_validator("TEXT_LAYER_DOCLINE_CONCURRENCY")
+    @classmethod
+    def _validate_text_layer_docline_concurrency(cls, v: int) -> int:
+        return max(1, min(32, v))
+
+    @field_validator("TEXT_LAYER_PAGE_MIN_CHARS")
+    @classmethod
+    def _validate_text_layer_page_min_chars(cls, v: int) -> int:
+        return max(0, min(10_000, v))
+
+    @field_validator("TEXT_LAYER_MAX_BLOCK_ERRORS")
+    @classmethod
+    def _validate_text_layer_max_block_errors(cls, v: int) -> int:
+        return max(0, min(1_000, v))
 
     @field_validator("OCR_TEXT_BLOCK_CACHE_TTL_SEC")
     @classmethod

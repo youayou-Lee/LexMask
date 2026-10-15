@@ -120,6 +120,12 @@ def _vision_signature(
             int(getattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 0) or 0),
             int(getattr(settings, "HAS_NER_TOKENS_PER_TYPE", 0) or 0),
         ],
+        # Issue#115 评审 M-1：文档级文本层链是**另一条识别链**，开关状态必须进签名，
+        # 否则开启后同一页会命中「关链时代」的缓存，表现成「开了没生效」。
+        "text_layer_docline": bool(getattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", False)),
+        "text_layer_docline_chunk_chars": int(
+            getattr(settings, "TEXT_LAYER_DOCLINE_CHUNK_CHARS", 0) or 0
+        ),
         "page": int(page),
         "ocr_has_types": _vision_type_ids(ocr_has_types),
         "visual_feature_types": _vision_type_ids(visual_feature_types),
@@ -549,6 +555,7 @@ async def detect_vision(
         snapshot=snapshot,
         page=page,
         ocr_has_types=ocr_has_types,
+        owner_id=owner_id,
     )
     pipeline_ocr_types = effective_ocr_types
     if doc_boxes is not None:
@@ -571,18 +578,23 @@ async def detect_vision(
     pipeline_status = dict(getattr(vision_service, "last_pipeline_status", {}) or {})
     duration_ms = dict(getattr(vision_service, "last_duration_ms", {}) or {})
     if doc_memo is not None:
+        # 评审 I-5：`ran/failed` 不再硬编码——由**本页实际是否被文档级链接管**推导，
+        # 并把块失败数与截断块数暴露给上层（否则「部分块失败」会显示成「成功」）。
+        doc_took_over = doc_boxes is not None
         pipeline_status["text_layer_doc"] = {
-            "ran": True,
-            "failed": False,
+            "ran": doc_took_over,
+            "failed": bool(doc_memo.get("http_errors")) or not doc_took_over,
             "pages": doc_memo["pages"],
             "entities": doc_memo["entities"],
             "chunks": doc_memo["chunks"],
             "coverage": doc_memo["coverage"],
             "verdict": doc_memo["verdict"],
             "seconds": doc_memo["seconds"],
+            "http_errors": doc_memo.get("http_errors", 0),
+            "truncated_chunks": doc_memo.get("truncated_chunks", 0),
         }
-        if not doc_boxes:
-            warnings = [*warnings, f"text_layer_doc:no_boxes_page={page}"]
+        if not doc_took_over:
+            warnings = [*warnings, f"text_layer_doc:fallback_page={page}"]
     if merge_existing:
         existing_boxes = _boxes_from_page(_page_value(snapshot.get("bounding_boxes"), page), page)
         if existing_boxes:

@@ -286,3 +286,200 @@ def test_boxes_for_page_marks_unusable_layer(monkeypatch, tmp_path):
     monkeypatch.setattr(source.docline, "sample_ink_alignment", lambda *a, **k: 0.0)
     boxes, memo = asyncio.run(source.boxes_for_page(file_id="c" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=None))
     assert boxes is None and memo is None, "不可用层必须回落"
+
+# ------------------------------------------------ Issue#115 门⑥ 评审回归（C/I 类）
+
+
+def _dense(who: str) -> list[str]:
+    return [who, *[f"证据材料第{i}页正文内容" for i in range(29)]]
+
+
+def test_find_value_spans_rejects_match_inside_longer_word():
+    """评审 I-4：`张三` 不得匹配进 `张三丰` 内部（否则框会盖住半个词）。
+
+    旧实现用裸 `str.find`，会把 `张三` 匹配到 `张三丰` 里的前两个字，产出
+    「位置错 + 范围盖住不该涂的字」的框。
+    """
+    pages = [_page(1, ["甲方", "张三", "乙方张三丰"])]
+    stream, word_spans = docline.build_stream(pages)
+    normalized, index_map = docline._normalized_stream(stream)
+    starts = {span.start for span in word_spans}
+    ends = {span.end for span in word_spans}
+
+    bounded = docline.find_value_spans(
+        normalized, index_map, "张三", word_starts=starts, word_ends=ends, stream=stream
+    )
+    assert len(bounded) == 1, f"只应命中独立成词的那一处，实际 {bounded}"
+
+    # 去掉边界校验（旧行为）会多命中一次——证明这个校验确实在起作用
+    unbounded = docline.find_value_spans(normalized, index_map, "张三")
+    assert len(unbounded) == 2, "旧行为（无边界校验）会额外匹配进「张三丰」"
+
+
+def test_map_values_keeps_same_column_repeats():
+    """评审 I-4：同一页、同一列、同 x0 的两个不同出现必须各出一个框。
+
+    旧去重键是 (页, 类型, 值, int(x0*10000))，不含 y ⇒ 第二处被静默丢弃。
+    """
+    words = [
+        docline.TextLayerWord(50.0, 700.0, 90.0, 720.0, "张三"),
+        docline.TextLayerWord(50.0, 600.0, 90.0, 620.0, "张三"),
+    ]
+    pages = [docline.TextLayerPage(no=1, width=595.0, height=842.0, words=words)]
+    stream, word_spans = docline.build_stream(pages)
+    entities, failures = docline.map_values(pages, stream, word_spans, {"PERSON": {"张三"}})
+    assert [e.value for e in entities] == ["张三", "张三"], "两处出现必须都保留"
+    assert entities[0].bbox != entities[1].bbox
+    assert failures == []
+
+
+def test_covered_page_with_zero_boxes_falls_back(monkeypatch, tmp_path):
+    """评审 C-1：覆盖页产出 0 框时不得清空 OCR 类型，必须回落旧路径。"""
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+    monkeypatch.setattr(settings, "TEXT_LAYER_EMPTY_PAGE_FALLBACK", True)
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(b"%PDF-1.4 stub")
+    source.reset_memo()
+
+    pages = [_page(1, _dense("张三")), _page(2, _dense("李四"))]
+
+    async def fake_run(page_list, labels, *, has_client, **kwargs):
+        return docline.DocLineResult(
+            pages=2, chunks=1, chunk_chars=2000, stream_chars=10, layer_chars=8, covered_chars=10,
+            entities=[docline.DocLineEntity(1, "PERSON", "张三", (0.1, 0.2, 0.3, 0.4))],
+            ner_calls=1, truncated_chunks=0, http_errors=0, residual_calls=0, seconds=0.01,
+        )
+
+    monkeypatch.setattr(source.docline, "extract_text_layer_pages", lambda *a, **k: pages)
+    monkeypatch.setattr(source.docline, "sample_ink_alignment", lambda *a, **k: 0.18)
+    monkeypatch.setattr(source.docline, "run_document_ner", fake_run)
+
+    ok, _ = asyncio.run(
+        source.boxes_for_page(file_id="z" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=None)
+    )
+    assert [b.text for b in ok] == ["张三"]
+
+    empty, memo2 = asyncio.run(
+        source.boxes_for_page(file_id="z" * 8, snapshot=_snapshot(str(path)), page=2, ocr_has_types=None)
+    )
+    assert empty is None, "0 框的覆盖页必须回落，不能被当成「这页没实体」"
+    assert memo2 is not None
+
+
+def test_thin_page_is_not_covered(monkeypatch, tmp_path):
+    """评审 C-2：页级下限——薄挂层页不能被卷级平均「救」进覆盖集。"""
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+    monkeypatch.setattr(settings, "TEXT_LAYER_PAGE_MIN_CHARS", 60)
+    # 卷级门调低到 60，把本用例**隔离在页级门**上（卷级平均本来就有独立用例）
+    monkeypatch.setattr(settings, "TEXT_LAYER_MIN_CHARS_PER_PAGE", 60)
+    path = tmp_path / "mixed.pdf"
+    path.write_bytes(b"%PDF-1.4 stub")
+    source.reset_memo()
+
+    pages = [
+        _page(1, _dense("张三")),          # 厚层页
+        _page(2, ["第2页"]),                # 薄挂层页：只有 3 个字（云上实测形态）
+        _page(3, []),                      # 完全无层
+    ]
+
+    async def fake_run(page_list, labels, *, has_client, **kwargs):
+        return docline.DocLineResult(
+            pages=3, chunks=1, chunk_chars=2000, stream_chars=10, layer_chars=8, covered_chars=10,
+            entities=[docline.DocLineEntity(1, "PERSON", "张三", (0.1, 0.2, 0.3, 0.4)),
+                      docline.DocLineEntity(2, "PERSON", "第2页", (0.1, 0.2, 0.3, 0.4))],
+            ner_calls=1, truncated_chunks=0, http_errors=0, residual_calls=0, seconds=0.01,
+        )
+
+    monkeypatch.setattr(source.docline, "extract_text_layer_pages", lambda *a, **k: pages)
+    monkeypatch.setattr(source.docline, "sample_ink_alignment", lambda *a, **k: 0.18)
+    monkeypatch.setattr(source.docline, "run_document_ner", fake_run)
+
+    thick, memo = asyncio.run(
+        source.boxes_for_page(file_id="t" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=None)
+    )
+    assert memo["covered_pages"] == {1}, f"只有厚层页算覆盖，实际 {memo['covered_pages']}"
+    assert memo["uncovered_pages"] == [2, 3]
+
+    thin, _ = asyncio.run(
+        source.boxes_for_page(file_id="t" * 8, snapshot=_snapshot(str(path)), page=2, ocr_has_types=None)
+    )
+    assert thin is None, "薄挂层页必须回落旧路径（该页的图像内容只能靠 OCR 拿到）"
+
+
+def test_tenant_regex_types_disable_docline(monkeypatch, tmp_path):
+    """评审 I-3：租户配了 regex 类型时不启用本链（保证层没有等价实现）。"""
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(b"%PDF-1.4 stub")
+    source.reset_memo()
+    called: list[int] = []
+
+    monkeypatch.setattr(
+        source.docline, "extract_text_layer_pages",
+        lambda *a, **k: called.append(1) or [_page(1, _dense("张三"))],
+    )
+    boxes, memo = asyncio.run(
+        source.boxes_for_page(
+            file_id="r" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=None, owner_id=_RegexOwner()
+        )
+    )
+    assert boxes is None and memo is None
+    assert called == [], "有 regex 类型的租户不应触发整卷文本层构建"
+
+
+class _RegexOwner:
+    """桩：让 `entity_type_service.get_regex_types` 返回非空。"""
+
+
+def test_block_errors_over_limit_fall_back_and_are_negative_cached(monkeypatch, tmp_path):
+    """评审 I-5/I-6：块失败超阈 ⇒ 整卷回落；且不得每页重算整卷。"""
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+    monkeypatch.setattr(settings, "TEXT_LAYER_MAX_BLOCK_ERRORS", 0)
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(b"%PDF-1.4 stub")
+    source.reset_memo()
+    builds: list[int] = []
+
+    def fake_extract(*_a, **_k):
+        builds.append(1)
+        return [_page(1, _dense("张三")), _page(2, _dense("李四"))]
+
+    async def fake_run(page_list, labels, *, has_client, **kwargs):
+        return docline.DocLineResult(
+            pages=2, chunks=2, chunk_chars=2000, stream_chars=10, layer_chars=8, covered_chars=10,
+            entities=[], ner_calls=1, truncated_chunks=0, http_errors=1, residual_calls=0, seconds=0.01,
+        )
+
+    monkeypatch.setattr(source.docline, "extract_text_layer_pages", fake_extract)
+    monkeypatch.setattr(source.docline, "sample_ink_alignment", lambda *a, **k: 0.18)
+    monkeypatch.setattr(source.docline, "run_document_ner", fake_run)
+
+    for page in (1, 2):
+        boxes, memo = asyncio.run(
+            source.boxes_for_page(file_id="e" * 8, snapshot=_snapshot(str(path)), page=page, ocr_has_types=None)
+        )
+        assert boxes is None and memo is None, "块失败超阈必须整卷回落"
+    assert len(builds) == 1, "临时故障要负缓存，不能每页重算整卷"
+
+
+def test_document_ner_dispatches_through_global_gpu_gate(monkeypatch):
+    """评审 I-5：块级派发必须经过全局 GPU 闸门，不得自建信号量绕开。"""
+    import contextlib
+
+    pages = [_page(1, ["甲：", "张三", "乙：", "李四"])]
+    entered: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def fake_slot(label):
+        entered.append(label)
+        yield
+
+    class Client:
+        def ner(self, text, entity_types=None, **kwargs):
+            return {}
+
+    monkeypatch.setattr(docline, "shared_gpu_inference_slot", fake_slot)
+    asyncio.run(docline.run_document_ner(pages, ["姓名"], has_client=Client()))
+
+    assert entered, "块级调用必须取 shared_gpu_inference_slot（全局闸位）"
+    assert any("TextLayerDocLine" in label for label in entered)
