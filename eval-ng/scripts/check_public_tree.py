@@ -42,13 +42,16 @@ ABS_PATH_RE = re.compile(
 WIN_PATH_RE = re.compile(r"(?<![\w])[A-Za-z]:\\[^\s\"'`,)]*")
 # 凭据类键名：`--api-pass` / `api_pass=` / `password=` / `secret:` …（R1：必须覆盖 flag 形态）
 CREDENTIAL_NAME_RE = r"(?:api[_-]?(?:pass(?:word)?|key)|passw(?:or)?d|secret|token)s?"
-# 模板/占位值不算命中：`<你的密码>`、`${ENV}`、`changeme`、`your-password` …
-PLACEHOLDER_VALUE_RE = re.compile(
-    r"(?i)(?:[<>{}]|\$\{?\w+"
-    r"|^(?:\W*(?:your|my|the)?[-_ ]*(?:password|passwd|secret|token|key))\W*$"
-    r"|^(?:test|fake|sample|dummy|placeholder|example|changeme|redacted)[-_ ]?\w*$"
-    r"|^(?:os\.)?environ\b|[\w.]+\(|[\w.]+\["
-    r"|^[A-Z][A-Z0-9_]{2,}$)"
+# 豁免只认「语境」与「模板形态」，**绝不按值的普通形状豁免**
+# （上一轮教训：`(?i)` 作用到 `^[A-Z][A-Z0-9_]{2,}$` 后等价于「任何纯字母数字值」，真口令漏网）
+ENV_LOOKUP_RE = re.compile(r"(?i)(?:os\.)?(?:environ|getenv)\b|environ\s*\[")
+TEMPLATE_VALUE_RE = re.compile(r"[<>{}]|\$\{?\w+")
+PLACEHOLDER_WORDS = frozenset({
+    "changeme", "dummy", "placeholder", "example", "redacted", "your-password", "your_password",
+    "test-token", "test_token", "test-password", "fake-token", "sample-token",
+})
+CODE_VALUE_PREFIXES = (
+    "settings.", "os.", "self.", "cls.", "config.", "request.", "args.", "env.", "params.", "kwargs.",
 )
 SECRET_RES = (
     ("bearer", re.compile(r"\bBearer\s+[A-Za-z0-9\-._~+/]{24,}")),
@@ -58,8 +61,16 @@ SECRET_RES = (
     ("credential_literal", re.compile(rf"(?i)\b{CREDENTIAL_NAME_RE}\b\s*[:=]\s*[\"'](?P<val>[^\"']{{8,}})[\"']")),
     # flag 形态：本仓 CLI 的「凭据开关 + 引号字面量」与 argparse 的 default= 写法
     ("credential_flag", re.compile(rf"(?i)--{CREDENTIAL_NAME_RE}\b[^)\n]{{0,40}}?[\"'](?P<val>[^\"'=\s,]{{8,}})[\"']")),
+    # 裸赋值形态：无引号赋值也要能抓（键名 = 字母数字混合值）
+    # 裸赋值形态：值必须**同时含字母与数字**（`Hunter2Hunter2` 抓；`create_token`/`json.load`/`event.target.value`
+    # 这类代码标识符不抓）——`credential_bare` 只看无引号赋值，避免把正常代码判成凭据
+    ("credential_bare", re.compile(
+        rf"(?i)\b{CREDENTIAL_NAME_RE}\b\s*[:=]\s*(?P<val>"
+        rf"(?=[A-Za-z0-9!@#$%^&*_\-]*[A-Za-z])(?=[A-Za-z0-9!@#$%^&*_\-]*\d)"
+        rf"[A-Za-z0-9!@#$%^&*_\-]{{8,}})"
+    )),
 )
-CREDENTIAL_RULES = frozenset({"credential_literal", "credential_flag"})
+CREDENTIAL_RULES = frozenset({"credential_literal", "credential_flag", "credential_bare"})
 LOOPBACK_PREFIXES = ("127.", "0.0.0.0", "::1")
 # 私网（RFC1918）与文档段（RFC5737）+ 保留段：示例与夹具的合法取值，不是实例地址
 PRIVATE_IP_RE = re.compile(
@@ -79,6 +90,7 @@ SELF_TEST_BAD = (
     # R1 形态：flag 与 add_argument(default=) 两种写法都必须落网（值用合成串，不是真实口令）
     "cli --api-pass \"Synthetic-Pass!123\" "  # public-tree-scan: ignore-line
     "parser.add_argument(\"--api-pass\", default=\"Synthetic-Pass!123\")"  # public-tree-scan: ignore-line
+    "cfg password=Hunter2Hunter2 "  # public-tree-scan: ignore-line
 )
 SELF_TEST_CLEAN = (
     "api_base http://127.0.0.1:8000 fixture 203.0.113.9 host 10.1.2.3 "
@@ -98,6 +110,17 @@ def load_denylist(path: str | None) -> list[str]:
     return [line.strip() for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _is_exempt(match: re.Match[str]) -> bool:
+    """凭据类命中的豁免判定：只认语境（读环境变量）、模板形态与具名占位词。"""
+    if ENV_LOOKUP_RE.search(match.group(0)):
+        return True
+    value = match.group("val")
+    if TEMPLATE_VALUE_RE.search(value):
+        return True
+    low = value.strip().lower()
+    return low in PLACEHOLDER_WORDS or low.startswith(CODE_VALUE_PREFIXES)
+
+
 def scan(text: str, *, denylist: list[str], allow_prefixes: list[str]) -> list[tuple[str, str]]:
     """返回 [(规则, 命中片段), ...]。"""
     findings: list[tuple[str, str]] = []
@@ -112,8 +135,8 @@ def scan(text: str, *, denylist: list[str], allow_prefixes: list[str]) -> list[t
             findings.append((rule, value))
     for rule, regex in SECRET_RES:
         for match in regex.finditer(text):
-            if rule in CREDENTIAL_RULES and PLACEHOLDER_VALUE_RE.search(match.group("val")):
-                continue  # 模板/占位值（`<你的密码>`、`${ENV}` …）不是凭据
+            if rule in CREDENTIAL_RULES and _is_exempt(match):
+                continue  # 语境/模板/占位词才放过；值的普通形状不作豁免
             findings.append((rule, match.group(0)))
     for token in denylist:
         if token.startswith("re:"):
@@ -181,7 +204,10 @@ def self_test(denylist: list[str] | None = None) -> int:
     bad = scan_source("self-test-bad", SELF_TEST_BAD, denylist=words + ["SCNET-INSTANCE-1"],
                       allow_prefixes=[])
     rules = {line.split("[", 1)[1].split("]", 1)[0] for line in bad}
-    required = {"public_ip", "abs_path", "win_path", "bearer", "credential_literal", "credential_flag", "denylist"}
+    required = {
+        "public_ip", "abs_path", "win_path", "bearer",
+        "credential_literal", "credential_flag", "credential_bare", "denylist",
+    }
     missing = required - rules
     clean = scan_source("self-test-clean", SELF_TEST_CLEAN, denylist=words, allow_prefixes=[])
     problems: list[str] = []

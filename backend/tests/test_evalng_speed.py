@@ -17,6 +17,7 @@ report = boot.load("engine/speedkit/report.py")
 arms = boot.load("engine/speedkit/arms.py")
 cli = boot.load("cli.py")
 redact = boot.load("scripts/check_report_redaction.py")
+ptree = boot.load("scripts/check_public_tree.py")
 # 单测专用口令替身：公开仓不得出现真实口令（G4）
 _UNIT_API_PASS = "unit-test-pass-not-a-credential"
 
@@ -1167,7 +1168,8 @@ class _StubApi:
 
 def _run_cli_with_stub(monkeypatch, tmp_path, *, driver_name: str, with_batch: bool = False,
                        records: list[dict] | None = None, rounds: int = 2, warmup_rounds: int = 1,
-                       premise_parse: dict | None = None):
+                       premise_parse: dict | None = None, arm_env: dict | None = None,
+                       evidence_env: dict | None = None):
     """跑一遍 CLI 装配链。`records` 非空时按轮次依次吐出（用于造非法轮/离散度场景）。
 
     `premise_parse` 非空时把清单条目改成声明 `scanned_pdf`（id 对齐 `f1`）并替换后端
@@ -1176,6 +1178,14 @@ def _run_cli_with_stub(monkeypatch, tmp_path, *, driver_name: str, with_batch: b
     _, exam, arm, evidence = _cli_fixtures(tmp_path)
     monkeypatch.setattr(driver, "SpeedApi", _StubApi)
     canned = _canned_round(with_batch=with_batch)
+    if arm_env is not None:
+        arm_doc = json.loads(arm.read_text(encoding="utf-8"))
+        arm_doc["env"] = dict(arm_env)
+        arm.write_text(json.dumps(arm_doc), encoding="utf-8")
+    if evidence_env is not None:
+        ev_doc = json.loads(evidence.read_text(encoding="utf-8"))
+        ev_doc["env"] = dict(evidence_env)
+        evidence.write_text(json.dumps(ev_doc), encoding="utf-8")
     if premise_parse is not None:
         doc = json.loads(exam.read_text(encoding="utf-8"))
         doc["corpus"][0]["id"] = "f1"
@@ -1201,6 +1211,21 @@ class TestCliReportCompleteness:
     这两条的价值在于：**逐页/逐轮/批作业的每个数值叶子都真的过一遍路径表**——
     单测 fixture 手搓的报告结构覆盖不到 cli 现场拼出来的字段，漏一个就在门④ 变 FAIL。
     """
+
+    def test_d3_and_d8_assembly_are_wired(self, monkeypatch, tmp_path):
+        """⑤ 阻塞 3：删 `key_placement_checks` / `env_matches_arm` 的 `checks.extend(...)` 曾全绿逃逸。
+
+        判别性来自「判据 id 必须出现在装配后的 checks 里」——删接线即缺 id。
+        """
+        code, doc = _run_cli_with_stub(
+            monkeypatch, tmp_path, driver_name="single",
+            arm_env={"UNIT_SWITCH": "on"}, evidence_env={"UNIT_SWITCH": "on"},
+        )
+        assert code != 2
+        ids = {c["id"] for c in doc["checks"]}
+        assert "D3.no_suffix_merge" in ids, sorted(ids)   # key_placement_checks 的装配（唯一来源）
+        assert "D2.arm_env" in ids, sorted(ids)           # env_matches_arm 的装配（唯一来源）
+        assert "D8.env_arm_no_file_write" in ids, sorted(ids)  # arms.arm_checks 的装配
 
     def test_corpus_premise_is_wired_into_checks(self, monkeypatch, tmp_path):
         """R3：`D1.corpus_premise` 的**装配级接线**必须有判据（删掉 cli.py 的 extend 即红）。
@@ -1519,6 +1544,37 @@ class TestCliReportCompleteness:
         assert warm[0]["status"] == "PASS", warm
 
 # ── 脱敏扫描器（D5④） ──────────────────────────────────────────────────────
+class TestPublicTreeScanner:
+    """G4 公开树扫描器自身必须有 pytest 判据（⑤ 阻塞 2：`self_test` 挡不住「轻微放宽规则」）。"""
+
+    @staticmethod
+    def _rules(text: str) -> set[str]:
+        return {rule for rule, _ in ptree.scan(text, denylist=[], allow_prefixes=[])}
+
+    def test_plain_alnum_secrets_are_caught(self):
+        """反向钉子：字母数字混合口令必须命中——豁免一旦按「值形状」放宽，这里立刻红。"""
+        for probe in (
+            '--api-pass "syntheticApiPass2026"',  # public-tree-scan: ignore-line
+            '--api-pass "REALLONGAPIPASS9"',  # public-tree-scan: ignore-line
+            "password=Hunter2Hunter2",  # public-tree-scan: ignore-line
+            'password="Passw0rd!2026"',  # public-tree-scan: ignore-line
+        ):
+            assert self._rules(probe) & {"credential_literal", "credential_flag", "credential_bare"}, probe
+
+    def test_code_identifiers_and_templates_are_clean(self):
+        """正反边界：代码标识符、模板值、环境变量读取、fetch 选项都不得误报。"""
+        for probe in (
+            "token = create_token", "password=body.password", "secret = json.load",
+            "tokens = Array.from", "api_key: m.api_key", "password: event.target.value",
+            'token="test-token"', "password=<你的密码>", 'credentials: "same-origin"',
+            '--api-pass", default=os.environ.get("EVAL_API_PASS")',
+        ):
+            assert not self._rules(probe), probe
+
+    def test_self_test_covers_all_required_rules(self):
+        assert ptree.self_test([]) == 0
+
+
 class TestRedactionScanner:
     def test_self_test_positive_control(self):
         assert redact.self_test() == []
