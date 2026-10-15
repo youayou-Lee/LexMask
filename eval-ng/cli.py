@@ -19,6 +19,7 @@ if __package__ in (None, ""):  # 脚本直跑：注册包上下文使相对 impo
 
 import argparse
 import asyncio
+import hashlib
 import json
 import sys
 from datetime import datetime
@@ -26,7 +27,7 @@ from pathlib import Path
 
 from .engine.protocol import AnswerForm, EnvReport, ExamItem
 from .engine.report import save_report
-from .engine.runner import MissingEnvAnnotation, MetricGroup, run_exam
+from .engine.runner import MetricGroup, MissingEnvAnnotation, run_exam
 
 
 def load_exam_json(path: Path, exam_id: str | None = None) -> list[ExamItem]:
@@ -59,8 +60,8 @@ def build_participant(name: str, args) -> object:
 
         return MockParticipant()
     if name in ("has", "glm-gen4"):
-        from .participants.has import HasParticipant
         from .participants.glm_gen4 import GlmGen4Participant
+        from .participants.has import HasParticipant
 
         cls = HasParticipant if name == "has" else GlmGen4Participant
         return cls(args.ner_base, model=args.model, max_tokens=args.max_tokens,
@@ -106,6 +107,39 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     e2e.add_argument("exam", help="e2e 考卷 JSON（make_exam_from_manifest.py 产物）")
     e2e.add_argument("--warmup-pages", type=int, default=1)
     e2e.add_argument("--baseline", default=None)
+    speed = sub.add_parser(
+        "speed",
+        help="速度测量（单臂单次报告；臂/重启编排在引擎外的薄脚本里）",
+        description="四态判定：PASS / FAIL / BLOCKED / UNVERIFIED；exit 0=PASS 1=FAIL 3=BLOCKED|UNVERIFIED 2=用法/前置错",
+    )
+    speed.add_argument("exam", help="速度考卷 JSON（corpus[]；或 eval-ng items[] 的 artifact_file/robustness）")
+    speed.add_argument("--driver", required=True, choices=["single", "batch"],
+                       help="single=逐页 vision（锚点装置同构）；batch=smart_batch 作业链路")
+    speed.add_argument("--arm", required=True, help="臂定义 JSON（私有仓 arms/*.json；schema 见 speedkit.arms）")
+    speed.add_argument("--out", required=True, help="报告前缀：写 <out>.json 与 <out>.md")
+    speed.add_argument("--page-concurrency", type=int, required=True, help="页并发 k（显式给，无默认）")
+    speed.add_argument("--cache-policy", required=True, choices=["cold", "warm"])
+    speed.add_argument("--suite", required=True, choices=["synthetic", "real"])
+    speed.add_argument("--round-evidence", required=True,
+                       help="编排写出的 rounds.json（含 pid/start_time/时间戳/就绪等待/生效开关集）")
+    speed.add_argument("--payload-file", default=None,
+                       help="显式载荷 JSON；缺省=锚点同款钉死集（OCR19+印章/签名）")
+    speed.add_argument("--cleanup", action="store_true", help="跑完删除上传的卷（真卷必须带）")
+    speed.add_argument("--rounds", type=int, default=4, help="总轮数（含 warmup 轮），上限 5")
+    speed.add_argument("--warmup-rounds", type=int, default=1)
+    speed.add_argument("--round-restart-cmd", default=None,
+                       help="轮间重启命令（编排给的薄脚本；引擎只执行它并读证据，不自己起停服务）")
+    speed.add_argument("--api-base", default="http://127.0.0.1:8000")
+    speed.add_argument("--api-user", default="eval_user")
+    speed.add_argument("--api-pass", default="EvalUser!2026")
+    speed.add_argument("--timeout", type=float, default=600.0)
+    speed.add_argument("--job-timeout-min", type=float, default=120.0)
+    speed.add_argument("--upload-workers", type=int, default=4)
+    speed.add_argument("--code-rev", default=None, help="编排传入的代码版本（引擎会与现场 git HEAD 双向核对）")
+    speed.add_argument("--install", default=None, help="安装标识（默认记分支+rev）")
+    speed.add_argument("--baseline", default=None,
+                       help="[悬空] 同实例 benchmark_throughput.py 报告，用于 D7 parity 对照")
+    speed.add_argument("--runs", type=int, default=1, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     return args
 
@@ -247,7 +281,6 @@ async def _run_single(args: argparse.Namespace, exam: list[ExamItem], exam_id: s
 
 async def _run_e2e(args: argparse.Namespace) -> int:
     from .engine import e2e as e2e_mod
-
     from .engine.env_detect import detect_hardware
 
     if not args.env_label or not args.target_label:
@@ -297,7 +330,507 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run(args))
     if args.command == "run-e2e":
         return asyncio.run(_run_e2e(args))
+    if args.command == "speed":
+        return _run_speed(args)
     return 2
+
+
+class _Usage(Exception):
+    """用法/前置错误 ⇒ exit 2（装置不可得记 BLOCKED，不与用法错误混判）。"""
+
+
+# 判据 ↔ 报告字段路径（D3⑦：引用表逐条回取，路径不存在即 FAIL）
+SPEED_CRITERIA_PATHS: dict[str, str] = {
+    "D3.closure_same_clock": "summary.closure_ratio",
+    "D3.residual_two_sided": "summary.residual_ratio",
+    "D3.cross_clock_not_copied": "summary.harness_ratio",
+    "D4.file_wall_p50": "summary.file_wall_s.p50",
+    "D4.file_wall_mean": "summary.file_wall_s.mean",
+    "D4.wall_agreement": "summary.wall_agreement.max_abs_ratio_diff",
+    "D4.pages_per_min": "summary.pages_per_min",
+    "D4.parallel_efficiency": "summary.parallel_efficiency",
+    "D5.readiness_ready": "readiness.ready_wait_sec",
+    "D5.readiness_settle": "readiness.settle_sec",
+    "D8.cache_hits": "summary.cache_hits",
+}
+
+
+def _speed_exit(verdict: str) -> int:
+    return {"PASS": 0, "FAIL": 1}.get(verdict, 3)
+
+
+def _load_speed_corpus(args) -> tuple[list[dict], dict]:
+    """读速度考卷 → (逐卷条目, 入报告的考卷视图)。页数必须明示；md5/文本层现场机检。"""
+    from .engine.speedkit import driver as sk_driver
+    from .engine.speedkit import report as sk_report
+
+    path = Path(args.exam)
+    if not path.is_file():
+        raise _Usage(f"考卷不存在：{path}")
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    suite = str(doc.get("suite") or "synthetic")
+    if args.suite == "real" and suite != "real":
+        raise _Usage(f"--suite real 但考卷 {path} 未声明 \"suite\":\"real\"（防合成卷冒充真卷）")
+    if args.suite == "synthetic" and suite == "real":
+        raise _Usage("考卷声明 real，须用 --suite real 调用（防真卷被当合成卷对外报数）")
+
+    raw_items = doc.get("corpus") or []
+    if not raw_items:
+        raw_items = [raw for raw in (doc.get("items") or [])
+                     if raw.get("path") and str(raw.get("form") or "") in ("artifact_file", "robustness", "")]
+    if not raw_items:
+        raise _Usage(f"考卷 {path} 无可用条目（corpus[] 或 items[form=artifact_file|robustness]）")
+
+    items: list[dict] = []
+    for raw in raw_items:
+        file_path = str(raw.get("path") or "")
+        if not file_path or not Path(file_path).is_file():
+            raise _Usage(f"考卷条目 {raw.get('id')!r} 的 path 不存在：{file_path!r}")
+        pages = raw.get("pages")
+        if not isinstance(pages, int) or pages <= 0:
+            raise _Usage(f"考卷条目 {raw.get('id')!r} 必须显式给正整数 pages（轮次合法性依赖它）")
+        md5 = str(raw.get("md5") or sk_report.md5_file(file_path))
+        expect_md5 = str(raw.get("expect_md5") or "")
+        if expect_md5 and md5 != expect_md5:
+            raise _Usage(f"考卷条目 {raw.get('id')!r} 的 md5 {md5} ≠ 声明 expect_md5 {expect_md5}"
+                         "（卷内容已漂移，锚点不可比）")
+        carrier = str(raw.get("carrier") or "")
+        text_chars = None
+        if Path(file_path).suffix.lower() == ".pdf":
+            text_chars = sk_driver.pdftotext_nonblank_chars(file_path)
+            if not carrier:
+                carrier = "scanned_pdf" if not text_chars else "text_pdf"
+        items.append({
+            "id": str(raw.get("id") or Path(file_path).stem),
+            "path": str(file_path),
+            "pages": pages,
+            "md5": md5,
+            "carrier": carrier or "unknown",
+            "text_chars": text_chars,
+            "expect_reject": bool(raw.get("expect_reject")),
+            "no_gt": True,
+        })
+    # 报告视图：real 卷的落盘路径必须脱敏（D9②：真卷路径/卷名不得进报告）
+    view_items = []
+    for entry in items:
+        view = dict(entry)
+        if suite == "real":
+            digest = hashlib.sha256(str(entry["path"]).encode("utf-8")).hexdigest()[:12]
+            view["path"] = f"<redacted:{digest}>"
+        view_items.append(view)
+    exam_view = {
+        "exam_id": str(doc.get("exam_id") or path.stem),
+        "suite": suite,
+        "path": str(path) if suite != "real" else f"<redacted:{hashlib.sha256(str(path).encode()).hexdigest()[:12]}>",
+        "manifest_sha256": sk_report.sha256_file(str(path)),
+        "corpus": view_items,
+    }
+    return items, exam_view
+
+
+def _run_speed(args: argparse.Namespace) -> int:
+    """`speed` 子命令：单臂单次报告。臂/重启/授权在引擎外的编排脚本里，引擎零业务 spawn。"""
+    import os
+    import shlex
+    import subprocess
+
+    from .engine.speedkit import arms as _arms  # noqa: F401 —— 保持模块级常量可读性
+    from .engine.speedkit import arms as sk_arms
+    from .engine.speedkit import collect as sk_collect
+    from .engine.speedkit import driver as sk_driver
+    from .engine.speedkit import report as sk_report
+
+    started_at = sk_report.utcnow()
+
+    try:
+        if args.page_concurrency < 1:
+            raise _Usage(f"--page-concurrency 必须 ≥1，实为 {args.page_concurrency}")
+        if args.rounds < 2 or args.rounds > sk_driver.MAX_TIMING_ROUNDS + sk_driver.WARMUP_ROUNDS:
+            raise _Usage(f"--rounds 必须在 2..{sk_driver.MAX_TIMING_ROUNDS + sk_driver.WARMUP_ROUNDS}"
+                         f"（含 warmup 轮），实为 {args.rounds}")
+        if args.warmup_rounds < 0 or args.warmup_rounds >= args.rounds:
+            raise _Usage(f"--warmup-rounds={args.warmup_rounds} 必须落在 0..{args.rounds - 1}")
+        if args.upload_workers < 1:
+            raise _Usage("--upload-workers 必须 ≥1")
+        out_dir = Path(args.out).resolve().parent
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise _Usage(f"--out 目录不可建：{out_dir}（{exc}）") from exc
+        if not os.access(out_dir, os.W_OK):
+            raise _Usage(f"--out 目录不可写：{out_dir}")
+        payload, payload_source, payload_sha = sk_driver.effective_payload(args.payload_file)
+        arm = sk_arms.load_arm(args.arm)
+        evidence = sk_driver.load_round_evidence(args.round_evidence)
+        corpus, exam_view = _load_speed_corpus(args)
+        total_pages = sum(it["pages"] for it in corpus)
+        if args.page_concurrency > total_pages:
+            raise _Usage(f"--page-concurrency={args.page_concurrency} > 清单总页数 {total_pages}")
+        timing_items = [it for it in corpus if not it["expect_reject"]]
+        expected_pages = sum(it["pages"] for it in timing_items)
+    except _Usage as exc:
+        print(f"[speed] 用法错误：{exc}", file=sys.stderr)
+        return 2
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"[speed] 前置错误：{exc}", file=sys.stderr)
+        return 2
+
+    ignore_paths = (str(Path(args.out).resolve()),)
+    checks: list[dict] = []
+    abort_reason: str | None = None
+    try:
+        checks.extend(sk_arms.arm_checks(arm, phase="pre", ignore_paths=ignore_paths))
+    except ValueError as exc:
+        print(f"[speed] 前置错误：{exc}", file=sys.stderr)
+        return 2
+    if any(c.get("status") in ("FAIL", "BLOCKED") for c in checks):
+        abort_reason = "臂前置断言未过（patch 臂跑前工作树必须干净）；未进入计时"
+        print(f"[speed] {abort_reason}", file=sys.stderr)
+
+    rounds: list[dict] = []
+    type_ids: list[str] = []
+    if not abort_reason:
+        try:
+            api = sk_driver.SpeedApi(args.api_base, args.api_user, args.api_pass, timeout=args.timeout)
+        except Exception as exc:  # noqa: BLE001
+            # 登录/建连即失败 = 装置不可得 ⇒ BLOCKED（不是被测对象的性能结论，不得判 FAIL）
+            api = None
+            checks.append({"id": "D1.measurement_reachable", "status": "BLOCKED",
+                           "detail": f"登录/建连失败（装置不可得 ⇒ BLOCKED，不判 FAIL）："
+                                     f"{type(exc).__name__}: {str(exc)[:200]}", "value": None})
+            abort_reason = f"装置不可得（登录失败）：{type(exc).__name__}: {str(exc)[:160]}"
+            print(f"[speed] {abort_reason}", file=sys.stderr)
+        try:
+            if args.driver == "batch":
+                try:
+                    type_ids = api.default_type_ids()
+                except Exception as exc:  # noqa: BLE001
+                    type_ids = []
+                    checks.append({"id": "D6.batch_type_ids", "status": "BLOCKED",
+                                   "detail": f"取默认类型集失败：{exc!r}", "value": 0})
+                if not type_ids:
+                    abort_reason = "batch 线取不到默认实体类型集（entity_type_ids 不能为空）"
+                    checks.append({"id": "D6.batch_type_ids", "status": "BLOCKED",
+                                   "detail": abort_reason, "value": len(type_ids)})
+            for round_no in range(1, args.rounds + 1):
+                if abort_reason:
+                    break
+                if round_no > 1 and args.round_restart_cmd:
+                    proc = subprocess.run(shlex.split(args.round_restart_cmd), capture_output=True,
+                                          text=True, timeout=600, check=False)
+                    if proc.returncode != 0:
+                        checks.append({"id": "D2.restart_cmd", "status": "FAIL",
+                                       "detail": f"轮间重启命令返回 {proc.returncode}："
+                                                 f"{(proc.stderr or proc.stdout)[:200]}", "value": proc.returncode})
+                        abort_reason = "轮间重启命令失败（冷跑协议不成立）"
+                        break
+                round_started = sk_report.utcnow()
+                try:
+                    if args.driver == "single":
+                        record = sk_driver.measure_single_round(
+                            api, corpus, payload=payload, page_concurrency=args.page_concurrency,
+                            cleanup=args.cleanup, upload_workers=args.upload_workers,
+                        )
+                    else:
+                        record = sk_driver.measure_batch_round(
+                            api, corpus, payload=payload, type_ids=type_ids, label=arm["name"],
+                            timeout_sec=args.job_timeout_min * 60, upload_workers=args.upload_workers,
+                            cleanup=args.cleanup,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    # 装置不可得（后端未起 / 认证失败 / 网络不通）不是被测对象的性能结论 ⇒ BLOCKED，不判 FAIL
+                    checks.append({"id": "D1.measurement_reachable", "status": "BLOCKED",
+                                   "detail": f"{args.driver} 线第 {round_no} 轮测量中断（装置不可得 ⇒ BLOCKED，"
+                                             f"不判 FAIL）：{type(exc).__name__}: {str(exc)[:200]}",
+                                   "value": None})
+                    abort_reason = f"测量不可得（{type(exc).__name__}）：{str(exc)[:160]}"
+                    print(f"[speed] {abort_reason}", file=sys.stderr)
+                    break
+                round_finished = sk_report.utcnow()
+                warmup = round_no <= args.warmup_rounds
+                valid, invalid_reason = sk_driver.round_valid(
+                    record, driver=args.driver, expected_pages=expected_pages,
+                )
+                record.update({
+                    "round": round_no, "warmup": warmup, "invalid": bool(warmup and not valid),
+                    "invalid_reason": None if valid else invalid_reason,
+                    "harness_start_ts": round_started, "harness_end_ts": round_finished,
+                    "driver_self_wall_s": record.get("driver_self_wall_s"),
+                })
+                if warmup:
+                    record["invalid"] = False
+                    record["invalid_reason"] = None
+                page_agg = record.get("agg") or {}
+                record["cache"] = {"histogram": page_agg.get("cache_histogram"),
+                                   "hits": page_agg.get("cache_hits")}
+                rounds.append(record)
+                if not valid and not warmup:
+                    checks.append({"id": "D1.round_validity", "status": "FAIL",
+                                   "detail": f"计时轮 {round_no} 不合法：{invalid_reason}", "value": round_no})
+        finally:
+            try:
+                api.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    timing = [r for r in rounds if not r.get("warmup") and not r.get("invalid")]
+    agg = sk_collect.sum_pages([p for r in timing for p in (r.get("pages") or [])])
+    overview_agg = sk_collect.sum_pages([p for r in rounds for p in (r.get("pages") or [])])
+    walls = [float(r.get("file_wall_s") or 0.0) for r in timing]
+    self_walls = [float(r.get("driver_self_wall_s") or 0.0) for r in timing]
+    wall_stats = sk_driver.wall_stats(walls)
+    wall_agreement = sk_driver.wall_agreement(
+        [(r.get("file_wall_s"), r.get("driver_self_wall_s")) for r in timing]
+    )
+    pages_in_timing = sum(len(r.get("pages") or []) for r in timing)
+    total_wall = sum(walls)
+    files = len(timing) * len(timing_items)
+    summary = {
+        "pages_total": total_pages,
+        "pages_measured_timing": pages_in_timing,
+        "pages_measured_all_rounds": overview_agg.get("pages_measured"),
+        "files_total": len(corpus),
+        "files_timed": files,
+        "steady_pages": pages_in_timing,
+        "sum_backend_pages_ms": agg.get("sum_backend_pages_ms"),
+        "sum_harness_pages_ms": agg.get("sum_harness_pages_ms"),
+        "sum_rings_ms": agg.get("sum_rings_ms"),
+        "unclassified_ms": agg.get("unclassified_ms"),
+        "unclassified_source": agg.get("unclassified_source"),
+        "residual_ratio": agg.get("residual_ratio"),
+        "closure_ratio": (round(abs(agg.get("unclassified_ms") or 0.0) / agg["sum_backend_pages_ms"], 6)
+                          if (agg.get("sum_backend_pages_ms") or 0) > 0 else None),
+        "harness_ratio": agg.get("harness_ratio"),
+        "rings_by_key_ms": agg.get("rings_by_key_ms"),
+        "cache_histogram": agg.get("cache_histogram"),
+        "cache_hits": agg.get("cache_hits"),
+        "page_concurrency_peak": agg.get("page_concurrency_peak"),
+        "file_wall_s": wall_stats,
+        "driver_self_wall_s": sk_driver.wall_stats(self_walls),
+        "wall_agreement": wall_agreement,
+        "page_ms_p50": sk_driver.wall_stats(
+            [float(p["root_total_ms"]) for r in timing for p in (r.get("pages") or [])
+             if sk_collect.is_number(p.get("root_total_ms"))]
+        ).get("p50"),
+        "pages_per_min": (round(pages_in_timing * 60 / total_wall, 3) if total_wall > 0 else None),
+        "files_per_min": (round(files * 60 / total_wall, 3) if total_wall > 0 else None),
+        "parallel_efficiency": (
+            round(sum(float(p.get("wall_s") or 0.0) for r in timing for p in (r.get("pages") or []))
+                  / total_wall, 6) if total_wall > 0 else None
+        ),
+    }
+
+    checks.extend(sk_driver.env_matches_arm(evidence, arm))
+    checks.extend(sk_driver.cold_evidence_checks(
+        evidence, rounds, cache_policy=args.cache_policy, driver=args.driver,
+        api_base=args.api_base, restart_cmd=args.round_restart_cmd,
+    ))
+    checks.extend(sk_driver.concurrency_dual_evidence(rounds, args.page_concurrency, args.driver))
+    checks.extend(sk_driver.expect_reject_checks(rounds, corpus))
+    harness_seq, backend_seq = sk_collect.recorded_pair_sequences(
+        [[p for p in (r.get("pages") or [])] for r in timing]
+    )
+    checks.extend(sk_collect.closure_checks(
+        agg, harness_seq=harness_seq, backend_seq=backend_seq,
+    ))
+    checks.extend(sk_collect.key_placement_checks(agg, args.driver))
+    checks.extend(_speed_driver_key_checks(args.driver, summary, rounds))
+    checks.append({
+        "id": "D4.wall_agreement",
+        "status": "PASS" if wall_agreement.get("within_tolerance") else "FAIL",
+        "detail": f"file_wall_s 与驱动自测墙钟逐轮最大相对差 "
+                  f"{wall_agreement.get('max_abs_ratio_diff')}（阈值 ≤{sk_driver.WALL_AGREEMENT_TOLERANCE}）",
+        "value": wall_agreement.get("max_abs_ratio_diff"),
+    })
+    needs, why = sk_driver.timing_rounds_needed(wall_stats)
+    checks.append({"id": "D2.timing_rounds", "status": "PASS" if not needs else "UNVERIFIED",
+                   "detail": why, "value": wall_stats.get("n")})
+    checks.extend(_speed_parity_checks(args.baseline, summary))
+    checks.extend(sk_driver.quality_sidecar_check(_merge_sidecars(rounds), rounds))
+    if abort_reason:
+        checks.append({"id": "D1.aborted", "status": "BLOCKED", "detail": abort_reason, "value": None})
+        if not rounds:
+            checks.append({"id": "D1.round_validity", "status": "BLOCKED",
+                           "detail": "未产生任何计时轮（空报告不得冒充成功）", "value": 0})
+
+    readiness = {
+        "ready_wait_sec": evidence.get("ready_wait_sec"),
+        "settle_sec": evidence.get("settle_sec"),
+    }
+    fingerprints = sk_report.build_fingerprints(api_base=args.api_base)
+    footnote = {
+        "instance": ("local" if sk_report.is_loopback_host(sk_report.api_base_host(args.api_base))
+                     else str(fingerprints.get("hostname"))),
+        "hardware": fingerprints.get("hardware_raw"),
+        "image_dtk": fingerprints.get("dtk_version_raw"),
+        "code_rev": args.code_rev or sk_report.runtime_code_rev(),
+        "switches": _switches_line(evidence),
+        "manifest_hash": exam_view.get("manifest_sha256"),
+        "window": f"{started_at} → {sk_report.utcnow()}",
+        "readiness": (f"就绪等待 {readiness['ready_wait_sec']}s / 静置 {readiness['settle_sec']}s"
+                      if sk_collect.is_number(readiness["ready_wait_sec"])
+                      and sk_collect.is_number(readiness["settle_sec"]) else None),
+    }
+    mode = {
+        "driver": args.driver,
+        "page_concurrency": args.page_concurrency,
+        "cache_policy": args.cache_policy,
+        "rounds": args.rounds,
+        "warmup_rounds": args.warmup_rounds,
+        "timing_rounds": len(timing),
+        "payload_source": payload_source,
+        "payload_sha256": payload_sha,
+        "payload_ocr_types": len(payload["selected_ocr_has_types"]),
+        "payload_visual_types": len(payload["selected_visual_feature_types"]),
+        "api_base": args.api_base,
+        "suite": exam_view.get("suite"),
+        "install": args.install or _install_label(),
+        "upload_workers": args.upload_workers,
+        "job_timeout_min": args.job_timeout_min,
+    }
+    cache = {
+        "policy": args.cache_policy,
+        "histogram": agg.get("cache_histogram"),
+        "hits": agg.get("cache_hits"),
+        "hit_definition": sk_collect.HIT_STATUS,
+        "inflight_status_separate": True,
+        "per_round": [{"round": r.get("round"), "histogram": (r.get("agg") or {}).get("cache_histogram")}
+                      for r in timing],
+    }
+    reproduce = {
+        "command": ["python", "eval-ng/cli.py", "speed", str(args.exam), "--driver", args.driver,
+                    "--arm", args.arm, "--out", args.out,
+                    "--page-concurrency", str(args.page_concurrency),
+                    "--cache-policy", args.cache_policy, "--suite", args.suite,
+                    "--round-evidence", args.round_evidence]
+                   + (["--payload-file", args.payload_file] if args.payload_file else [])
+                   + (["--cleanup"] if args.cleanup else []),
+        "env": dict(evidence.get("env") or {}),
+        "requires": ["同实例", "同窗口", "同语料（md5 见 exam.corpus）", "冷跑时逐轮重启后端"],
+    }
+    report = sk_report.build_report(
+        exam=exam_view, mode=mode, arm=sk_arms.arm_report_block(arm), rounds=rounds,
+        cold_evidence=list(evidence.get("rounds") or []), summary=summary, cache=cache,
+        footnote=footnote, fingerprints=fingerprints, criteria_spec=SPEED_CRITERIA_PATHS,
+        reproduce=reproduce, checks=checks, not_measured=_not_measured(args),
+        started_at=started_at, finished_at=sk_report.utcnow(), has_gt=False, readiness=readiness,
+    )
+    try:
+        checks.extend(sk_arms.arm_checks(arm, phase="post", ignore_paths=ignore_paths))
+        report["checks"] = checks
+    except ValueError as exc:
+        report["checks"] = checks + [{"id": "D8.arm_post", "status": "FAIL",
+                                      "detail": f"跑后臂断言不可执行：{exc}", "value": None}]
+    report = sk_report.finalize(report, api_base=args.api_base, live_code_rev=args.code_rev)
+    json_path, md_path = sk_report.write_outputs(report, args.out)
+    md_errors = sk_report.md_consistency_errors(report, Path(md_path).read_text(encoding="utf-8"))
+    if md_errors:
+        report["checks"] = list(report["checks"]) + [
+            {"id": "D4.md_consistency", "status": "FAIL", "detail": err, "value": None} for err in md_errors
+        ]
+        report["verdict"] = sk_report.verdict_from_checks(report["checks"])
+        report["checks"] = list(report["checks"])
+        json_path, md_path = sk_report.write_outputs(report, args.out)
+    print(f"[speed] 判定 {report['verdict']}｜报告：{json_path}｜{md_path}")
+    return _speed_exit(report["verdict"])
+
+
+def _merge_sidecars(rounds: list[dict]) -> dict:
+    merged: dict = {}
+    for record in rounds:
+        for key, value in (record.get("sidecar") or {}).items():
+            if value is None:
+                continue
+            if key in merged and merged[key] == value:
+                continue
+            merged[key] = value
+    return merged
+
+
+def _switches_line(evidence: dict) -> str | None:
+    env = (evidence or {}).get("env") or {}
+    if not env:
+        return None
+    return ", ".join(f"{k}={env[k]}" for k in sorted(env))
+
+
+def _install_label() -> str:
+    import subprocess
+
+    from .engine import speedkit as _sk  # noqa: F401
+
+    try:
+        branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True,
+                                text=True, timeout=10, check=False).stdout.strip()
+        rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
+                             text=True, timeout=10, check=False).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return f"{branch}@{rev}" if branch and rev else (rev or "unknown")
+
+
+def _speed_driver_key_checks(driver: str, summary: dict, rounds: list[dict]) -> list[dict]:
+    """D2④：single 报告不得含 batch 专有键；batch 必须含 jobs 面键。"""
+    from .engine.speedkit import collect as sk_collect
+
+    checks: list[dict] = []
+    keys = set(summary) | {k for r in rounds for k in (r.get("batch") or {})}
+    if driver == "single":
+        stray = sorted(keys & sk_collect.BATCH_ONLY_KEYS)
+        checks.append({"id": "D2.single_key_set", "status": "PASS" if not stray else "FAIL",
+                       "detail": ("single 报告未含 batch 专有键" if not stray
+                                  else f"single 报告出现 batch 专有键：{', '.join(stray)}"),
+                       "value": len(stray)})
+    else:
+        batch = next((r.get("batch") for r in rounds if r.get("batch")), {}) or {}
+        missing = [k for k in sk_collect.BATCH_REQUIRED_KEYS if batch.get(k) in (None, "")]
+        checks.append({"id": "D2.batch_key_set", "status": "PASS" if not missing else "FAIL",
+                       "detail": ("batch 报告含 job_id 与 job_queue_wait_ms" if not missing
+                                  else f"batch 报告缺键：{', '.join(missing)}"),
+                       "value": len(missing)})
+    return checks
+
+
+def _speed_parity_checks(baseline_path: str | None, summary: dict) -> list[dict]:
+    """D7：(悬空能力) 与同实例 `benchmark_throughput.py` 报告比对 pages_per_min 与页 p50。"""
+    if not baseline_path:
+        return [{"id": "D7.parity", "status": "UNVERIFIED",
+                 "detail": "未给 --baseline（同实例 benchmark_throughput.py 报告）；parity 未验", "value": None}]
+    try:
+        base = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [{"id": "D7.parity", "status": "FAIL",
+                 "detail": f"--baseline 不可读：{exc!r}", "value": None}]
+    pairs = [("pages_per_min", summary.get("pages_per_min"), base.get("pages_per_min")),
+             ("page_ms_p50", summary.get("page_ms_p50"), base.get("page_ms_p50"))]
+    errors: list[str] = []
+    compared = 0
+    for name, ours, theirs in pairs:
+        if not (isinstance(ours, (int, float)) and isinstance(theirs, (int, float))) or not theirs:
+            continue
+        compared += 1
+        diff = abs(float(ours) - float(theirs)) / float(theirs)
+        if diff > 0.20:
+            errors.append(f"{name}: 本模块 {ours} vs 基准 {theirs}（相对差 {diff:.1%} > 20%）")
+    if not compared:
+        return [{"id": "D7.parity", "status": "UNVERIFIED",
+                 "detail": "基准报告缺 pages_per_min / page_ms_p50，无可比字段", "value": 0}]
+    return [{"id": "D7.parity", "status": "PASS" if not errors else "FAIL",
+             "detail": ("pages_per_min 与页 p50 与基准差均 ≤20%" if not errors else "；".join(errors)),
+             "value": compared}]
+
+
+def _not_measured(args) -> list[str]:
+    items = [
+        "精度/质量分：本期不测（no_gt，gt 恒 None；质量字段出现即 FAIL）",
+        "文本层文档级链：本期不测（属 #115/#127 面）",
+        "侧车模型内部耗时（vLLM 服务端 CPU/GPU 时间）：后端不下发，不得凭空造键",
+    ]
+    if args.cache_policy == "warm":
+        items.append("冷启动开销：warm 轮不测冷跑地板（cache_policy=warm）")
+    if not args.baseline:
+        items.append("与 benchmark_throughput.py 的 parity（未给 --baseline）")
+    return items
 
 
 if __name__ == "__main__":

@@ -12,7 +12,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 EVALNG_DIR = REPO / "eval-ng"
 
-_SUBPKGS = ("engine", "engine/scorers", "engine/gates", "datasets", "participants", "tests")
+_SUBPKGS = ("engine", "engine/scorers", "engine/gates", "engine/speedkit", "datasets",
+            "participants", "scripts", "tests")
 
 
 def _register_pkg():
