@@ -485,9 +485,11 @@ class Settings(BaseSettings):
     HAS_VISION_MIN_TEXT_CHARS_FOR_NER: int = 1
 
     # --- Issue#115 扫描件内嵌文本层 → 文档级 NER 链 ---
-    # 默认关闭：本链在开启后才接管「扫描页 + 可用内嵌文本层」的页；
-    # 关闭时行为与改动前**完全一致**（验收 G4 的硬前提）。
-    TEXT_LAYER_DOCLINE_ENABLED: bool = False
+    # Issue#129 起**默认开启**：本链接管「扫描页 + 可用内嵌文本层」的页，逐页 OCR 归零。
+    # 置 False 时行为与 Issue#115 改动前**完全一致**（验收 G4 的硬前提）。
+    # 开启代价：任一页**首次**请求须等整卷分块建流完成（60 页约 115s、189 页约 231s；
+    # memo 命中后逐页秒级）。无可用文本层的页 / 卷级门不达标 / 建卷异常一律逐页回落旧视觉线。
+    TEXT_LAYER_DOCLINE_ENABLED: bool = True
     # 文档级分块的段长。实测 2000 字档比 6000 字档**又快又全**（6000 字档
     # 6/30 块撞 2048 完成帽、召回只有页线的 40%，2000 字档 73%）。
     TEXT_LAYER_DOCLINE_CHUNK_CHARS: int = 2_000
@@ -498,6 +500,15 @@ class Settings(BaseSettings):
     # 单卷上限：超过则**只处理前 N 页**（不做分段落盘，见 Issue#115 评审 M-3）。
     # 注意：<=0 表示无上限（不推荐，长卷会把整卷词框常驻内存）。
     TEXT_LAYER_DOCLINE_MAX_PAGES: int = 1_000
+    # **建流预算闸**（Issue#129 评审 I1）：整卷建流是**在首个请求里同步跑完**的，
+    # 若预计耗时超预算，本卷就不走文档级线、逐页回落旧视觉线——否则首发请求会超过
+    # 网关 `proxy_read_timeout`（`frontend/nginx.conf.template`，与前端
+    # `VISION_TIMEOUT=900s` 对齐）被打成 504，而**这条路径不经过任何回落**。
+    # 0 = 不限制（不推荐）。默认 600s 覆盖到约 375 页（按下面的 s/页 估算）。
+    TEXT_LAYER_DOCLINE_MAX_BUILD_SEC: float = 600.0
+    # 建流速率的保守估算值（秒/页），仅用于上面的预算闸。实测：189 页卷 231s
+    # ≈ 1.22 s/页（并发 8）；60 页卷 115–171s。取 1.6 留约 1.3× 余量。
+    TEXT_LAYER_DOCLINE_BUILD_SEC_PER_PAGE: float = 1.6
     # **页级**覆盖下限（评审 C-2）：该页自身文本层的字符数低于此值就**不算被覆盖**，
     # 该页回落 OCR+HaS 旧路径。卷级平均（TEXT_LAYER_MIN_CHARS_PER_PAGE）不能代替
     # 页级判据——薄挂层页会被卷平均「救」进来，从而被永久摘出 OCR 链。
@@ -736,6 +747,18 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_text_layer_max_word_chars(cls, v: int) -> int:
         return max(40, min(100000, v))
+
+    @field_validator("TEXT_LAYER_DOCLINE_MAX_BUILD_SEC")
+    @classmethod
+    def _validate_text_layer_docline_max_build_sec(cls, v: float) -> float:
+        # 0 = 不限制；上限 3600s 与其它长任务（MINERU_TASK_TIMEOUT 等）同量级。
+        return max(0.0, min(3600.0, v))
+
+    @field_validator("TEXT_LAYER_DOCLINE_BUILD_SEC_PER_PAGE")
+    @classmethod
+    def _validate_text_layer_docline_build_sec_per_page(cls, v: float) -> float:
+        # 只影响预算闸的估算，钳到 (0, 60] 防止除零/荒谬值。
+        return max(0.01, min(60.0, v))
 
     @field_validator("OCR_TEXT_BLOCK_CACHE_TTL_SEC")
     @classmethod

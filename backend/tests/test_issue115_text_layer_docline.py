@@ -16,6 +16,24 @@ from app.services import text_layer_doc_source as source
 from app.services import text_layer_docline_service as docline
 from app.services import text_layer_quality as quality
 
+# ------------------------------------------------------------------ Issue#129 默认值
+
+
+def test_docline_is_enabled_by_default():
+    """Issue#129：本链**代码默认值**为开启（用户 2026-10-15 拍板）。
+
+    断言的是 `Settings` 的**字段默认值**而不是当前进程的生效值：后者会被
+    `backend/.env` 或环境变量（`env_file` 见 `app/core/config.py`）覆盖，
+    在有存量 `.env` 的机器上会让本用例变红，而代码默认其实是对的
+    （门⑥ 评审 M3）。生效值的端到端证明在门④ 云上做（不导出任何
+    `TEXT_LAYER_*` 环境变量重启 backend，断言链被激活且 `ocr_calls=0`）。
+
+    判别力：本断言在 Issue#129 之前为 `False` ⇒ **不改动即失败**，不是恒真条。
+    """
+    field = type(settings).model_fields["TEXT_LAYER_DOCLINE_ENABLED"]
+    assert field.default is True
+
+
 # ------------------------------------------------------------------ C1 分类器
 
 
@@ -196,6 +214,43 @@ def test_boxes_for_page_uses_memo_once_and_maps_pages(monkeypatch, tmp_path):
     assert [b.text for b in second] == ["李四"]
     assert first[0].source == "ocr_has" and first[0].source_detail == source.SOURCE_DETAIL
     assert memo1 is memo2
+
+
+def test_build_budget_gate_skips_oversized_volume(monkeypatch, tmp_path):
+    """Issue#129 评审 I1：预估建流超预算的卷**不接管**，逐页回落旧线。
+
+    背景：整卷建流在**首个请求里同步跑完**，页数过多会让该请求超过网关
+    `proxy_read_timeout`（`frontend/nginx.conf.template`）而 504，且这条路径
+    不经过任何回落。判别力：预算调小后 `run_document_ner` 必须**一次都不被调用**、
+    本页返回 `(None, None)`；闸不存在时本用例会因模型被调用而失败。
+    """
+    source.reset_memo()
+    path = tmp_path / "v.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+    calls: list[int] = []
+    # 每页必须**过得了层质量门**（否则会在闸之前就 return None，让本用例失去判别力）
+    pages = [_page(i, ["张三", *[f"证据材料第{j}页" for j in range(20)]]) for i in range(1, 101)]
+
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_MAX_BUILD_SEC", 10.0)
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_BUILD_SEC_PER_PAGE", 1.0)
+    monkeypatch.setattr(source.docline, "extract_text_layer_pages", lambda *a, **k: pages)
+    monkeypatch.setattr(source.docline, "sample_ink_alignment", lambda *a, **k: 0.18)
+
+    async def fake_run(*_a, **_k):
+        calls.append(1)
+        raise AssertionError("超预算的卷不该调用模型")
+
+    monkeypatch.setattr(source.docline, "run_document_ner", fake_run)
+
+    boxes, memo = asyncio.run(
+        source.boxes_for_page(
+            file_id="c" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=None
+        )
+    )
+
+    assert boxes is None and memo is None, "超预算 ⇒ 整卷不接管，调用方回落旧路径"
+    assert calls == [], "预算闸必须在建流之前短路"
 
 
 def test_boxes_for_page_falls_back_on_page_without_layer(monkeypatch, tmp_path):

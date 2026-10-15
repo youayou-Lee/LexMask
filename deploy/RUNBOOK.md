@@ -51,3 +51,23 @@ bash deploy/upgrade.sh ~/redaction-release-*.tar.gz
 - 只动 `backend/app`、`backend/config`、`backend/scripts`、`frontend/dist` → 重启 :8000，秒级中断
 - 动 `~/*.sh`（GPU 服务配置）→ 需重启对应模型服务，遵循 `start_all.sh` 依赖顺序，避开业务高峰
 - 动 `backend_g0.sh` 环境变量 → 重启 :8000 即生效
+
+## 6. 内嵌文本层文档级链（Issue#115 / #129，默认开）
+
+扫描件自带**可用**内嵌文本层时，本链接管该页的「文本实体」部分：**整卷抽一次文本层 → 按 ~2000 字不跨词分块 → 文档级 HaS**，逐页 OCR 归零；印章/签名仍走 LA 逐页链。无可用文本层的页、卷级门不达标、建卷异常 ⇒ **逐页回落旧视觉线**。
+
+实测（60 页真实卷，同机同会话）：**6.72s/页 → 3.03s/页**，OCR 边车调用 58 → 0，HaS 调用 394 → 191。
+
+**值守要记住的两件事：**
+
+1. **首屏要等整卷建流**：任一页的**首次**请求会同步跑完整卷（60 页约 115–171s、189 页约 231s），之后各页 memo 命中、秒级。因此
+   - 网关超时必须覆盖它：`frontend/nginx.conf.template` 的 `proxy_read_timeout` 已设为 **900s**；若前面另有一层反代（SLB/宝塔/云厂商网关），**其默认 60s 超时必须同步抬高**，否则首屏 504（后端仍在建流，重试即命中）。
+   - 超大卷有兜底闸：`TEXT_LAYER_DOCLINE_MAX_BUILD_SEC`（默认 600s ≈ 375 页）——预估超预算的卷**直接不接管**，逐页走旧线，不会打爆网关。
+2. **怎么关**：`TEXT_LAYER_DOCLINE_ENABLED=false`（`backend_g0.sh` 或 `.env`），重启 :8000 即整链回退到 #115 之前的逐页视觉线，**无需改代码**。低显存 / 前面有短超时网关 / 只想快速出首屏的部署建议关。
+
+**出问题时的日志特征**（`~/backend.log`）：
+- `text_layer_docline built file=… pages=… chunks=… coverage=… calls=… elapsed=…` — 建流成功，看 `elapsed` 是否符合预期
+- `text_layer_docline skipped: …` — 未接管及原因（`layer …` 层不合格 / `no text layer` / `estimated build … > budget …` / `coverage …` / `truncated …` / `failed_chunks …`），此时该卷走旧线，属**预期行为**
+- `Vision detect stored file=… page=… boxes=…` — 每页落盘（两条链共用）
+
+**排查顺序**：① 该卷是否 `skipped`（是 ⇒ 旧线，看旧线问题）；② `elapsed` 是否远超预算；③ 网关是否 504（对比 `backend.log` 里是否其实已经建完）。
