@@ -23,7 +23,10 @@ from app.models.entity_schemas import BoundingBox
 from app.services import text_layer_docline_service as docline
 from app.services import text_layer_quality as quality
 from app.services.has_client import has_client
-from app.services.vision.has_text_payload import _build_has_text_type_names
+from app.services.vision.has_text_payload import (
+    _build_has_text_type_names,
+    build_label_to_type_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +58,18 @@ def _file_fingerprint(path: str) -> str:
         return "unknown"
 
 
-def _to_boxes(entities: list[docline.DocLineEntity], page: int) -> list[BoundingBox]:
+def _to_boxes(
+    entities: list[docline.DocLineEntity],
+    page: int,
+    label_to_id: dict[str, str] | None = None,
+) -> list[BoundingBox]:
+    """把文档级实体转成本页框。**类型必须反向映射成 id**（模型返回的是中文标签桶）。
+
+    不映射就直接拿标签当 `type` 会产出 `姓名`/`身份证号` 这类框，下游按 id 过滤时
+    全部落空（云上首轮实测：召回 0/121）。查不到标签就保留原样（与既有链路回落一致）。
+    """
     boxes: list[BoundingBox] = []
+    mapping = label_to_id or {}
     for entity in entities:
         if entity.page != page:
             continue
@@ -65,15 +78,16 @@ def _to_boxes(entities: list[docline.DocLineEntity], page: int) -> list[Bounding
         height = max(0.0, y1 - y0)
         if width <= 0 or height <= 0:
             continue
+        type_id = mapping.get(entity.type, entity.type)
         boxes.append(
             BoundingBox(
-                id=f"tld-{page}-{entity.type}-{len(boxes)}",
+                id=f"tld-{page}-{type_id}-{len(boxes)}",
                 x=x0,
                 y=y0,
                 width=width,
                 height=height,
                 page=page,
-                type=entity.type,
+                type=type_id,
                 text=entity.value,
                 selected=True,
                 confidence=None,
@@ -85,7 +99,7 @@ def _to_boxes(entities: list[docline.DocLineEntity], page: int) -> list[Bounding
     return boxes
 
 
-async def _build(file_id: str, snapshot: dict, labels: list[str]) -> dict | None:
+async def _build(file_id: str, snapshot: dict, labels: list[str], ocr_has_types) -> dict | None:
     path = str(snapshot.get("file_path") or "")
     if not path or not os.path.exists(path):
         return None
@@ -116,11 +130,13 @@ async def _build(file_id: str, snapshot: dict, labels: list[str]) -> dict | None
         return None
 
     result = await docline.run_document_ner(pages, labels, has_client=has_client)
+    label_to_id = build_label_to_type_id(ocr_has_types)
     by_page: dict[int, list[BoundingBox]] = {}
     for page_meta in pages:
-        by_page[page_meta.no] = _to_boxes(result.entities, page_meta.no)
+        by_page[page_meta.no] = _to_boxes(result.entities, page_meta.no, label_to_id)
     memo = {
         "labels": labels,
+        "label_to_id": label_to_id,
         "boxes_by_page": by_page,
         "pages": result.pages,
         "entities": len(result.entities),
@@ -165,7 +181,7 @@ async def boxes_for_page(
         async with _LOCK:
             memo = _MEMO.get(key)
             if memo is None:
-                memo = await _build(file_id, snapshot, labels)
+                memo = await _build(file_id, snapshot, labels, ocr_has_types)
                 if memo is None:
                     return None, None
                 _MEMO[key] = memo

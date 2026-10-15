@@ -124,6 +124,27 @@ def _build_has_text_type_names(vision_types: list | None = None) -> list[str]:
         labels.extend(_item_query_labels(item))
     return list(dict.fromkeys(label for label in labels if label))
 
+
+def build_label_to_type_id(vision_types: list | None = None) -> dict[str, str]:
+    """反查表：提示词标签 → 类型 id。
+
+    与 `has_text_analysis` 里建的 `chinese_to_id` 同源（同一批 checklist 条目、
+    同一个 `_item_query_labels`），供**离页**链路（Issue#115 文档级链）把模型
+    返回的标签桶还原成框上的类型 id。查不到就保留原标签（与既有链路
+    `has_text_analysis.py` 的「识别出来是啥就是啥」回落一致），绝不丢。
+    """
+    items = list(vision_types) if vision_types else _default_has_text_items()
+    mapping: dict[str, str] = {}
+    for item in items:
+        normalized_id = _canonical_image_text_type(getattr(item, "id", ""))
+        if not normalized_id or normalized_id in VISUAL_ONLY_ENTITY_TYPES:
+            continue
+        for query_label in _item_query_labels(item):
+            if query_label:
+                mapping[str(query_label)] = normalized_id
+    return mapping
+
+
 def _compact_text(text: str | None) -> str:
     return "".join(str(text or "").split())
 

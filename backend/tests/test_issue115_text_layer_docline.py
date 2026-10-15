@@ -199,6 +199,27 @@ def test_boxes_for_page_uses_memo_once_and_maps_pages(monkeypatch, tmp_path):
     assert memo1 is memo2
 
 
+def test_label_to_type_id_maps_model_buckets_back_to_canonical_ids():
+    """云上首轮真实事故：模型返回的是**中文标签桶**，直接当 type 会让下游按 id
+    过滤全部落空（实测召回 0/121）。此用例钉住反向映射。"""
+    from app.services.vision.has_text_payload import build_label_to_type_id
+
+    mapping = build_label_to_type_id(None)
+    assert mapping.get("姓名") == "PERSON"
+    assert mapping.get("身份证号") == "ID_CARD"
+
+    boxes = source._to_boxes(
+        [docline.DocLineEntity(1, "姓名", "张三", (0.1, 0.2, 0.3, 0.4))], 1, mapping
+    )
+    assert [b.type for b in boxes] == ["PERSON"]
+
+    # 查不到的标签保留原样（识别出来是啥就是啥），不丢
+    unknown = source._to_boxes(
+        [docline.DocLineEntity(1, "某种新类型", "x", (0.1, 0.2, 0.3, 0.4))], 1, mapping
+    )
+    assert [b.type for b in unknown] == ["某种新类型"]
+
+
 def test_boxes_for_page_swallows_errors_and_falls_back(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
     path = tmp_path / "scan.pdf"
