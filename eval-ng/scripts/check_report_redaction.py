@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:  # 口令面规则单一真源（同目录同族扫描器）；缺文件即失败，不得留下「口令面无人管」的假干净
-    from check_public_tree import SECRET_RES
+    from check_public_tree import credential_findings
 except ImportError:  # pragma: no cover - 只在文件被拆散时触发
     raise SystemExit(
         "check_report_redaction: 缺同目录 check_public_tree.py（口令面规则单一真源）"
@@ -67,9 +67,7 @@ def scan(text: str, *, denylist: list[str], allow_prefixes: list[str]) -> list[t
     for match in IP_RE.finditer(text):
         if not _is_loopback(match.group(0)):
             findings.append(("ip", match.group(0)))
-    for rule, regex in SECRET_RES:
-        for match in regex.finditer(text):
-            findings.append((rule, match.group(0)))
+    findings.extend(credential_findings(text))
     for rule, regex in (("abs_path", ABS_PATH_RE), ("win_path", WIN_PATH_RE)):
         for match in regex.finditer(text):
             value = match.group(0)

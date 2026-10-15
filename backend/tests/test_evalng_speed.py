@@ -1571,6 +1571,33 @@ class TestPublicTreeScanner:
         ):
             assert not self._rules(probe), probe
 
+    def test_compound_credential_keys_are_caught(self):
+        """R6 反向钉子：凭据词作**后缀**/camelCase 的复合键曾整类漏网（`\\b` 在 `_` 前后不成边界）。"""
+        creds = {"credential_literal", "credential_flag", "credential_bare"}
+        for probe in (
+            "api_secret=Zz9Kk2Lm",  # public-tree-scan: ignore-line
+            'db_password="Hunter2Hunter2"',  # public-tree-scan: ignore-line
+            'API_SECRET = "Zz9Kk2Lm"',  # public-tree-scan: ignore-line
+            'clientSecret: "Ab3xY9Qq2"',  # public-tree-scan: ignore-line
+            'access_token = "ghp_abcdefghijklmnopqrstuvwxyz0123456"',  # public-tree-scan: ignore-line
+            'add_argument("--db-password", default="Qq11Ww22")',  # public-tree-scan: ignore-line
+        ):
+            assert self._rules(probe) & creds, probe
+
+    def test_metadata_keys_and_code_values_are_clean(self):
+        """正反边界（R6 增补）：元数据尾巴键、类型名、ID 形态、JSON 片段、CJK 文案都不得误报。"""
+        for probe in (
+            "token_count=12", 'token_type: "refresh_token"', 'secret_name = "my-secret-name"',
+            'credentials: "same-origin"', 'api_key_id = "key-1234567"',
+            "key: Ed25519PrivateKey", "private_key: Ed25519PrivateKey",
+            "subject_key: 'SUBJ-001'", 'PUBLIC_KEY_HEX = "291c9c80654fd61d2389102ceec5848"',
+            "migrations_key = '_migrations'", 'msg = "密码错误，请重试"',
+            'payload = {"PP-OCRv6": 1}', "max_tokens=4000", "monkey = 'abc12345'",
+            # 值形状的真正边界：含分隔符/JSON 片段/CJK 文案（即便带数字）也不是口令
+            'key = "abc=123def"', "value = 'x{1}y2z9'", 'data = "密码1错误2，请重试"',
+        ):
+            assert not self._rules(probe), probe
+
     def test_self_test_covers_all_required_rules(self):
         assert ptree.self_test([]) == 0
 
