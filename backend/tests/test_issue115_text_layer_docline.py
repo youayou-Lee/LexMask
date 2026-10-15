@@ -709,3 +709,41 @@ def test_map_values_indexes_word_spans_once(monkeypatch) -> None:
 
     assert len(entities) == 500
     assert len(calls) == 1, f"词区间索引被重建了 {len(calls)} 次（应为 1 次）"
+
+
+def test_overlapping_word_spans_boundaries() -> None:
+    """二分定位的边界：词首在区间之前但交叠要收；端点相切（不交叠）要排除。"""
+    pages = [_page(1, ["前面", "张三挂号", "后面"])]
+    stream, spans = docline.build_stream(pages)
+    starts = [s.start for s in spans]
+    # 命中「三挂」：落在第二个词内部，且该词的 start 小于命中起点
+    target = stream.index("三挂")
+    hit = docline._overlapping_word_spans(target, target + 2, spans, starts)
+    assert len(hit) == 1, hit
+    assert hit[0].word.text == "张三挂号"
+    # 端点相切：起点正好等于某词 end 的区间不该收进那个词
+    touching = docline._overlapping_word_spans(spans[1].end, spans[1].end + 1, spans, starts)
+    assert all(s.word.text != "张三挂号" for s in touching), touching
+
+
+def test_map_values_scales_to_large_documents() -> None:
+    """规模回归（P1 189 页实测）：命中区间 → 词的定位不能重扫全部词。
+
+    修复前 `for span in word_spans` 对每个命中都重扫一遍：本用例 6 万个词 ×
+    6 万个命中 ≈ 3.6×10^9 次迭代。实测标定（8 千词输入：修复后 0.10s / 未修复
+    1.39s，二次方增长）⇒ 本规模未修复约 78s、修复后约 0.8s。
+    上限 20s 对修复后有 ~25× 余量、对未修复有 ~4× 反向余量，两侧都不擦边。
+    """
+    import time
+
+    n_words, n_values = 60000, 12000
+    pages = [_page(1, [f"值{i % n_values}号" for i in range(n_words)])]
+    stream, spans = docline.build_stream(pages)
+    values = {"T": {f"值{i}号" for i in range(n_values)}}
+
+    started = time.perf_counter()
+    entities, _failures = docline.map_values(pages, stream, spans, values)
+    elapsed = time.perf_counter() - started
+
+    assert len(entities) == n_words
+    assert elapsed < 20.0, f"规模退化到 {elapsed:.1f}s（命中→词定位在重扫全部词？）"

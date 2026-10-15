@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import asyncio
+import bisect
 import logging
 import re
 import time
@@ -336,6 +337,28 @@ def _aligned_to_words(
     return left_ok and right_ok
 
 
+def _overlapping_word_spans(
+    start: int, end: int, word_spans: list[_WordSpan], span_starts: list[int]
+) -> list[_WordSpan]:
+    """返回与流区间 `[start, end)` 有交叠的词（二分定位，O(log n + 交叠数)）。
+
+    Issue#115 P1（189 页真实卷）实测暴露：这里原本是 `for span in word_spans`，
+    对**每个命中区间**重扫全部词 ⇒ O(命中数 × 词数)。该卷 ~20 万词、数千个出现多次
+    的值，纯 Python 单线程跑在事件循环里，`/health` 直接超时（服务假死而非变慢）。
+    """
+    i = bisect.bisect_left(span_starts, start)
+    if i > 0:
+        i -= 1  # 起点落在 start 之前的那个词，可能仍与本区间交叠
+    out: list[_WordSpan] = []
+    total = len(word_spans)
+    while i < total and word_spans[i].start < end:
+        span = word_spans[i]
+        if span.end > start:
+            out.append(span)
+        i += 1
+    return out
+
+
 def _word_span_index(word_spans: list[_WordSpan]) -> set[tuple[int, int]]:
     """词区间索引 `{(start, end)}`。
 
@@ -371,6 +394,7 @@ def map_values(
     # 若放在下面的「多命中收口」里逐值重建，就是 O(值数 × 词数) ≈ 6 亿次元组构造
     # ——P1（189 页）实测把事件循环堵死 >2 分钟（/health 超时、CPU 100% 单核）。
     aligned_keys = _word_span_index(word_spans)
+    span_starts = [span.start for span in word_spans]
     entities: list[DocLineEntity] = []
     failures: list[dict] = []
     seen: set[tuple[int, str, str, int, int]] = set()
@@ -400,9 +424,7 @@ def map_values(
                 # 收集命中词，并记录命中字符在词内的偏移：用于把框**收紧**到真正的
                 # 那几个字（否则 `（2022）京0101刑初123号` 这种长「词」会被整块涂掉）。
                 per_page: dict[int, list[tuple[TextLayerWord, int, int]]] = {}
-                for span in word_spans:
-                    if span.end <= start or span.start >= end:
-                        continue
+                for span in _overlapping_word_spans(start, end, word_spans, span_starts):
                     off0 = max(0, start - span.start)
                     off1 = min(len(span.word.text), end - span.start)
                     per_page.setdefault(span.page, []).append((span.word, off0, off1))
