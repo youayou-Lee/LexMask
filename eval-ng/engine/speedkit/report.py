@@ -86,6 +86,7 @@ _NUMERIC_ALLOW_RES = tuple(re.compile(pattern) for pattern in (
     r"^rounds\[\d+\]\.cache\.(round|hits)$",
     r"^rounds\[\d+\]\.cache\.histogram\..+$",
     r"^rounds\[\d+\]\.sidecar\.(box_count|entity_count)$",
+    r"^rounds\[\d+\]\.sidecar\.(has_text_ner_truncation_retries|has_text_ner_rebatch_batches)$",
     # ── 逐卷视图（文件级页数/解析元数据/旁证计数） ────────────────────────
     r"^rounds\[\d+\]\.items\[\d+\]\.(pages|box_count|entity_count)$",
     r"^rounds\[\d+\]\.items\[\d+\]\.parse\.total_pages$",
@@ -135,6 +136,28 @@ def md5_file(path: str) -> str:
     return digest.hexdigest()
 
 
+_ABS_PATH_START_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
+_PATH_SEP_RE = re.compile(r"[\\/]")
+
+
+def redact_path(text) -> str:
+    """报告内绝对路径脱敏：`<任何绝对前缀>/exam_d1.json` → `<abs>/…/exam_d1.json`。
+
+    ④云门实测：合成卷也带实例绝对路径，报告拿不到脱敏扫描器零命中（D5④/G4 是硬门）。这里只压
+    前缀、保留 basename 供人核对；同一文件的机检身份由 `md5`/`manifest_sha256` 独立承载。
+    """
+    value = str(text)
+    if not _ABS_PATH_START_RE.match(value):
+        return value
+    base = _PATH_SEP_RE.split(value.rstrip("\\/"))[-1]
+    return f"<abs>/…/{base}" if base else "<abs>"
+
+
+def redact_command(argv) -> list:
+    """命令回放里的路径 token 逐个脱敏（非路径 token 原样保留）。"""
+    return [redact_path(token) if isinstance(token, str) else token for token in (argv or [])]
+
+
 def runtime_code_rev(root: str | None = None) -> str:
     """引擎现场读出的代码版本（用于与编排传入的 `--code-rev` 双向核对）。"""
     try:
@@ -172,8 +195,13 @@ def is_loopback_host(host: str) -> bool:
 
 # ── 脚注 + 指纹 ─────────────────────────────────────────────────────────────
 def hardware_raw(fallback: str = "") -> str:
-    """现场硬件原始输出（`nvidia-smi` → `hy-smi` → `/proc/driver`；禁手填）。"""
-    for cmd in (["nvidia-smi", "-L"], ["hy-smi", "-L"], ["hy-smi"]):
+    """现场硬件原始输出（`nvidia-smi` → `hy-smi` → `/proc/driver`；禁手填）。
+
+    ④云门实测：SCNet 实例的非交互 PATH 里**没有** `hy-smi`（实为 `/opt/hyhal/bin/hy-smi`）⇒ 按绝对
+    路径探测；再退 `/proc/cpuinfo` 的 `model name`（实例上给出 `Hygon C86 7185 32-core Processor`）。
+    """
+    for cmd in (["nvidia-smi", "-L"], ["hy-smi", "-L"], ["hy-smi"],
+                ["/opt/hyhal/bin/hy-smi", "-L"], ["/opt/hyhal/bin/hy-smi"], ["npu-smi", "info", "-m"]):
         try:
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
         except (OSError, subprocess.SubprocessError):
@@ -195,18 +223,24 @@ def hardware_raw(fallback: str = "") -> str:
 
 
 def dtk_version_raw() -> str:
-    """DTK/镜像版本原始输出：`DTK_VERSION` env → `/opt/dtk/version` → `hy-smi --version`。"""
+    """DTK/镜像版本原始输出：`DTK_VERSION` env → 版本文件 → `hy-smi --version`。
+
+    ④云门实测：SCNet 实例上**不是** `/opt/dtk/version`，而是 `/opt/dtk/.dtk_version`（57 B）⇒ 补探测；
+    `hy-smi` 同样要按绝对路径试。
+    """
     env = os.environ.get("DTK_VERSION")
     if env and env.strip():
         return env.strip()
-    for path in ("/opt/dtk/version", "/opt/dtk/.version", "/usr/local/dtk/version"):
+    for path in ("/opt/dtk/version", "/opt/dtk/.version", "/opt/dtk/.dtk_version",
+                 "/usr/local/dtk/version", "/etc/dtk-version"):
         try:
             text = Path(path).read_text(encoding="utf-8", errors="ignore").strip()
         except OSError:
             continue
         if text:
             return text.splitlines()[0][:200]
-    for cmd in (["hy-smi", "--version"], ["hy-smi", "-v"]):
+    for cmd in (["hy-smi", "--version"], ["hy-smi", "-v"],
+                ["/opt/hyhal/bin/hy-smi", "--version"], ["/opt/hyhal/bin/hy-smi", "-v"]):
         try:
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
         except (OSError, subprocess.SubprocessError):

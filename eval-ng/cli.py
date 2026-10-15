@@ -410,18 +410,21 @@ def _load_speed_corpus(args) -> tuple[list[dict], dict]:
             "expect_reject": bool(raw.get("expect_reject")),
             "no_gt": True,
         })
-    # 报告视图：real 卷的落盘路径必须脱敏（D9②：真卷路径/卷名不得进报告）
+    # 报告视图：绝对路径一律脱敏（D5④/G4 是硬门；real 卷另加 digest，D9②）
     view_items = []
     for entry in items:
         view = dict(entry)
         if suite == "real":
             digest = hashlib.sha256(str(entry["path"]).encode("utf-8")).hexdigest()[:12]
             view["path"] = f"<redacted:{digest}>"
+        else:
+            view["path"] = sk_report.redact_path(entry["path"])
         view_items.append(view)
     exam_view = {
         "exam_id": str(doc.get("exam_id") or path.stem),
         "suite": suite,
-        "path": str(path) if suite != "real" else f"<redacted:{hashlib.sha256(str(path).encode()).hexdigest()[:12]}>",
+        "path": (f"<redacted:{hashlib.sha256(str(path).encode()).hexdigest()[:12]}>"
+                 if suite == "real" else sk_report.redact_path(str(path))),
         "manifest_sha256": sk_report.sha256_file(str(path)),
         "corpus": view_items,
     }
@@ -574,6 +577,10 @@ def _run_speed(args: argparse.Namespace) -> int:
                     checks.append({"id": "D1.round_validity", "status": "FAIL",
                                    "detail": f"计时轮 {round_no} 不合法（已从聚合中排除）：{invalid_reason}",
                                    "value": round_no})
+            if not abort_reason and rounds:
+                # runner 在**离开整个轮循环之后**才写下一轮重启证据 ⇒ 循环内读到的是上一轮（实测把
+                # D2.cold_evidence 谎报成「计时轮 2 缺重启证据」）。退出循环后快照一次并重读。
+                evidence = _refresh_round_evidence(args.round_evidence)
         finally:
             try:
                 api.close()
@@ -707,14 +714,15 @@ def _run_speed(args: argparse.Namespace) -> int:
                       for r in timing],
     }
     reproduce = {
-        "command": ["python", "eval-ng/cli.py", "speed", str(args.exam), "--driver", args.driver,
-                    "--arm", args.arm, "--out", args.out,
-                    "--page-concurrency", str(args.page_concurrency),
-                    "--cache-policy", args.cache_policy, "--suite", args.suite,
-                    "--round-evidence", args.round_evidence]
-                   + (["--payload-file", args.payload_file] if args.payload_file else [])
-                   + (["--cleanup"] if args.cleanup else []),
-        "env": dict(evidence.get("env") or {}),
+        "command": sk_report.redact_command(
+            ["python", "eval-ng/cli.py", "speed", str(args.exam), "--driver", args.driver,
+             "--arm", args.arm, "--out", args.out,
+             "--page-concurrency", str(args.page_concurrency),
+             "--cache-policy", args.cache_policy, "--suite", args.suite,
+             "--round-evidence", args.round_evidence]
+            + (["--payload-file", args.payload_file] if args.payload_file else [])
+            + (["--cleanup"] if args.cleanup else [])),
+        "env": {key: sk_report.redact_path(value) for key, value in (evidence.get("env") or {}).items()},
         "requires": ["同实例", "同窗口", "同语料（md5 见 exam.corpus）", "冷跑时逐轮重启后端"],
     }
     report = sk_report.build_report(
@@ -742,6 +750,31 @@ def _run_speed(args: argparse.Namespace) -> int:
         json_path, md_path = sk_report.write_outputs(report, args.out)
     print(f"[speed] 判定 {report['verdict']}｜报告：{json_path}｜{md_path}")
     return _speed_exit(report["verdict"])
+
+
+def _refresh_round_evidence(path: str) -> list[dict]:
+    """轮循环结束后重读轮次证据（runner 只在整轮之后落盘；见 D2② 冷跑协议）。
+
+    快照副本可避免「读到别人正在覆盖的半截文件」，也让退出循环后的读取与循环内语义一致。
+    """
+    import shutil
+    import tempfile
+
+    from .engine.speedkit import driver as sk_driver
+
+    try:
+        with tempfile.NamedTemporaryFile(prefix="round-evidence-", suffix=".json", delete=False) as handle:
+            snapshot = handle.name
+        shutil.copyfile(path, snapshot)
+    except OSError:
+        return sk_driver.load_round_evidence(path)
+    try:
+        return sk_driver.load_round_evidence(snapshot)
+    finally:
+        try:
+            Path(snapshot).unlink()
+        except OSError:
+            pass
 
 
 def _merge_sidecars(rounds: list[dict]) -> dict:

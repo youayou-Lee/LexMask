@@ -38,6 +38,39 @@ SINGLE_REQUIRED_RING_LEAVES = (
     "ocr_has.prepare", "ocr_has.ocr", "ocr_has.has_ner", "ocr_has.match", "ocr_has.draw",
 )
 
+# 环叶子只收**耗时**键（④云门实测订正）：后端的 `stage_duration_ms` 是混合账本——
+# 除耗时外还塞了计数与字符数（`has_text_input_chars`/`ocr_cache_misses`/`has_text_type_count` …）。
+# 把计数当耗时求和 ⇒ Σ_rings 远大于 Σ_root（10 页实测 44.6s/页 vs 24.5s/页），闭合 54% 恒 FAIL。
+# 故：声明的阶段名 ∪ `*_ms` 后缀 = 耗时；`total` 恒归 `pipeline_totals_ms`，不进叶子（防双算）。
+DURATION_STAGE_NAMES = frozenset({"prepare", "ocr", "has_ner", "match", "draw", "model"})
+
+
+def is_duration_key(key: str) -> bool:
+    """耗时叶子判据：声明阶段名或以 `_ms` 结尾；`total` 另有归属（管线环），不入叶子。"""
+    name = key.rsplit(".", 1)[-1]
+    if name == "total":
+        return False
+    return name in DURATION_STAGE_NAMES or name.endswith("_ms")
+
+
+def single_page_pipeline_durations(resp: dict) -> dict[str, float]:
+    """逐管线**块级** `duration_ms`（= 页根 total 的同粒度分量；D3①a 闭合用）。
+
+    `stage_duration_ms.total` 只是**部分**阶段的合计（实测 ocr_has：块 1853ms vs stage total 849ms），
+    拿它当环和会让闭合差 18%~54% 恒 FAIL；块级 `pipeline_status[*].duration_ms` 才与页根同粒度。
+    """
+    durations: dict[str, float] = {}
+    status = resp.get("pipeline_status") or {}
+    if not isinstance(status, dict):
+        return durations
+    for name, block in status.items():
+        if not isinstance(block, dict):
+            continue
+        value = block.get("duration_ms")
+        if is_number(value):
+            durations[str(name)] = float(value)
+    return durations
+
 # batch 线专有键：`single` 报告出现任一即判 FAIL（D2④ 显式键集合比对）
 BATCH_ONLY_KEYS = frozenset({
     "job_id", "job_status", "job_queue_wait_ms", "job_items_total", "job_items_done",
@@ -95,20 +128,15 @@ def page_signal(resp: dict, *, wall_s: float, harness_span: tuple[float, float] 
     """把一页响应压成统一页信号（两线共用；batch 线走 `batch_page_signal` 适配后同样结构）。"""
     root = resp.get("duration_ms") if isinstance(resp.get("duration_ms"), dict) else {}
     pipelines = single_page_pipelines(resp)
-    totals: dict[str, float] = {}
+    totals = single_page_pipeline_durations(resp)
     leaves: dict[str, float] = {}
     for name, stage in pipelines.items():
         for key, value in stage.items():
-            if not is_number(value):
-                continue
-            leaves[f"{name}.{key}"] = float(value)
-        total = stage.get("total")
-        if is_number(total):
-            totals[name] = float(total)
+            if is_number(value) and is_duration_key(key):
+                leaves[f"{name}.{key}"] = float(value)
+        if name not in totals and is_number(stage.get("total")):
+            totals[name] = float(stage["total"])  # 罕见兜底：仅当块级 duration_ms 缺失
     histogram: dict[str, int] = {}
-    for key, _value in leaves.items():
-        if key.split(".")[-1] == "has_text_cache_status_raw":
-            continue
     for _name, stage in pipelines.items():
         status = stage.get("has_text_cache_status")
         if isinstance(status, str) and status:
@@ -142,13 +170,15 @@ def batch_page_signal(page: dict) -> dict:
     page = page or {}
     breakdown = page.get("duration_breakdown_ms") if isinstance(page.get("duration_breakdown_ms"), dict) else {}
     leaves: dict[str, float] = {}
-    for key, value in breakdown.items():
-        if is_number(value):
-            leaves[str(key)] = float(value)
     totals: dict[str, float] = {}
-    for key, _value in leaves.items():
-        if key.split(".")[-1] == "total" and "." in key:
-            totals[key.rsplit(".", 1)[0]] = value
+    for key, value in breakdown.items():
+        if not is_number(value):
+            continue
+        name = str(key)
+        if name.rsplit(".", 1)[-1] == "total" and "." in name:
+            totals[name.rsplit(".", 1)[0]] = float(value)  # 管线环（与 single 块级 duration_ms 同粒度）
+        elif is_duration_key(name):
+            leaves[name] = float(value)  # 耗时叶子；计数/字符数/缓存标记不入环
     histogram_raw = page.get("cache_status") if isinstance(page.get("cache_status"), dict) else {}
     histogram: dict[str, int] = {}
     for key, value in histogram_raw.items():

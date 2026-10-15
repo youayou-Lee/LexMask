@@ -29,6 +29,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from . import report
+
 ARM_KEYS = frozenset({"name", "kind", "env", "patches", "expect", "probe", "notes"})
 ARM_KINDS = frozenset({"env", "patch"})
 PATCH_KEYS = frozenset({"file", "from", "to"})
@@ -87,17 +89,20 @@ def load_arm(path: str) -> dict:
 
 
 def arm_report_block(arm: dict) -> dict:
-    """入报告的臂快照（不含判定，判定见 `arm_checks`）。"""
+    """入报告的臂快照（不含判定，判定见 `arm_checks`）。
+
+    ④云门实测：`source`/`checkout_root` 是实例绝对路径 ⇒ 入报告前脱敏（D5④/G4 硬门）。
+    """
     return {
         "name": arm.get("name"),
         "kind": arm.get("kind"),
-        "source": arm.get("source"),
+        "source": report.redact_path(arm.get("source")),
         "env": dict(arm.get("env") or {}),
         "patches": list(arm.get("patches") or []),
         "expect": list(arm.get("expect") or []),
         "probe": arm.get("probe"),
         "notes": arm.get("notes"),
-        "checkout_root": str(REPO_ROOT),
+        "checkout_root": report.redact_path(str(REPO_ROOT)),
     }
 
 

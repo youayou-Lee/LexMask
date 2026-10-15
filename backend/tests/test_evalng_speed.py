@@ -40,13 +40,25 @@ def _no_real_backend(monkeypatch):
     return attempted
 
 
-def _single_resp(total: float = 1000.0, ring: dict | None = None) -> dict:
+def _single_resp(total: float = 1000.0, ring: dict | None = None, *,
+                 stage_total: float | None = None, block_total: float | None = None) -> dict:
+    """单管线 canned 响应。
+
+    `stage_total` = `stage_duration_ms["total"]`（**部分阶段**合计；真实后端上常远小于环）；
+    `block_total` = `pipeline_status[*].duration_ms`（**块级**管线耗时，D3①a 闭合用的环）。
+    默认两者相等，便于旧用例继续用「按比例缩放环」造闭合偏差；真实形状见
+    `test_single_pipeline_ring_uses_block_duration_against_mixed_ledger`。
+    """
     ring = dict(ring or RING_LEAVES)
-    ring["total"] = round(sum(ring.values()), 3)  # 管线 total = 环节之和（页根 total 独立）
+    if stage_total is None:
+        stage_total = round(sum(ring.values()), 3)
+    ring["total"] = stage_total
+    if block_total is None:
+        block_total = stage_total
     return {
         "page": 3,
         "duration_ms": {"total": total, "request_total_ms": total + 5.0},
-        "pipeline_status": {"ocr_has": {"stage_duration_ms": ring}},
+        "pipeline_status": {"ocr_has": {"stage_duration_ms": ring, "duration_ms": block_total}},
     }
 
 
@@ -64,8 +76,8 @@ def _batch_page(total: float = 1000.0, ring: dict | None = None, k: int = 3) -> 
     }
 
 
-def _signal(total: float = 1000.0, wall_s: float = 1.0, ring: dict | None = None) -> dict:
-    return collect.page_signal(_single_resp(total, ring), wall_s=wall_s, page_no=3)
+def _signal(total: float = 1000.0, wall_s: float = 1.0, ring: dict | None = None, **kwargs) -> dict:
+    return collect.page_signal(_single_resp(total, ring, **kwargs), wall_s=wall_s, page_no=3)
 
 
 # ── collect：信号抽取与聚合 ────────────────────────────────────────────────
@@ -75,8 +87,55 @@ class TestCollect:
         assert sig["root_total_ms"] == 1000.0
         assert sig["request_total_ms"] == 1005.0
         assert sig["page"] == 3
-        assert sig["ring_keys"] == sorted([f"ocr_has.{k}" for k in RING_LEAVES] + ["ocr_has.total"])
+        assert sig["ring_keys"] == sorted(f"ocr_has.{k}" for k in RING_LEAVES)
         assert sig["pipeline_totals_ms"] == {"ocr_has": 1000.0}
+
+    def test_duration_key_rejects_counters_and_total(self):
+        assert collect.is_duration_key("ocr")
+        assert collect.is_duration_key("has_text_prepare_ms")
+        assert collect.is_duration_key("prepare")
+        assert not collect.is_duration_key("total")
+        assert not collect.is_duration_key("has_text_input_chars")
+        assert not collect.is_duration_key("has_text_type_count")
+        assert not collect.is_duration_key("ocr_cache_misses")
+
+    def test_single_pipeline_ring_uses_block_duration_against_mixed_ledger(self):
+        """④云门实测口径：环 = 块级 `duration_ms`，叶子只收耗时键（计数不入环）。
+
+        真实后端第 3 页（探针实测）：ocr_has 块 1853ms / stage total 849ms、visual_features 块 3944ms /
+        stage total 3895ms、页根 total 5832ms；旧口径拿 stage total 求和 ⇒ 闭合差 29% 恒 FAIL。
+        """
+        resp = {
+            "page": 3,
+            "duration_ms": {"ocr_has": 1853.0, "visual_features": 3944.0, "pdf_render_ms": 871.0,
+                            "total": 5832.0, "request_total_ms": 5856.0},
+            "pipeline_status": {
+                "ocr_has": {
+                    "duration_ms": 1853.0,
+                    "stage_duration_ms": {
+                        "prepare": 69.0, "ocr": 762.0, "has_ner": 3.0, "match": 7.0, "draw": 0.0,
+                        "total": 849.0,
+                        "has_text_input_chars": 357, "has_text_type_count": 20, "has_text_total_ms": 3.0,
+                        "ocr_cache_hits": 1, "has_text_truncated": False,
+                    },
+                },
+                "visual_features": {
+                    "duration_ms": 3944.0,
+                    "stage_duration_ms": {"model": 3283.0, "prepare": 0.0, "draw": 0.0, "total": 3895.0},
+                },
+            },
+        }
+        sig = collect.page_signal(resp, wall_s=1.0, page_no=3)
+        assert sig["pipeline_totals_ms"] == {"ocr_has": 1853.0, "visual_features": 3944.0}
+        assert "ocr_has.total" not in sig["ring_keys"]
+        assert "ocr_has.has_text_input_chars" not in sig["ring_keys"]
+        assert "ocr_has.ocr" in sig["ring_keys"] and "visual_features.model" in sig["ring_keys"]
+        agg = collect.sum_pages([sig])
+        assert agg["residual_ratio"] < 0.02  # 5832 vs 5797 ⇒ 0.6%，旧口径 29% 会 FAIL
+        assert agg["sum_rings_ms"] == 5797.0
+        statuses = {check["id"]: check["status"] for check in collect.closure_checks(agg)}
+        assert statuses["D3.closure_same_clock"] == "PASS"
+        assert statuses["D3.residual_two_sided"] == "PASS"
 
     def test_single_signal_harness_span(self):
         sig = collect.page_signal(_single_resp(), wall_s=1.0, harness_span=(10.0, 11.0), page_no=1)
