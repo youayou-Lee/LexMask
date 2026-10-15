@@ -3,7 +3,7 @@
 
 House rules: ALWAYS headed real Chrome (never headless/bundled Chromium).
 Target selected by env:
-  E2E_BASE_URL   default http://localhost:8000  (tunnelled 5090 or local stack)
+  E2E_BASE_URL   default http://localhost:8000  (tunnelled target instance -- currently cloud SCNet DCU scnet-main -- or local stack)
   E2E_USERNAME / E2E_PASSWORD   a regular (non-admin) account; created via
                                 /auth/register on first run if missing.
 """
