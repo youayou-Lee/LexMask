@@ -32,6 +32,9 @@ from app.models.schemas import (
 )
 from app.services.redaction.image_redactor import prepare_image_redaction
 from app.services.redactor import Redactor, build_preview_entity_map
+from app.services.text_layer_doc_source import (
+    boxes_for_page as text_layer_doc_boxes_for_page,
+)
 from app.services.vision_service import VisionService
 
 logger = logging.getLogger(__name__)
@@ -117,6 +120,12 @@ def _vision_signature(
             int(getattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 0) or 0),
             int(getattr(settings, "HAS_NER_TOKENS_PER_TYPE", 0) or 0),
         ],
+        # Issue#115 评审 M-1：文档级文本层链是**另一条识别链**，开关状态必须进签名，
+        # 否则开启后同一页会命中「关链时代」的缓存，表现成「开了没生效」。
+        "text_layer_docline": bool(getattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", False)),
+        "text_layer_docline_chunk_chars": int(
+            getattr(settings, "TEXT_LAYER_DOCLINE_CHUNK_CHARS", 0) or 0
+        ),
         "page": int(page),
         "ocr_has_types": _vision_type_ids(ocr_has_types),
         "visual_feature_types": _vision_type_ids(visual_feature_types),
@@ -539,6 +548,23 @@ async def detect_vision(
         logger.info("Vision force refresh file=%s page=%d", file_id[:8], page)
 
     vision_service = VisionService()
+    # Issue#115：扫描件自带**可用**文本层时改走文档级链（整卷一次分块 NER），
+    # 本页 OCR 调用为 0；视觉特征（LA）仍走原逐页链。默认关，任何异常都退回旧路径。
+    if ocr_has_enabled:
+        # 门⑥ 第三轮 Important#3：必须传**总开关生效后**的类型表，且管线被租户整体
+        # 关掉时根本不调用本链——否则「用户关掉的 OCR+HaS」会被文档级链复活。
+        doc_boxes, doc_memo = await text_layer_doc_boxes_for_page(
+            file_id=file_id,
+            snapshot=snapshot,
+            page=page,
+            ocr_has_types=effective_ocr_types,
+            owner_id=owner_id,
+        )
+    else:
+        doc_boxes, doc_memo = None, None
+    pipeline_ocr_types = effective_ocr_types
+    if doc_boxes is not None:
+        pipeline_ocr_types = []
     # 正则兜底需要租户上下文：在文本链路运行前把 owner 设到 OCR/HaS 单例上
     from app.services.ocr_has_vision_service import get_ocr_has_vision_service
     get_ocr_has_vision_service().current_owner_id = owner_id
@@ -546,13 +572,37 @@ async def detect_vision(
         file_path=snapshot["file_path"],
         file_type=snapshot["file_type"],
         page=page,
-        ocr_has_types=effective_ocr_types,
+        ocr_has_types=pipeline_ocr_types,
         visual_feature_types=effective_visual_feature_types,
         include_result_image=include_result_image,
     )
+    if doc_boxes is not None:
+        bounding_boxes = VisionService()._deduplicate_boxes([*doc_boxes, *bounding_boxes])
     warnings = list(getattr(vision_service, "last_warnings", []) or [])
     pipeline_status = dict(getattr(vision_service, "last_pipeline_status", {}) or {})
     duration_ms = dict(getattr(vision_service, "last_duration_ms", {}) or {})
+    if doc_memo is not None:
+        # 评审 I-5：`ran/failed` 不再硬编码——由**本页实际是否被文档级链接管**推导，
+        # 并把块失败数与截断块数暴露给上层（否则「部分块失败」会显示成「成功」）。
+        doc_took_over = doc_boxes is not None
+        pipeline_status["text_layer_doc"] = {
+            "ran": doc_took_over,
+            "failed": (
+                bool(doc_memo.get("http_errors"))
+                or bool(doc_memo.get("truncated_chunks"))
+                or not doc_took_over
+            ),
+            "pages": doc_memo["pages"],
+            "entities": doc_memo["entities"],
+            "chunks": doc_memo["chunks"],
+            "coverage": doc_memo["coverage"],
+            "verdict": doc_memo["verdict"],
+            "seconds": doc_memo["seconds"],
+            "http_errors": doc_memo.get("http_errors", 0),
+            "truncated_chunks": doc_memo.get("truncated_chunks", 0),
+        }
+        if not doc_took_over:
+            warnings = [*warnings, f"text_layer_doc:fallback_page={page}"]
     if merge_existing:
         existing_boxes = _boxes_from_page(_page_value(snapshot.get("bounding_boxes"), page), page)
         if existing_boxes:
