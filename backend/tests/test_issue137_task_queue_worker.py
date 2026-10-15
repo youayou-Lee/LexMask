@@ -234,7 +234,13 @@ def test_supervise_workers_respawns_dead_worker(caplog: pytest.LogCaptureFixture
             live = [task for task in queue._worker_tasks if not task.done()]
             assert len(live) == 2, f"必须补位回 concurrency=2，实际 {len(live)}"
             assert victims[0] not in queue._worker_tasks, "死掉的 worker 任务应被剪除"
-            assert any("was cancelled" in record.message or "died" in record.message for record in caplog.records)
+            msgs = [record.getMessage() for record in caplog.records]
+            assert any("was cancelled" in m for m in msgs), (
+                f"取消必须在监督日志里被识别为 cancelled（N1）：{msgs}"
+            )
+            assert not [m for m in msgs if "died: None: None" in m], (
+                f"取消不得被误报成 died: None: None（N1 钉住）：{msgs}"
+            )
         finally:
             _shutdown(queue)
 
@@ -297,8 +303,12 @@ def test_concurrency_zero_and_negative_are_clamped(monkeypatch: pytest.MonkeyPat
     asyncio.run(scenario())
 
 
-def test_lost_wake_token_is_restored() -> None:
-    """token 丢失（worker 取走后死亡）⇒ 监督必须按差额补回，否则该件永久「排队中」。"""
+def test_lost_wake_token_is_restored(caplog: pytest.LogCaptureFixture) -> None:
+    """token 丢失（worker 取走后死亡）⇒ 监督必须按差额补回，否则该件永久「排队中」。
+
+    M20（③ 第二轮）：非 quiet 路径（真死过 worker）必须**留 WARNING 证据** ——
+    与 M16（健康态只记 DEBUG）两方向都钉住，否则「丢了 token 却无告警」无人发现。
+    """
 
     async def scenario() -> None:
         queue = tq.SimpleTaskQueue(concurrency=1)
@@ -315,8 +325,18 @@ def test_lost_wake_token_is_restored() -> None:
             queue._pending_tasks.append(_item("item-lost-token"))
             queue._pending_items.add(queue._task_key(queue._pending_tasks[0]))
             assert queue.queue_size == 0
-            queue._supervise_workers()
+            # 非 quiet 路径只在「真死过 worker」时走：先取消掉在岗 worker（M20 口径）。
+            queue._worker_tasks[0].cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await queue._worker_tasks[0]
+            assert queue._worker_tasks[0].done()
+            with caplog.at_level(logging.WARNING, logger="app.services.task_queue"):
+                queue._supervise_workers()
             assert queue.queue_size == 1, "差额 token 必须被补回"
+            msgs = [r.getMessage() for r in caplog.records]
+            assert any("lost wake token" in m for m in msgs), (
+                f"非 quiet 路径（真死过 worker）必须留 WARNING 证据：{msgs}"
+            )
             for _ in range(60):
                 if seen:
                     break
@@ -545,7 +565,9 @@ def test_marked_retiring_worker_finishes_task_then_exits() -> None:
                     break
                 await asyncio.sleep(0.05)
             assert seen == ["item-retire"], "退休中的 worker 仍须完成手上的任务"
-            for _ in range(60):
+            # M19（③ 第二轮）：窗口必须 < 空闲超时 2.0s，否则无法区分
+            # 「做完即退」（第二处退休分支）与「下一个空闲窗口才退」。
+            for _ in range(24):  # ≤1.2s
                 if queue._worker_tasks[0].done():
                     break
                 await asyncio.sleep(0.05)
@@ -553,6 +575,138 @@ def test_marked_retiring_worker_finishes_task_then_exits() -> None:
             queue._supervise_workers()
             live = [task for task in queue._worker_tasks if not task.done()]
             assert len(live) == 1, f"concurrency 未变，必须补齐被退休的 slot：{len(live)}"
+        finally:
+            _shutdown(queue)
+
+    asyncio.run(scenario())
+
+
+def test_unexpected_wait_error_is_logged_with_exception_and_retried(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """B1′（③ 第二轮评审 M17）：Issue AC3「**记录**后继续」的"记录"半边必须被钉住。
+
+    M17（删掉等待路径的 `logger.exception(...)`、只保留 `sleep+continue`）此前
+    24 例全绿逃逸：既有用例只断言「未死 + 后续仍被消费」= "继续"半边，
+    "记录"半边没有任何正断言 ⇒ 故障被静默吞掉也无人发现。
+    """
+
+    async def scenario() -> None:
+        calls = {"n": 0}
+        real_wait_for = asyncio.wait_for
+
+        async def fake_wait_for(awaitable, timeout=None):  # noqa: ANN001, ANN202
+            calls["n"] += 1
+            if calls["n"] == 1:
+                awaitable.close()
+                raise RuntimeError("boom in wait path")
+            return await real_wait_for(awaitable, timeout=timeout)
+
+        monkeypatch.setattr(tq.asyncio, "wait_for", fake_wait_for)
+        queue = tq.SimpleTaskQueue(concurrency=1)
+        _start(queue)
+        seen: list[str] = []
+
+        async def fake_run(task: tq.TaskItem) -> None:
+            seen.append(task.item_id)
+
+        queue._run_recognition = fake_run  # type: ignore[method-assign]
+        try:
+            with caplog.at_level(logging.ERROR, logger="app.services.task_queue"):
+                await asyncio.sleep(0.05)
+            recorded = [
+                record
+                for record in caplog.records
+                if record.levelno >= logging.ERROR and "failed to wait on queue" in record.getMessage()
+            ]
+            assert recorded, (
+                "等待路径的未预期异常必须被记录（AC3 的'记录'半边；M17 删掉该日志后此处必红）："
+                f"{[r.getMessage() for r in caplog.records]}"
+            )
+            assert any(record.exc_info for record in recorded), (
+                "记录必须带异常信息（exc_info/traceback），否则排障看不到根因"
+            )
+            queue.enqueue(_item("item-after-wait-boom"))
+            for _ in range(60):
+                if seen:
+                    break
+                await asyncio.sleep(0.05)
+            assert seen == ["item-after-wait-boom"], "记录后必须继续消费（'继续'半边）"
+            assert queue._worker_respawns == 0, "等待异常不得靠重起 worker 掩盖"
+        finally:
+            _shutdown(queue)
+
+    asyncio.run(scenario())
+
+
+def test_retiring_marker_is_consumed_when_worker_retires(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """B2′（③ 第二轮评审 M18）：`_retiring_ids` 必须在退休被观测到时消费掉。
+
+    M18（`self._retiring_ids.discard(worker_id)` 改成 `pass`）此前 24 例全绿逃逸：
+    缩容 2→1 后 id=1 永久留在标记集里，之后任何复用该 id 的新 worker 会在首个空闲
+    窗口自我退休 → 监督再补位 → 无限 churn。该不变量正是本轮 B1 修复的立身之本。
+    """
+
+    async def scenario() -> None:
+        queue = tq.SimpleTaskQueue(concurrency=2)
+        _start(queue)
+        try:
+            await asyncio.sleep(0.05)
+            queue.set_concurrency(1, persist=False)
+            assert queue._retiring_ids == {1}, f"缩容必须标记多余 worker：{queue._retiring_ids}"
+            await asyncio.sleep(2.6)  # worker-1 在下一个空闲窗口自行退出
+            with caplog.at_level(logging.WARNING, logger="app.services.task_queue"):
+                queue._supervise_workers()
+            live = [task for task in queue._worker_tasks if not task.done()]
+            assert len(live) == 1, f"缩容后不得补位：{len(live)}"
+            assert queue._retiring_ids == set(), (
+                "退休标记必须随退休被消费（M18 让它不过期 ⇒ 回扩容/复用 id 时 churn）："
+                f"{queue._retiring_ids}"
+            )
+            assert queue._worker_respawns == 0, "正常退休不得计入补位"
+            queue.set_concurrency(2, persist=False)  # 回扩容
+            await asyncio.sleep(2.6)
+            queue._supervise_workers()
+            live = [task for task in queue._worker_tasks if not task.done()]
+            assert len(live) == 2, f"回扩容后必须满员：{len(live)}"
+            assert queue._worker_respawns == 0, (
+                f"回扩容后不得出现补位 churn（respawns={queue._worker_respawns}）"
+            )
+            errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+            assert not errors, f"计划退休/回扩容不得报 ERROR：{errors}"
+        finally:
+            _shutdown(queue)
+
+    asyncio.run(scenario())
+
+
+def test_healthy_supervision_keeps_token_restore_quiet(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """M16（③ 第二轮评审，非阻塞）：没死过 worker 时的 token 差额只记 DEBUG，不得刷 WARNING。"""
+
+    async def scenario() -> None:
+        queue = tq.SimpleTaskQueue(concurrency=1)
+        _start(queue)
+        try:
+            await asyncio.sleep(0.05)
+
+            async def noop_run(task: tq.TaskItem) -> None:  # noqa: ARG001
+                return None
+
+            queue._run_recognition = noop_run  # type: ignore[method-assign]
+            item = _item("item-transient")
+            queue._pending_tasks.append(item)
+            queue._pending_items.add(queue._task_key(item))
+            with caplog.at_level(logging.DEBUG, logger="app.services.task_queue"):
+                queue._supervise_workers()
+            warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+            assert not [m for m in warnings if "lost wake token" in m], (
+                f"健康态（无死 worker）的差额补回不得刷 WARNING（M16 改非 quiet 后此处必红）：{warnings}"
+            )
+            assert queue.queue_size >= 1, "瞬态差额仍须补 token（安静 != 不做事）"
         finally:
             _shutdown(queue)
 

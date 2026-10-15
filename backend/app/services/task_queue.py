@@ -509,7 +509,10 @@ class SimpleTaskQueue(RecognitionPipelineMixin, StructuredPipelineMixin, Redacti
                 continue
             except asyncio.CancelledError:
                 logger.info("worker-%d exited (reason=cancelled)", worker_id)
-                break
+                # Issue#137 ③ 第二轮 N1：继续抛出，让 Task 以 cancelled 收尾。
+                # 若就地 break，监督看到的是「无异常 done」，会把取消误报成
+                # `died: None: None; will respawn`（措辞误导，cancelled 分支成死代码）。
+                raise
             except Exception:
                 # 等待路径的任何未预期异常都不得结束 worker（否则又回到静默死亡）。
                 logger.exception("worker-%d failed to wait on queue; retrying", worker_id)

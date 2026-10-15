@@ -81,3 +81,9 @@ enqueue:     id(self)=…592  id(_queue)=…448  qsize=1 pending=1 running=True 
 - **自动化**：上表用例；`backend/tests/` 中既有队列/作业相关用例零回归；`eval-ng` 基线与全量失败名集合与 preview 基线逐条一致。
 - **云实例（门④，必需）**：该缺陷只在 Python 3.10 复现 ⇒ 必须在云实例上验证：重启带修复的后端 → 空闲 >2s → 提交 `smart_batch` ⇒ 作业在飞被消费（`worker-N processing` 出现、状态脱离 `queued`）。
 - **回归面**：#131 的 D7 parity 依赖该路径，修复后重跑；`--driver batch` 与旧 `benchmark_throughput.py` 共用此路径，两侧同受益。
+
+## 6. 修订记录（③ 冷评审第 1/2 轮）
+
+- **在场件回收口径（N5 回填）**：worker 死亡后它手上的在场件走**两段兜底** —— ① 监督即时认领：`_supervise_workers()` 对该 worker 的 `_current[slot]` 调 `_reclaim_orphan()`，先从 `_pending_items` 去重集合 `discard` 再重新 `enqueue`（否则去重集合会让该件永久卡死）；② 长效兜底：既有 `_stale_processing_watchdog`（30s 周期，`max_age = max(120, 2 × BATCH_RECOGNITION_PAGE_TIMEOUT)`）按 DB 状态回收 stale processing 件。两者职责边界＝即时性 vs 跨进程/崩溃后收敛。
+- **取消路径（N1）**：`_worker_loop` 捕到 `asyncio.CancelledError` 时**继续抛出**，让 Task 以 cancelled 收尾；否则监督看到「无异常 done」，会把取消误报成 `died: None: None; will respawn`（措辞误导，且 `task.cancelled()` 分支成死代码）。
+- **判据加固（③ 第二轮 M16/M17/M18/M19/M20）**：`failed to wait on queue` 必须有**正**日志断言（含 `exc_info`）；`_retiring_ids` 必须有「退休后被消费」断言；健康态 token 补回只记 DEBUG、真死过 worker 才记 WARNING（两方向都断言）；被标记退休的 worker 必须**在 ≤1.2s 内**（< 空闲超时 2.0s）做完即退，以区分「做完即退」与「下一个空闲窗口才退」。
