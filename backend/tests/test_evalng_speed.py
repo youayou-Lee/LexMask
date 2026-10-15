@@ -467,6 +467,16 @@ class TestReport:
         assert "同 id 2 条，取最严" in out[0]["detail"]
         assert out[1]["detail"] == "n=3"  # 无重复的条目不得被改写
         assert report.dedupe_checks([]) == []
+        # N4（②轮 Nit）：白名单是**路径级**的，换族改名同样要被抓（不是只钉 rounds[].agg.*_value）
+        cases = [
+            ({"summary": {"agg_value": 0.87}}, "agg_value"),
+            ({"mode": {"mystery_value": 0.87}}, "mystery_value"),
+            ({"rounds": [{"items": [{"agg_value": 0.87}]}]}, "agg_value"),
+            ({"rounds": [{"agg": {"score_value": 0.87}}]}, "score_value"),
+        ]
+        for doc, leaf in cases:
+            errs = report.numeric_whitelist_errors(doc)
+            assert errs and any(leaf in err for err in errs), (doc, errs)
 
     def test_whitelist_allows_observations_anchor_band_only(self):
         """P4 观测里的锚点墙钟秒数放行；同子树里换个名字（哪怕是同样的数）必须被点名。

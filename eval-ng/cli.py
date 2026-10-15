@@ -1016,8 +1016,8 @@ def _not_measured(args) -> list[str]:
     ]
     if args.cache_policy == "warm":
         items.append("冷启动开销：warm 轮不测冷跑地板（cache_policy=warm）")
-    if not args.baseline:
-        items.append("与 benchmark_throughput.py 的 parity（未给 --baseline）")
+    # N5（②轮 Nit）：parity 由 `D7.parity` 这条**实测** check 承载（未给基线时 UNVERIFIED），
+    # 这里只列「本期范围外」的三项，不再把「能力缺口」混进静态文案。
     return items
 
 
