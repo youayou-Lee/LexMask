@@ -172,6 +172,9 @@ def export_stage(results_dir: Path, out_path: Path, types: set[str] | None,
                       keep_empty=keep_empty)
     write_exam_jsonl(rows, out_path, version=version)
     if evalng_out is not None:
+        if not rows:
+            print("[warn] 勾选/剔域后 0 页，evalng 考卷将为空（eval-ng 会拒绝执行）",
+                  file=sys.stderr)
         write_evalng_exam(
             build_evalng_exam(rows, exam_id=Path(out_path).stem),
             evalng_out)

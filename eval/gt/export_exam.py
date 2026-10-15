@@ -78,9 +78,10 @@ def build_evalng_exam(rows: list[dict], exam_id: str,
                       bucket_meta: dict | None = None) -> dict:
     """考卷行 → eval-ng 考卷文档（``{"exam_id", "items": [...]}``）。
 
-    每页一题，``form=entity_table``，``gt={类型: [实体串, ...]}``（同页同名
-    实体保留重复——出现次数本身是 GT 信息，评分按条计）。``bucket_meta``
-    可选，随考卷写入报告（与 make_exam_from_t2 的桶说明同槽位）。
+    每页一题，``form=entity_table``，``gt={类型: [实体串, ...]}``。同页重复
+    实体原样保留、忠实记录 GT（评分按集合域自然去重，与 t2 桶同族）。
+    ``bucket_meta`` 可选，随考卷写入报告（与 make_exam_from_t2 的桶说明
+    同槽位；产线路径暂不使用，为多案合并报告预留）。
     """
     items = []
     for r in rows:
