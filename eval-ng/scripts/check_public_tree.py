@@ -87,8 +87,14 @@ TOKEN_RES = (
 )
 _WORD_SPLIT_RE = re.compile(r"[^A-Za-z0-9]+")
 _CAMEL_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+")
+_VALUE_GROUP = r'(?P<val>"[^"\n]{1,200}"|\'[^\'\n]{1,200}\'|[^\s,;)]{1,120})'
 CREDENTIAL_ASSIGN_RE = re.compile(
-    r"(?P<name>[A-Za-z_][A-Za-z0-9_]{0,40})\s*[:=]\s*(?P<val>[^\s,;)]{1,120})"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]{0,40})\s*[:=]\s*" + _VALUE_GROUP
+)
+# 引号键（JSON / YAML / dict 字面量）：键名被引号包起、后跟冒号或等号与一个口令字面量。
+# 普通赋值的 name 组不含引号，键被引号包起时针冒号/等号之前先撞上 `"` ⇒ 整类漏网（⑧期预前加固实测）。
+QUOTED_KEY_ASSIGN_RE = re.compile(
+    r"(?P<q>[\"'])(?P<name>[A-Za-z_][A-Za-z0-9_]{0,40})(?P=q)\s*[:=]\s*" + _VALUE_GROUP
 )
 CREDENTIAL_FLAG_RE = re.compile(r"(?P<name>--[A-Za-z][A-Za-z0-9_-]{1,40})")
 # 带类型注解的赋值：`NAME: <注解> = "<真口令>"`（Python 惯用写法）。
@@ -96,7 +102,7 @@ CREDENTIAL_FLAG_RE = re.compile(r"(?P<name>--[A-Za-z][A-Za-z0-9_-]{1,40})")
 # 注解段必须锚到标识符开头、不含 `=` 与换行（防跨语句/跨赋值误配），但要覆盖 PEP 604 联合 `str | None`、
 # 泛型 `Final[str | None]` / `Literal["a"]` / `Optional["Cfg"]` 等引号与括号形态（⑧冷评审 R8-1）。
 ANNOTATED_ASSIGN_RE = re.compile(
-    r'(?P<name>[A-Za-z_][A-Za-z0-9_]{0,40})\s*:\s*(?P<ann>[A-Za-z_][\w\.\[\], |"\'()]{0,80}?)\s*=\s*(?P<val>[^\s,;)]{1,120})'
+    r'(?P<name>[A-Za-z_][A-Za-z0-9_]{0,40})\s*:\s*(?P<ann>[A-Za-z_][\w\.\[\], |"\'()]{0,80}?)\s*=\s*' + _VALUE_GROUP
 )
 # 引号字面量用**零宽前瞻**配对（`finditer` 会吃掉共享引号：`"--flag", default="VALUE"` 里
 # 第 2、3 个引号分属两段，普通匹配会把 `", default="` 整段吞掉导致真值漏网）
@@ -252,17 +258,19 @@ def credential_findings(text: str) -> list[tuple[str, str]]:
             findings.append((rule, match.group(0)))
     # 普通赋值（`name = val` / `name: val`）与带类型注解的赋值（`name: Type = val`）取并：
     # 后者若单靠前一个正则，注解冒号会把值位置吃掉 ⇒ 整类漏网（⑦冷评审 R7-1）。
-    for match in list(CREDENTIAL_ASSIGN_RE.finditer(text)) + list(ANNOTATED_ASSIGN_RE.finditer(text)):
-        if not is_credential_name(match.group("name")):
-            continue
-        window = match.group(0)
-        if ENV_LOOKUP_RE.search(window):
-            continue  # 语境：读环境变量，不是内置口令
-        val = match.group("val")
-        if not _literal_hit(val):
-            continue
-        rule = "credential_literal" if val[:1] in "\"'" else "credential_bare"
-        findings.append((rule, window))
+    assign_regexes = (CREDENTIAL_ASSIGN_RE, ANNOTATED_ASSIGN_RE, QUOTED_KEY_ASSIGN_RE)
+    for regex in assign_regexes:
+        for match in regex.finditer(text):
+            if not is_credential_name(match.group("name")):
+                continue
+            window = match.group(0)
+            if ENV_LOOKUP_RE.search(window):
+                continue  # 语境：读环境变量，不是内置口令
+            val = match.group("val")
+            if not _literal_hit(val):
+                continue
+            rule = "credential_literal" if val[:1] in "\"'" else "credential_bare"
+            findings.append((rule, window))
     for flag in CREDENTIAL_FLAG_RE.finditer(text):
         if not is_credential_name(flag.group("name")):
             continue

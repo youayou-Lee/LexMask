@@ -1593,6 +1593,10 @@ class TestPublicTreeScanner:
             'client_secret: Optional["Cfg"] = "Ab12Cd34"',  # public-tree-scan: ignore-line
             'db_password: dict | None = "Qq11Ww22"',  # public-tree-scan: ignore-line
             'access_token: list[str] | None = "ghp_abcdefghijklmnopqrstuvwxyz0123456"',  # public-tree-scan: ignore-line
+            # 引号键（dict / JSON / YAML）形态：键名被引号包起曾整类漏网（⑧期预前加固）
+            '"client_secret": "Ab12Cd34"',  # public-tree-scan: ignore-line
+            "{'db_password': 'Qq11Ww22'}",  # public-tree-scan: ignore-line
+            '"access_token": "ghp_abcdefghijklmnopqrstuvwxyz0123456"',  # public-tree-scan: ignore-line
         ):
             assert self._rules(probe) & creds, probe
 
@@ -1605,6 +1609,8 @@ class TestPublicTreeScanner:
             "subject_key: 'SUBJ-001'", 'PUBLIC_KEY_HEX = "291c9c80654fd61d2389102ceec5848"',
             "migrations_key = '_migrations'", 'msg = "密码错误，请重试"',
             'payload = {"PP-OCRv6": 1}', "max_tokens=4000", "monkey = 'abc12345'",
+            # 引号键（dict / JSON / YAML）的反例：元数据类型名 / cross-origin 这类非凭据值
+            '{"token_type": "refresh_token"}', '{"credentials": "same-origin"}',
             # 值形状的真正边界：含分隔符/JSON 片段/CJK 文案（即便带数字）也不是口令
             'key = "abc=123def"', "value = 'x{1}y2z9'", 'data = "密码1错误2，请重试"',
             # R7-1/R8-1 反例：注解（含联合/泛型）形态下的 env 读法 / 占位词 / 代码值
