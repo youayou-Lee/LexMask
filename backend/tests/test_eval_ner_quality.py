@@ -66,17 +66,16 @@ def test_corpus_covers_all_default_types():
 # ---------- eval_ner_quality：prompt 契约 ----------
 
 def test_prompt_matches_production_has_client_template():
-    """评测 prompt 必须与 backend/app/services/has_client.py 的模型卡模板逐字一致（防漂移）。"""
-    source = (REPO_ROOT / "backend" / "app" / "services" / "has_client.py").read_text(encoding="utf-8")
-    match = re.search(r'prompt = f"""(Recognize the following entity types.*?)"""', source, re.DOTALL)
-    assert match, "has_client.py 中找不到 NER prompt 模板（模板是否被改动？请同步 eval 脚本）"
-    template = match.group(1)
+    """评测 prompt 必须与 backend/app/services/has_client.py 的模型卡模板逐字一致（防漂移）。
+
+    Issue#104 后模板唯一真源 = HaSClient._build_ner_prompt（ner 实发与分组
+    规划器共用那份）；直接 import 比对，比源码正则更不怕排版漂移。
+    """
+    from app.services.has_client import HaSClient
 
     types = ["姓名", "电话"]
     text = "张三的电话是13800000000。"
-    types_str = json.dumps(types, ensure_ascii=False, separators=(",", ":"))
-    rendered = template.replace("{{}}", "{}").replace("{types_str}", types_str) \
-        .replace("{guidance_block}", "").replace("{text}", text)
+    rendered = HaSClient._build_ner_prompt(types, "", text)
     assert eval_mod.build_ner_prompt(text, types) == rendered
 
 

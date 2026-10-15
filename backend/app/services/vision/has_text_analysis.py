@@ -22,6 +22,7 @@ from app.services.vision.has_text_payload import (
     _default_has_text_items,
     _filter_blocks_for_has_text,
     _item_query_labels,
+    plan_has_text_groups,
 )
 from app.services.vision.ocr_cache import (
     _add_has_text_duration,
@@ -82,6 +83,156 @@ def _merge_ner_into_union(
                 bucket.append(value)
                 added = True
     return added
+
+
+async def _resolve_effective_context(has_client: Any) -> int:
+    """生效上下文（Issue#104 C1）：真客户端走服务端探测（worker 线程内）；
+    鸭子类型的最小桩（测试替身无该方法）回落配置值——探测缺失不拒服。"""
+    probe = getattr(has_client, "_effective_context_tokens", None)
+    if callable(probe):
+        return await asyncio.to_thread(probe)
+    return max(512, int(settings.HAS_NER_CONTEXT_TOKENS))
+
+
+def merge_group_ner_results(group_results: list[Any]) -> dict[str, list[str]]:
+    """跨组合并 {type: [values]}：保序、组间 (type, value) 去重（Issue#104 D1⑥）。
+
+    与既有 bridge 合并同款去重语义；空桶不落键。组级失败由调用方先行处置，
+    本函数只吃成功的 dict。
+    """
+    merged: dict[str, list[str]] = {}
+    for result in group_results:
+        if not isinstance(result, dict):
+            continue
+        for entity_type, entity_list in result.items():
+            if not entity_list:
+                continue
+            bucket = merged.setdefault(entity_type, [])
+            for value in entity_list:
+                clean_text = _compact_text(value)
+                if clean_text and clean_text not in bucket:
+                    bucket.append(clean_text)
+    return merged
+
+
+def plan_has_text_group_texts(
+    texts: list[str],
+    chinese_types: list[str],
+    *,
+    context_tokens: int,
+) -> list[str]:
+    """把整页文本行按 token 预算分成若干组文本（Issue#104 C3 接线）。
+
+    estimate/预算闭包直接用 HaSClient 的真函数（staticmethod/classmethod，
+    不依赖实例状态）——与实发**同一算术**，鸭子类型的测试桩也无感。
+    返回组文本列表；单组时与现状逐字等价。
+    """
+    from app.services.has_client import _NER_CONTEXT_RESERVE_TOKENS, HaSClient
+
+    estimate_for = lambda t: HaSClient._estimate_prompt_tokens(  # noqa: E731
+        HaSClient._build_ner_prompt(chinese_types, "", t)
+    )
+    max_tokens_for = lambda t: HaSClient.planned_max_tokens(  # noqa: E731
+        chinese_types, t, context_tokens=context_tokens
+    )
+    groups = plan_has_text_groups(
+        texts,
+        context_tokens=context_tokens,
+        reserve_tokens=_NER_CONTEXT_RESERVE_TOKENS,
+        estimate_for=estimate_for,
+        max_tokens_for=max_tokens_for,
+    )
+    return ["\n".join(group) for group in groups]
+
+
+async def _run_has_text_ner_groups(
+    has_client: Any,
+    stage_status: dict[str, Any] | None,
+    group_texts: list[str],
+    chinese_types: list[str],
+) -> tuple[dict[str, list[str]], int]:
+    """逐组派发 HaS 主查（Issue#104 C3/C5）。
+
+    - 每组独立走 缓存 → inflight（按**组文本**键）→ 组并发窗口 + GPU 闸位；
+      单组时组文本 == 整页文本，与现状逐字等价（C6：同一 payload、同一闸位
+      数、同一 K 趟自洽采样）。
+    - 组并发窗口 = HAS_VISION_MAX_GROUPS_INFLIGHT（独立于 GPU 闸门的硬界：
+      闸门被 SERIALIZE_SHARED_GPU_MODELS=False 旁路时扇出仍有界，D5②）。
+    - 组内 ner(raise_on_error=True)：组失败**上抛**而非返回 {}，页级据此判
+      失败——组级静默漏检（本 Issue 的病）不得在组上复发（C5/D-cm）。
+
+    Returns ``(merged_union, failed_group_count)``；失败组不参与合并（调用方
+    据此整页判失败）。
+    """
+    from app.core.gpu_inference_gate import shared_gpu_inference_slot
+
+    k_samples = max(1, int(settings.HAS_NER_SELF_CONSIST_SAMPLES))
+    sample_temp = float(settings.HAS_NER_SELF_CONSIST_TEMPERATURE)
+    group_sem = asyncio.Semaphore(
+        max(1, min(int(settings.HAS_VISION_MAX_GROUPS_INFLIGHT), len(group_texts)))
+    )
+
+    async def _run_group(group_text: str) -> dict[str, list[str]]:
+        cached = _get_cached_has_text_ner(has_client, group_text, chinese_types)
+        if cached is not None:
+            return cached
+        inflight_key = _has_text_ner_inflight_key(has_client, group_text, chinese_types)
+        owns_inflight, inflight_future = _begin_has_text_ner_inflight(inflight_key)
+        if not owns_inflight:
+            # 同组文本的兄弟页：等 owner 落定（与旧整页 inflight 语义一致）。
+            return await asyncio.shield(inflight_future)
+        result: dict[str, list[str]] | None = None
+        try:
+            async with group_sem:
+                queue_start = time.perf_counter()
+                async with shared_gpu_inference_slot("OCR HaS Text NER"):
+                    queue_ms = round((time.perf_counter() - queue_start) * 1000)
+                    _add_has_text_duration(stage_status, "has_text_slot_wait_ms", queue_ms)
+                    cached = _get_cached_has_text_ner(has_client, group_text, chinese_types)
+                    if cached is not None:
+                        _record_has_text_metric(stage_status, "has_text_cache_status", "hit_after_slot")
+                        result = cached
+                    else:
+                        model_start = time.perf_counter()
+
+                        def _ner_sample(pass_index: int) -> Any:
+                            return has_client.ner(
+                                group_text,
+                                chinese_types,
+                                temperature=(0.0 if pass_index == 0 else sample_temp),
+                                sample_index=pass_index,
+                                raise_on_error=True,
+                            )
+
+                        result, passes_run = await asyncio.to_thread(
+                            aggregate_ner_samples, _ner_sample, k_samples
+                        )
+                        _record_has_text_metric(stage_status, "has_text_cache_status", "model_call")
+                        _add_has_text_duration(
+                            stage_status,
+                            "has_text_self_consist_passes",
+                            passes_run,
+                        )
+                        _add_has_text_duration(
+                            stage_status,
+                            "has_text_model_ms",
+                            round((time.perf_counter() - model_start) * 1000),
+                        )
+            _finish_has_text_ner_inflight(inflight_key, inflight_future, result)
+            return result if isinstance(result, dict) else {}
+        except BaseException:
+            _finish_has_text_ner_inflight(inflight_key, inflight_future, None)
+            raise
+
+    results = await asyncio.gather(
+        *(_run_group(group_text) for group_text in group_texts),
+        return_exceptions=True,
+    )
+    failures = [item for item in results if isinstance(item, BaseException)]
+    for failure in failures:
+        logger.error("HaS text NER group raised: %s", failure)
+    merged = merge_group_ner_results([item for item in results if isinstance(item, dict)])
+    return merged, len(failures)
 
 
 def aggregate_ner_samples(
@@ -424,74 +575,47 @@ async def run_has_text_analysis(
             logger.info("HaS using default types: %s", chinese_types)
         _record_has_text_metric(stage_status, "has_text_type_count", len(chinese_types))
 
+        # 生效上下文（C1）：主查分支里取；residual 在缓存命中路径惰性取。
+        context_tokens: int | None = None
         ner_result = _get_cached_has_text_ner(has_client, text_content, chinese_types)
         if ner_result is not None:
             _record_has_text_metric(stage_status, "has_text_cache_status", "hit_before_slot")
             logger.info("HaS NER cache hit before local slot wait")
         else:
             _record_has_text_metric(stage_status, "has_text_cache_status", "miss")
-            inflight_key = _has_text_ner_inflight_key(has_client, text_content, chinese_types)
-            owns_inflight, inflight_future = _begin_has_text_ner_inflight(inflight_key)
-            if not owns_inflight:
-                duplicate_wait_start = time.perf_counter()
-                ner_result = await asyncio.shield(inflight_future)
-                wait_ms = round((time.perf_counter() - duplicate_wait_start) * 1000)
-                _record_has_text_metric(stage_status, "has_text_cache_status", "shared_inflight")
-                _add_has_text_duration(stage_status, "has_text_duplicate_wait_ms", wait_ms)
-                logger.info("HaS NER duplicate waited %dms without local slot", wait_ms)
-            else:
-                try:
-                    # HaS httpx is synchronous - offload to a worker thread. Concurrency
-                    # is bounded by the shared GPU inference gate (HAS_NER_GLOBAL_MAX_INFLIGHT,
-                    # 1 = fully serialized); identical page payloads were already merged by
-                    # the inflight registry above, so raising the gate never duplicates work.
-                    from app.core.gpu_inference_gate import shared_gpu_inference_slot
-
-                    queue_start = time.perf_counter()
-                    async with shared_gpu_inference_slot("OCR HaS Text NER"):
-                        queue_ms = round((time.perf_counter() - queue_start) * 1000)
-                        _add_has_text_duration(stage_status, "has_text_slot_wait_ms", queue_ms)
-                        if queue_ms > 0:
-                            logger.info("HaS Text waited %dms for shared NER slot", queue_ms)
-                        ner_result = _get_cached_has_text_ner(has_client, text_content, chinese_types)
-                        if ner_result is not None:
-                            _record_has_text_metric(stage_status, "has_text_cache_status", "hit_after_slot")
-                            logger.info("HaS NER cache hit after slot wait")
-                        else:
-                            model_start = time.perf_counter()
-                            # Self-consistent multi-pass NER over THIS payload.
-                            # Pass 0 is the temp=0 greedy seed (== today's single
-                            # call); passes >=1 re-sample at temp>0 under distinct
-                            # sample_index keys and are folded into the union. The
-                            # union is monotone (only ⊇ the seed), so widening K
-                            # cannot uncover PII the seed already hid — hallucinated
-                            # temp>0 values are gated to 0 region by the matcher.
-                            # K=1 (default) drives exactly one temp=0 pass = current.
-                            k_samples = max(1, int(settings.HAS_NER_SELF_CONSIST_SAMPLES))
-                            sample_temp = float(settings.HAS_NER_SELF_CONSIST_TEMPERATURE)
-
-                            def _ner_sample(pass_index: int) -> Any:
-                                return has_client.ner(
-                                    text_content,
-                                    chinese_types,
-                                    temperature=(0.0 if pass_index == 0 else sample_temp),
-                                    sample_index=pass_index,
-                                )
-
-                            ner_result, passes_run = await asyncio.to_thread(
-                                aggregate_ner_samples, _ner_sample, k_samples
-                            )
-                            _record_has_text_metric(stage_status, "has_text_cache_status", "model_call")
-                            _record_has_text_metric(stage_status, "has_text_self_consist_passes", passes_run)
-                            _add_has_text_duration(
-                                stage_status,
-                                "has_text_model_ms",
-                                round((time.perf_counter() - model_start) * 1000),
-                            )
-                    _finish_has_text_ner_inflight(inflight_key, inflight_future, ner_result)
-                except Exception:
-                    _finish_has_text_ner_inflight(inflight_key, inflight_future, None)
-                    raise
+            # Issue#104 C1/C3：生效上下文取服务端自报值（探测失败回落安全小值），
+            # 整页文本按 token 预算分成若干次主查。单组时组文本 == 整页文本，
+            # 与现状逐字等价（C6：同一 payload、同一闸位数、同一 K 趟采样）。
+            context_tokens = await _resolve_effective_context(has_client)
+            group_texts = plan_has_text_group_texts(
+                has_payload.texts, chinese_types, context_tokens=context_tokens
+            )
+            _record_has_text_metric(stage_status, "has_text_payload_group_count", len(group_texts))
+            logger.info(
+                "HaS payload planned into %d group(s) (context=%d tokens, emitted_chars=%d)",
+                len(group_texts),
+                context_tokens,
+                has_payload.emitted_chars,
+            )
+            ner_result, groups_failed = await _run_has_text_ner_groups(
+                has_client, stage_status, group_texts, chinese_types
+            )
+            if groups_failed:
+                # Issue#104 C5：任一组失败 ⇒ 该页主查整体判失败——组级部分结果
+                # 不得伪装成「该页无实体」静默通过（那正是本 Issue 在修的病）。
+                _record_has_text_metric(stage_status, "has_text_ner_failed_groups", groups_failed)
+                _record_has_text_metric(stage_status, "has_text_cache_status", "group_failed")
+                logger.error(
+                    "HaS text NER page judged FAILED: %d/%d group(s) failed; not merging partial results",
+                    groups_failed,
+                    len(group_texts),
+                )
+                _record_has_text_metric(
+                    stage_status,
+                    "has_text_total_ms",
+                    round((time.perf_counter() - total_start) * 1000),
+                )
+                return []
 
         if not ner_result or not isinstance(ner_result, dict):
             logger.info("HaS: no entities found by NER")
@@ -629,17 +753,43 @@ async def run_has_text_analysis(
                 if residual_ner_result is None:
                     from app.core.gpu_inference_gate import shared_gpu_inference_slot
 
-                    async with shared_gpu_inference_slot("OCR HaS Text residual NER"):
-                        residual_ner_result = _get_cached_has_text_ner(has_client, residual_text, chinese_types)
-                        if residual_ner_result is None:
+                    # Issue#104 C4：residual 接缝与主查同一条规划/派发路径——
+                    # 它同样是 32000 字符上限、同样会超上下文 400（bridge 的
+                    # 1200 上限安全，不分组）。组失败按组吞掉（auxiliary pass，
+                    # 维持「residual 缺席 = 与旧版等价」的语义），组结果 union。
+                    residual_context = (
+                        context_tokens
+                        if context_tokens is not None
+                        else await _resolve_effective_context(has_client)
+                    )
+                    residual_group_texts = plan_has_text_group_texts(
+                        residual_payload.texts,
+                        chinese_types,
+                        context_tokens=residual_context,
+                    )
+                    _record_has_text_metric(
+                        stage_status, "has_text_residual_group_count", len(residual_group_texts)
+                    )
+                    residual_group_results: list[Any] = []
+                    for residual_group_text in residual_group_texts:
+                        cached_group = _get_cached_has_text_ner(has_client, residual_group_text, chinese_types)
+                        if cached_group is not None:
+                            residual_group_results.append(cached_group)
+                            continue
+                        async with shared_gpu_inference_slot("OCR HaS Text residual NER"):
+                            cached_group = _get_cached_has_text_ner(has_client, residual_group_text, chinese_types)
+                            if cached_group is not None:
+                                residual_group_results.append(cached_group)
+                                continue
                             model_start = time.perf_counter()
-                            result = await asyncio.to_thread(has_client.ner, residual_text, chinese_types)
+                            result = await asyncio.to_thread(has_client.ner, residual_group_text, chinese_types)
                             _add_has_text_duration(
                                 stage_status,
                                 "has_text_model_ms",
                                 round((time.perf_counter() - model_start) * 1000),
                             )
-                            residual_ner_result = result if isinstance(result, dict) else {}
+                            residual_group_results.append(result if isinstance(result, dict) else {})
+                    residual_ner_result = merge_group_ner_results(residual_group_results)
                 # Model-centric verification of the residual re-ask (fixes 甲方→开户行):
                 # the residual NER ran on REDUCED text where a label's real value was
                 # already consumed, so the open-vocab model can force-fit a wrong span —
