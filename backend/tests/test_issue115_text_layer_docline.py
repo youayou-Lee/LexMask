@@ -526,7 +526,7 @@ def test_map_values_maps_subword_values_inside_longer_words():
     旧链 `match_entities_to_ocr` 支持 sub-word positioning；新链若要求「整词相等」，
     这四种形态全部 0 框且不告警 ⇒ 比旧链更窄的静默漏检。
     """
-    pages = [_page(1, ["被告人张三丰", "电话13612345678", "编号（2022）京0101刑初123号"])]
+    pages = [_page(1, [("被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰"), "电话13612345678", "编号（2022）京0101刑初123号"])]
     stream, spans = docline.build_stream(pages)
     entities, failures = docline.map_values(
         pages, stream, spans, {"姓名": {"张三丰"}, "手机号": {"13612345678"}}
@@ -615,13 +615,24 @@ def test_empty_ocr_has_types_skips_whole_chain(monkeypatch, tmp_path):
     assert built == [], "空类型表不得触发建卷（否则默认 38 类会复活）"
 
 
+def _person_type():
+    """门⑥ 四轮 Important#1：类型表必须传**带 .id 的对象**。
+
+    传裸字符串 `["PERSON"]` 时 `_build_has_text_type_names` 推出的标签表为空，
+    `boxes_for_page` 会在 `if not labels: return None, None` 提前返回，`_build`
+    根本不执行 ⇒ 那些「卷级门可失败」用例是恒真断言（实测 `_build` 调用次数=0）。
+    """
+    from app.services.pipeline_service import PRESET_OCR_HAS_TYPES
+
+    return next(item for item in PRESET_OCR_HAS_TYPES if item.id == "PERSON")
+
 def test_volume_level_gates_are_fail_able(monkeypatch, tmp_path):
     """门⑥ 二轮 Important#5：卷级门（失败块/回映失败率/覆盖率）必须真能挡住建卷。"""
     monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
     monkeypatch.setattr(source.docline, "extract_text_layer_pages", lambda *_a, **_k: [
         docline.TextLayerPage(
             no=1, width=595.0, height=842.0,
-            words=[docline.TextLayerWord(50.0, 700.0, 90.0, 720.0, "被告人张三丰")],
+            words=[docline.TextLayerWord(50.0, 700.0, 90.0, 720.0, ("被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰"))],
         )
     ])
     monkeypatch.setattr(source.docline, "sample_ink_alignment", lambda *_a, **_k: 0.18)
@@ -639,7 +650,7 @@ def test_volume_level_gates_are_fail_able(monkeypatch, tmp_path):
     path.write_bytes(b"%PDF-1.4\n")
     boxes, memo = asyncio.run(
         source.boxes_for_page(
-            file_id="g" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=["PERSON"]
+            file_id="g" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=[_person_type()]
         )
     )
     assert boxes is None and memo is None, "失败块必须让整卷回落旧路径"
@@ -656,7 +667,7 @@ def test_volume_level_gates_are_fail_able(monkeypatch, tmp_path):
     source.reset_memo()
     boxes, memo = asyncio.run(
         source.boxes_for_page(
-            file_id="h" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=["PERSON"]
+            file_id="h" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=[_person_type()]
         )
     )
     assert boxes is None and memo is None, "覆盖率 0.40 < 0.90 必须回落旧路径"
@@ -768,3 +779,46 @@ def test_map_values_word_lookup_is_sublinear_in_document_size() -> None:
     assert counting.reads < bound, (
         f"词表被读取 {counting.reads} 次（上限 {bound}）⇒ 命中定位退化成了重扫全部词"
     )
+
+
+def test_truncated_ratio_gate_falls_back(monkeypatch, tmp_path):
+    """门⑥ 四轮 Important#1：截断过半必须让整卷回落，且阈值出自配置（双向验证）。"""
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+    monkeypatch.setattr(source.docline, "extract_text_layer_pages", lambda *_a, **_k: [
+        docline.TextLayerPage(
+            no=1, width=595.0, height=842.0,
+            words=[docline.TextLayerWord(50.0, 700.0, 90.0, 720.0, ("被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰被告人张三丰"))],
+        )
+    ])
+    monkeypatch.setattr(source.docline, "sample_ink_alignment", lambda *_a, **_k: 0.18)
+
+    async def _truncated(*_a, **_k):
+        return docline.DocLineResult(
+            pages=1, chunks=10, chunk_chars=2_000, stream_chars=100, layer_chars=100,
+            covered_chars=100, entities=[], ner_calls=20, residual_calls=0,
+            truncated_chunks=6, http_errors=0, seconds=0.1, failed_chunks=0,
+            map_failures=[],
+        )
+
+    monkeypatch.setattr(source.docline, "run_document_ner", _truncated)
+    path = tmp_path / "t.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setattr(settings, "TEXT_LAYER_MAX_TRUNCATED_RATIO", 0.50)
+    boxes, memo = asyncio.run(
+        source.boxes_for_page(
+            file_id="j" * 8, snapshot=_snapshot(str(path)), page=1,
+            ocr_has_types=[_person_type()],
+        )
+    )
+    assert boxes is None and memo is None, "6/10 截断超过 0.50 必须回落旧路径"
+
+    # 阈值放宽到 0.90 ⇒ 同一输入必须能接管（证明门真的读配置而不是硬编码）
+    monkeypatch.setattr(settings, "TEXT_LAYER_MAX_TRUNCATED_RATIO", 0.90)
+    source.reset_memo()
+    boxes2, memo2 = asyncio.run(
+        source.boxes_for_page(
+            file_id="j" * 8, snapshot=_snapshot(str(path)), page=1,
+            ocr_has_types=[_person_type()],
+        )
+    )
+    assert memo2 is not None and memo2.get("truncated_chunks") == 6, "放宽阈值后应接管并记录截断数"
