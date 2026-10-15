@@ -1214,13 +1214,14 @@ class TestCliReportCompleteness:
         base = tmp_path / "k1.json"
         base.write_text(json.dumps({"mode": {"page_concurrency": 1},
                                     "summary": {"file_wall_s": {"p50": 180.0}}}), encoding="utf-8")
-        ok = cli._speed_baseline_checks(str(base), mode={"page_concurrency": 3},
+        doc = cli._load_baseline(str(base))
+        ok = cli._speed_baseline_checks(doc, mode={"page_concurrency": 3},
                                         summary={"file_wall_s": {"p50": 90.0}})
         assert _check_status(ok, "D1.anchor_ratio") == "PASS", ok
-        bad = cli._speed_baseline_checks(str(base), mode={"page_concurrency": 3},
+        bad = cli._speed_baseline_checks(doc, mode={"page_concurrency": 3},
                                          summary={"file_wall_s": {"p50": 130.0}})
         assert _check_status(bad, "D1.anchor_ratio") == "FAIL", bad
-        same = cli._speed_baseline_checks(str(base), mode={"page_concurrency": 1},
+        same = cli._speed_baseline_checks(doc, mode={"page_concurrency": 1},
                                          summary={"file_wall_s": {"p50": 95.0}})
         assert _check_status(same, "D1.anchor_ratio") == "UNVERIFIED", same  # 同 k ⇒ 比值无判别力
         assert cli._speed_baseline_checks(None, mode={"page_concurrency": 3}, summary={}) == []
@@ -1230,19 +1231,22 @@ class TestCliReportCompleteness:
         cli = boot.load("cli.py")
         bench = tmp_path / "bench.json"
         bench.write_text(json.dumps({"pages_per_min": 2.4, "page_ms_p50": 24900.0}), encoding="utf-8")
-        ok = cli._speed_baseline_checks(str(bench), mode={"page_concurrency": 2},
+        bench_doc = cli._load_baseline(str(bench))
+        ok = cli._speed_baseline_checks(bench_doc, mode={"page_concurrency": 2},
                                         summary={"pages_per_min": 2.5, "page_ms_p50": 25000.0})
         assert _check_status(ok, "D7.parity") == "PASS", ok
-        off = cli._speed_baseline_checks(str(bench), mode={"page_concurrency": 2},
+        off = cli._speed_baseline_checks(bench_doc, mode={"page_concurrency": 2},
                                          summary={"pages_per_min": 4.0, "page_ms_p50": 25000.0})
         assert _check_status(off, "D7.parity") == "FAIL", off
-        alien = cli._speed_baseline_checks(str(bench), mode={"page_concurrency": 2},
+        alien = cli._speed_baseline_checks(bench_doc, mode={"page_concurrency": 2},
                                           summary={"pages_per_min": None, "page_ms_p50": None})
         assert _check_status(alien, "D7.parity") == "UNVERIFIED", alien
         broken = tmp_path / "broken.json"
         broken.write_text("{not json", encoding="utf-8")
-        with pytest.raises(cli._Usage):  # CLI 转 exit 2（前置错误不得冒 traceback）
-            cli._speed_baseline_checks(str(broken), mode={}, summary={})
+        with pytest.raises(cli._Usage):  # 测量前就失败（CLI 转 exit 2），不冒 traceback
+            cli._load_baseline(str(broken))
+        with pytest.raises(cli._Usage):
+            cli._load_baseline(str(tmp_path / "missing.json"))
 
     def test_self_sufficiency_names_missing_fields(self):
         """I16：报告自足性缺项必须点名 FAIL；warm 轮不要求 cold_evidence。"""

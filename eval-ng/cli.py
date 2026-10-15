@@ -467,6 +467,7 @@ def _run_speed(args: argparse.Namespace) -> int:
             arm = sk_arms.load_arm(args.arm)
             evidence = sk_driver.load_round_evidence(args.round_evidence)
             corpus, exam_view = _load_speed_corpus(args)
+            baseline_doc = _load_baseline(args.baseline)  # 测量前 fail-fast（别跑完才发现基线不可读）
         except OSError as exc:
             # 文件不存在/不可读是**用法前置错误**（D6②：明确报错非 0），不得冒泡成 traceback，
             # 也不得混进「装置不可得 ⇒ BLOCKED」把作者的用法错误洗成被测系统问题。
@@ -732,7 +733,7 @@ def _run_speed(args: argparse.Namespace) -> int:
         mode=mode, arm=sk_arms.arm_report_block(arm), summary=summary, evidence=evidence,
     ))
     # `--baseline` 对照判据（D1① 两臂比值 / D7 parity）依赖 mode 与 summary，故在装配后追加
-    checks.extend(_speed_baseline_checks(args.baseline, mode=mode, summary=summary))
+    checks.extend(_speed_baseline_checks(baseline_doc, mode=mode, summary=summary))
     report = sk_report.build_report(
         exam=exam_view, mode=mode, arm=sk_arms.arm_report_block(arm), rounds=rounds,
         cold_evidence=list(evidence.get("rounds") or []), summary=summary, cache=cache,
@@ -893,21 +894,27 @@ def _speed_anchor_observation(arm: dict, summary: dict) -> dict:
     }}
 
 
-def _speed_baseline_checks(path: str | None, *, mode: dict, summary: dict) -> list[dict]:
-    """`--baseline` 的两类真判据（②冷评审 I16：AC1 比值与 D7 parity 都要有机器落点）。
-
-    - 基线是**本模块的另一份** speed 报告（含 mode+summary）⇒ **D1①** 两臂 k 中位墙钟比值 ≥1.8×；
-    - 基线是 `benchmark_throughput.py` 的产物（顶层 pages_per_min + page_ms_p50）⇒ **D7** 口径差 ≤20%。
-    """
+def _load_baseline(path: str | None) -> dict | None:
+    """测量**之前**就校验 `--baseline` 可读（否则跑完一轮才发现前置错，白烧几分钟机器）。"""
     if not path:
-        return []
+        return None
     try:
         doc = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise _Usage(f"--baseline 报告不可读：{exc}") from exc
     if not isinstance(doc, dict):
         raise _Usage("--baseline 必须是 JSON 对象")
+    return doc
 
+
+def _speed_baseline_checks(doc: dict | None, *, mode: dict, summary: dict) -> list[dict]:
+    """`--baseline` 的两类真判据（②冷评审 I16：AC1 比值与 D7 parity 都要有机器落点）。
+
+    - 基线是**本模块的另一份** speed 报告（含 mode+summary）⇒ **D1①** 两臂 k 中位墙钟比值 ≥1.8×；
+    - 基线是 `benchmark_throughput.py` 的产物（顶层 pages_per_min + page_ms_p50）⇒ **D7** 口径差 ≤20%。
+    """
+    if doc is None:
+        return []
     mine_p50 = (summary.get("file_wall_s") or {}).get("p50")
     if isinstance(doc.get("mode"), dict) and isinstance(doc.get("summary"), dict):
         other_mode, other_summary = doc["mode"], doc["summary"]
