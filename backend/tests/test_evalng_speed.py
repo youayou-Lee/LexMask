@@ -1573,7 +1573,10 @@ class TestPublicTreeScanner:
 
     def test_compound_credential_keys_are_caught(self):
         """R6 反向钉子：凭据词作**后缀**/camelCase 的复合键曾整类漏网（`\\b` 在 `_` 前后不成边界）。"""
-        creds = {"credential_literal", "credential_flag", "credential_bare"}
+        creds = {
+            "credential_literal", "credential_flag", "credential_bare",
+            "bearer", "api_key", "url_credential", "basic_auth",
+        }
         for probe in (
             "api_secret=Zz9Kk2Lm",  # public-tree-scan: ignore-line
             'db_password="Hunter2Hunter2"',  # public-tree-scan: ignore-line
@@ -1597,6 +1600,9 @@ class TestPublicTreeScanner:
             '"client_secret": "Ab12Cd34"',  # public-tree-scan: ignore-line
             "{'db_password': 'Qq11Ww22'}",  # public-tree-scan: ignore-line
             '"access_token": "ghp_abcdefghijklmnopqrstuvwxyz0123456"',  # public-tree-scan: ignore-line
+            # 与键名无关的令牌形态（⑧期预前加固）：URL 内联凭据 / HTTP Basic
+            "postgresql://eval_user:Synthetic-Pass!123@127.0.0.1:5432/app",  # public-tree-scan: ignore-line
+            "auth Basic U3ludGhldGljLVBhc3MhMTIz",  # public-tree-scan: ignore-line
         ):
             assert self._rules(probe) & creds, probe
 
@@ -1611,6 +1617,9 @@ class TestPublicTreeScanner:
             'payload = {"PP-OCRv6": 1}', "max_tokens=4000", "monkey = 'abc12345'",
             # 引号键（dict / JSON / YAML）的反例：元数据类型名 / cross-origin 这类非凭据值
             '{"token_type": "refresh_token"}', '{"credentials": "same-origin"}',
+            # URL / Basic 形态的反例：无凭据的普通 URL、文档里的 Basic 字样
+            "https://example.com/api/v1/jobs", "http://127.0.0.1:8000/health",
+            "Basic Auth is documented", "db_url: str = os.environ['DATABASE_URL']",
             # 值形状的真正边界：含分隔符/JSON 片段/CJK 文案（即便带数字）也不是口令
             'key = "abc=123def"', "value = 'x{1}y2z9'", 'data = "密码1错误2，请重试"',
             # R7-1/R8-1 反例：注解（含联合/泛型）形态下的 env 读法 / 占位词 / 代码值

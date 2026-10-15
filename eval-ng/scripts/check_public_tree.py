@@ -79,11 +79,15 @@ PLACEHOLDER_SUBSTRINGS = (
 CODE_VALUE_PREFIXES = (
     "settings.", "os.", "self.", "cls.", "config.", "request.", "args.", "env.", "params.", "kwargs.",
 )
-# 值本身就是令牌形态（与键名无关）：`Bearer <长串>`、厂商前缀密钥
+# 值本身就是令牌形态（与键名无关）：`Bearer <长串>`、厂商前缀密钥、URL 内联凭据、HTTP Basic
 TOKEN_RES = (
     ("bearer", re.compile(r"\bBearer\s+[A-Za-z0-9\-._~+/]{24,}")),
     # 必须带厂商分隔符，否则 `skeletonButtonSize` / `skippedNoCandidates` 这类标识符会误报
     ("api_key", re.compile(r"\b(?:sk|rk|ghp|gho|ghs|github_pat)-[A-Za-z0-9_-]{16,}\b|AKIA[0-9A-Z]{16}")),
+    # 连接串内联凭据（`协议://用户:口令@主机` 形态；口令 ≥8 字符，避免占位/变量形态）
+    ("url_credential", re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]{1,40}:(?P<urlsecret>[^\s/@]{8,})@")),
+    # HTTP Basic 的 base64 凭据（≥16 字符，且必须长到不像普通词）
+    ("basic_auth", re.compile(r"\bBasic\s+(?P<basicauth>[A-Za-z0-9+/]{16,}={0,2})")),
 )
 _WORD_SPLIT_RE = re.compile(r"[^A-Za-z0-9]+")
 _CAMEL_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+")
@@ -209,6 +213,9 @@ SELF_TEST_BAD = (
     # R7-1 形态：带类型注解的赋值（注解冒号会吃掉值位置，`str` 被当值 ⇒ 整类漏网）
     "cfg client_secret: str = \"Ab12Cd34\" "  # public-tree-scan: ignore-line
     'api_key: str | None = "Ab12Cd34"'  # public-tree-scan: ignore-line,
+    # 与键名无关的令牌形态：URL 内联凭据与 HTTP Basic（值均为合成串）
+    "db postgresql://eval_user:Synthetic-Pass!123@127.0.0.1:5432/app "  # public-tree-scan: ignore-line
+    "auth Basic U3ludGhldGljLVBhc3MhMTIz"  # public-tree-scan: ignore-line
 
 )
 SELF_TEST_CLEAN = (
@@ -228,6 +235,14 @@ def _is_public_ip(ip: str) -> bool:
     return not PRIVATE_IP_RE.match(ip)
 
 
+# ── 凭据面覆盖边界（⑦⑧冷评审反复追问的口径，明写以免「静默盲区」）────────────────────
+#   覆盖：普通赋值 `n = "v"`、带类型注解赋值 `n: Ann = "v"`（含 PEP 604 `|`、泛型、前向引用）、
+#         引号键（JSON/YAML/dict）、`--flag <字面量>`、无引号字母数字混合值、Bearer / 厂商前缀密钥 /
+#         URL 内联凭据 / HTTP Basic。
+#   不覆盖（设计边界，非静默盲区）：① 编码/拼接/运行时构造的口令（如 base64 常量、`"a"+"b"`、
+#         f-string 插值——后者按模板豁免）；② 跨行材料（PEM 私钥正文逐行 `-`，形状判定视为分隔符）；
+#         ③ 仅在密钥库/环境/凭据文件中出现、代码内无字面量的凭据；④ 长度 <8 或纯占位词的值。
+#   值形状判定要求「含数字或非字母数字符号」且非分隔符/JSON 片段/CJK 文案/类型名/ID 形态。
 def load_denylist(path: str | None) -> list[str]:
     if not path:
         return []
@@ -250,7 +265,7 @@ def credential_findings(text: str) -> list[tuple[str, str]]:
 
     规则名沿用既有三态：`credential_literal`（键名 + 引号字面量）、`credential_flag`
     （`--flag` 后跟引号字面量）、`credential_bare`（键名 + 无引号字母数字混合值）；
-    另有 `bearer` / `api_key` 两条与键名无关的令牌形态。
+    另有 `bearer` / `api_key` / `url_credential` / `basic_auth` 四条与键名无关的令牌形态。
     """
     findings: list[tuple[str, str]] = []
     for rule, regex in TOKEN_RES:
@@ -367,7 +382,7 @@ def self_test(denylist: list[str] | None = None) -> int:
                       allow_prefixes=[])
     rules = {line.split("[", 1)[1].split("]", 1)[0] for line in bad}
     required = {
-        "public_ip", "abs_path", "win_path", "bearer",
+        "public_ip", "abs_path", "win_path", "bearer", "url_credential", "basic_auth",
         "credential_literal", "credential_flag", "credential_bare", "denylist",
     }
     missing = required - rules
