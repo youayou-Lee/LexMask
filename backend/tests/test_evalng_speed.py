@@ -451,6 +451,21 @@ class TestReport:
         ok = {"rounds": [{"round": 2, "agg": {"pages_measured": 2}}]}
         assert report.numeric_whitelist_errors(ok) == []
 
+    def test_whitelist_allows_observations_anchor_band_only(self):
+        """P4 观测里的锚点墙钟秒数放行；同子树里换个名字（哪怕是同样的数）必须被点名。
+
+        ④云门实测：`observations.anchor_band.declared_p50_s` 是我加 P4 观测时漏放的**自己人**，
+        被自家闸门抓成 FAIL（闸门有效性的现场证明）。这里把「只放行两条具名路径」钉死。
+        """
+        doc = {"observations": {"anchor_band": {"declared_p50_s": 198.13, "measured_p50_s": 217.172,
+                                                "out_of_band": False, "deviation": "9.6%"}}}
+        assert report.numeric_whitelist_errors(doc) == []
+        doc["observations"]["anchor_band"]["f1"] = 0.99
+        errors = report.numeric_whitelist_errors(doc)
+        assert any("f1" in err for err in errors), errors
+        doc2 = {"observations": {"anchor_band": {"measured_p50_s": 217.172, "p50_ms": 217172.0}}}
+        assert any("p50_ms" in err for err in report.numeric_whitelist_errors(doc2))
+
     def test_whitelist_allows_rejected_http_status(self):
         """D6③ 的拒收证据（HTTP 状态码）是声明载体，必须放行；同位置的新增指标仍须被抓。"""
         doc = {"rounds": [{"rejected_items": [

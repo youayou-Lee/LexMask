@@ -107,6 +107,10 @@ _NUMERIC_ALLOW_RES = tuple(re.compile(pattern) for pattern in (
     r"^rounds\[\d+\]\.batch\.(recognition_page_duration_sum_ms|recognition_wall_ms)$",
     r"^rounds\[\d+\]\.batch\.(recognition_parallelism_ratio|page_ms_p50|pages_per_min)$",
     r"^rounds\[\d+\]\.batch\.item_statuses\.[^.]+$",
+    # ── P4 观测（D1 锚点绝对带） ─────────────────────────────────────────
+    # ④云门实测：这两条是**我自己的新代码**被自己的白名单抓出来的（闸门有效）。
+    # 只放行两条墙钟秒数键；不许写 `observations\..*` 通配，否则给「改名绕过」开后门。
+    r"^observations\.anchor_band\.(declared_p50_s|measured_p50_s)$",
 ))
 # 质量类键名：出现（无论数值或字符串）即 FAIL
 QUALITY_KEY_RE = re.compile(
