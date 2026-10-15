@@ -74,6 +74,41 @@ def exam_summary(rows: list[dict]) -> dict:
     }
 
 
+def build_evalng_exam(rows: list[dict], exam_id: str,
+                      bucket_meta: dict | None = None) -> dict:
+    """考卷行 → eval-ng 考卷文档（``{"exam_id", "items": [...]}``）。
+
+    每页一题，``form=entity_table``，``gt={类型: [实体串, ...]}``（同页同名
+    实体保留重复——出现次数本身是 GT 信息，评分按条计）。``bucket_meta``
+    可选，随考卷写入报告（与 make_exam_from_t2 的桶说明同槽位）。
+    """
+    items = []
+    for r in rows:
+        gt: dict[str, list[str]] = {}
+        for e in r["entities"]:
+            gt.setdefault(e["type"], []).append(e["text"])
+        items.append({
+            "id": r["page"],
+            "exam_id": exam_id,
+            "form": "entity_table",
+            "text": r["text"],
+            "types": sorted(gt),
+            "gt": gt,
+        })
+    doc: dict = {"exam_id": exam_id, "items": items}
+    if bucket_meta:
+        doc["buckets"] = bucket_meta
+    return doc
+
+
+def write_evalng_exam(doc: dict, out_path: str | Path) -> None:
+    """写 eval-ng 考卷 JSON（单文件、非 jsonl——cli.load_exam_json 的入参形状）。"""
+    path = Path(out_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc, ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+
+
 def write_exam_jsonl(rows: list[dict], out_path: str | Path,
                      version: str) -> None:
     """写考卷 jsonl，每行带 ``gt_version``（口径变更可追溯，#56 惯例）。"""

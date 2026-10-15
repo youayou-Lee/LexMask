@@ -34,7 +34,8 @@ import re
 import sys
 from pathlib import Path
 
-from gt.export_exam import build_exam, exam_summary, write_exam_jsonl
+from gt.export_exam import build_evalng_exam, build_exam, exam_summary, \
+    write_evalng_exam, write_exam_jsonl
 from gt.quality_metrics import build_quality_report
 
 STAGES = ("render", "compare", "reduce", "gate", "export")
@@ -145,11 +146,14 @@ def reduce_and_gate_stages(results_dir: Path, out_dir: Path) -> dict:
 
 def export_stage(results_dir: Path, out_path: Path, types: set[str] | None,
                  version: str, keep_empty: bool = False,
-                 flow_scope_file: Path | None = None) -> tuple[list[dict], dict]:
+                 flow_scope_file: Path | None = None,
+                 evalng_out: Path | None = None) -> tuple[list[dict], dict]:
     """读 results/*.json → 剔流水域 → 类型勾选 → 写考卷 jsonl。
 
     流水域判定 = 内容签名（is_flow_page）∪ 显式清单（flow_scope_file，
     phase1-scope.json 的 flow_pages——内容判据难免漏网，人工圈定优先）。
+    ``evalng_out`` 给出时同步写一份 eval-ng 考卷 JSON（exam_id 取考卷文件
+    名去后缀），一条命令产出两种消费形态。
     """
     explicit: set[tuple[str, int]] = set()
     if flow_scope_file and Path(flow_scope_file).exists():
@@ -167,6 +171,10 @@ def export_stage(results_dir: Path, out_path: Path, types: set[str] | None,
     rows = build_exam(pages, types=types, exclude_pages=excluded,
                       keep_empty=keep_empty)
     write_exam_jsonl(rows, out_path, version=version)
+    if evalng_out is not None:
+        write_evalng_exam(
+            build_evalng_exam(rows, exam_id=Path(out_path).stem),
+            evalng_out)
     return rows, exam_summary(rows)
 
 
@@ -249,12 +257,15 @@ def main() -> int:
                              ensure_ascii=False))
         elif stage == "export":
             types = set(a.types) if a.types else None
+            evalng_path = eval_dir / f'exam-{a.exam_version}-evalng.json'
             rows, summary = export_stage(
                 results_dir, eval_dir / f"exam-{a.exam_version}.jsonl",
                 types=types, version=a.exam_version,
-                flow_scope_file=Path(a.flow_scope_file) if a.flow_scope_file else None)
+                flow_scope_file=Path(a.flow_scope_file) if a.flow_scope_file else None,
+                evalng_out=evalng_path)
             print(json.dumps({"stage": stage, **summary,
-                              "exam": str(eval_dir / f'exam-{a.exam_version}.jsonl')},
+                              "exam": str(eval_dir / f'exam-{a.exam_version}.jsonl'),
+                              "evalng_exam": str(evalng_path)},
                              ensure_ascii=False, indent=1))
     return 0
 

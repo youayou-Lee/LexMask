@@ -101,3 +101,68 @@ def test_summary_counts_by_type():
 def test_page_id_format_multi_digit():
     out = export_exam.build_exam([_page(page_no=11)])
     assert out[0]["page"] == "[卷]1.p_p12"
+
+
+# ---- eval-ng 考卷接线（Issue#93 落地后续：产线考卷直进统一评测引擎） ----------
+
+def test_build_evalng_exam_shape():
+    doc = export_exam.build_evalng_exam(
+        export_exam.build_exam([_page()]), exam_id="exam-v2")
+    assert doc["exam_id"] == "exam-v2"
+    assert len(doc["items"]) == 1
+    it = doc["items"][0]
+    assert it["id"] == "[卷]1.p_p1"
+    assert it["exam_id"] == "exam-v2"
+    assert it["form"] == "entity_table"
+    assert it["types"] == sorted(it["gt"])
+    assert it["gt"]["姓名"] == ["张三"]
+    assert it["text"].startswith("张三")
+
+
+def test_build_evalng_exam_keeps_duplicate_entities():
+    rows = [{"page": "a.p_p1", "pdf": "a.pdf", "page_no": 0, "text": "龙世辉、龙世辉",
+             "entities": [{"text": "龙世辉", "type": "姓名"},
+                          {"text": "龙世辉", "type": "姓名"}]}]
+    doc = export_exam.build_evalng_exam(rows, exam_id="x")
+    assert doc["items"][0]["gt"] == {"姓名": ["龙世辉", "龙世辉"]}
+
+
+def test_build_evalng_exam_bucket_meta_slot():
+    doc = export_exam.build_evalng_exam([], exam_id="x",
+                                        bucket_meta={"content": "产线考卷"})
+    assert doc["buckets"] == {"content": "产线考卷"}
+    assert export_exam.build_evalng_exam([], exam_id="x").get("buckets") is None
+
+
+def test_write_evalng_exam_roundtrip(tmp_path):
+    out = tmp_path / "sub" / "exam.json"
+    doc = export_exam.build_evalng_exam(
+        export_exam.build_exam([_page()]), exam_id="exam-v2")
+    export_exam.write_evalng_exam(doc, out)
+    loaded = json.loads(out.read_text(encoding="utf-8"))
+    assert loaded == doc
+
+
+def test_evalng_exam_loadable_by_evalng_cli(tmp_path, monkeypatch):
+    """接线契约：write_evalng_exam 的产物必须能被 eval-ng cli.load_exam_json 吃下。"""
+    evalng_dir = REPO / "eval-ng"
+    if not evalng_dir.exists():
+        pytest.skip("eval-ng 不在检出内")
+    # 目录名带连字符，按 cli.py 的自举方式注册包名 evalng
+    import sys as _sys
+    import types as _types
+    if "evalng" not in _sys.modules:
+        pkg = _types.ModuleType("evalng")
+        pkg.__path__ = [str(evalng_dir)]
+        _sys.modules["evalng"] = pkg
+    from evalng.engine.protocol import AnswerForm
+    from evalng.cli import load_exam_json
+    out = tmp_path / "exam.json"
+    export_exam.write_evalng_exam(
+        export_exam.build_evalng_exam(
+            export_exam.build_exam([_page(), _page(page_no=1)]), exam_id="exam-v2"),
+        out)
+    items = load_exam_json(out, "exam-v2")
+    assert len(items) == 2
+    assert all(i.form is AnswerForm.ENTITY_TABLE for i in items)
+    assert items[0].gt["金额"] == ["30000元"]
