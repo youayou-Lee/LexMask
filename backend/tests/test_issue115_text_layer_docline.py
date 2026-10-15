@@ -406,29 +406,62 @@ def test_thin_page_is_not_covered(monkeypatch, tmp_path):
     assert thin is None, "薄挂层页必须回落旧路径（该页的图像内容只能靠 OCR 拿到）"
 
 
-def test_tenant_regex_types_disable_docline(monkeypatch, tmp_path):
-    """评审 I-3：租户配了 regex 类型时不启用本链（保证层没有等价实现）。"""
+def test_regex_guarantee_layer_runs_on_document_stream():
+    """评审 I-3：regex 保证层必须在文档级链上补跑（旧链有 regex 回落）。
+
+    否则配置了正则类型的租户在覆盖页上会丢掉这些类型（静默漏检）。
+    """
+    pages = [_page(1, ["案号", "（2022）京0101刑初123号", "姓名", "张三"])]
+
+    class Client:
+        def ner(self, text, entity_types=None, **kwargs):
+            return {}
+
+    result = asyncio.run(
+        docline.run_document_ner(
+            pages,
+            ["姓名"],
+            has_client=Client(),
+            regex_types=[("CASE_NUMBER", r"刑初\d{1,6}号")],
+        )
+    )
+    types = {e.type for e in result.entities}
+    assert "CASE_NUMBER" in types, f"regex 类型必须被补进结果，实际 {types}"
+    cn = [e for e in result.entities if e.type == "CASE_NUMBER"]
+    assert cn and "刑初123号" in cn[0].value
+    # 框必须收紧到命中的那几个字（而不是整词涂掉）
+    assert (cn[0].bbox[2] - cn[0].bbox[0]) < 0.5, f"框被插值收紧了才对，实际 {cn[0].bbox}"
+
+
+def test_boxes_for_page_passes_tenant_regex_types_into_build(monkeypatch, tmp_path):
+    """接入层必须把租户 regex 类型传进整卷构建（而不是整卷禁用）。"""
     monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
     path = tmp_path / "scan.pdf"
     path.write_bytes(b"%PDF-1.4 stub")
     source.reset_memo()
-    called: list[int] = []
+    seen: list = []
 
-    monkeypatch.setattr(
-        source.docline, "extract_text_layer_pages",
-        lambda *a, **k: called.append(1) or [_page(1, _dense("张三"))],
-    )
-    boxes, memo = asyncio.run(
+    monkeypatch.setattr(source, "_regex_types", lambda owner: [("CASE_NUMBER", r"X\d+")])
+
+    async def fake_run(page_list, labels, *, has_client, regex_types=None, **kwargs):
+        seen.append(regex_types)
+        return docline.DocLineResult(
+            pages=1, chunks=1, chunk_chars=2000, stream_chars=10, layer_chars=8, covered_chars=10,
+            entities=[docline.DocLineEntity(1, "PERSON", "张三", (0.1, 0.2, 0.3, 0.4))],
+            ner_calls=1, truncated_chunks=0, http_errors=0, residual_calls=0, seconds=0.01,
+        )
+
+    monkeypatch.setattr(source.docline, "extract_text_layer_pages", lambda *a, **k: [_page(1, _dense("张三"))])
+    monkeypatch.setattr(source.docline, "sample_ink_alignment", lambda *a, **k: 0.18)
+    monkeypatch.setattr(source.docline, "run_document_ner", fake_run)
+
+    boxes, _ = asyncio.run(
         source.boxes_for_page(
-            file_id="r" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=None, owner_id=_RegexOwner()
+            file_id="g" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=None, owner_id=object()
         )
     )
-    assert boxes is None and memo is None
-    assert called == [], "有 regex 类型的租户不应触发整卷文本层构建"
-
-
-class _RegexOwner:
-    """桩：让 `entity_type_service.get_regex_types` 返回非空。"""
+    assert boxes is not None
+    assert seen == [[("CASE_NUMBER", r"X\d+")]], f"regex 类型必须透传，实际 {seen}"
 
 
 def test_block_errors_over_limit_fall_back_and_are_negative_cached(monkeypatch, tmp_path):

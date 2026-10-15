@@ -57,22 +57,25 @@ def _labels(ocr_has_types) -> list[str]:
 _NEGATIVE_TTL_SEC = 120.0
 
 
-def _tenant_has_regex_types(owner_id) -> bool:
-    """租户配了带 regex_pattern 的类型时**不启用**文档级链（Issue#115 评审 I-3）。
+def _regex_types(owner_id) -> list[tuple[str, str]]:
+    """租户启用的 regex 类型 (id, pattern) 清单（Issue#115 评审 I-3）。
 
-    regex 保证层（Issue#43）只实现在 OCR+HaS 链内（`_apply_regex_fallback`），文档级链
-    没有等价步骤。若照常启用，配置了正则类型的租户在覆盖页上会**丢掉这些类型**。
-    宁可整卷回落慢路径，也不接受静默漏检。
+    既有 OCR+HaS 链有 `_apply_regex_fallback` 保证层；文档级链必须在同一份流上
+    补跑同一批正则，否则配置了正则类型的租户会在覆盖页上漏检这些类型。
     """
     if owner_id is None:
-        return False
+        return []
     try:
         from app.services import entity_type_service as ets
 
-        return bool(ets.get_regex_types(owner_id))
-    except Exception as exc:  # noqa: BLE001 - 查不到就当作有，保守回落
+        return [
+            (str(item.id), str(item.regex_pattern))
+            for item in ets.get_regex_types(owner_id)
+            if getattr(item, "id", None) and getattr(item, "regex_pattern", None)
+        ]
+    except Exception as exc:  # noqa: BLE001 - 探不到就当作没有（与旧链同口径）
         logger.warning("text_layer_docline regex-type probe failed: %s", exc)
-        return True
+        return []
 
 
 def _file_fingerprint(path: str) -> str:
@@ -124,7 +127,13 @@ def _to_boxes(
     return boxes
 
 
-async def _build(file_id: str, snapshot: dict, labels: list[str], ocr_has_types) -> dict | None:
+async def _build(
+    file_id: str,
+    snapshot: dict,
+    labels: list[str],
+    ocr_has_types,
+    regex_types: list[tuple[str, str]] | None = None,
+) -> dict | None:
     path = str(snapshot.get("file_path") or "")
     if not path or not os.path.exists(path):
         return None
@@ -154,7 +163,9 @@ async def _build(file_id: str, snapshot: dict, labels: list[str], ocr_has_types)
         )
         return None
 
-    result = await docline.run_document_ner(pages, labels, has_client=has_client)
+    result = await docline.run_document_ner(
+        pages, labels, has_client=has_client, regex_types=regex_types
+    )
     max_errors = int(settings.TEXT_LAYER_MAX_BLOCK_ERRORS)
     if result.http_errors > max_errors:
         logger.warning(
@@ -224,15 +235,14 @@ async def boxes_for_page(
     """返回该页的文档级框与元信息；资格不符或出错时返回 `(None, None)`。"""
     if not settings.TEXT_LAYER_DOCLINE_ENABLED:
         return None, None
-    if _tenant_has_regex_types(owner_id):
-        logger.info("text_layer_docline skipped: tenant regex types file=%s", file_id[:8])
-        return None, None
     labels = _labels(ocr_has_types)
     if not labels:
         return None, None
+    regex_types = _regex_types(owner_id)
     knobs = (
         f"{settings.TEXT_LAYER_DOCLINE_CHUNK_CHARS}:{settings.TEXT_LAYER_DOCLINE_CHUNK_OVERLAP}:"
-        f"{settings.TEXT_LAYER_DOCLINE_CONCURRENCY}:{settings.TEXT_LAYER_PAGE_MIN_CHARS}"
+        f"{settings.TEXT_LAYER_DOCLINE_CONCURRENCY}:{settings.TEXT_LAYER_PAGE_MIN_CHARS}:"
+        f"{';'.join(f'{tid}={pat}' for tid, pat in regex_types)}"
     )
     key = (
         f"{file_id}|{_file_fingerprint(str(snapshot.get('file_path') or ''))}"
@@ -250,7 +260,7 @@ async def boxes_for_page(
                 memo = None
             if memo is None:
                 try:
-                    built = await _build(file_id, snapshot, labels, ocr_has_types)
+                    built = await _build(file_id, snapshot, labels, ocr_has_types, regex_types)
                 except _TransientIneligible as exc:
                     built = None
                     marker = {"unusable": True, "retry_at": time.monotonic() + _NEGATIVE_TTL_SEC,

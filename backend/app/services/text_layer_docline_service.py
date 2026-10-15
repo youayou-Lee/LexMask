@@ -333,8 +333,15 @@ def map_values(
     stream: str,
     word_spans: list[_WordSpan],
     values_by_type: dict[str, set[str]],
+    *,
+    unconstrained_types: set[str] | None = None,
 ) -> tuple[list[DocLineEntity], list[dict]]:
-    """值 → (页号, 归一化并集框)。返回 (实体, 映射失败清单)。"""
+    """值 → (页号, 归一化并集框)。返回 (实体, 映射失败清单)。
+
+    `unconstrained_types` 里的类型**不做词边界校验**（regex 保证层用：正则命中
+    天然可能落在词中间，用 `\d{3}号` 这类模式时不该被判掉）。这类匹配的框会按
+    词内字符比例**插值**收紧到命中的那几个字，而不是整词涂掉。
+    """
     normalized, index_map = _normalized_stream(stream)
     page_meta = {page.no: page for page in pages}
     word_starts = {span.start for span in word_spans}
@@ -344,34 +351,49 @@ def map_values(
     seen: set[tuple[int, str, str, int, int]] = set()
     for type_id, values in values_by_type.items():
         for value in sorted(values):
-            spans = find_value_spans(
-                normalized,
-                index_map,
-                value,
-                word_starts=word_starts,
-                word_ends=word_ends,
-                stream=stream,
-            )
+            if unconstrained_types and type_id in unconstrained_types:
+                spans = find_value_spans(normalized, index_map, value)
+            else:
+                spans = find_value_spans(
+                    normalized,
+                    index_map,
+                    value,
+                    word_starts=word_starts,
+                    word_ends=word_ends,
+                    stream=stream,
+                )
             if not spans:
                 failures.append({"type": type_id, "value": value, "reason": "not_found_in_stream"})
                 continue
             hits = 0
             for start, end in spans:
-                per_page: dict[int, list[TextLayerWord]] = {}
+                # 收集命中词，并记录命中字符在词内的偏移：用于把框**收紧**到真正的
+                # 那几个字（否则 `（2022）京0101刑初123号` 这种长「词」会被整块涂掉）。
+                per_page: dict[int, list[tuple[TextLayerWord, int, int]]] = {}
                 for span in word_spans:
                     if span.end <= start or span.start >= end:
                         continue
-                    per_page.setdefault(span.page, []).append(span.word)
+                    off0 = max(0, start - span.start)
+                    off1 = min(len(span.word.text), end - span.start)
+                    per_page.setdefault(span.page, []).append((span.word, off0, off1))
                 if not per_page:
                     continue
-                for page_no, words in per_page.items():
+                for page_no, hits_words in per_page.items():
                     meta = page_meta.get(page_no)
                     if meta is None or meta.width <= 0 or meta.height <= 0:
                         continue
-                    x0 = min(w.x0 for w in words)
-                    y0 = min(w.y0 for w in words)
-                    x1 = max(w.x1 for w in words)
-                    y1 = max(w.y1 for w in words)
+                    xs: list[float] = []
+                    for word, off0, off1 in hits_words:
+                        chars = max(1, len(word.text))
+                        span_w = word.x1 - word.x0
+                        xs.append(word.x0 + span_w * off0 / chars)
+                        xs.append(word.x0 + span_w * off1 / chars)
+                    x0 = min(min(xs), min(w.x0 for w, _a, _b in hits_words))
+                    x1 = max(max(xs), max(w.x0 for w, _a, _b in hits_words))
+                    x0 = min(x0, min(w.x1 for w, _a, _b in hits_words))
+                    x1 = max(x1, max(w.x1 for w, _a, _b in hits_words))
+                    y0 = min(w.y0 for w, _a, _b in hits_words)
+                    y1 = max(w.y1 for w, _a, _b in hits_words)
                     bbox = (
                         max(0.0, x0 / meta.width),
                         max(0.0, y0 / meta.height),
@@ -425,6 +447,7 @@ async def run_document_ner(
     overlap: int | None = None,
     concurrency: int | None = None,
     residual_pass: bool = True,
+    regex_types: list[tuple[str, str]] | None = None,
 ) -> DocLineResult:
     """文档级 NER 主入口。`labels` 是 HaS 提示词标签（中文，见 has_text_payload）。"""
     started = time.perf_counter()
@@ -433,7 +456,7 @@ async def run_document_ner(
     limit = int(concurrency if concurrency is not None else settings.TEXT_LAYER_DOCLINE_CONCURRENCY)
     semaphore = asyncio.Semaphore(max(1, limit))
     values_by_type: dict[str, set[str]] = {label: set() for label in labels}
-    stats = {"calls": 0, "residual_calls": 0, "truncated": 0, "http_errors": 0}
+    stats = {"calls": 0, "residual_calls": 0, "truncated": 0, "http_errors": 0, "regex_values": 0}
     lock = asyncio.Lock()
 
     async def ask(text: str, use_labels: list[str]) -> dict[str, list[str]]:
@@ -488,7 +511,28 @@ async def run_document_ner(
 
     await asyncio.gather(*(one_chunk(chunk) for chunk in chunks))
 
-    entities, failures = map_values(pages, stream, word_spans, values_by_type)
+    # **regex 保证层**（Issue#115 评审 I-3）：租户配置的 regex 类型在既有 OCR+HaS 链里
+    # 由 `_apply_regex_fallback` 兜底；文档级链没有那一步，若不在此补上，配置了正则类型的
+    # 租户会在覆盖页上**丢掉这些类型**（漏检）。这里直接在整卷流上跑同一批正则，命中的值
+    # 交给同一套回映（含词边界校验）出框，语义与旧链一致。
+    regex_type_ids: set[str] = set()
+    for type_id, pattern in regex_types or []:
+        if not type_id or not pattern:
+            continue
+        try:
+            hits = {m.group(0).strip() for m in re.finditer(pattern, stream)}
+        except re.error as exc:
+            logger.warning("docline regex type %s has bad pattern: %s", type_id, exc)
+            continue
+        hits.discard("")
+        if hits:
+            values_by_type.setdefault(type_id, set()).update(hits)
+            stats["regex_values"] = int(stats.get("regex_values", 0)) + len(hits)
+            regex_type_ids.add(type_id)
+
+    entities, failures = map_values(
+        pages, stream, word_spans, values_by_type, unconstrained_types=regex_type_ids
+    )
     covered = _union_coverage(chunks, len(stream))
     layer_chars = sum(len(w.text) for span in word_spans for w in [span.word])
     return DocLineResult(
