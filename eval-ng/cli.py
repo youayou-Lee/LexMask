@@ -662,7 +662,6 @@ def _run_speed(args: argparse.Namespace) -> int:
     _needs, timing_status, why = sk_driver.timing_rounds_needed(wall_stats)
     checks.append({"id": "D2.timing_rounds", "status": timing_status,
                    "detail": why, "value": wall_stats.get("n")})
-    checks.extend(_speed_parity_checks(args.baseline, summary))
     checks.extend(sk_driver.quality_sidecar_check(_merge_sidecars(rounds), rounds))
     if abort_reason:
         checks.append({"id": "D1.aborted", "status": "BLOCKED", "detail": abort_reason, "value": None})
@@ -914,7 +913,9 @@ def _speed_baseline_checks(doc: dict | None, *, mode: dict, summary: dict) -> li
     - 基线是 `benchmark_throughput.py` 的产物（顶层 pages_per_min + page_ms_p50）⇒ **D7** 口径差 ≤20%。
     """
     if doc is None:
-        return []
+        return [{"id": "D7.parity", "status": "UNVERIFIED", "value": None,
+                 "detail": ("未给 --baseline：本模块另一臂报告 ⇒ D1① 比值；"
+                            "benchmark_throughput.py 产物 ⇒ D7 parity（两者都由本条出口判）")}]
     mine_p50 = (summary.get("file_wall_s") or {}).get("p50")
     if isinstance(doc.get("mode"), dict) and isinstance(doc.get("summary"), dict):
         other_mode, other_summary = doc["mode"], doc["summary"]
@@ -930,11 +931,15 @@ def _speed_baseline_checks(doc: dict | None, *, mode: dict, summary: dict) -> li
                      "detail": (f"k={min(k_mine, k_other)} 中位墙钟 {float(slow):.3f}s ÷ "
                                 f"k={max(k_mine, k_other)} {float(fast):.3f}s = {ratio:.3f}×"
                                 f"（阈值 ≥{ANCHOR_RATIO_MIN}×）"),
-                     "value": ratio}]
+                     "value": ratio},
+                    {"id": "D7.parity", "status": "UNVERIFIED", "value": None,
+                     "detail": "基线是本模块另一臂报告（用于 D1① 比值）；D7 parity 需交 benchmark 产物"}]
         return [{"id": "D1.anchor_ratio", "status": "UNVERIFIED",
                  "detail": (f"两臂 k 相同或数据缺失（本 k={k_mine}／基线 k={k_other}，"
                             f"p50 本 {mine_p50}／基线 {other_p50}）⇒ 比值无判别力"),
-                 "value": None}]
+                 "value": None},
+                {"id": "D7.parity", "status": "UNVERIFIED", "value": None,
+                 "detail": "基线是本模块另一臂报告；D7 parity 需交 benchmark 产物"}]
 
     bench_ppm, bench_p50 = doc.get("pages_per_min"), doc.get("page_ms_p50")
     mine_ppm, mine_p50_ms = summary.get("pages_per_min"), summary.get("page_ms_p50")
@@ -1001,35 +1006,6 @@ def _speed_driver_key_checks(driver: str, summary: dict, rounds: list[dict], *,
                        "value": len(missing)})
         checks.extend(_batch_upload_checks(rounds, corpus_max_bytes))
     return checks
-
-
-def _speed_parity_checks(baseline_path: str | None, summary: dict) -> list[dict]:
-    """D7：(悬空能力) 与同实例 `benchmark_throughput.py` 报告比对 pages_per_min 与页 p50。"""
-    if not baseline_path:
-        return [{"id": "D7.parity", "status": "UNVERIFIED",
-                 "detail": "未给 --baseline（同实例 benchmark_throughput.py 报告）；parity 未验", "value": None}]
-    try:
-        base = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return [{"id": "D7.parity", "status": "FAIL",
-                 "detail": f"--baseline 不可读：{exc!r}", "value": None}]
-    pairs = [("pages_per_min", summary.get("pages_per_min"), base.get("pages_per_min")),
-             ("page_ms_p50", summary.get("page_ms_p50"), base.get("page_ms_p50"))]
-    errors: list[str] = []
-    compared = 0
-    for name, ours, theirs in pairs:
-        if not (isinstance(ours, (int, float)) and isinstance(theirs, (int, float))) or not theirs:
-            continue
-        compared += 1
-        diff = abs(float(ours) - float(theirs)) / float(theirs)
-        if diff > 0.20:
-            errors.append(f"{name}: 本模块 {ours} vs 基准 {theirs}（相对差 {diff:.1%} > 20%）")
-    if not compared:
-        return [{"id": "D7.parity", "status": "UNVERIFIED",
-                 "detail": "基准报告缺 pages_per_min / page_ms_p50，无可比字段", "value": 0}]
-    return [{"id": "D7.parity", "status": "PASS" if not errors else "FAIL",
-             "detail": ("pages_per_min 与页 p50 与基准差均 ≤20%" if not errors else "；".join(errors)),
-             "value": compared}]
 
 
 def _not_measured(args) -> list[str]:

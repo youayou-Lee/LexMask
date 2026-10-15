@@ -451,6 +451,23 @@ class TestReport:
         ok = {"rounds": [{"round": 2, "agg": {"pages_measured": 2}}]}
         assert report.numeric_whitelist_errors(ok) == []
 
+    def test_dedupe_checks_keeps_worst_status_per_id(self):
+        """同一 id 出现两条时按四态取最严（pre/post 两相臂检查天然重名）。
+
+        ④云门 k=3 实测：`D8.env_arm_no_file_write` 落了两次 PASS——机器消费者按 id 取值会歧义。
+        """
+        checks = [
+            {"id": "D8.env_arm_no_file_write", "status": "PASS", "detail": "pre 相"},
+            {"id": "D2.timing_rounds", "status": "PASS", "detail": "n=3"},
+            {"id": "D8.env_arm_no_file_write", "status": "FAIL", "detail": "post 相：臂改了工作树"},
+        ]
+        out = report.dedupe_checks(checks)
+        assert [c["id"] for c in out] == ["D8.env_arm_no_file_write", "D2.timing_rounds"]  # 保留首次位置
+        assert out[0]["status"] == "FAIL" and "post 相" in out[0]["detail"]
+        assert "同 id 2 条，取最严" in out[0]["detail"]
+        assert out[1]["detail"] == "n=3"  # 无重复的条目不得被改写
+        assert report.dedupe_checks([]) == []
+
     def test_whitelist_allows_observations_anchor_band_only(self):
         """P4 观测里的锚点墙钟秒数放行；同子树里换个名字（哪怕是同样的数）必须被点名。
 
@@ -473,6 +490,24 @@ class TestReport:
         assert report.numeric_whitelist_errors(doc) == []
         doc["rounds"][0]["rejected_items"][0]["bytes_sent"] = 9000000
         assert any("bytes_sent" in err for err in report.numeric_whitelist_errors(doc))
+
+    def test_d7_parity_has_single_exit(self):
+        """D7.parity 只有 `_speed_baseline_checks` 一个出口（④云门实测两套实现会落两条同 id）。"""
+        summary = {"file_wall_s": {"p50": 90.0}, "pages_per_min": 6.5, "page_ms_p50": 24000.0}
+        none_case = cli._speed_baseline_checks(None, mode={"page_concurrency": 3}, summary=summary)
+        assert [c["id"] for c in none_case] == ["D7.parity"] and none_case[0]["status"] == "UNVERIFIED"
+
+        arm_report = {"mode": {"page_concurrency": 1}, "summary": {"file_wall_s": {"p50": 217.0}}}
+        pair = cli._speed_baseline_checks(arm_report, mode={"page_concurrency": 3}, summary=summary)
+        assert [c["id"] for c in pair] == ["D1.anchor_ratio", "D7.parity"]
+        assert pair[0]["status"] == "PASS" and "D7 parity 需交 benchmark" in pair[1]["detail"]
+
+        bench = {"pages_per_min": 6.4, "page_ms_p50": 24500.0}
+        only_d7 = cli._speed_baseline_checks(bench, mode={"page_concurrency": 3}, summary=summary)
+        assert [c["id"] for c in only_d7] == ["D7.parity"] and only_d7[0]["status"] == "PASS"
+
+        far = {"pages_per_min": 1.0, "page_ms_p50": 24500.0}
+        assert cli._speed_baseline_checks(far, mode={"page_concurrency": 3}, summary=summary)[0]["status"] == "FAIL"
 
     def test_no_data_checks_downgraded_without_timing_rounds(self):
         """E1：装置不可得（0 计时轮）时「无数据可判」类 FAIL 降 BLOCKED；有轮次则保留 FAIL。"""
@@ -1239,7 +1274,10 @@ class TestCliReportCompleteness:
         same = cli._speed_baseline_checks(doc, mode={"page_concurrency": 1},
                                          summary={"file_wall_s": {"p50": 95.0}})
         assert _check_status(same, "D1.anchor_ratio") == "UNVERIFIED", same  # 同 k ⇒ 比值无判别力
-        assert cli._speed_baseline_checks(None, mode={"page_concurrency": 3}, summary={}) == []
+        # 无基线时也必须明确表态（单一出口：不再有第二套实现重复落 D7.parity）
+        none_case = cli._speed_baseline_checks(None, mode={"page_concurrency": 3}, summary={})
+        assert [c["id"] for c in none_case] == ["D7.parity"]
+        assert none_case[0]["status"] == "UNVERIFIED"
 
     def test_baseline_benchmark_report_gives_parity(self, tmp_path):
         """D7：`--baseline` 交 benchmark_throughput.py 产物 ⇒ 口径差 ≤20% 机判。"""

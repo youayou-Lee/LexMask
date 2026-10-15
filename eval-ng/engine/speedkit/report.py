@@ -481,6 +481,36 @@ def downgrade_no_data_checks(checks: list[dict], *, measured: bool) -> list[dict
     return out
 
 
+def dedupe_checks(checks: list[dict]) -> list[dict]:
+    """同一 `id` 只保留**最严**的一条（④云门实测：臂检查 pre/post 两相天然重名）。
+
+    报告是机器判据的载体：同一 id 出现两条时，外部消费者按 id 取值会拿到歧义答案
+    （k=3 实测 `D8.env_arm_no_file_write` 同时 PASS 两次）。这里按四态取最严、保留首次
+    出现的位置，并在 detail 末尾注明条数——**不新增数值字段**（白名单只放行具名路径）。
+    """
+    if not checks:
+        return []
+    order: list[str] = []
+    worst: dict[str, dict] = {}
+    counts: dict[str, int] = {}
+    for check in checks:
+        cid = check.get("id")
+        counts[cid] = counts.get(cid, 0) + 1
+        if cid not in worst:
+            order.append(cid)
+            worst[cid] = check
+            continue
+        if VERDICT_ORDER.index(str(check.get("status"))) < VERDICT_ORDER.index(str(worst[cid].get("status"))):
+            worst[cid] = check
+    out: list[dict] = []
+    for cid in order:
+        check = dict(worst[cid])
+        if counts[cid] > 1:
+            check["detail"] = f"{check.get('detail') or ''}（同 id {counts[cid]} 条，取最严）"
+        out.append(check)
+    return out
+
+
 def verdict_from_checks(checks: list[dict]) -> str:
     """四态归并：`FAIL` > `BLOCKED` > `UNVERIFIED` > `PASS`。
 
@@ -597,7 +627,9 @@ def finalize(report: dict, *, api_base: str, live_code_rev: str | None = None) -
     for err in collect.validate_criteria_refs(report):
         derived.append({"id": "D4.criteria_refs", "status": _status(err), "detail": err, "value": None})
 
-    checks = downgrade_no_data_checks(list(report.get("checks") or []), measured=measured) + derived
+    checks = dedupe_checks(
+        downgrade_no_data_checks(list(report.get("checks") or []), measured=measured) + derived
+    )
     report["checks"] = checks
     report["verdict"] = verdict_from_checks(checks)
     return report
