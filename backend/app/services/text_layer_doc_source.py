@@ -149,6 +149,26 @@ async def _build(
         logger.info("text_layer_docline skipped: no text layer file=%s", file_id[:8])
         return None
 
+    # **建流预算闸**（Issue#129 评审 I1）：整卷建流在**首个请求里同步跑完**，页数过多
+    # 会让该请求超过网关 `proxy_read_timeout`（`frontend/nginx.conf.template`，
+    # 已与前端 `VISION_TIMEOUT=900s` 对齐）而 **504** —— 且这条路径**不经过任何回落**
+    # （后端自己不 5xx，但网关会把连接掐掉，用户看到网关错误，重试才撞上 memo）。
+    # 预估超预算 ⇒ 本卷直接不接管，逐页走旧视觉线（每页有界，不会撑爆网关）。
+    budget = float(getattr(settings, "TEXT_LAYER_DOCLINE_MAX_BUILD_SEC", 0.0) or 0.0)
+    if budget > 0:
+        rate = float(getattr(settings, "TEXT_LAYER_DOCLINE_BUILD_SEC_PER_PAGE", 1.6) or 1.6)
+        estimated = len(pages) * rate
+        if estimated > budget:
+            logger.warning(
+                "text_layer_docline skipped: estimated build %.0fs > budget %.0fs "
+                "(%d pages) file=%s",
+                estimated,
+                budget,
+                len(pages),
+                file_id[:8],
+            )
+            return None
+
     ink = await asyncio.to_thread(docline.sample_ink_alignment, path, pages)
     metrics = quality.compute_metrics(
         [[word.text for word in page.words] for page in pages],
@@ -320,6 +340,8 @@ async def boxes_for_page(
     knobs = (
         f"{settings.TEXT_LAYER_DOCLINE_CHUNK_CHARS}:{settings.TEXT_LAYER_DOCLINE_CHUNK_OVERLAP}:"
         f"{settings.TEXT_LAYER_DOCLINE_CONCURRENCY}:{settings.TEXT_LAYER_PAGE_MIN_CHARS}:"
+        f"{settings.TEXT_LAYER_DOCLINE_MAX_BUILD_SEC}:"
+        f"{settings.TEXT_LAYER_DOCLINE_BUILD_SEC_PER_PAGE}:"
         f"{';'.join(f'{tid}={pat}' for tid, pat in regex_types)}"
     )
     key = (

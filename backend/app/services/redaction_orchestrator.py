@@ -549,7 +549,10 @@ async def detect_vision(
 
     vision_service = VisionService()
     # Issue#115：扫描件自带**可用**文本层时改走文档级链（整卷一次分块 NER），
-    # 本页 OCR 调用为 0；视觉特征（LA）仍走原逐页链。默认关，任何异常都退回旧路径。
+    # 本页 OCR 调用为 0；视觉特征（LA）仍走原逐页链。
+    # Issue#129 起**默认开启**（`TEXT_LAYER_DOCLINE_ENABLED=True`）：置 false 即整链回退
+    # 到 #115 之前的逐页视觉线；任何资格不符/异常**一律退回旧路径**（不 5xx）。
+    # 注意：`force=True` 只绕视觉缓存，**不**重跑文档级 memo（链结果是文件的函数）。
     if ocr_has_enabled:
         # 门⑥ 第三轮 Important#3：必须传**总开关生效后**的类型表，且管线被租户整体
         # 关掉时根本不调用本链——否则「用户关掉的 OCR+HaS」会被文档级链复活。
