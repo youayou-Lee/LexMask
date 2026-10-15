@@ -518,6 +518,9 @@ class Settings(BaseSettings):
     # 词框内暗像素中位数的下限。真卷实测 0.1183、随机空白 0.0000；
     # 合成对齐样本 0.1778、下移半行 0.0614 ⇒ 取 0.02 只拦「层与图完全不对齐」。
     TEXT_LAYER_MIN_INK_ALIGNMENT: float = 0.02
+    # 单「词」最大字数（C1 粘连层判据）：真实卷 60 页样本实测最长 48 字（999 分位 34），
+    # 而把整页文字拼成一个 word 的坏层会到 2000+。上限取 400，离真实分布有 8× 余量。
+    TEXT_LAYER_MAX_WORD_CHARS: int = 400
     # 墨迹采样页数（每卷取前 N 页做一次渲染采样）。
     TEXT_LAYER_INK_SAMPLE_PAGES: int = 3
     # **卷级覆盖率下限**（门⑥ 二轮 Important#5）：覆盖率 = 成功块长度**并集** /
@@ -730,6 +733,11 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_text_layer_max_map_failure_ratio(cls, v: float) -> float:
         return max(0.0, min(1.0, v))
+
+    @field_validator("TEXT_LAYER_MAX_WORD_CHARS")
+    @classmethod
+    def _validate_text_layer_max_word_chars(cls, v: int) -> int:
+        return max(40, min(100000, v))
 
     @field_validator("OCR_TEXT_BLOCK_CACHE_TTL_SEC")
     @classmethod

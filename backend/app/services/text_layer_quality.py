@@ -44,6 +44,7 @@ class LayerMetrics:
     avg_chars_per_page: float = 0.0
     avg_word_len: float = 0.0
     short_word_ratio: float = 0.0
+    max_word_len: int = 0
     line_count: int = 0
     avg_line_len: float = 0.0
     garbage_char_ratio: float = 0.0
@@ -57,6 +58,7 @@ class LayerMetrics:
             "avg_chars_per_page": round(self.avg_chars_per_page, 2),
             "avg_word_len": round(self.avg_word_len, 3),
             "short_word_ratio": round(self.short_word_ratio, 4),
+            "max_word_len": self.max_word_len,
             "line_count": self.line_count,
             "avg_line_len": round(self.avg_line_len, 2),
             "garbage_char_ratio": round(self.garbage_char_ratio, 4),
@@ -127,6 +129,7 @@ def compute_metrics(
         avg_chars_per_page=(char_count / page_count) if page_count else 0.0,
         avg_word_len=(sum(word_lengths) / word_count) if word_count else 0.0,
         short_word_ratio=(short_words / word_count) if word_count else 0.0,
+        max_word_len=(max(word_lengths) if word_lengths else 0),
         line_count=line_count,
         avg_line_len=(sum(line_lengths) / line_count) if line_count else 0.0,
         garbage_char_ratio=(garbage / char_count) if char_count else 0.0,
@@ -162,6 +165,12 @@ def classify(metrics: LayerMetrics) -> LayerVerdict:
     min_word_len = float(settings.TEXT_LAYER_MIN_AVG_WORD_LEN)
     if metrics.avg_word_len < min_word_len:
         reasons.append(f"avg_word_len:{metrics.avg_word_len:.2f}<{min_word_len:.2f}")
+
+    max_word_chars = int(settings.TEXT_LAYER_MAX_WORD_CHARS)
+    if metrics.max_word_len > max_word_chars:
+        # 粘连层信号：真实卷最长「词」实测 48 字（60 页样本 max=48），
+        # 而把整页 2000+ 字拼成单个 word 的坏层一眼可辨。
+        reasons.append(f"glued_words:{metrics.max_word_len}>{max_word_chars}")
 
     if metrics.ink_alignment is not None:
         min_ink = float(settings.TEXT_LAYER_MIN_INK_ALIGNMENT)
