@@ -1196,17 +1196,53 @@ class TestCliReportCompleteness:
         checks = arms.arm_checks(arm, phase="post", ignore_paths=[])
         assert _check_status(checks, "D8.patch_arm_revert") == "FAIL", checks
 
-    def test_anchor_reproduction_uses_declared_p50(self):
-        """I16：锚点复现的判定落点必须在引擎里（原来只能肉眼比归档数字）。"""
+    def test_anchor_band_is_observation_not_criterion(self):
+        """方案 §7：历史绝对带只做 P4 **观测**（out_of_band 标记），绝不进 checks、不改判定。"""
         cli = boot.load("cli.py")
         arm = {"name": "k3", "expect_p50_s": 86.65}
-        ok = cli._speed_anchor_check(arm, {"file_wall_s": {"p50": 92.9}})
-        assert ok[0]["status"] == "PASS", ok
-        bad = cli._speed_anchor_check(arm, {"file_wall_s": {"p50": 200.0}})
-        assert bad[0]["status"] == "FAIL", bad
-        absent = cli._speed_anchor_check({"name": "k3"}, {"file_wall_s": {"p50": 92.9}})
-        assert absent[0]["status"] == "UNVERIFIED", absent
-        assert cli._speed_anchor_check(arm, {"file_wall_s": {"p50": None}}) == []
+        obs = cli._speed_anchor_observation(arm, {"file_wall_s": {"p50": 92.9}})
+        assert obs["anchor_band"]["out_of_band"] is False, obs
+        assert obs["anchor_band"]["measured_p50_s"] == 92.9
+        out = cli._speed_anchor_observation(arm, {"file_wall_s": {"p50": 200.0}})
+        assert out["anchor_band"]["out_of_band"] is True, out
+        assert cli._speed_anchor_observation({"name": "k3"}, {"file_wall_s": {"p50": 92.9}}) == {}
+        assert cli._speed_anchor_observation(arm, {"file_wall_s": {"p50": None}}) == {}
+
+    def test_baseline_report_gives_anchor_ratio(self, tmp_path):
+        """I16/AC1：`--baseline` 交本模块另一臂报告 ⇒ D1① 比值 ≥1.8× 有机器落点。"""
+        cli = boot.load("cli.py")
+        base = tmp_path / "k1.json"
+        base.write_text(json.dumps({"mode": {"page_concurrency": 1},
+                                    "summary": {"file_wall_s": {"p50": 180.0}}}), encoding="utf-8")
+        ok = cli._speed_baseline_checks(str(base), mode={"page_concurrency": 3},
+                                        summary={"file_wall_s": {"p50": 90.0}})
+        assert _check_status(ok, "D1.anchor_ratio") == "PASS", ok
+        bad = cli._speed_baseline_checks(str(base), mode={"page_concurrency": 3},
+                                         summary={"file_wall_s": {"p50": 130.0}})
+        assert _check_status(bad, "D1.anchor_ratio") == "FAIL", bad
+        same = cli._speed_baseline_checks(str(base), mode={"page_concurrency": 1},
+                                         summary={"file_wall_s": {"p50": 95.0}})
+        assert _check_status(same, "D1.anchor_ratio") == "UNVERIFIED", same  # 同 k ⇒ 比值无判别力
+        assert cli._speed_baseline_checks(None, mode={"page_concurrency": 3}, summary={}) == []
+
+    def test_baseline_benchmark_report_gives_parity(self, tmp_path):
+        """D7：`--baseline` 交 benchmark_throughput.py 产物 ⇒ 口径差 ≤20% 机判。"""
+        cli = boot.load("cli.py")
+        bench = tmp_path / "bench.json"
+        bench.write_text(json.dumps({"pages_per_min": 2.4, "page_ms_p50": 24900.0}), encoding="utf-8")
+        ok = cli._speed_baseline_checks(str(bench), mode={"page_concurrency": 2},
+                                        summary={"pages_per_min": 2.5, "page_ms_p50": 25000.0})
+        assert _check_status(ok, "D7.parity") == "PASS", ok
+        off = cli._speed_baseline_checks(str(bench), mode={"page_concurrency": 2},
+                                         summary={"pages_per_min": 4.0, "page_ms_p50": 25000.0})
+        assert _check_status(off, "D7.parity") == "FAIL", off
+        alien = cli._speed_baseline_checks(str(bench), mode={"page_concurrency": 2},
+                                          summary={"pages_per_min": None, "page_ms_p50": None})
+        assert _check_status(alien, "D7.parity") == "UNVERIFIED", alien
+        broken = tmp_path / "broken.json"
+        broken.write_text("{not json", encoding="utf-8")
+        with pytest.raises(cli._Usage):  # CLI 转 exit 2（前置错误不得冒 traceback）
+            cli._speed_baseline_checks(str(broken), mode={}, summary={})
 
     def test_self_sufficiency_names_missing_fields(self):
         """I16：报告自足性缺项必须点名 FAIL；warm 轮不要求 cold_evidence。"""

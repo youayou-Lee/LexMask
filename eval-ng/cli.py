@@ -658,7 +658,6 @@ def _run_speed(args: argparse.Namespace) -> int:
                   f"{wall_agreement.get('max_abs_ratio_diff')}（阈值 ≤{sk_driver.WALL_AGREEMENT_TOLERANCE}）",
         "value": wall_agreement.get("max_abs_ratio_diff"),
     })
-    checks.extend(_speed_anchor_check(arm, summary))
     _needs, timing_status, why = sk_driver.timing_rounds_needed(wall_stats)
     checks.append({"id": "D2.timing_rounds", "status": timing_status,
                    "detail": why, "value": wall_stats.get("n")})
@@ -732,12 +731,15 @@ def _run_speed(args: argparse.Namespace) -> int:
     checks.extend(_speed_self_sufficiency_checks(
         mode=mode, arm=sk_arms.arm_report_block(arm), summary=summary, evidence=evidence,
     ))
+    # `--baseline` 对照判据（D1① 两臂比值 / D7 parity）依赖 mode 与 summary，故在装配后追加
+    checks.extend(_speed_baseline_checks(args.baseline, mode=mode, summary=summary))
     report = sk_report.build_report(
         exam=exam_view, mode=mode, arm=sk_arms.arm_report_block(arm), rounds=rounds,
         cold_evidence=list(evidence.get("rounds") or []), summary=summary, cache=cache,
         footnote=footnote, fingerprints=fingerprints, criteria_spec=SPEED_CRITERIA_PATHS,
         reproduce=reproduce, checks=checks, not_measured=_not_measured(args),
         started_at=started_at, finished_at=sk_report.utcnow(), has_gt=False, readiness=readiness,
+        observations=_speed_anchor_observation(arm, summary),
     )
     try:
         checks.extend(sk_arms.arm_checks(arm, phase="post", ignore_paths=ignore_paths))
@@ -867,26 +869,84 @@ SELF_SUFFICIENCY_ITEMS = (
 )
 
 
-def _speed_anchor_check(arm: dict, summary: dict) -> list[dict]:
-    """D1：锚点复现由引擎判——臂声明 `expect_p50_s`（#106 归档值）与实测 p50 比，阈值 ±20%。
+ANCHOR_RATIO_MIN = 1.8
+BASELINE_TOLERANCE = 0.20
 
-    ②冷评审 I16：30 个 check id 里原来没有「双仪器锚点复现」的判定落点，只能靠人肉眼比归档数字。
+
+def _speed_anchor_observation(arm: dict, summary: dict) -> dict:
+    """P4：锚点绝对带只做**观测**（`out_of_band` 标记 + 记录当前值 + 声明值）。
+
+    验收方案 §7 明写：198.13s/86.65s 历史带**退为观测**、不充当任何判据、无 re-anchor 逃生舱；
+    因此这里绝不进 `checks`，也不影响四态判定。
     """
     declared = arm.get("expect_p50_s")
     measured = (summary.get("file_wall_s") or {}).get("p50")
-    if declared is None:
-        return [{"id": "D1.anchor_reproduction", "status": "UNVERIFIED",
-                 "detail": "臂未声明 expect_p50_s（#106 归档锚点 p50 须显式声明才可机判）", "value": None}]
-    if not isinstance(measured, (int, float)):
-        return []
-    declared_f, measured_f = float(declared), float(measured)
-    ratio = abs(measured_f - declared_f) / declared_f
-    return [{"id": "D1.anchor_reproduction",
-             "status": "PASS" if ratio <= ANCHOR_TOLERANCE else "FAIL",
-             "detail": (f"锚点 p50 声明 {declared_f:.3f}s，实测 {measured_f:.3f}s，偏差 {ratio:.1%}"
-                        f"（阈值 ±{ANCHOR_TOLERANCE:.0%}）"),
-             "value": measured_f}]
+    if declared is None or not isinstance(measured, (int, float)):
+        return {}
+    deviation = abs(float(measured) - float(declared)) / float(declared)
+    return {"anchor_band": {
+        "declared_p50_s": float(declared),
+        "measured_p50_s": float(measured),
+        "deviation": f"{deviation:.1%}",
+        "out_of_band": bool(deviation > BASELINE_TOLERANCE),
+        "note": "历史绝对带仅作 P4 观测，不改变任何 D 组判定（无 re-anchor 逃生舱）",
+    }}
 
+
+def _speed_baseline_checks(path: str | None, *, mode: dict, summary: dict) -> list[dict]:
+    """`--baseline` 的两类真判据（②冷评审 I16：AC1 比值与 D7 parity 都要有机器落点）。
+
+    - 基线是**本模块的另一份** speed 报告（含 mode+summary）⇒ **D1①** 两臂 k 中位墙钟比值 ≥1.8×；
+    - 基线是 `benchmark_throughput.py` 的产物（顶层 pages_per_min + page_ms_p50）⇒ **D7** 口径差 ≤20%。
+    """
+    if not path:
+        return []
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise _Usage(f"--baseline 报告不可读：{exc}") from exc
+    if not isinstance(doc, dict):
+        raise _Usage("--baseline 必须是 JSON 对象")
+
+    mine_p50 = (summary.get("file_wall_s") or {}).get("p50")
+    if isinstance(doc.get("mode"), dict) and isinstance(doc.get("summary"), dict):
+        other_mode, other_summary = doc["mode"], doc["summary"]
+        k_mine, k_other = mode.get("page_concurrency"), other_mode.get("page_concurrency")
+        other_p50 = (other_summary.get("file_wall_s") or {}).get("p50")
+        if (isinstance(k_mine, int) and isinstance(k_other, int) and k_mine != k_other
+                and isinstance(mine_p50, (int, float)) and isinstance(other_p50, (int, float))
+                and mine_p50 and other_p50):
+            slow, fast = (mine_p50, other_p50) if k_mine < k_other else (other_p50, mine_p50)
+            ratio = float(slow) / float(fast)
+            return [{"id": "D1.anchor_ratio",
+                     "status": "PASS" if ratio >= ANCHOR_RATIO_MIN else "FAIL",
+                     "detail": (f"k={min(k_mine, k_other)} 中位墙钟 {float(slow):.3f}s ÷ "
+                                f"k={max(k_mine, k_other)} {float(fast):.3f}s = {ratio:.3f}×"
+                                f"（阈值 ≥{ANCHOR_RATIO_MIN}×）"),
+                     "value": ratio}]
+        return [{"id": "D1.anchor_ratio", "status": "UNVERIFIED",
+                 "detail": (f"两臂 k 相同或数据缺失（本 k={k_mine}／基线 k={k_other}，"
+                            f"p50 本 {mine_p50}／基线 {other_p50}）⇒ 比值无判别力"),
+                 "value": None}]
+
+    bench_ppm, bench_p50 = doc.get("pages_per_min"), doc.get("page_ms_p50")
+    mine_ppm, mine_p50_ms = summary.get("pages_per_min"), summary.get("page_ms_p50")
+    diffs: list[tuple[str, float]] = []
+    for label, mine, bench in (("pages_per_min", mine_ppm, bench_ppm),
+                               ("page_ms_p50", mine_p50_ms, bench_p50)):
+        if isinstance(mine, (int, float)) and isinstance(bench, (int, float)) and bench:
+            diffs.append((label, abs(float(mine) / float(bench) - 1.0)))
+    if not diffs:
+        return [{"id": "D7.parity", "status": "UNVERIFIED",
+                 "detail": (f"--baseline 既非本模块报告也非 benchmark 产物（缺 pages_per_min/page_ms_p50）："
+                            f"键 {sorted(doc)[:8]}"),
+                 "value": None}]
+    worst = max(diffs, key=lambda item: item[1])
+    return [{"id": "D7.parity", "status": "PASS" if worst[1] <= BASELINE_TOLERANCE else "FAIL",
+             "detail": ("对照 benchmark_throughput.py："
+                        + "；".join(f"{label} 相对差 {value:.1%}" for label, value in diffs)
+                        + f"（阈值 ≤{BASELINE_TOLERANCE:.0%}）"),
+             "value": worst[1]}]
 
 def _speed_self_sufficiency_checks(*, mode: dict, arm: dict, summary: dict,
                                    evidence: dict) -> list[dict]:

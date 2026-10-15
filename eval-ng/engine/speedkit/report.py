@@ -497,6 +497,7 @@ def build_report(
     summary: dict, cache: dict, footnote: dict, fingerprints: dict, criteria_spec: dict[str, str],
     reproduce: dict, checks: list[dict], not_measured: list[str],
     started_at: str, finished_at: str, has_gt: bool = False, readiness: dict | None = None,
+    observations: dict | None = None,
 ) -> dict:
     round_views = []
     for entry in rounds:
@@ -539,6 +540,8 @@ def build_report(
         "footnote": footnote,
         "fingerprints": fingerprints,
         "checks": list(checks or []),
+        # P4 一类**观测**（不进 checks、不参与四态判定）：如锚点绝对带出带标记
+        "observations": dict(observations or {}),
         "not_measured": list(not_measured or []),
         "reproduce": reproduce,
         "verdict": "UNVERIFIED",
@@ -647,6 +650,7 @@ def render_markdown(report: dict) -> str:
     summary = report.get("summary") or {}
     mode = report.get("mode") or {}
     footnote = report.get("footnote") or {}
+    observations = report.get("observations") or {}
     wall = summary.get("file_wall_s") or {}
     lines = [
         f"# speedkit 报告 — {report.get('exam', {}).get('exam_id', '?')}",
@@ -657,6 +661,15 @@ def render_markdown(report: dict) -> str:
         f"- 文件墙钟 p50：{_fmt(wall.get('p50'))} s／均值 {_fmt(wall.get('mean'))} s"
         f"（n={wall.get('n')}；IQR {_fmt(wall.get('iqr'))} s；舍弃轮 {mode.get('warmup_rounds')}）",
         f"- 墙钟口径：{mode.get('file_wall_s_semantics') or '（未声明）'}",
+    ]
+    band = (observations or {}).get("anchor_band") or {}
+    if band:
+        lines.append(
+            f"- 锚点带观测（P4，**不影响判定**）：声明 p50 {band.get('declared_p50_s')} s／"
+            f"实测 {band.get('measured_p50_s')} s／偏差 {band.get('deviation')}"
+            f"／out_of_band={'true' if band.get('out_of_band') else 'false'}"
+        )
+    lines +=[
         f"- 页吞吐：{_fmt(summary.get('pages_per_min'))} 页/min；文件吞吐：{_fmt(summary.get('files_per_min'))} 文件/min",
         f"- Σ 后端逐页 {_fmt(summary.get('sum_backend_pages_ms'))} ms／Σ 环 {_fmt(summary.get('sum_rings_ms'))} ms",
         f"- 残差 unclassified={_fmt(summary.get('unclassified_ms'))} ms（{_fmt(summary.get('residual_ratio'))}）"
