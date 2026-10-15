@@ -688,24 +688,37 @@ def env_matches_arm(evidence: dict, arm: dict) -> list[dict]:
 
 
 def concurrency_dual_evidence(rounds: list[dict], declared_k: int, driver: str) -> list[dict]:
-    """D2①：驱动自报 k 与实测反推并置（single=在飞峰值；batch=后端回吐页并发）。"""
-    observed: list[int] = []
+    """D2①：驱动自报 k 与实测反推并置（single=在飞峰值；batch=后端回吐页并发）。
+
+    ④云门 D6④/D7 备料时发现：**单轮页数少于 k** 时物理上不可能达到 k（1 页卷 + k=2 的批线作业
+    `page_concurrency_peak` 只能是 1）。逐轮期望值取 `min(declared_k, 该轮页数)`，只有「实测与期望
+    不等」才 FAIL——否则会把「语料太小」误报成「声明造假」。
+    """
+    rows: list[tuple[int, int, int, int]] = []
     for entry in rounds:
         if entry.get("warmup") or entry.get("invalid"):
             continue
         agg = entry.get("agg") or {}
         value = agg.get("observed_page_concurrency") if driver == "single" else agg.get("page_concurrency_peak")
-        if collect.is_number(value):
-            observed.append(int(value))
-    if not observed:
+        if not collect.is_number(value):
+            continue
+        pages = agg.get("pages_measured")
+        if not collect.is_number(pages):
+            pages = len(entry.get("pages") or [])
+        pages_i = int(pages or 0)
+        expected = min(int(declared_k), pages_i) if pages_i else int(declared_k)
+        rows.append((int(entry.get("round") or 0), int(value), expected, pages_i))
+    if not rows:
         return [{"id": "D2.k_dual_evidence", "status": "UNVERIFIED",
                  "detail": "无计时轮可反推页并发", "value": None}]
-    peak = max(observed)
-    ok = peak == declared_k
     label = "实测在飞峰值" if driver == "single" else "后端回吐页并发峰值"
-    return [{"id": "D2.k_dual_evidence", "status": "PASS" if ok else "FAIL",
-             "detail": f"声明 k={declared_k}；{label}={peak}" + ("" if ok else " ⇒ 两证不一致"),
-             "value": peak}]
+    bad = [row for row in rows if row[1] != row[2]]
+    detail = f"声明 k={declared_k}；" + "；".join(
+        f"r{row[0]} {label}={row[1]}（{row[3]} 页 ⇒ 期望 min(k,页)={row[2]}）" for row in rows
+    )
+    return [{"id": "D2.k_dual_evidence", "status": "FAIL" if bad else "PASS",
+             "detail": detail + ("" if not bad else " ⇒ 实测与期望不一致"),
+             "value": max(row[1] for row in rows)}]
 
 
 def expect_reject_checks(rounds: list[dict], corpus_items: list[dict]) -> list[dict]:

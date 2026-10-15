@@ -698,6 +698,21 @@ class TestDriver:
         rounds2 = [{"agg": {"page_concurrency_peak": 4}}]
         assert driver.concurrency_dual_evidence(rounds2, 4, "batch")[0]["status"] == "PASS"
 
+    def test_concurrency_dual_evidence_accounts_for_small_corpus(self):
+        """④云门备料实测：单轮页数 < k 时物理上到不了 k（1 页卷 + k=2 的批线作业 peak 只能是 1）。
+
+        期望值 = min(声明 k, 该轮页数)；否则会把「语料太小」误报成「声明造假」。
+        """
+        small = [{"round": 2, "agg": {"page_concurrency_peak": 1, "pages_measured": 1}}]
+        check = driver.concurrency_dual_evidence(small, 2, "batch")[0]
+        assert check["status"] == "PASS" and "期望 min(k,页)=1" in check["detail"]
+        # 页面够多却仍达不到声明值 ⇒ 仍是 FAIL（判别力不得被「小语料豁免」稀释）
+        big = [{"round": 2, "agg": {"page_concurrency_peak": 1, "pages_measured": 10}}]
+        assert driver.concurrency_dual_evidence(big, 2, "batch")[0]["status"] == "FAIL"
+        # single 线同规则
+        one_page = [{"round": 2, "agg": {"observed_page_concurrency": 1}, "pages": [{}]}]
+        assert driver.concurrency_dual_evidence(one_page, 3, "single")[0]["status"] == "PASS"
+
     def test_expect_reject_checks(self):
         corpus = [{"id": "enc"}, {"id": "ok"}]
         corpus[0]["expect_reject"] = True
