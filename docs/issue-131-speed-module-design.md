@@ -504,3 +504,5 @@ python eval-ng/scripts/check_public_tree.py --base "" --allow-prefix /opt/dtk --
 
 - 两枚 `--allow-prefix` 是**公开工具链前缀**（DTK/Hygon 运行时的 `/opt/dtk`、`/opt/hyhal`），已在私有验收方案注明理由；缺它们时本 PR 会报 12 条 `abs_path`（不是泄露）。
 - 仓库当前**没有** `.git/hooks/pre-commit`，本门不会自动执行 ⇒ 需在评审/合并流程里显式调用（或在 CI 里加一步）。
+- **凭据面规则**（⑦⑧冷评审与预先加固后）：`credential_literal`（键名 + 引号字面量，键名按 `_`/camelCase 切词元）、`credential_flag`（`--flag` 后的引号字面量）、`credential_bare`（键名 + 无引号字母数字混合值）、`QUOTED_KEY_ASSIGN_RE`（引号键：JSON/YAML/dict 形态）、`ANNOTATED_ASSIGN_RE`（类型注解形态，覆盖 PEP 604 `|`、泛型 `Final[...]`/`Literal[...]`、前向引用 `Optional["Cfg"]`）；豁免仅限**语境判定**（env 读取 / 模板占位 / 具名占位词 / 代码取值前缀），不做「值形状」放宽。
+- **整树模式的预期噪声**：`--base ""` 下当前有 13 条 `credential_*` 命中，全部为合成夹具或文档示例（`backend/tests/test_ldap_auth.py`、`test_role_matrix.py`、`test_dicom_core_realdata.py`、`backend/scripts/eval/benchmark_throughput.py:6` 等），另 4 处 `cloud-deploy/` 疑似真实测试账号口令已另立 **Issue#141**（同族 #140）。PR 门用**默认 diff 模式**，故不因历史噪声变红。
