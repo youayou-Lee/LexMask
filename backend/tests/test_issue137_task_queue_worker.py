@@ -84,6 +84,12 @@ def test_worker_loop_catches_asyncio_timeout_error(
     monkeypatch.setattr(tq.asyncio, "TimeoutError", _Fake310AsyncTimeoutError)
     monkeypatch.setattr(tq.asyncio, "wait_for", fake_wait_for)
 
+    # ①.5 评审 T1：替身类必须与内建 `TimeoutError` 无继承关系，否则本机 3.12 上
+    # 「抛替身」会被 `except TimeoutError` 蒙过去 ⇒ 改前也绿（恒真）。
+    assert not issubclass(_Fake310AsyncTimeoutError, TimeoutError), (
+        "替身类必须是非 TimeoutError 子类，才能模拟 3.10 的两类分立语义"
+    )
+
     async def scenario() -> None:
         queue = tq.SimpleTaskQueue(concurrency=1)
         _start(queue)
@@ -104,6 +110,11 @@ def test_worker_loop_catches_asyncio_timeout_error(
                     await asyncio.sleep(0.05)
                 assert seen == ["item-310"], f"存活下来的 worker 必须继续消费，实际 {seen}"
                 assert queue._worker_respawns == 0, "空闲超时不得被当成死亡去补位"
+                # N1（①.5 评审）：连续 3 个真实空闲窗口（2s×3 = 6.0s）后仍必须存活。
+                await asyncio.sleep(6.0)
+                assert not queue._worker_tasks[0].done(), (
+                    "连续 3 个空闲窗口后 worker 仍必须存活（只测单次即时超时会被兜底蒙过）"
+                )
             noisy = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
             assert not [m for m in noisy if "failed to wait on queue" in m], (
                 f"3.10 语义的空闲超时被当成异常记录了（应走 except 分支静默续等）：{noisy}"
@@ -173,23 +184,31 @@ def test_worker_unexpected_exception_does_not_kill_it(monkeypatch: pytest.Monkey
                     break
                 await asyncio.sleep(0.05)
             assert seen == ["item-after-boom"]
+            # N2（①.5 评审）：注入异常后必须再过一整个空闲窗口仍存活（只测「随即消费」
+            # 会被「异常后立刻再抛」的时序蒙过）。
+            await asyncio.sleep(2.6)
+            assert not queue._worker_tasks[0].done(), "等待路径异常后 worker 必须长期存活"
         finally:
             _shutdown(queue)
 
     asyncio.run(scenario())
 
 
-def test_token_without_pending_task_is_tolerated() -> None:
+def test_token_without_pending_task_is_tolerated(caplog: pytest.LogCaptureFixture) -> None:
     """token 与待处理列表失步：丢 token 留告警，不得让 worker 死于 IndexError。"""
 
     async def scenario() -> None:
         queue = tq.SimpleTaskQueue(concurrency=1)
         _start(queue)
         try:
-            queue._queue.put_nowait(None)  # 凭空一个 token，_pending_tasks 为空
-            await asyncio.sleep(2.6)
+            with caplog.at_level(logging.WARNING, logger="app.services.task_queue"):
+                queue._queue.put_nowait(None)  # 凭空一个 token，_pending_tasks 为空
+                await asyncio.sleep(2.6)
             assert not queue._worker_tasks[0].done(), "token 失步不得杀死 worker"
             assert queue.queue_size == 0, "失步 token 应被丢弃"
+            # N3（①.5 评审）：丢弃必须留机器可读的告警（不能静默吞掉）。
+            msgs = [r.getMessage() for r in caplog.records]
+            assert any("token dropped" in m for m in msgs), f"失步 token 必须留告警：{msgs}"
             queue._queue.put_nowait(None)
         finally:
             _shutdown(queue)
@@ -395,6 +414,13 @@ def test_planned_retirement_is_logged_and_not_respawned(
             msgs = [r.getMessage() for r in caplog.records]
             assert any("planned_retirement" in m for m in msgs), f"退休须留证据：{msgs}"
             assert not any("supervisor respawned" in m for m in msgs), f"不得补位：{msgs}"
+            # B2（③ 评审）：正常退休不是故障——不得出现 ERROR 级的「died/will respawn」。
+            noisy = [
+                (r.levelname, r.getMessage())
+                for r in caplog.records
+                if r.levelno >= logging.ERROR
+            ]
+            assert not noisy, f"计划退休不得记 ERROR：{noisy}"
         finally:
             _shutdown(queue)
 
@@ -417,8 +443,116 @@ def test_respawn_logs_the_dead_worker(caplog: pytest.LogCaptureFixture) -> None:
                 queue._supervise_workers()
             msgs = [r.getMessage() for r in caplog.records]
             assert any(
-                m.startswith("supervisor respawned worker-") and "reason=dead worker-" in m for m in msgs
+                m.startswith("supervisor respawned worker-") and "reason=dead worker" in m for m in msgs
             ), f"补位须留证据：{msgs}"
+        finally:
+            _shutdown(queue)
+
+    asyncio.run(scenario())
+
+
+def test_respawned_worker_reuses_dead_slot_and_survives_idle_window(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """B1（③ 评审）：补位必须沿用死者的 slot id，并活过下一个空闲窗口。
+
+    改前监督补位走自增 id（`_next_worker_id`），而`concurrency=1` 时那些 id 全都
+    ≥ concurrency ⇒ 补位 worker 在首个空闲窗口就被自己的退休判据判死：
+    `concurrency=1` 时 10s 内池子空着占 80%、`concurrency=2` 单点死亡后 8s 内
+    只有 25% 时间满员（③ 评审实测）。既有 14 例对此全绿（变异 M13 逃生）。
+    """
+
+    async def scenario() -> None:
+        queue = tq.SimpleTaskQueue(concurrency=2)
+        _start(queue)
+        try:
+            await asyncio.sleep(0.05)
+            victim = queue._worker_tasks[0]
+            victim_id = queue._worker_ids[victim]
+            victim.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await victim
+            with caplog.at_level(logging.WARNING, logger="app.services.task_queue"):
+                queue._supervise_workers()
+            live = [task for task in queue._worker_tasks if not task.done()]
+            assert len(live) == 2, f"必须补位回 concurrency=2，实际 {len(live)}"
+            assert any(queue._worker_ids[task] == victim_id for task in live), (
+                "补位必须复用死者 slot id="
+                f"{victim_id}（不得自增出 ≥ concurrency 的新 id）："
+                f"{[(t.get_name(), queue._worker_ids[t]) for t in live]}"
+            )
+            await asyncio.sleep(2.6)  # 活过一个完整空闲窗口
+            after = [task for task in queue._worker_tasks if not task.done()]
+            assert len(after) == 2, (
+                f"补位 worker 不得在空闲窗口自我退休（监督 churn）：实际 {len(after)}"
+            )
+        finally:
+            _shutdown(queue)
+
+    asyncio.run(scenario())
+
+
+def test_restore_wake_tokens_matches_pending_minus_qsize(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """N6/M12（③ 评审）：丢 token 的差额 = `len(_pending_tasks) - qsize`，只补差额。"""
+
+    async def scenario() -> None:
+        queue = tq.SimpleTaskQueue(concurrency=1)
+        _start(queue)
+        try:
+            await asyncio.sleep(0.05)
+
+            async def noop_run(task: tq.TaskItem) -> None:  # noqa: ARG001
+                return None
+
+            queue._run_recognition = noop_run  # type: ignore[method-assign]
+            items = [_item("item-a"), _item("item-b")]
+            queue._pending_tasks.extend(items)
+            for item in items:
+                queue._pending_items.add(queue._task_key(item))
+            queue._queue.put_nowait(None)  # 只剩 1 个 token（另一个随死亡丢失）
+            with caplog.at_level(logging.WARNING, logger="app.services.task_queue"):
+                queue._restore_wake_tokens()
+            # 同步调用内事件循环无法插入 ⇒ 此刻断言稳定。
+            assert queue.queue_size == 2, f"只补差额：期望 2，实际 {queue.queue_size}"
+            msgs = [r.getMessage() for r in caplog.records]
+            assert any("restored 1 lost wake token" in m for m in msgs), f"须留证据：{msgs}"
+        finally:
+            _shutdown(queue)
+
+    asyncio.run(scenario())
+
+
+def test_marked_retiring_worker_finishes_task_then_exits() -> None:
+    """B1/M10（③ 评审）：被标记退休的 worker 必须做完手上任务再退出（第二处退休分支）。"""
+
+    async def scenario() -> None:
+        queue = tq.SimpleTaskQueue(concurrency=1)
+        _start(queue)
+        seen: list[str] = []
+
+        async def fake_run(task: tq.TaskItem) -> None:
+            seen.append(task.item_id)
+
+        queue._run_recognition = fake_run  # type: ignore[method-assign]
+        try:
+            await asyncio.sleep(0.05)
+            queue._retiring_ids.add(queue._worker_ids[queue._worker_tasks[0]])
+            queue.enqueue(_item("item-retire"))
+            for _ in range(60):
+                if seen:
+                    break
+                await asyncio.sleep(0.05)
+            assert seen == ["item-retire"], "退休中的 worker 仍须完成手上的任务"
+            for _ in range(60):
+                if queue._worker_tasks[0].done():
+                    break
+                await asyncio.sleep(0.05)
+            assert queue._worker_tasks[0].done(), "计划退休的 worker 完成当前件后必须退出"
+            queue._supervise_workers()
+            live = [task for task in queue._worker_tasks if not task.done()]
+            assert len(live) == 1, f"concurrency 未变，必须补齐被退休的 slot：{len(live)}"
         finally:
             _shutdown(queue)
 

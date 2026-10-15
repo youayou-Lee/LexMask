@@ -49,7 +49,13 @@ enqueue:     id(self)=…592  id(_queue)=…448  qsize=1 pending=1 running=True 
 1. **超时捕获跨版本正确**：`except (TimeoutError, asyncio.TimeoutError):`。
    3.11+ 两者同一，元组写法无副作用。
 2. **worker 循环兜底**：worker 主体的任何未预期异常都不得静默结束 worker——记录（`logger.exception`）后继续下一轮，带 0.2s 退避避免异常风暴空转。
-3. **worker 存活性监督**：看门狗周期内检查 `self._worker_tasks` 中 `done()` 的 worker，**记录其异常**（`task.exception()`）并按 `concurrency` 补位；worker 退出必须留一行日志（含 worker_id 与原因）。
+3. **worker 存活性监督**：看门狗周期内检查 `self._worker_tasks` 中 `done()` 的 worker，
+   **记录其异常**（`task.exception()`）并补位至 `concurrency`；补位**复用死者的 slot id**
+   （不得自增 id：`concurrency=1` 时自增出的 id 全 ≥ `concurrency`，会让补位 worker 在首个空闲窗口
+   被退休判据判死 ⇒ 监督 churn）。
+   退休判据由「`worker_id >= concurrency`」改为**显式标记** `_retiring_ids`
+   （只有 `set_concurrency` 缩容时写入）⇒ 正常退休记 INFO 且不补位，异常死亡记 ERROR 并补位，
+   `will respawn` 只在确实补位时出现。worker 退出必须留一行日志（含 worker_id 与原因）。
 4. **待处理列表防御**：token 与 `_pending_tasks` 若失步（空表却取到 token），跳过该 token 并告警，而不是让 `pop(0)` 以 `IndexError` 杀死 worker。
 5. **可观测性**：入队/消费日志补齐 worker 存活数，便于一眼看出「队列有件但无人消费」。
 
@@ -60,11 +66,15 @@ enqueue:     id(self)=…592  id(_queue)=…448  qsize=1 pending=1 running=True 
 | 用例 | 断言 |
 |---|---|
 | `test_worker_survives_idle_timeout` | worker 空闲超过超时窗口后 `task.done()` 仍为 False（3.10 回归核心） |
-| `test_worker_loop_catches_asyncio_timeout_error` | monkeypatch `asyncio.wait_for` 抛 `asyncio.TimeoutError()` ⇒ worker 不退出、继续消费后入队的任务 |
+| `test_worker_loop_catches_asyncio_timeout_error` | 替身类（**非 `TimeoutError` 子类**）触发超时 ⇒ worker 存活、继续消费，且连续 3 个空闲窗口（≥6.0s）后仍在 |
 | `test_enqueue_after_idle_is_consumed` | 启动 → 空闲 > 超时窗口 → 入队 ⇒ 任务在 2s 内被消费（端到端队列语义） |
-| `test_worker_unexpected_exception_does_not_kill_it` | 注入 runner 抛异常 ⇒ 记录后 worker 存活，后续任务仍被消费 |
-| `test_watchdog_respawns_dead_worker` | 人为 cancel 一个 worker ⇒ 监督逻辑补位至 `concurrency` |
-| `test_token_without_pending_task_is_tolerated` | 制造 token 多于待处理项 ⇒ 不抛 `IndexError`，worker 存活 |
+| `test_worker_unexpected_exception_does_not_kill_it` | 等待路径注入异常 ⇒ 记录后 worker 存活，后续任务仍被消费，且再过一整个空闲窗口仍存活 |
+| `test_respawned_worker_reuses_dead_slot_and_survives_idle_window` | 杀一个 worker ⇒ 补位**复用死者 slot id**，且活过 ≥2.6s 空闲窗口后 `live == concurrency`（封监督 churn） |
+| `test_planned_retirement_is_logged_and_not_respawned` | `set_concurrency(2→1)` ⇒ live 收敛到 1、无补位、**无任何 ERROR 记录** |
+| `test_marked_retiring_worker_finishes_task_then_exits` | 被标记退休的 worker 先把手上件做完再退出，随后按 slot 补齐 |
+| `test_supervise_workers_respawns_dead_worker` | 人为 cancel 一个 worker ⇒ 监督逻辑补位至 `concurrency` 并留证据 |
+| `test_token_without_pending_task_is_tolerated` | 制造 token 多于待处理项 ⇒ 不抛 `IndexError`，worker 存活，token 被丢弃并留告警 |
+| `test_restore_wake_tokens_matches_pending_minus_qsize` | 差额 = `len(_pending_tasks) - qsize`，只补差额并留证据（不多补） |
 
 ## 5. 验收与验证矩阵
 
