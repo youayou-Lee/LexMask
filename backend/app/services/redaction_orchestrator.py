@@ -32,6 +32,9 @@ from app.models.schemas import (
 )
 from app.services.redaction.image_redactor import prepare_image_redaction
 from app.services.redactor import Redactor, build_preview_entity_map
+from app.services.text_layer_doc_source import (
+    boxes_for_page as text_layer_doc_boxes_for_page,
+)
 from app.services.vision_service import VisionService
 
 logger = logging.getLogger(__name__)
@@ -539,6 +542,18 @@ async def detect_vision(
         logger.info("Vision force refresh file=%s page=%d", file_id[:8], page)
 
     vision_service = VisionService()
+    # Issue#115：扫描件自带**可用**文本层时改走文档级链（整卷一次分块 NER），
+    # 本页 OCR 调用为 0；视觉特征（LA）仍走原逐页链。默认关，任何异常都退回旧路径。
+    doc_boxes, doc_memo = await text_layer_doc_boxes_for_page(
+        file_id=file_id,
+        snapshot=snapshot,
+        page=page,
+        ocr_has_types=ocr_has_types,
+    )
+    pipeline_ocr_types = effective_ocr_types
+    if doc_boxes is not None:
+        signature["text_layer_doc"] = True
+        pipeline_ocr_types = []
     # 正则兜底需要租户上下文：在文本链路运行前把 owner 设到 OCR/HaS 单例上
     from app.services.ocr_has_vision_service import get_ocr_has_vision_service
     get_ocr_has_vision_service().current_owner_id = owner_id
@@ -546,13 +561,28 @@ async def detect_vision(
         file_path=snapshot["file_path"],
         file_type=snapshot["file_type"],
         page=page,
-        ocr_has_types=effective_ocr_types,
+        ocr_has_types=pipeline_ocr_types,
         visual_feature_types=effective_visual_feature_types,
         include_result_image=include_result_image,
     )
+    if doc_boxes is not None:
+        bounding_boxes = VisionService()._deduplicate_boxes([*doc_boxes, *bounding_boxes])
     warnings = list(getattr(vision_service, "last_warnings", []) or [])
     pipeline_status = dict(getattr(vision_service, "last_pipeline_status", {}) or {})
     duration_ms = dict(getattr(vision_service, "last_duration_ms", {}) or {})
+    if doc_memo is not None:
+        pipeline_status["text_layer_doc"] = {
+            "ran": True,
+            "failed": False,
+            "pages": doc_memo["pages"],
+            "entities": doc_memo["entities"],
+            "chunks": doc_memo["chunks"],
+            "coverage": doc_memo["coverage"],
+            "verdict": doc_memo["verdict"],
+            "seconds": doc_memo["seconds"],
+        }
+        if not doc_boxes:
+            warnings = [*warnings, f"text_layer_doc:no_boxes_page={page}"]
     if merge_existing:
         existing_boxes = _boxes_from_page(_page_value(snapshot.get("bounding_boxes"), page), page)
         if existing_boxes:

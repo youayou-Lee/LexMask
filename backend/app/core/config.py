@@ -484,6 +484,32 @@ class Settings(BaseSettings):
     # OCR pages before sending them to HaS Text.
     HAS_VISION_MIN_TEXT_CHARS_FOR_NER: int = 1
 
+    # --- Issue#115 扫描件内嵌文本层 → 文档级 NER 链 ---
+    # 默认关闭：本链在开启后才接管「扫描页 + 可用内嵌文本层」的页；
+    # 关闭时行为与改动前**完全一致**（验收 G4 的硬前提）。
+    TEXT_LAYER_DOCLINE_ENABLED: bool = False
+    # 文档级分块的段长。实测 2000 字档比 6000 字档**又快又全**（6000 字档
+    # 6/30 块撞 2048 完成帽、召回只有页线的 40%，2000 字档 73%）。
+    TEXT_LAYER_DOCLINE_CHUNK_CHARS: int = 2_000
+    # 相邻块重叠：保证跨块边界的实体不被切碎（验收 D9）。
+    TEXT_LAYER_DOCLINE_CHUNK_OVERLAP: int = 200
+    # 文档级并发（块级）。沿用 shared_gpu_inference_slot，不会绕开既有闸门。
+    TEXT_LAYER_DOCLINE_CONCURRENCY: int = 4
+    # 单卷上限：超过则分段落盘，不把整卷文本层与词框常驻内存（验收 G9）。
+    TEXT_LAYER_DOCLINE_MAX_PAGES: int = 1_000
+    # --- 文本层质量判定阈值（Issue#115 C1）---
+    # 不对称代价（用户 2026-10-15 拍板）：漏用可用层的代价可接受，
+    # **错用不可用层不可接受**，因此阈值偏保守。
+    TEXT_LAYER_MIN_CHARS_PER_PAGE: int = 120
+    TEXT_LAYER_MAX_SHORT_WORD_RATIO: float = 0.55
+    TEXT_LAYER_MAX_GARBAGE_RATIO: float = 0.15
+    TEXT_LAYER_MIN_AVG_WORD_LEN: float = 1.6
+    # 词框内暗像素中位数的下限。真卷实测 0.1183、随机空白 0.0000；
+    # 合成对齐样本 0.1778、下移半行 0.0614 ⇒ 取 0.02 只拦「层与图完全不对齐」。
+    TEXT_LAYER_MIN_INK_ALIGNMENT: float = 0.02
+    # 墨迹采样页数（每卷取前 N 页做一次渲染采样）。
+    TEXT_LAYER_INK_SAMPLE_PAGES: int = 3
+
     # 兼容旧环境变量 HAS_BASE_URL
     HAS_BASE_URL: str | None = None
 
