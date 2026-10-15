@@ -559,7 +559,6 @@ async def detect_vision(
     )
     pipeline_ocr_types = effective_ocr_types
     if doc_boxes is not None:
-        signature["text_layer_doc"] = True
         pipeline_ocr_types = []
     # 正则兜底需要租户上下文：在文本链路运行前把 owner 设到 OCR/HaS 单例上
     from app.services.ocr_has_vision_service import get_ocr_has_vision_service

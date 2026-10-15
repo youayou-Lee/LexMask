@@ -520,6 +520,15 @@ class Settings(BaseSettings):
     TEXT_LAYER_MIN_INK_ALIGNMENT: float = 0.02
     # 墨迹采样页数（每卷取前 N 页做一次渲染采样）。
     TEXT_LAYER_INK_SAMPLE_PAGES: int = 3
+    # **卷级覆盖率下限**（门⑥ 二轮 Important#5）：覆盖率 = 成功块长度**并集** /
+    # 文档流总长；低于它整卷放弃文档级链、回落旧路径。
+    TEXT_LAYER_MIN_COVERAGE: float = 0.90
+    # **回映失败率上限**：模型给出的值在文本层里定位不到（或跨页拼接）的比例，
+    # 超过它就整卷放弃 —— 否则「模型复读/文本层不同源」会被当成正常结果。
+    TEXT_LAYER_MAX_MAP_FAILURE_RATIO: float = 0.30
+    # 警告（门⑥ 二轮 Minor#7）：`TEXT_LAYER_EMPTY_PAGE_FALLBACK=False` 会重新打开
+    # C-1 —— 「0 框」被当成「这页已由文档级链处理」⇒ 该页整页丢检。除另有页级
+    # 质量门兜底，否则不要关。
 
     # 兼容旧环境变量 HAS_BASE_URL
     HAS_BASE_URL: str | None = None
@@ -711,6 +720,16 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_text_layer_max_block_errors(cls, v: int) -> int:
         return max(0, min(1_000, v))
+
+    @field_validator("TEXT_LAYER_MIN_COVERAGE")
+    @classmethod
+    def _validate_text_layer_min_coverage(cls, v: float) -> float:
+        return max(0.0, min(1.0, v))
+
+    @field_validator("TEXT_LAYER_MAX_MAP_FAILURE_RATIO")
+    @classmethod
+    def _validate_text_layer_max_map_failure_ratio(cls, v: float) -> float:
+        return max(0.0, min(1.0, v))
 
     @field_validator("OCR_TEXT_BLOCK_CACHE_TTL_SEC")
     @classmethod

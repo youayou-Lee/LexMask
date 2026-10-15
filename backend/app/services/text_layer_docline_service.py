@@ -81,7 +81,15 @@ class DocLineResult:
     http_errors: int
     residual_calls: int
     seconds: float
+    failed_chunks: int = 0
     map_failures: list[dict] = field(default_factory=list)
+
+    @property
+    def map_failure_ratio(self) -> float:
+        """回映失败率（门⑥ 二轮 Important#5）：分母 = 成功实体数 + 失败项数。"""
+        total = len(self.map_failures)
+        denom = len(self.entities) + total
+        return (total / denom) if denom else 0.0
 
     @property
     def coverage_ratio(self) -> float:
@@ -336,36 +344,33 @@ def map_values(
     *,
     unconstrained_types: set[str] | None = None,
 ) -> tuple[list[DocLineEntity], list[dict]]:
-    """值 → (页号, 归一化并集框)。返回 (实体, 映射失败清单)。
+    r"""值 → (页号, 归一化并集框)。返回 (实体, 映射失败清单)。
 
-    `unconstrained_types` 里的类型**不做词边界校验**（regex 保证层用：正则命中
+    **不做词边界硬校验**：HaS 给的是「张三丰」这类词内子串（旧链
+    `match_entities_to_ocr` 本身就支持 sub-word positioning），硬校验会让新链比旧链
+    更窄而静默漏检。框精度改由词内插值保证。`unconstrained_types` 保留（regex
+    保证层的类型本就不受词边界约束），当前两种情形走同一条路。正则命中
     天然可能落在词中间，用 `\d{3}号` 这类模式时不该被判掉）。这类匹配的框会按
     词内字符比例**插值**收紧到命中的那几个字，而不是整词涂掉。
     """
     normalized, index_map = _normalized_stream(stream)
     page_meta = {page.no: page for page in pages}
-    word_starts = {span.start for span in word_spans}
-    word_ends = {span.end for span in word_spans}
     entities: list[DocLineEntity] = []
     failures: list[dict] = []
     seen: set[tuple[int, str, str, int, int]] = set()
     for type_id, values in values_by_type.items():
         for value in sorted(values):
-            if unconstrained_types and type_id in unconstrained_types:
-                spans = find_value_spans(normalized, index_map, value)
-            else:
-                spans = find_value_spans(
-                    normalized,
-                    index_map,
-                    value,
-                    word_starts=word_starts,
-                    word_ends=word_ends,
-                    stream=stream,
-                )
+            # **不做词边界硬校验**（门⑥ 第二轮 Critical#2）：HaS 返回的正是
+            # 「张三丰」这类**词内子串**，中文正文里值紧贴称谓/括号/前缀是常态
+            # （`被告人张三丰`、`电话13612345678`、`（张三）`）。旧链
+            # `match_entities_to_ocr` 自身就支持 sub-word positioning，硬校验会让
+            # 新链比旧链更窄 ⇒ 静默漏检。框精度改由下面的**词内插值**保证。
+            spans = find_value_spans(normalized, index_map, value)
             if not spans:
                 failures.append({"type": type_id, "value": value, "reason": "not_found_in_stream"})
                 continue
             hits = 0
+            rejected = False
             for start, end in spans:
                 # 收集命中词，并记录命中字符在词内的偏移：用于把框**收紧**到真正的
                 # 那几个字（否则 `（2022）京0101刑初123号` 这种长「词」会被整块涂掉）。
@@ -378,20 +383,31 @@ def map_values(
                     per_page.setdefault(span.page, []).append((span.word, off0, off1))
                 if not per_page:
                     continue
+                # 跨页命中一律丢弃（Critical#2 之二）：流里**页间与词间用的是同一个
+                # 空格**，`p1 末词 + p2 首词` 会被拼成原文根本不存在的值。
+                if len(per_page) > 1:
+                    failures.append({"type": type_id, "value": value, "reason": "cross_page"})
+                    rejected = True
+                    continue
                 for page_no, hits_words in per_page.items():
                     meta = page_meta.get(page_no)
                     if meta is None or meta.width <= 0 or meta.height <= 0:
                         continue
-                    xs: list[float] = []
+                    # 框 = 命中字符在词内的线性插值端点（Important#1）：旧写法后又取
+                    # 词的 x0/x1 边界，而 `min(x1) >= min(x0)` 恒成立 ⇒ 插值必然退化
+                    # 成整词，「收紧」是死代码。
+                    x_starts: list[float] = []
+                    x_ends: list[float] = []
                     for word, off0, off1 in hits_words:
                         chars = max(1, len(word.text))
                         span_w = word.x1 - word.x0
-                        xs.append(word.x0 + span_w * off0 / chars)
-                        xs.append(word.x0 + span_w * off1 / chars)
-                    x0 = min(min(xs), min(w.x0 for w, _a, _b in hits_words))
-                    x1 = max(max(xs), max(w.x0 for w, _a, _b in hits_words))
-                    x0 = min(x0, min(w.x1 for w, _a, _b in hits_words))
-                    x1 = max(x1, max(w.x1 for w, _a, _b in hits_words))
+                        x_starts.append(word.x0 + span_w * off0 / chars)
+                        x_ends.append(word.x0 + span_w * off1 / chars)
+                    x0 = min(x_starts)
+                    x1 = max(x_ends)
+                    if x1 <= x0:
+                        x0 = min(w.x0 for w, _a, _b in hits_words)
+                        x1 = max(w.x1 for w, _a, _b in hits_words)
                     y0 = min(w.y0 for w, _a, _b in hits_words)
                     y1 = max(w.y1 for w, _a, _b in hits_words)
                     bbox = (
@@ -408,7 +424,7 @@ def map_values(
                     seen.add(key)
                     entities.append(DocLineEntity(page_no, type_id, value, bbox))
                     hits += 1
-            if hits == 0:
+            if hits == 0 and not rejected:
                 failures.append({"type": type_id, "value": value, "reason": "no_word_overlap"})
     return entities, failures
 
@@ -456,7 +472,9 @@ async def run_document_ner(
     limit = int(concurrency if concurrency is not None else settings.TEXT_LAYER_DOCLINE_CONCURRENCY)
     semaphore = asyncio.Semaphore(max(1, limit))
     values_by_type: dict[str, set[str]] = {label: set() for label in labels}
-    stats = {"calls": 0, "residual_calls": 0, "truncated": 0, "http_errors": 0, "regex_values": 0}
+    stats = {"calls": 0, "residual_calls": 0, "truncated": 0, "http_errors": 0,
+             "regex_values": 0, "failed_chunks": 0}
+    failed_ranges: list[tuple[int, int]] = []
     lock = asyncio.Lock()
 
     async def ask(text: str, use_labels: list[str]) -> dict[str, list[str]]:
@@ -473,7 +491,8 @@ async def run_document_ner(
                 logger.warning("docline NER chunk failed: %s", exc)
                 async with lock:
                     stats["http_errors"] += 1
-                return {}
+                    stats["failed_chunks"] += 1
+                return None
         async with lock:
             stats["calls"] += 1
             for _label, found in (result or {}).items():
@@ -485,6 +504,12 @@ async def run_document_ner(
     async def one_chunk(chunk: tuple[str, int, int]) -> None:
         text = chunk[0]
         result = await ask(text, labels)
+        if result is None:
+            # 块级硬失败：该块覆盖的字符**不计入 coverage**，且整卷判不合格
+            # （门⑥ 第二轮 Critical#2 的「失败必须可见」要求）。
+            async with lock:
+                failed_ranges.append((chunk[1], chunk[2]))
+            return
         hit_values: list[str] = []
         async with lock:
             for label, found in result.items():
@@ -500,6 +525,10 @@ async def run_document_ner(
         if len(residual) < _MIN_RESIDUAL_CHARS:
             return
         residual_result = await ask(residual, labels)
+        if residual_result is None:
+            async with lock:
+                failed_ranges.append((chunk[1], chunk[2]))
+            return
         async with lock:
             stats["residual_calls"] += 1
             for label, found in (residual_result or {}).items():
@@ -533,9 +562,15 @@ async def run_document_ner(
     entities, failures = map_values(
         pages, stream, word_spans, values_by_type, unconstrained_types=regex_type_ids
     )
-    covered = _union_coverage(chunks, len(stream))
+    # **coverage 只算成功块**（Important#5）：旧写法对全部块求并集，而块首尾相接+
+    # 重叠 ⇒ 并集恒等于整条流 ⇒ `coverage_ratio` 结构上恒为 1.0，是不可能失败的
+    # 指标。改为剔除失败块后求并集，失败块就会如实压低 coverage。
+    failed_set = set(failed_ranges)
+    ok_chunks = [c for c in chunks if (c[1], c[2]) not in failed_set]
+    covered = _union_coverage(ok_chunks, len(stream))
     layer_chars = sum(len(w.text) for span in word_spans for w in [span.word])
     return DocLineResult(
+        failed_chunks=len(failed_set),
         pages=len(pages),
         chunks=len(chunks),
         chunk_chars=int(chunk_chars or settings.TEXT_LAYER_DOCLINE_CHUNK_CHARS),
@@ -567,6 +602,3 @@ def _union_coverage(chunks: list[tuple[str, int, int]], total: int) -> int:
             current_start, current_end = start, end
     covered += current_end - current_start
     return min(covered, total)
-
-
-_TAG_RE = re.compile(r"[\s_]")  # 供调用方拼 box id 时清洗

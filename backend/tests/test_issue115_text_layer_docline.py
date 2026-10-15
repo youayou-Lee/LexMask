@@ -16,7 +16,6 @@ from app.services import text_layer_doc_source as source
 from app.services import text_layer_docline_service as docline
 from app.services import text_layer_quality as quality
 
-
 # ------------------------------------------------------------------ C1 分类器
 
 
@@ -210,7 +209,8 @@ def test_boxes_for_page_falls_back_on_page_without_layer(monkeypatch, tmp_path):
     path.write_bytes(b"%PDF-1.4 stub")
     source.reset_memo()
 
-    dense = lambda who: [who, *[f"证据材料第{i}页正文内容" for i in range(29)]]
+    def dense(who: str) -> list[str]:
+        return [who, *[f"证据材料第{i}页正文内容" for i in range(29)]]
     pages = [
         _page(1, dense("张三")),
         _page(2, dense("李四")),
@@ -516,3 +516,148 @@ def test_document_ner_dispatches_through_global_gpu_gate(monkeypatch):
 
     assert entered, "块级调用必须取 shared_gpu_inference_slot（全局闸位）"
     assert any("TextLayerDocLine" in label for label in entered)
+
+
+# ------------------------------------------------- 门⑥ 二轮修复的回归（C1/C2/I5）
+
+
+def test_map_values_maps_subword_values_inside_longer_words():
+    """门⑥ 二轮 Critical#2：值常是**词内子串**（`被告人张三丰`）。
+
+    旧链 `match_entities_to_ocr` 支持 sub-word positioning；新链若要求「整词相等」，
+    这四种形态全部 0 框且不告警 ⇒ 比旧链更窄的静默漏检。
+    """
+    pages = [_page(1, ["被告人张三丰", "电话13612345678", "编号（2022）京0101刑初123号"])]
+    stream, spans = docline.build_stream(pages)
+    entities, failures = docline.map_values(
+        pages, stream, spans, {"姓名": {"张三丰"}, "手机号": {"13612345678"}}
+    )
+    got = {e.value: e for e in entities}
+    assert set(got) == {"张三丰", "13612345678"}, f"词内子串必须落框：{failures}"
+    assert failures == []
+    whole_word_width = 40.0 / 595.0
+    for entity in entities:
+        x0, _y0, x1, _y1 = entity.bbox
+        assert 0.0 < x0 < x1 <= 1.0
+        # 框必须**收紧到命中字符**；若退化成整词，中文长「词」会被整块涂黑
+        assert (x1 - x0) < whole_word_width + 1e-9
+    assert got["张三丰"].bbox[0] > 0.0, "词内命中必须带非零起点（证明插值生效）"
+
+
+def test_map_values_rejects_value_spanning_two_pages():
+    """门⑥ 二轮 Critical#2 之二：页间分隔符与词间同为空格，跨页会拼出假实体。"""
+    pages = [_page(1, ["甲方张三"]), _page(2, ["丰住本市"])]
+    stream, spans = docline.build_stream(pages)
+    entities, failures = docline.map_values(pages, stream, spans, {"姓名": {"张三丰"}})
+    assert entities == []
+    assert [f["reason"] for f in failures] == ["cross_page"]
+
+
+def test_docline_result_map_failure_ratio_is_defined():
+    result = docline.DocLineResult(
+        pages=1, chunks=1, chunk_chars=2_000, stream_chars=10, layer_chars=10,
+        covered_chars=10, entities=[], ner_calls=1, residual_calls=0,
+        truncated_chunks=0, http_errors=0, seconds=0.1,
+    )
+    assert result.map_failure_ratio == 0.0
+    result.map_failures.append({"type": "t", "value": "v", "reason": "not_found_in_stream"})
+    assert result.map_failure_ratio == 1.0
+
+
+def test_coverage_drops_when_a_chunk_fails(monkeypatch):
+    """门⑥ 二轮 Important#5：覆盖率必须**能失败**。
+
+    旧写法对**全部**块求并集，而块首尾相接+重叠 ⇒ 并集恒等于整条流 ⇒
+    `coverage_ratio` 结构上恒为 1.0。改为只统计成功块后，失败块会如实压低它。
+    """
+    pages = [_page(1, [f"第{i}号文件材料" for i in range(40)])]
+    state = {"n": 0}
+
+    class _FakeHas:
+        def ner(self, _text: str, _labels: list[str]) -> dict[str, list[str]]:
+            state["n"] += 1
+            if state["n"] == 2:
+                raise RuntimeError("boom")
+            return {"姓名": ["第1号文件材料"]}
+
+    result = asyncio.run(
+        docline.run_document_ner(
+            pages, ["姓名"], has_client=_FakeHas(), chunk_chars=60, overlap=0
+        )
+    )
+    assert result.chunks > 1, "样本必须真的分成多块，否则本用例无判别力"
+    assert result.failed_chunks >= 1
+    assert result.coverage_ratio < 1.0
+
+
+def test_empty_ocr_has_types_skips_whole_chain(monkeypatch, tmp_path):
+    """门⑥ 二轮 Critical#1：用户明确「不跑 HaS」（空类型表）时整条链必须跳过。
+
+    `has_text_payload` 的 `if vision_types else 默认` 会把空列表当 falsy 而回落到
+    38 类默认表 ⇒ 本链会替用户跑满 38 类，且账号停用的类型在此复活。
+    """
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+    built: list[int] = []
+
+    async def _fake_build(*_a, **_k):
+        built.append(1)
+        return None
+
+    monkeypatch.setattr(source, "_build", _fake_build)
+    path = tmp_path / "a.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+
+    boxes, memo = asyncio.run(
+        source.boxes_for_page(
+            file_id="f" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=[]
+        )
+    )
+    assert boxes is None and memo is None
+    assert built == [], "空类型表不得触发建卷（否则默认 38 类会复活）"
+
+
+def test_volume_level_gates_are_fail_able(monkeypatch, tmp_path):
+    """门⑥ 二轮 Important#5：卷级门（失败块/回映失败率/覆盖率）必须真能挡住建卷。"""
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+    monkeypatch.setattr(source.docline, "extract_text_layer_pages", lambda *_a, **_k: [
+        docline.TextLayerPage(
+            no=1, width=595.0, height=842.0,
+            words=[docline.TextLayerWord(50.0, 700.0, 90.0, 720.0, "被告人张三丰")],
+        )
+    ])
+    monkeypatch.setattr(source.docline, "sample_ink_alignment", lambda *_a, **_k: 0.18)
+
+    async def _bad_coverage(*_a, **_k):
+        return docline.DocLineResult(
+            pages=1, chunks=2, chunk_chars=2_000, stream_chars=100, layer_chars=100,
+            covered_chars=40, entities=[], ner_calls=2, residual_calls=0,
+            truncated_chunks=0, http_errors=0, seconds=0.1, failed_chunks=1,
+            map_failures=[],
+        )
+
+    monkeypatch.setattr(source.docline, "run_document_ner", _bad_coverage)
+    path = tmp_path / "b.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+    boxes, memo = asyncio.run(
+        source.boxes_for_page(
+            file_id="g" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=["PERSON"]
+        )
+    )
+    assert boxes is None and memo is None, "失败块必须让整卷回落旧路径"
+
+    async def _low_coverage(*_a, **_k):
+        return docline.DocLineResult(
+            pages=1, chunks=2, chunk_chars=2_000, stream_chars=100, layer_chars=100,
+            covered_chars=40, entities=[], ner_calls=2, residual_calls=0,
+            truncated_chunks=0, http_errors=0, seconds=0.1, failed_chunks=0,
+            map_failures=[],
+        )
+
+    monkeypatch.setattr(source.docline, "run_document_ner", _low_coverage)
+    source.reset_memo()
+    boxes, memo = asyncio.run(
+        source.boxes_for_page(
+            file_id="h" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=["PERSON"]
+        )
+    )
+    assert boxes is None and memo is None, "覆盖率 0.40 < 0.90 必须回落旧路径"

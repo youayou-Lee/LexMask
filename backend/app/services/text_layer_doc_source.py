@@ -166,6 +166,20 @@ async def _build(
     result = await docline.run_document_ner(
         pages, labels, has_client=has_client, regex_types=regex_types
     )
+    # **卷级合格门**（门⑥ 二轮 Important#5）：失败块/回映失败率/覆盖率任一越界即整卷
+    # 放弃走文档级链、回落旧路径。这些门以前不存在，或只在**任何值**下都成立。
+    if result.failed_chunks > 0:
+        logger.warning(
+            "text_layer_docline skipped: %d/%d chunks failed file=%s",
+            result.failed_chunks, result.chunks, file_id[:8],
+        )
+        raise _TransientIneligible(f"failed_chunks:{result.failed_chunks}/{result.chunks}")
+    map_ratio = float(result.map_failure_ratio)
+    if map_ratio > float(settings.TEXT_LAYER_MAX_MAP_FAILURE_RATIO):
+        logger.warning(
+            "text_layer_docline skipped: map failure ratio %.3f file=%s", map_ratio, file_id[:8]
+        )
+        raise _TransientIneligible(f"map_failure_ratio:{map_ratio:.3f}")
     max_errors = int(settings.TEXT_LAYER_MAX_BLOCK_ERRORS)
     if result.http_errors > max_errors:
         logger.warning(
@@ -176,6 +190,13 @@ async def _build(
             file_id[:8],
         )
         raise _TransientIneligible(f"block_errors:{result.http_errors}/{result.chunks}")
+    coverage = float(result.coverage_ratio)
+    if coverage < float(settings.TEXT_LAYER_MIN_COVERAGE):
+        logger.warning(
+            "text_layer_docline skipped: coverage %.3f < %.2f file=%s",
+            coverage, float(settings.TEXT_LAYER_MIN_COVERAGE), file_id[:8],
+        )
+        raise _TransientIneligible(f"coverage:{coverage:.3f}")
     label_to_id = build_label_to_type_id(ocr_has_types)
     # **只有真正带词的页才算被覆盖**：`extract_text_layer_pages` 会把无文本层的页
     # 也返回（`words=[]`）。若按「页存在」算覆盖，混合卷里那些无层页会被判成
@@ -224,6 +245,39 @@ async def _build(
     return memo
 
 
+_NEGATIVE: dict = {"_negative": True}
+_KEY_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _key_lock(key: str) -> asyncio.Lock:
+    """按 key 的构建锁（门⑥ 二轮 Important#4）。
+
+    旧写法把整卷 HaS（可达数分钟）放在**全局** `_LOCK` 里 ⇒ A 文件第 1 页在建流时，
+    其它文件的所有页都在排队。改为按 key 加锁：跨文件可并发构建，同文件只建一次。
+    """
+    lock = _KEY_LOCKS.get(key)
+    if lock is None:
+        if len(_KEY_LOCKS) > 64:  # 简单的容量兜底
+            _KEY_LOCKS.clear()
+        lock = asyncio.Lock()
+        _KEY_LOCKS[key] = lock
+    return lock
+
+
+async def _lookup_memo(key: str) -> dict | None:
+    """读 memo：命中且未过期返回 memo；负缓存仍有效返回 `_NEGATIVE`；否则 None（需重建）。"""
+    async with _LOCK:
+        memo = _MEMO.get(key)
+        if memo is None:
+            return None
+        if memo.get("unusable"):
+            retry_at = float(memo.get("retry_at") or 0.0)
+            if retry_at == float("inf") or time.monotonic() < retry_at:
+                return _NEGATIVE
+            return None
+        return memo
+
+
 async def boxes_for_page(
     *,
     file_id: str,
@@ -234,6 +288,14 @@ async def boxes_for_page(
 ) -> tuple[list[BoundingBox] | None, dict | None]:
     """返回该页的文档级框与元信息；资格不符或出错时返回 `(None, None)`。"""
     if not settings.TEXT_LAYER_DOCLINE_ENABLED:
+        return None, None
+    # **「不跑 HaS」必须整条链跳过**（门⑥ 二轮 Critical#1）：`effective_ocr_has_types`
+    # 为空时旧链是全跳过，而 `has_text_payload` 的 `if vision_types else 默认` 会让空
+    # 列表 falsy 而回落到 **38 类默认表** —— 于是用户明确要的「只做视觉特征、不跑 HaS」
+    # 反而变成整卷 38 类 HaS，且账号停用的类型会在这条链上复活。
+    # 只拦**空列表**：orchestrator 传的永远是已收口的列表（`filter_types_by_account_enabled`
+    # 之后），空列表 = 用户明确「不跑 HaS」；`None` 保留原语义（不限制 ⇒ 用默认表）。
+    if ocr_has_types is not None and len(ocr_has_types) == 0:
         return None, None
     labels = _labels(ocr_has_types)
     if not labels:
@@ -249,15 +311,10 @@ async def boxes_for_page(
         f"|{','.join(labels)}|{knobs}"
     )
     try:
-        async with _LOCK:
-            memo = _MEMO.get(key)
-            if memo is not None and memo.get("unusable"):
-                # 负缓存（评审 I-6）：确定性不合格的卷（无层/层不可用/租户有 regex）
-                # 永久缓存；临时故障（块失败超阈）只缓存 120s，过期允许重试。
-                retry_at = float(memo.get("retry_at") or 0.0)
-                if retry_at == float("inf") or time.monotonic() < retry_at:
-                    return None, None
-                memo = None
+        async with _key_lock(key):
+            memo = await _lookup_memo(key)
+            if memo is _NEGATIVE:
+                return None, None
             if memo is None:
                 try:
                     built = await _build(file_id, snapshot, labels, ocr_has_types, regex_types)
@@ -273,9 +330,10 @@ async def boxes_for_page(
                 else:
                     marker = {"unusable": True, "retry_at": float("inf")}
                 memo = built if built is not None else marker
-                _MEMO[key] = memo
-                if len(_MEMO) > 16:
-                    _MEMO.pop(next(iter(_MEMO)))
+                async with _LOCK:
+                    _MEMO[key] = memo
+                    if len(_MEMO) > 16:
+                        _MEMO.pop(next(iter(_MEMO)))
                 if memo.get("unusable"):
                     return None, None
         if int(page) not in memo["covered_pages"]:
