@@ -4,7 +4,7 @@
 
   # 1) draft：上传识别 → preview-map（derived 编号映射草稿）→ CSV 落私有目录
   python eval/scripts/build_pseudonym_set.py draft 真实样本.docx \
-      --api-base http://127.0.0.1:8000 --private-dir /root/private_data/eval37 \
+      --api-base http://127.0.0.1:8000 --private-dir private_data/eval37 \
       --dataset-id pseudo_case_001
 
   # 2) 人工复核 CSV（改「化名」列；漏检实体补行：原文+类型+自拟化名——补行即 GT 补漏，
@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -204,7 +205,7 @@ def main() -> int:
     p_draft.add_argument("source", type=Path, help="真实样本（非扫描 pdf/docx/txt，不入库）")
     p_draft.add_argument("--api-base", default="http://127.0.0.1:8000")
     p_draft.add_argument("--api-user", default="eval_user")
-    p_draft.add_argument("--api-pass", default="EvalUser!2026")
+    p_draft.add_argument("--api-pass", default=os.environ.get("EVAL_API_PASS"))
     p_draft.add_argument("--private-dir", required=True, type=Path, help="私有目录（不入库）")
     p_draft.add_argument("--dataset-id", required=True)
     p_draft.add_argument("--timeout", type=float, default=600.0)
@@ -214,7 +215,7 @@ def main() -> int:
     p_fin.add_argument("--source", required=True, type=Path, help="原始真实样本")
     p_fin.add_argument("--api-base", default="http://127.0.0.1:8000")
     p_fin.add_argument("--api-user", default="eval_user")
-    p_fin.add_argument("--api-pass", default="EvalUser!2026")
+    p_fin.add_argument("--api-pass", default=os.environ.get("EVAL_API_PASS"))
     p_fin.add_argument("--private-dir", required=True, type=Path)
     p_fin.add_argument("--dataset-id", required=True)
     p_fin.add_argument("--timeout", type=float, default=600.0)

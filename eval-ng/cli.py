@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -102,7 +103,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                        metavar="NAME=VER", help="环境自报：组件版本，可多次")
         p.add_argument("--api-base", default="http://127.0.0.1:8000")
         p.add_argument("--api-user", default="eval_user")
-        p.add_argument("--api-pass", default="EvalUser!2026")
+        # 口令经环境变量传入：公开仓不得出现真实口令字面量（G4）
+        p.add_argument("--api-pass", default=os.environ.get("EVAL_API_PASS"))
         p.add_argument("--timeout", type=float, default=600.0)
     e2e.add_argument("exam", help="e2e 考卷 JSON（make_exam_from_manifest.py 产物）")
     e2e.add_argument("--warmup-pages", type=int, default=1)
@@ -131,7 +133,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                        help="轮间重启命令（编排给的薄脚本；引擎只执行它并读证据，不自己起停服务）")
     speed.add_argument("--api-base", default="http://127.0.0.1:8000")
     speed.add_argument("--api-user", default="eval_user")
-    speed.add_argument("--api-pass", default="EvalUser!2026")
+    speed.add_argument("--api-pass", default=os.environ.get("EVAL_API_PASS"))
     speed.add_argument("--timeout", type=float, default=600.0)
     speed.add_argument("--job-timeout-min", type=float, default=120.0)
     speed.add_argument("--upload-workers", type=int, default=4)

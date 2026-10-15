@@ -17,6 +17,9 @@ report = boot.load("engine/speedkit/report.py")
 arms = boot.load("engine/speedkit/arms.py")
 cli = boot.load("cli.py")
 redact = boot.load("scripts/check_report_redaction.py")
+# 单测专用口令替身：公开仓不得出现真实口令（G4）
+_UNIT_API_PASS = "unit-test-pass-not-a-credential"
+
 REAL_SPEED_API = driver.SpeedApi  # autouse fixture 会把模块属性替换成抛错版本，这里留真类引用
 EVALNG_ROOT = Path(__file__).resolve().parents[2] / "eval-ng"
 
@@ -1163,11 +1166,22 @@ class _StubApi:
 
 
 def _run_cli_with_stub(monkeypatch, tmp_path, *, driver_name: str, with_batch: bool = False,
-                       records: list[dict] | None = None, rounds: int = 2, warmup_rounds: int = 1):
-    """跑一遍 CLI 装配链。`records` 非空时按轮次依次吐出（用于造非法轮/离散度场景）。"""
+                       records: list[dict] | None = None, rounds: int = 2, warmup_rounds: int = 1,
+                       premise_parse: dict | None = None):
+    """跑一遍 CLI 装配链。`records` 非空时按轮次依次吐出（用于造非法轮/离散度场景）。
+
+    `premise_parse` 非空时把清单条目改成声明 `scanned_pdf`（id 对齐 `f1`）并替换后端
+    `/parse` 旁证——用于验证 `D1.corpus_premise` 的**装配级接线**（R3）。
+    """
     _, exam, arm, evidence = _cli_fixtures(tmp_path)
     monkeypatch.setattr(driver, "SpeedApi", _StubApi)
     canned = _canned_round(with_batch=with_batch)
+    if premise_parse is not None:
+        doc = json.loads(exam.read_text(encoding="utf-8"))
+        doc["corpus"][0]["id"] = "f1"
+        doc["corpus"][0]["carrier"] = "scanned_pdf"
+        exam.write_text(json.dumps(doc), encoding="utf-8")
+        canned["items"][0]["parse"] = dict(premise_parse)
     queue = [dict(r) for r in records] if records else []
     target = "measure_single_round" if driver_name == "single" else "measure_batch_round"
 
@@ -1187,6 +1201,26 @@ class TestCliReportCompleteness:
     这两条的价值在于：**逐页/逐轮/批作业的每个数值叶子都真的过一遍路径表**——
     单测 fixture 手搓的报告结构覆盖不到 cli 现场拼出来的字段，漏一个就在门④ 变 FAIL。
     """
+
+    def test_corpus_premise_is_wired_into_checks(self, monkeypatch, tmp_path):
+        """R3：`D1.corpus_premise` 的**装配级接线**必须有判据（删掉 cli.py 的 extend 即红）。
+
+        判别性：清单声明 `scanned_pdf`，而替身后端 `/parse` 报 `is_scanned=False` ⇒ 必须 FAIL；
+        反向（`is_scanned=True`）只允许 PASS/UNVERIFIED，绝不允许 FAIL。
+        """
+        code, doc = _run_cli_with_stub(
+            monkeypatch, tmp_path, driver_name="single",
+            premise_parse={"file_type": "pdf", "is_scanned": False, "total_pages": 2},
+        )
+        assert code != 2
+        assert self._status(doc, "D1.corpus_premise") == "FAIL", doc["checks"]
+
+        code2, doc2 = _run_cli_with_stub(
+            monkeypatch, tmp_path, driver_name="single",
+            premise_parse={"file_type": "pdf", "is_scanned": True, "total_pages": 2},
+        )
+        assert code2 != 2
+        assert self._status(doc2, "D1.corpus_premise") != "FAIL", doc2["checks"]
 
     @staticmethod
     def _failed(doc: dict) -> set[str]:
@@ -1319,16 +1353,16 @@ class TestCliReportCompleteness:
     def test_redact_command_masks_credentials_and_paths(self):
         """I13：口令类开关的后一个 token 整体替换；值内 Bearer/口令字面量抹掉。"""
         masked = report.redact_command(
-            ["python", "eval-ng/cli.py", "speed", "/srv/evidence/exam.json", "--api-pass", "EvalUser!2026",  # public-tree-scan: ignore-line
+            ["python", "eval-ng/cli.py", "speed", "/srv/evidence/exam.json", "--api-pass", _UNIT_API_PASS,  # public-tree-scan: ignore-line
              "--api-base", "http://127.0.0.1:8000"]
         )
         joined = " ".join(masked)
-        assert "EvalUser!2026" not in joined, joined
+        assert _UNIT_API_PASS not in joined, joined
         assert "<redacted>" in masked
         assert "/srv/evidence" not in joined, joined  # public-tree-scan: ignore-line
         assert any(report.scrub_secrets(v) == v for v in ("plain",))  # 无凭据值原样
 
-        env = report.redact_env({"API_PASS": "EvalUser!2026", "HAS_NER_GLOBAL_MAX_INFLIGHT": "8",
+        env = report.redact_env({"API_PASS": _UNIT_API_PASS, "HAS_NER_GLOBAL_MAX_INFLIGHT": "8",
                                  "NOTE": "Bearer abcdefghijklmnopqrstuvwxyz012345"})  # public-tree-scan: ignore-line
         assert env["API_PASS"] == "<redacted>"
         assert env["HAS_NER_GLOBAL_MAX_INFLIGHT"] == "8"

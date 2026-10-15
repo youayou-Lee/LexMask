@@ -40,18 +40,26 @@ ABS_PATH_RE = re.compile(
     r"(?<![\w.\-/])(/(?:root|home|mnt|data|opt|srv|var|Users|tmp|workspace|media)/[^\s\"'`,)]*)"
 )
 WIN_PATH_RE = re.compile(r"(?<![\w])[A-Za-z]:\\[^\s\"'`,)]*")
+# 凭据类键名：`--api-pass` / `api_pass=` / `password=` / `secret:` …（R1：必须覆盖 flag 形态）
+CREDENTIAL_NAME_RE = r"(?:api[_-]?(?:pass(?:word)?|key)|passw(?:or)?d|secret|token)s?"
+# 模板/占位值不算命中：`<你的密码>`、`${ENV}`、`changeme`、`your-password` …
+PLACEHOLDER_VALUE_RE = re.compile(
+    r"(?i)(?:[<>{}]|\$\{?\w+"
+    r"|^(?:\W*(?:your|my|the)?[-_ ]*(?:password|passwd|secret|token|key))\W*$"
+    r"|^(?:test|fake|sample|dummy|placeholder|example|changeme|redacted)[-_ ]?\w*$"
+    r"|^(?:os\.)?environ\b|[\w.]+\(|[\w.]+\["
+    r"|^[A-Z][A-Z0-9_]{2,}$)"
+)
 SECRET_RES = (
     ("bearer", re.compile(r"\bBearer\s+[A-Za-z0-9\-._~+/]{24,}")),
     # 必须带厂商分隔符，否则 `skeletonButtonSize` / `skippedNoCandidates` 这类标识符会误报
     ("api_key", re.compile(r"\b(?:sk|rk|ghp|gho|ghs|github_pat)-[A-Za-z0-9_-]{16,}\b|AKIA[0-9A-Z]{16}")),
-    (
-        "credential_literal",
-        re.compile(
-            r"(?i)\b(?:password|passwd|api[_-]?key|secret|token)\b\s*[:=]\s*[\"']"
-            r"(?=[^\"']{10,}[\"'])(?=[^\"']*\d)(?=[^\"']*[^A-Za-z0-9\"'])[^\"']*[\"']"
-        ),
-    ),
+    # 键名 + 字面量（`password="…"`、`api_pass: "…"`）
+    ("credential_literal", re.compile(rf"(?i)\b{CREDENTIAL_NAME_RE}\b\s*[:=]\s*[\"'](?P<val>[^\"']{{8,}})[\"']")),
+    # flag 形态：本仓 CLI 的「凭据开关 + 引号字面量」与 argparse 的 default= 写法
+    ("credential_flag", re.compile(rf"(?i)--{CREDENTIAL_NAME_RE}\b[^)\n]{{0,40}}?[\"'](?P<val>[^\"'=\s,]{{8,}})[\"']")),
 )
+CREDENTIAL_RULES = frozenset({"credential_literal", "credential_flag"})
 LOOPBACK_PREFIXES = ("127.", "0.0.0.0", "::1")
 # 私网（RFC1918）与文档段（RFC5737）+ 保留段：示例与夹具的合法取值，不是实例地址
 PRIVATE_IP_RE = re.compile(
@@ -67,7 +75,10 @@ MAX_BYTES = 2 * 1024 * 1024
 
 SELF_TEST_BAD = (
     "instance 8.8.8.8 path /srv/evidence/arm.json win C:\\Users\\dev\\secret.txt "  # public-tree-scan: ignore-line
-    "auth Bearer abcdefghijklmnopqrstuvwxyz012345 password=\"Passw0rd!2026\" deny SCNET-INSTANCE-1"  # public-tree-scan: ignore-line
+    "auth Bearer abcdefghijklmnopqrstuvwxyz012345 password=\"Passw0rd!2026\" deny SCNET-INSTANCE-1 "  # public-tree-scan: ignore-line
+    # R1 形态：flag 与 add_argument(default=) 两种写法都必须落网（值用合成串，不是真实口令）
+    "cli --api-pass \"Synthetic-Pass!123\" "  # public-tree-scan: ignore-line
+    "parser.add_argument(\"--api-pass\", default=\"Synthetic-Pass!123\")"  # public-tree-scan: ignore-line
 )
 SELF_TEST_CLEAN = (
     "api_base http://127.0.0.1:8000 fixture 203.0.113.9 host 10.1.2.3 "
@@ -101,6 +112,8 @@ def scan(text: str, *, denylist: list[str], allow_prefixes: list[str]) -> list[t
             findings.append((rule, value))
     for rule, regex in SECRET_RES:
         for match in regex.finditer(text):
+            if rule in CREDENTIAL_RULES and PLACEHOLDER_VALUE_RE.search(match.group("val")):
+                continue  # 模板/占位值（`<你的密码>`、`${ENV}` …）不是凭据
             findings.append((rule, match.group(0)))
     for token in denylist:
         if token.startswith("re:"):
@@ -168,7 +181,7 @@ def self_test(denylist: list[str] | None = None) -> int:
     bad = scan_source("self-test-bad", SELF_TEST_BAD, denylist=words + ["SCNET-INSTANCE-1"],
                       allow_prefixes=[])
     rules = {line.split("[", 1)[1].split("]", 1)[0] for line in bad}
-    required = {"public_ip", "abs_path", "win_path", "bearer", "credential_literal", "denylist"}
+    required = {"public_ip", "abs_path", "win_path", "bearer", "credential_literal", "credential_flag", "denylist"}
     missing = required - rules
     clean = scan_source("self-test-clean", SELF_TEST_CLEAN, denylist=words, allow_prefixes=[])
     problems: list[str] = []
