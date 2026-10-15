@@ -485,9 +485,11 @@ class Settings(BaseSettings):
     HAS_VISION_MIN_TEXT_CHARS_FOR_NER: int = 1
 
     # --- Issue#115 扫描件内嵌文本层 → 文档级 NER 链 ---
-    # 默认关闭：本链在开启后才接管「扫描页 + 可用内嵌文本层」的页；
-    # 关闭时行为与改动前**完全一致**（验收 G4 的硬前提）。
-    TEXT_LAYER_DOCLINE_ENABLED: bool = False
+    # Issue#129 起**默认开启**：本链接管「扫描页 + 可用内嵌文本层」的页，逐页 OCR 归零。
+    # 置 False 时行为与 Issue#115 改动前**完全一致**（验收 G4 的硬前提）。
+    # 开启代价：任一页**首次**请求须等整卷分块建流完成（60 页约 115s、189 页约 231s；
+    # memo 命中后逐页秒级）。无可用文本层的页 / 卷级门不达标 / 建卷异常一律逐页回落旧视觉线。
+    TEXT_LAYER_DOCLINE_ENABLED: bool = True
     # 文档级分块的段长。实测 2000 字档比 6000 字档**又快又全**（6000 字档
     # 6/30 块撞 2048 完成帽、召回只有页线的 40%，2000 字档 73%）。
     TEXT_LAYER_DOCLINE_CHUNK_CHARS: int = 2_000

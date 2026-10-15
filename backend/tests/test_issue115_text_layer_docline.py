@@ -16,6 +16,17 @@ from app.services import text_layer_doc_source as source
 from app.services import text_layer_docline_service as docline
 from app.services import text_layer_quality as quality
 
+# ------------------------------------------------------------------ Issue#129 默认值
+
+
+def test_docline_is_enabled_by_default():
+    """Issue#129：本链默认开启（用户 2026-10-15 拍板）。
+
+    判别力：本断言在 Issue#129 之前为 `False` ⇒ **不改动即失败**，不是恒真条。
+    """
+    assert settings.TEXT_LAYER_DOCLINE_ENABLED is True
+
+
 # ------------------------------------------------------------------ C1 分类器
 
 
