@@ -87,6 +87,25 @@ class HaSService:
                 chinese_types.append(chinese_type)
         return chinese_types
 
+    @staticmethod
+    def _call_client_ner_checked(
+        client: Any,
+        text: str,
+        chinese_types: list[str],
+        guidance: list[dict[str, Any]],
+    ) -> tuple[dict[str, list[str]], bool]:
+        """调 client 的 NER，并拿到「本次解析是否成功」的显式标志（Issue#108 ⑥）。
+
+        `has_client.ner()` 把 HTTP 错/超时/不可解析全吞成 `{}`，与「模型合法地答
+        没有实体」同形，写侧不能拿它当成功判据（评审 C1/C2）。优先走
+        `ner_checked()`；测试替身/旧 client 没有该口时退回 `ner()` 并**保守报
+        ok=False**（宁可不写全类型键，也不把未确认结果固化成 TTL 命中）。
+        """
+        checked = getattr(client, "ner_checked", None)
+        if callable(checked):
+            return checked(text, chinese_types, type_guidance=guidance)
+        return client.ner(text, chinese_types, type_guidance=guidance), False
+
     def _convert_entity_types_to_guidance(
         self,
         entity_types: list[EntityTypeConfig],
@@ -428,7 +447,22 @@ class HaSService:
             max_parallel = max(1, int(settings.HAS_NER_MAX_PARALLEL_REQUESTS))
             semaphore = asyncio.Semaphore(max_parallel)
 
-            async def run_batch(batch: list[EntityTypeConfig]) -> dict[str, list[str]]:
+            # Issue#108：预切之后 has_client.ner 只看到**子批**类型表，只写子批缓存键，
+            # 以完整类型表探测缓存的调用方（视觉线 has_text_analysis → get_cached_ner）
+            # 于是复用不到同一份文本的结果——同一段文字白推两遍。这里在合并后按完整
+            # 类型表补写一条，两个下脚料都记：真正派发的类型名 + 未确认批计数。
+            #
+            # ⑥ 评审 C1/C2：判据必须是「**解析成功**」而不是「没抛异常」——
+            # has_client.ner() 把 HTTP 错/超时/输出不可解析全吞成 `{}`，异常根本传
+            # 不到 gather(return_exceptions=True)，`isinstance(...)` 分支在生产形态
+            # 下永不进入。被吞掉的批若合并进全类型键，读侧 `cached is not None` 就判
+            # 命中，把「一次失败」放大成整个 TTL 的永久漏检（两处均已复现）。
+            # 所以改调 `ner_checked()`（返回 `(结果, ok)`）：ok=False 计入
+            # unconfirmed_batches，禁止写全类型键。
+            used_chinese_types: list[str] = []
+            unconfirmed_batches = 0
+
+            async def run_batch(batch: list[EntityTypeConfig]) -> tuple[dict[str, list[str]], bool]:
                 batch_chinese_types = self._convert_entity_types_to_chinese(batch)
                 for item in batch:
                     batch_chinese_types = self._expand_query_type_names(
@@ -436,14 +470,17 @@ class HaSService:
                         batch_chinese_types,
                     )
                 if not batch_chinese_types:
-                    return {}
+                    # 这批没请求任何类型：既无结论也无失败可言，不阻断写回。
+                    return {}, True
+                used_chinese_types.extend(batch_chinese_types)
                 async with semaphore:
                     async with shared_gpu_inference_slot("HaS Text NER batch"):
                         return await asyncio.to_thread(
-                            self.client.ner,
+                            self._call_client_ner_checked,
+                            self.client,
                             content,
                             batch_chinese_types,
-                            type_guidance=self._convert_entity_types_to_guidance(batch),
+                            self._convert_entity_types_to_guidance(batch),
                         )
 
             batch_results = await asyncio.gather(
@@ -459,14 +496,51 @@ class HaSService:
                         "HaS NER batch failed (lost types: %s): %s",
                         lost_types, batch_result,
                     )
+                    unconfirmed_batches += 1
                     continue
-                for result_type, values in batch_result.items():
+                batch_entities, batch_confirmed = batch_result
+                if not batch_confirmed:
+                    # C1/C2：这批的结果可能是空的或偏少的（失败被 client 吞成了
+                    # `{}`）。仍按尽力而为合并进本次结果，但不得据此写全类型键。
+                    logger.warning(
+                        "HaS NER batch result unconfirmed (not parsed); lost types: %s",
+                        self._convert_entity_types_to_chinese(batch),
+                    )
+                    unconfirmed_batches += 1
+                for result_type, values in batch_entities.items():
                     if not isinstance(values, list):
                         continue
                     bucket = ner_result.setdefault(result_type, [])
                     for value in values:
                         if value and value not in bucket:
                             bucket.append(value)
+
+            # Issue#108：只有**全部**子批都确认解析成功才按完整类型表写回。
+            # 未确认批若照样写回，这个键在 TTL 内会一直返回偏少的结果 = 永久漏检且
+            # 无日志（Issue#23 让失败至少留了 warning，但缓存会把「一次失败」放大成
+            # 「一段时间内一直失败」）。
+            # ⚠️ 这里刻意**不传 type_guidance**：读侧 `has_client.get_cached_ner`
+            # （视觉线 has_text_analysis 的探测口）签名为 (text, entity_types)，
+            # 键里的 guidance 摘要恒为空串；若写侧带上 guidance，键就对不上，
+            # 等于没写（Issue#108 正文明确要求「用与读侧相同的键」）。
+            #
+            # ⚠️ 收益边界（⑥ 二审 Important-3 / 一审 I3）：即便文本逐字相同，两条链的
+            # **标签表来源仍是两套实现**——写侧取 `et.name`（见
+            # `_convert_entity_types_to_chinese`，`_expand_query_type_names` 现为直通），
+            # 读侧取 `vision/has_text_payload._item_query_labels`（有 `query_labels` 时
+            # **只**返回 query_labels，且跳过 VISUAL_ONLY 类型）。默认清单实测读侧 38 个
+            # 标签 / 写侧 36 个（差 `大写金额`、`诊断`）⇒ 键对不上，跨链复用收益在默认
+            # 配置下 ≈ 0。本改动保证的是「两侧一致时必定复用」的机制本身，以及不再把
+            # 未确认的残缺结论写进这个键；标签来源收敛成单点是后续 Issue。
+            if used_chinese_types and not unconfirmed_batches:
+                try:
+                    self.client.set_cached_ner(
+                        content,
+                        used_chinese_types,
+                        dict(ner_result),
+                    )
+                except Exception as exc:  # 缓存写回失败绝不能影响识别结果本身
+                    logger.warning("HaS NER 全类型缓存写回失败(不影响识别): %s", exc)
 
             if not ner_result:
                 return []
