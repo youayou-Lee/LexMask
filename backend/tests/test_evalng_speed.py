@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import evalng_bootstrap as boot
+import httpx
 import pytest
 
 collect = boot.load("engine/speedkit/collect.py")
@@ -238,6 +239,25 @@ class TestCollect:
         assert refs["D3.closure_same_clock"]["value"] == 0.001
         assert refs["D4.file_wall_p50"]["value"] == 12.5
         assert collect.validate_criteria_refs({**doc, "criteria_refs": refs}) == []
+
+    def test_criteria_refs_validator_names_bad_path_and_stale_value(self):
+        """I3/M15 反向用例：引用表校验必须**真会**报错（短路成 [] 即红）。"""
+        doc = {"summary": {"closure_ratio": 0.02},
+               "criteria_refs": {
+                   "D3.closure_same_clock": {"path": "summary.closure_ratio", "value": 0.02},
+                   "D4.file_wall_p50": {"path": "summary.file_wall_s.p50", "value": 12.5},
+                   "D2.grid_k": {"path": "summary.page_concurrency_peak", "value": 3}}}
+        errors = collect.validate_criteria_refs(doc)
+        assert any("D4.file_wall_p50" in e and "不可取" in e for e in errors), errors  # 路径取不到
+        assert any("D2.grid_k" in e and "不可取" in e for e in errors), errors  # 同上（缺 summary 键）
+        doc["criteria_refs"]["D4.file_wall_p50"] = {"path": "summary.closure_ratio", "value": 0.99}
+        stale = collect.validate_criteria_refs(doc)
+        assert any("D4.file_wall_p50" in e and "≠" in e for e in stale), stale  # 值不等（快照过期）
+        clean = {"summary": {"closure_ratio": 0.02},
+                 "criteria_refs": {"D3.closure_same_clock": {"path": "summary.closure_ratio",
+                                                             "value": 0.02}}}
+        assert collect.validate_criteria_refs(clean) == []
+        assert collect.validate_criteria_refs({"summary": {}}) == ["报告缺 criteria_refs（D3⑦）"]
 
 
 # ── report：自足/白名单/判定 ───────────────────────────────────────────────
@@ -576,6 +596,50 @@ class TestDriver:
         assert driver.quality_sidecar_check(sidecar, [])[0]["status"] == "PASS"
         assert driver.quality_sidecar_check({}, [])[0]["status"] == "UNVERIFIED"
 
+    def test_sidecar_keeps_numeric_counters_and_merges(self):
+        """I1 反向用例：响应回吐的**数值计数**不得被结构性丢弃（改 `is_number` 判定即红）。"""
+        resp = {
+            "bounding_boxes": [{"text": "张三"}, {"text": ""}],
+            "pipeline_status": {"ocr_has": {"stage_duration_ms": {
+                "has_text_ner_finish_reason": "length",
+                "has_text_ner_truncation_retries": 2,
+                "has_text_ner_rebatch_batches": 1,
+                "has_text_cache_status": "miss"}}},
+        }
+        side = driver.sidecar_from_response(resp)
+        assert side["has_text_ner_truncation_retries"] == 2, "数值计数必须保留（否则 D8① 无旁证可判）"
+        assert side["has_text_ner_rebatch_batches"] == 1
+        assert side["has_text_ner_finish_reason"] == "length"
+        assert side["has_text_cache_status"] == "miss"
+        # 计数类跨轮累加、状态类取最近值
+        acc: dict = {}
+        driver._merge_sidecar(acc, side)
+        driver._merge_sidecar(acc, {**side, "has_text_ner_truncation_retries": 3,
+                                   "has_text_cache_status": "hit"})
+        assert acc["has_text_ner_truncation_retries"] == 5.0, acc
+        assert acc["has_text_ner_rebatch_batches"] == 2.0
+        assert acc["has_text_cache_status"] == "hit"
+        # 旁证取不到 ⇒ UNVERIFIED（不得判 PASS）
+        assert driver.quality_sidecar_check({}, [])[0]["status"] == "UNVERIFIED"
+        assert driver.quality_sidecar_check(acc, [{"sidecar": acc}])[0]["status"] == "PASS"
+        dropped = driver.quality_sidecar_check({}, [{"sidecar": acc}])
+        assert dropped[0]["status"] == "FAIL", "响应回吐过的旁证在聚合里丢了必须 FAIL"
+
+    def test_measurement_failure_kind_distinguishes_rejection_from_unreachable(self):
+        """I7/D6④ 反向用例：413/504 是**被测对象拒收** ⇒ FAIL；连不上/500 ⇒ 装置不可得 ⇒ BLOCKED。"""
+        assert driver.measurement_failure_kind(ConnectionError("refused"))[0] == "BLOCKED"
+        reject_413 = driver.VisionRejected(413, "payload too large")
+        kind, detail = driver.measurement_failure_kind(reject_413)
+        assert (kind, "413" in detail) == ("FAIL", True), detail
+        assert driver.measurement_failure_kind(driver.VisionRejected(504, "gateway timeout"))[0] == "FAIL"
+        assert driver.measurement_failure_kind(driver.VisionRejected(500, "boom"))[0] == "BLOCKED"
+        request = httpx.Request("POST", "http://127.0.0.1:8000/api/v1/x")
+        resp_502 = httpx.Response(502, request=request)
+        err = httpx.HTTPStatusError("bad gateway", request=request, response=resp_502)
+        assert driver.measurement_failure_kind(err)[0] == "BLOCKED"
+        assert driver.measurement_failure_kind(
+            driver.VisionRejected(413, "big"))[1].startswith("HTTP 413")
+
     def test_load_round_evidence(self, tmp_path):
         assert driver.load_round_evidence(None) == {}
         bad = tmp_path / "ev.json"
@@ -821,14 +885,21 @@ class _StubApi:
         return ["type-1"]
 
 
-def _run_cli_with_stub(monkeypatch, tmp_path, *, driver_name: str, with_batch: bool = False):
+def _run_cli_with_stub(monkeypatch, tmp_path, *, driver_name: str, with_batch: bool = False,
+                       records: list[dict] | None = None, rounds: int = 2, warmup_rounds: int = 1):
+    """跑一遍 CLI 装配链。`records` 非空时按轮次依次吐出（用于造非法轮/离散度场景）。"""
     _, exam, arm, evidence = _cli_fixtures(tmp_path)
     monkeypatch.setattr(driver, "SpeedApi", _StubApi)
     canned = _canned_round(with_batch=with_batch)
+    queue = [dict(r) for r in records] if records else []
     target = "measure_single_round" if driver_name == "single" else "measure_batch_round"
-    monkeypatch.setattr(driver, target, lambda *a, **kw: dict(canned))
+
+    def _measure(*_args, **_kwargs):
+        return queue.pop(0) if queue else dict(canned)
+
+    monkeypatch.setattr(driver, target, _measure)
     code = cli.main(_speed_argv(exam, arm, evidence, tmp_path, driver=driver_name,
-                                cache_policy="warm", rounds=2, warmup_rounds=1))
+                                cache_policy="warm", rounds=rounds, warmup_rounds=warmup_rounds))
     doc = json.loads((tmp_path / "report" / "unit.json").read_text(encoding="utf-8"))
     return code, doc
 
@@ -843,6 +914,48 @@ class TestCliReportCompleteness:
     @staticmethod
     def _failed(doc: dict) -> set[str]:
         return {c["id"] for c in doc["checks"] if c["status"] == "FAIL"}
+
+    @staticmethod
+    def _status(doc: dict, check_id: str) -> str | None:
+        return next((c["status"] for c in doc["checks"] if c["id"] == check_id), None)
+
+    def test_invalid_timing_round_is_marked_and_excluded(self, tmp_path, monkeypatch):
+        """C2 反向用例：零页计时轮必须标记 invalid 并**从计时聚合里剔除**（改 `invalid=False` 即红）。"""
+        empty = _canned_round()
+        empty.update({"pages": [], "agg": collect.sum_pages([]), "items": [], "sidecar": {},
+                      "file_wall_s": 99.0, "driver_self_wall_s": 99.0})
+        code, doc = _run_cli_with_stub(monkeypatch, tmp_path, driver_name="single",
+                                       records=[empty, _canned_round()], rounds=2, warmup_rounds=0)
+        assert code != 2
+        assert doc["rounds"][0]["invalid"] is True, doc["rounds"][0]
+        assert doc["rounds"][0]["invalid_reason"], "非法轮必须记录原因"
+        assert "D1.round_validity" in self._failed(doc)
+        assert doc["summary"]["file_wall_s"]["n"] == 1, (
+            "非法轮不得进入计时聚合", doc["summary"]["file_wall_s"])
+        assert doc["summary"]["pages_measured_timing"] == 2
+
+    def test_timing_discretion_status_comes_from_driver(self, tmp_path, monkeypatch):
+        """C3 反向用例：`D2.timing_rounds` 状态必须取自 driver 三态（映射成 PASS 即红）。"""
+        tight = []
+        for wall in (1.00, 1.00, 1.02):
+            rec = _canned_round()
+            rec.update({"file_wall_s": wall, "driver_self_wall_s": wall})
+            tight.append(rec)
+        _code, doc = _run_cli_with_stub(monkeypatch, tmp_path, driver_name="single",
+                                        records=[_canned_round(), *tight], rounds=4, warmup_rounds=1)
+        assert doc["summary"]["file_wall_s"]["n"] == 3
+        assert self._status(doc, "D2.timing_rounds") == "PASS", (
+            self._status(doc, "D2.timing_rounds"), doc["summary"]["file_wall_s"])
+        wide = []
+        for wall in (1.0, 3.0, 9.0, 20.0):
+            rec = _canned_round()
+            rec.update({"file_wall_s": wall, "driver_self_wall_s": wall})
+            wide.append(rec)
+        _code2, doc2 = _run_cli_with_stub(monkeypatch, tmp_path, driver_name="single",
+                                          records=[_canned_round(), *wide], rounds=5, warmup_rounds=1)
+        assert doc2["summary"]["file_wall_s"]["n"] == 4
+        assert self._status(doc2, "D2.timing_rounds") == "UNVERIFIED", (
+            "补满 4 个计时轮仍高离散只能是 UNVERIFIED", self._status(doc2, "D2.timing_rounds"))
 
     def test_single_report_is_whitelist_clean(self, tmp_path, monkeypatch):
         code, doc = _run_cli_with_stub(monkeypatch, tmp_path, driver_name="single")
