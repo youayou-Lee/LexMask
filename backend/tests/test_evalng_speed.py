@@ -64,13 +64,17 @@ def _single_resp(total: float = 1000.0, ring: dict | None = None, *,
     }
 
 
-def _batch_page(total: float = 1000.0, ring: dict | None = None, k: int = 3) -> dict:
+def _batch_page(total: float = 1000.0, ring: dict | None = None, k: int = 3,
+                *, page_wall_extra: float = 120.0) -> dict:
+    """真后端批线逐页条目形状（云门④ 实测）：breakdown 里有自己的 `total`，外层 `duration_ms`
+    还含账外槽位等待/装配 ⇒ `page_wall_extra` 就是这部分（不得被当成账本根）。"""
     ring = dict(ring or RING_LEAVES)
     ring["total"] = total
     breakdown = {f"ocr_has.{key}": value for key, value in ring.items()}
+    breakdown["total"] = total  # 批线账本根：与管线 `<prefix>.total` 同作用域
     return {
         "page": 7,
-        "duration_ms": total,
+        "duration_ms": total + page_wall_extra,
         "duration_breakdown_ms": breakdown,
         "cache_status": {"has_text_cache_status_hit_before_slot": 1},
         "page_concurrency": k,
@@ -262,9 +266,71 @@ class TestCollect:
         checks2 = {c["id"]: c for c in collect.key_placement_checks(agg2, "single")}
         assert checks2["D3.ring_keys_present"]["status"] == "FAIL"
 
-    def test_key_placement_skips_batch(self):
+    def test_key_placement_batch_checks_root_scope(self):
+        """批线现在有自己的键归位判据：账本根必须取 breakdown 的 `total`（同作用域）。"""
         agg = collect.sum_pages([collect.batch_page_signal(_batch_page())])
-        assert collect.key_placement_checks(agg, "batch") == []
+        checks = {c["id"]: c for c in collect.key_placement_checks(agg, "batch")}
+        assert checks["D3.root_scope"]["status"] == "PASS"
+        assert "breakdown_total" in checks["D3.root_scope"]["detail"]
+
+    def test_batch_root_scope_fails_when_outer_wall_clock_used(self):
+        """改前形态（拿外层 duration_ms 当根）必须被判 FAIL，并点名后果。"""
+        agg = collect.sum_pages([collect.batch_page_signal(_batch_page())])
+        agg["root_total_sources"] = ["page_duration_ms"]
+        checks = {c["id"]: c for c in collect.key_placement_checks(agg, "batch")}
+        assert checks["D3.root_scope"]["status"] == "FAIL"
+        assert "page_duration_ms" in checks["D3.root_scope"]["detail"]
+        assert "同源闭合" in checks["D3.root_scope"]["detail"]
+
+    def test_batch_signal_separates_breakdown_total_from_page_wall(self):
+        """账本根与账外墙钟必须分列；后者只记录不入和。"""
+        sig = collect.batch_page_signal(_batch_page(total=4249.0, page_wall_extra=125.0))
+        assert sig["root_total_ms"] == 4249.0
+        assert sig["root_total_source"] == "breakdown_total"
+        assert sig["page_wall_ms"] == 4374.0
+        agg = collect.sum_pages([sig])
+        assert agg["sum_backend_pages_ms"] == 4249.0
+        assert agg["sum_page_wall_ms"] == 4374.0
+        assert agg["root_total_sources"] == ["breakdown_total"]
+
+    def test_batch_closure_uses_same_scope_root(self):
+        """云门④ 实测的两页账目：同作用域根 ⇒ 闭合 1.9% 通过；外层墙钟当根 ⇒ 3.6% 失败。
+
+        这条用例的价值＝把「差 2% 阈值能不能判假」钉在真数据形状上（阈值本身未动）。
+        """
+        p1 = collect.batch_page_signal({
+            "page": 1, "duration_ms": 4374,
+            "duration_breakdown_ms": {"total": 4249, "ocr_has.total": 722, "visual_features.total": 3450},
+            "cache_status": {"has_text_cache_status": "hit_before_slot"}, "page_concurrency": 2,
+        })
+        p2 = collect.batch_page_signal({
+            "page": 2, "duration_ms": 4282,
+            "duration_breakdown_ms": {"total": 4246, "ocr_has.total": 719, "visual_features.total": 3448},
+            "cache_status": {"has_text_cache_status": "hit_before_slot"}, "page_concurrency": 2,
+        })
+        agg = collect.sum_pages([p1, p2])
+        assert agg["sum_backend_pages_ms"] == 8495.0
+        assert agg["sum_rings_ms"] == 8339.0
+        ratio_same_scope = abs(agg["sum_backend_pages_ms"] - agg["sum_rings_ms"]) / agg["sum_backend_pages_ms"]
+        assert ratio_same_scope <= 0.02  # 1.84%
+        outer = 4374.0 + 4282.0
+        ratio_outer_root = abs(outer - agg["sum_rings_ms"]) / outer
+        assert ratio_outer_root > 0.02  # 3.13% ⇒ 改前形态确实会被 ①a 判 FAIL
+        checks = {c["id"]: c for c in collect.closure_checks(agg, harness_seq=None, backend_seq=None)}
+        assert checks["D3.closure_same_clock"]["status"] == "PASS"
+
+    def test_batch_signal_keeps_cross_page_accumulators_out_of_rings(self):
+        """跨页累积的文本层账（可远超本页总账）不得混进耗时叶子。"""
+        page = _batch_page(total=4249.0)
+        page["duration_breakdown_ms"]["ocr_has.has_text_model_ms"] = 28121.0
+        page["duration_breakdown_ms"]["ocr_has.has_text_total_ms"] = 28653.0
+        sig = collect.batch_page_signal(page)
+        assert "ocr_has.has_text_model_ms" not in sig["ring_leaves_ms"]
+        assert sig["other_breakdown_ms"]["ocr_has.has_text_model_ms"] == 28121.0
+        assert sig["other_breakdown_ms"]["ocr_has.has_text_total_ms"] == 28653.0
+        # 声明阶段的耗时仍在环里（判别力不得被这次收窄稀释）
+        assert "ocr_has.ocr" in sig["ring_leaves_ms"]
+        assert "ocr_has.prepare" in sig["ring_leaves_ms"]
 
     def test_batch_signal(self):
         sig = collect.batch_page_signal(_batch_page())
@@ -1058,6 +1124,7 @@ def _canned_round(*, with_batch: bool = False) -> dict:
     pages = _canned_pages()
     agg = collect.sum_pages(pages)
     agg["observed_page_concurrency"] = 2  # driver 在 single 线真实写入（driver.py:347）
+    agg["root_total_sources"] = [collect.BREAKDOWN_ROOT_SCOPE]  # single 线 ∅；批线真后端写该值
     record = {
         "pages": pages, "agg": agg, "file_wall_s": 1.2, "driver_self_wall_s": 1.21,
         "items": [{  # 形状对齐 driver._parse_view + items_view，逐个数值叶子都会被白名单过一遍

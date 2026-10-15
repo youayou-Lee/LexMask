@@ -71,6 +71,7 @@ _NUMERIC_ALLOW_RES = tuple(re.compile(pattern) for pattern in (
     r"^summary\.(pages_total|pages_measured_timing|pages_measured_all_rounds|steady_pages)$",
     r"^summary\.(files_total|files_timed)$",
     r"^summary\.(sum_backend_pages_ms|sum_harness_pages_ms|sum_rings_ms|unclassified_ms)$",
+    r"^summary\.sum_page_wall_ms$",
     r"^summary\.(residual_ratio|closure_ratio|harness_ratio|cache_hits|page_ms_p50)$",
     r"^summary\.(pages_per_min|files_per_min|parallel_efficiency|page_concurrency_peak)$",
     r"^summary\.(file_wall_s|driver_self_wall_s)\.[a-z0-9_]+$",
@@ -82,6 +83,7 @@ _NUMERIC_ALLOW_RES = tuple(re.compile(pattern) for pattern in (
     r"^rounds\[\d+\]\.agg\.(pages_measured|pages_with_backend_total)$",
     r"^rounds\[\d+\]\.agg\.(sum_backend_pages_ms|sum_harness_pages_ms|sum_rings_ms|unclassified_ms)$",
     r"^rounds\[\d+\]\.agg\.(residual_ratio|harness_ratio|cache_hits|page_concurrency_peak)$",
+    r"^rounds\[\d+\]\.agg\.sum_page_wall_ms$",
     r"^rounds\[\d+\]\.agg\.(observed_page_concurrency|page_concurrency_values)(\[\d+\])?$",
     r"^rounds\[\d+\]\.agg\.(rings_by_key_ms|cache_histogram|pipelines_seen)\..+$",
     r"^rounds\[\d+\]\.cache\.(round|hits)$",
@@ -93,7 +95,8 @@ _NUMERIC_ALLOW_RES = tuple(re.compile(pattern) for pattern in (
     r"^rounds\[\d+\]\.items\[\d+\]\.parse\.total_pages$",
     r"^rounds\[\d+\]\.rejected_items\[\d+\]\.http_status$",
     # ── 逐页信号（两线同构） ─────────────────────────────────────────────
-    r"^rounds\[\d+\]\.pages\[\d+\]\.(page|wall_s|root_total_ms|request_total_ms|cache_hits)$",
+    r"^rounds\[\d+\]\.pages\[\d+\]\.(page|wall_s|root_total_ms|page_wall_ms|request_total_ms|cache_hits)$",
+    r"^rounds\[\d+\]\.pages\[\d+\]\.other_breakdown_ms\..+$",
     r"^rounds\[\d+\]\.pages\[\d+\]\.(harness_start|harness_end)$",
     r"^rounds\[\d+\]\.pages\[\d+\]\.(page_concurrency|page_concurrency_configured)$",
     r"^rounds\[\d+\]\.pages\[\d+\]\.(box_count|entity_count)$",
@@ -483,7 +486,7 @@ def quality_key_errors(report: dict) -> list[str]:
 # 此时若保持 FAIL，会把「装置连不上」误报成「被测系统不达标」（且 exit 1 而非 3）；
 # 故降为 BLOCKED。一旦存在合法计时轮，一律照原样保留 FAIL（判别力不得被降级稀释）。
 NO_DATA_CHECK_IDS = frozenset({
-    "D2.batch_key_set", "D3.closure_same_clock", "D3.residual_two_sided",
+    "D2.batch_key_set", "D3.closure_same_clock", "D3.residual_two_sided", "D3.root_scope",
     "D4.wall_agreement", "D4.self_sufficiency", "D5.readiness_probe",
 })
 

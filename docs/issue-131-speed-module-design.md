@@ -102,6 +102,20 @@ P2/P3 的「不判」是**显式范围声明**，不是漏写（第一轮 I10/D8
 
 ⇒ 压平函数**两线统一**，`single` 线由驱动自行按同一套键规则合成，不得两套口径。
 
+**批线账本根的同作用域规则（④ 云门 D7 期实测后补，判据 `D3.root_scope`）**：批线逐页有**两种作用域**
+并存的账目——外层 `duration_ms` 含批线槽位等待/装配等**账外**墙钟（实测每页 +112~202ms），而
+`duration_breakdown_ms["total"]` 才与各管线 `<prefix>.total` 同作用域。故：
+
+| 角色 | 取键 | 处置 |
+|---|---|---|
+| 账本根（进 D3①a/② 闭合式） | `duration_breakdown_ms["total"]` | 采用，作用域记入 `root_total_source` |
+| 账外墙钟 | `duration_ms` | 单列 `page_wall_ms`，**只记录不入和** |
+| 环叶子 | `<pipeline>.<声明阶段>`（`prepare/ocr/has_ner/match/draw/model`） | 进环 |
+| 跨页累积账 | 其余 `*_ms`（如 `ocr_has.has_text_model_ms`，实测可达本页总账 6 倍） | 单列 `other_breakdown_ms`，**只记录不入和** |
+
+判据 `D3.root_scope`：批线 `root_total_sources` 必须 = `["breakdown_total"]`，否则 FAIL 并点名后果
+（外层墙钟会让同源闭合凭空失败）。**阈值一处未动**；改前形态在真实两页账目上会让 D3①a 差 3.66% ⇒ FAIL。
+
 **压平后的键路径（写死，防歧义）**：`single` 线 = `ocr_has.<stage>` / `visual_features.<stage>` /
 `pdf_render_ms` / `pdf_render_cache_hit` / `pdf_text_layer_ms` 等；`batch` 线 = `<pipeline_name>.<stage_key>`。
 已核实的真实键：

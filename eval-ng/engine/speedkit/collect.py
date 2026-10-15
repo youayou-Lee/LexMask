@@ -43,6 +43,9 @@ SINGLE_REQUIRED_RING_LEAVES = (
 # 把计数当耗时求和 ⇒ Σ_rings 远大于 Σ_root（10 页实测 44.6s/页 vs 24.5s/页），闭合 54% 恒 FAIL。
 # 故：声明的阶段名 ∪ `*_ms` 后缀 = 耗时；`total` 恒归 `pipeline_totals_ms`，不进叶子（防双算）。
 DURATION_STAGE_NAMES = frozenset({"prepare", "ocr", "has_ner", "match", "draw", "model"})
+# 批线账本根的两种作用域（④ 云门实测：必须取 breakdown 自己的 total，见 batch_page_signal）
+BREAKDOWN_ROOT_SCOPE = "breakdown_total"
+PAGE_WALL_SCOPE = "page_duration_ms"
 
 
 def is_duration_key(key: str) -> bool:
@@ -166,10 +169,21 @@ def batch_page_signal(page: dict) -> dict:
 
     batch 的 `duration_breakdown_ms` 键已是 `<pipeline>.<key>` 全名（无需也不许再拼接或
     后缀归并）；管线环 = `<prefix>.total`。`cache_status` 是该页的直方图字典。
+
+    ④ 云门实测出的两处**同作用域订正**（只对齐粒度，不动任何阈值）：
+    1. 账本根取 `duration_breakdown_ms["total"]` —— 它与各管线 `<prefix>.total` 同作用域。
+       外层 `duration_ms` 还含批线槽位等待/装配等**账外**墙钟（实测每页 +112~202ms，
+       占 2.6%~4.6%），拿它当根会让 D3①a 的同源闭合凭空失败。外层墙钟单列
+       `page_wall_ms`（只记录、不入和），实际采用的作用域写入 `root_total_source`，
+       由 `key_placement_checks` 的 `D3.root_scope` 判。
+    2. 叶子只收 `<pipeline>.<声明阶段>`：breakdown 里另有跨页累积的文本层账
+       （如 `ocr_has.has_text_model_ms` / `has_text_total_ms`，实测可达本页总账的 6 倍），
+       它们不是本页组件，单列 `other_breakdown_ms`（只记录、不入和）。
     """
     page = page or {}
     breakdown = page.get("duration_breakdown_ms") if isinstance(page.get("duration_breakdown_ms"), dict) else {}
     leaves: dict[str, float] = {}
+    other: dict[str, float] = {}
     totals: dict[str, float] = {}
     for key, value in breakdown.items():
         if not is_number(value):
@@ -178,7 +192,10 @@ def batch_page_signal(page: dict) -> dict:
         if name.rsplit(".", 1)[-1] == "total" and "." in name:
             totals[name.rsplit(".", 1)[0]] = float(value)  # 管线环（与 single 块级 duration_ms 同粒度）
         elif is_duration_key(name):
-            leaves[name] = float(value)  # 耗时叶子；计数/字符数/缓存标记不入环
+            if "." in name and name.rsplit(".", 1)[-1] in DURATION_STAGE_NAMES:
+                leaves[name] = float(value)  # 本页声明的阶段耗时
+            else:
+                other[name] = float(value)  # 非声明阶段的 *_ms（可能是跨页累积账，不得入环）
     histogram_raw = page.get("cache_status") if isinstance(page.get("cache_status"), dict) else {}
     histogram: dict[str, int] = {}
     for key, value in histogram_raw.items():
@@ -188,12 +205,25 @@ def batch_page_signal(page: dict) -> dict:
         elif isinstance(value, str):
             histogram[value] = histogram.get(value, 0) + 1
     duration = page.get("duration_ms")
+    breakdown_total = breakdown.get("total")
+    if is_number(breakdown_total):
+        root_total: float | None = float(breakdown_total)
+        root_source: str | None = BREAKDOWN_ROOT_SCOPE
+    elif is_number(duration):
+        root_total = float(duration)
+        root_source = PAGE_WALL_SCOPE
+    else:
+        root_total = None
+        root_source = None
     return {
         "page": page.get("page"),
         "wall_s": None,
-        "root_total_ms": float(duration) if is_number(duration) else None,
+        "root_total_ms": root_total,
+        "root_total_source": root_source,
+        "page_wall_ms": float(duration) if is_number(duration) else None,
         "pipeline_totals_ms": totals,
         "ring_leaves_ms": leaves,
+        "other_breakdown_ms": other,
         "ring_keys": sorted(leaves),
         "cache_status": histogram,
         "cache_hits": histogram.get(HIT_STATUS, 0),
@@ -214,10 +244,16 @@ def sum_pages(pages: list[dict]) -> dict:
     concurrency_peaks: list[int] = []
     histogram: dict[str, int] = {}
     pipelines_seen: set[str] = set()
+    root_sources: set[str] = set()
+    page_wall_total = 0.0
     hits = 0
     for page in pages:
         totals = page.get("pipeline_totals_ms") or {}
         pipelines_seen.update(str(k) for k in totals)
+        if page.get("root_total_source"):
+            root_sources.add(str(page["root_total_source"]))
+        if is_number(page.get("page_wall_ms")):
+            page_wall_total += float(page["page_wall_ms"])
         ring_total += sum(float(v) for v in totals.values())
         for key, value in (page.get("ring_leaves_ms") or {}).items():
             rings_by_key[key] = rings_by_key.get(key, 0.0) + float(value)
@@ -241,6 +277,8 @@ def sum_pages(pages: list[dict]) -> dict:
         "harness_ratio": (round(sum_harness / sum_backend, 6) if sum_backend > 0 else None),
         "rings_by_key_ms": {k: round(v, 3) for k, v in sorted(rings_by_key.items())},
         "pipelines_seen": sorted(pipelines_seen),
+        "root_total_sources": sorted(root_sources),
+        "sum_page_wall_ms": round(page_wall_total, 3),
         "cache_histogram": dict(sorted(histogram.items())),
         "cache_hits": hits,
         "page_concurrency_peak": (max(concurrency_peaks) if concurrency_peaks else None),
@@ -314,9 +352,24 @@ def closure_checks(agg: dict, *, harness_seq=None, backend_seq=None) -> list[dic
 
 
 def key_placement_checks(agg: dict, driver: str) -> list[dict]:
-    """D3④/⑤：键前缀归位与非零性（只对 `single` 线）。"""
+    """D3④/⑤：键前缀归位与非零性（`single` 线）；D3.root_scope：批线账本根作用域。"""
     checks: list[dict] = []
     leaves = agg.get("rings_by_key_ms") or {}
+    if driver == "batch":
+        # ④ 云门实测：批线页根若取外层 `duration_ms`（含槽位等待等账外墙钟），
+        # 同源闭合（D3①a ≤2%）会凭空失败（实测差 2.6%~4.6%）。这里把「必须用
+        # breakdown 自己的 total 当根」做成机判，免得靠人记得。
+        sources = sorted(str(s) for s in (agg.get("root_total_sources") or []))
+        ok = sources == [BREAKDOWN_ROOT_SCOPE]
+        if ok:
+            detail = f"批线账本根作用域 = {BREAKDOWN_ROOT_SCOPE}（与管线 totals 同作用域）"
+        else:
+            detail = (f"批线账本根必须取 {BREAKDOWN_ROOT_SCOPE}（与管线 totals 同作用域）；"
+                      f"实测来源 {sources or '∅'}")
+            if PAGE_WALL_SCOPE in sources:
+                detail += "——外层 page_duration_ms 含账外槽位等待/装配，会让同源闭合凭空失败"
+        checks.append(_check("D3.root_scope", "PASS" if ok else "FAIL", detail, len(sources)))
+        return checks
     if driver != "single":
         return checks
     missing = [k for k in SINGLE_REQUIRED_RING_LEAVES if k not in leaves]
