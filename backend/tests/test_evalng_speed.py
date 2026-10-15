@@ -1228,6 +1228,32 @@ class TestCliReportCompleteness:
         assert report._first_meaningful_line("----\nHygon C86 7185 32-core Processor\n") == (
             "Hygon C86 7185 32-core Processor")
 
+    def test_hardware_capture_prefers_device_identity_over_table_header(self):
+        """④云门实测：DCU 上 `hy-smi` 首条可用行是**表头**，当「硬件」证据价值为零。
+
+        `hy-smi --showhw` 才给设备身份（DID/SSID/VBIOS/BUS）⇒ 捕获应跳过表头、取设备行并保留表头做注。
+        """
+        usage = (
+            "================================= System Management Interface "
+            "==================================\n"
+            "=============================================================\n"
+            "HCU     Temp     AvgPwr     Perf     PwrCap     VRAM%      HCU%      Mode\n"
+            "0       45.0     120.0      Normal   300.0      10%        0%        Normal\n"
+        )
+        assert report._looks_like_table_header(
+            "HCU     Temp     AvgPwr     Perf     PwrCap     VRAM%      HCU%      Mode") is True
+        assert report._looks_like_table_header("Hygon C86 7185 32-core Processor") is False
+        got = report._hardware_capture(usage)
+        assert "Mode" in got and "45.0" in got and "｜" in got, got
+        # 表头被跳过、设备行成为「第一条承载信息的行」
+        assert report._first_meaningful_line(usage).startswith("0       45.0")
+        # 只有表头（无设备行）⇒ 不得把表头当硬件证据
+        assert report._hardware_capture("HCU DID SSID GFX RAS SDMA RAS UMC RAS VBIOS BUS") != (
+            "HCU DID SSID GFX RAS SDMA RAS UMC RAS VBIOS BUS")
+        # 形如 `nvidia-smi -L` 的型号行（不以序号开头）仍要能取到
+        assert report._hardware_capture("GPU 0: NVIDIA GeForce RTX 5090 (UUID: x)\n") == (
+            "GPU 0: NVIDIA GeForce RTX 5090 (UUID: x)")
+
     def test_api_base_check_is_discriminative(self):
         """I15：`D2.api_base` 原来无条件 PASS；现在必须由 trust_env 决定。"""
         ev = {"rounds": [{"round": 1, "pid": 1, "start_time": "1",

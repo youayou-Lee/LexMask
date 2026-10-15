@@ -246,14 +246,46 @@ def is_loopback_host(host: str) -> bool:
 _BANNER_LINE_RE = re.compile(r"(?i)^[\s=\-*#+]+$|system management interface|^\s*(usage|command)\b")
 
 
+_COLUMN_TOKENS = frozenset({
+    "temp", "avgpwr", "perf", "pwrcap", "vram%", "hcu%", "mode", "gpu%", "mem%", "ecc",
+    "fan", "power", "usage", "did", "ssid", "gfx", "ras", "sdma", "umc", "vbios", "bus", "memory",
+})
+_DEVICE_ROW_RE = re.compile(r"^\d+\s+\S")
+
+
+def _looks_like_table_header(line: str) -> bool:
+    """一眼表头：≥4 个 token 命中已知列名（`hy-smi` 的表头行不承载硬件型号，别当证据）。"""
+    tokens = [tok.strip("|").lower() for tok in re.split(r"\s+", line) if tok.strip("|")]
+    if len(tokens) < 4:
+        return False
+    return sum(1 for tok in tokens if tok in _COLUMN_TOKENS) >= 4
+
+
 def _first_meaningful_line(text: str) -> str:
-    """跳过横幅/分隔行，取第一条承载信息的原始输出行。"""
+    """跳过横幅/分隔行与表头行，取第一条承载信息的原始输出行。"""
     for line in (text or "").splitlines():
         stripped = line.strip()
-        if not stripped or _BANNER_LINE_RE.search(stripped):
+        if not stripped or _BANNER_LINE_RE.search(stripped) or _looks_like_table_header(stripped):
             continue
         return stripped[:200]
     return ""
+
+
+def _hardware_capture(text: str) -> str:
+    """设备清单类输出：优先「表头｜设备行」两段式原始捕获，否则退第一条可用行。
+
+    ④云门实测：DCU 上 `hy-smi` 的首条可用行是**表头**（`HCU Temp AvgPwr …`），作为「硬件」证据
+    价值为零；`hy-smi --showhw` 才给出设备身份（DID/SSID/VBIOS/BUS）。这里取设备行并与表头合并，
+    全部来自现场命令原始 stdout（禁手填、禁拼造型号）。
+    """
+    lines = [ln.strip() for ln in (text or "").splitlines()]
+    meaningful = [ln for ln in lines if ln and not _BANNER_LINE_RE.search(ln)]
+    for idx, line in enumerate(meaningful):
+        if _DEVICE_ROW_RE.match(line):
+            header = meaningful[idx - 1] if idx > 0 and _looks_like_table_header(meaningful[idx - 1]) else ""
+            row = re.sub(r"\s{2,}", " ", line)
+            return (f"{re.sub(chr(92) + 's{2,}', ' ', header)}｜{row}" if header else row)[:200]
+    return _first_meaningful_line(text)
 
 
 def hardware_raw(fallback: str = "") -> str:
@@ -262,28 +294,17 @@ def hardware_raw(fallback: str = "") -> str:
     ④云门实测：SCNet 实例的非交互 PATH 里**没有** `hy-smi`（实为 `/opt/hyhal/bin/hy-smi`）⇒ 按绝对
     路径探测；再退 `/proc/cpuinfo` 的 `model name`（实例上给出 `Hygon C86 7185 32-core Processor`）。
     """
-    for cmd in (["nvidia-smi", "-L"], ["hy-smi", "-L"], ["hy-smi"],
-                ["/opt/hyhal/bin/hy-smi", "-L"], ["/opt/hyhal/bin/hy-smi"], ["npu-smi", "info", "-m"]):
+    for cmd in (["nvidia-smi", "-L"], ["hy-smi", "--showhw"], ["/opt/hyhal/bin/hy-smi", "--showhw"],
+                ["hy-smi"], ["/opt/hyhal/bin/hy-smi"], ["hy-smi", "-L"], ["/opt/hyhal/bin/hy-smi", "-L"],
+                ["npu-smi", "info", "-m"]):
         try:
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
         except (OSError, subprocess.SubprocessError):
             continue
         if out.returncode == 0 and out.stdout.strip():
-            line = _first_meaningful_line(out.stdout)
+            line = _hardware_capture(out.stdout)
             if line:
                 return line
-    # 无 GPU 工具（本地 dev 容器）：退到 CPU/机器原始输出，仍是现场机检、非手填
-    try:
-        cpuinfo = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        cpuinfo = ""
-    for line in cpuinfo.splitlines():
-        if line.lower().startswith("model name"):
-            return line.strip()[:200]
-    text = (platform.processor() or platform.machine() or "").strip()
-    if text:
-        return f"{text} (no gpu tool on this box)"[:200]
-    return fallback
     # 无 GPU 工具（本地 dev 容器）：退到 CPU/机器原始输出，仍是现场机检、非手填
     try:
         cpuinfo = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore")
