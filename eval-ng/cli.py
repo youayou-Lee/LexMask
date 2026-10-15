@@ -643,6 +643,7 @@ def _run_speed(args: argparse.Namespace) -> int:
     ))
     checks.extend(sk_driver.concurrency_dual_evidence(rounds, args.page_concurrency, args.driver))
     checks.extend(sk_driver.expect_reject_checks(rounds, corpus))
+    checks.extend(_speed_corpus_premise_checks(corpus, rounds))
     harness_seq, backend_seq = sk_collect.recorded_pair_sequences(
         [[p for p in (r.get("pages") or [])] for r in timing]
     )
@@ -982,6 +983,57 @@ def _speed_self_sufficiency_checks(*, mode: dict, arm: dict, summary: dict,
              "detail": ("报告自足：重放/复核所需字段齐备" if not missing
                         else f"报告自足性缺项：{', '.join(missing)}"),
              "value": len(missing)}]
+
+
+def _speed_corpus_premise_checks(corpus: list[dict], rounds: list[dict]) -> list[dict]:
+    """D1④（AC2）：卷的「声明形态」必须被两侧机检证实，而不是靠文件名或口头说明。
+
+    声明 `scanned_pdf` ⇒ 本地 `pdftotext` 非空白字符 = 0 **且** 后端 `/parse` 报 `is_scanned=True`；
+    声明 `text_pdf` 反之。任一侧与声明不符即 FAIL（测的不是它声明的形态，速率数字无意义）；
+    两侧里有一侧取不到（容器无 `pdftotext` / 装置不可得无 `/parse` 旁证）⇒ UNVERIFIED，不猜 PASS。
+    """
+    parse_view: dict[str, dict] = {}
+    for rnd in rounds:
+        for item in (rnd.get("items") or []):
+            if item.get("id") is not None and isinstance(item.get("parse"), dict):
+                parse_view[item["id"]] = item["parse"]
+
+    mismatch: list[str] = []
+    unknown: list[str] = []
+    confirmed: list[str] = []
+    for entry in corpus:
+        declared = str(entry.get("carrier") or "unknown")
+        if declared not in ("scanned_pdf", "text_pdf"):
+            continue
+        want_scanned = declared == "scanned_pdf"
+        item_id = str(entry.get("id"))
+        chars = entry.get("text_chars")
+        if chars is None:
+            unknown.append(f"{item_id}：本地无 pdftotext 非空白计数")
+        elif (chars == 0) != want_scanned:
+            mismatch.append(f"{item_id}：本地 pdftotext 非空白 {chars} 字，声明 {declared}")
+        meta = parse_view.get(entry.get("id"))
+        if meta is None:
+            unknown.append(f"{item_id}：无后端 /parse 旁证")
+        elif bool(meta.get("is_scanned")) != want_scanned:
+            mismatch.append(f"{item_id}：后端 parse.is_scanned={meta.get('is_scanned')}，声明 {declared}")
+        if chars is not None and meta is not None:
+            confirmed.append(item_id)
+    if mismatch:
+        return [{"id": "D1.corpus_premise", "status": "FAIL",
+                 "detail": "声明形态与机检不符（测得不是它声明的形态）：" + "；".join(mismatch),
+                 "value": len(mismatch)}]
+    if unknown:
+        return [{"id": "D1.corpus_premise", "status": "UNVERIFIED",
+                 "detail": "前提未被两侧机检全部证实：" + "；".join(unknown),
+                 "value": len(unknown)}]
+    if not confirmed:
+        return [{"id": "D1.corpus_premise", "status": "UNVERIFIED",
+                 "detail": "清单没有声明 scanned_pdf/text_pdf 的条目，形态前提无从机检", "value": 0}]
+    return [{"id": "D1.corpus_premise", "status": "PASS",
+             "detail": f"{len(confirmed)} 件的声明形态两侧机检一致"
+                       "（本地 pdftotext 非空白计数 + 后端 parse.is_scanned）",
+             "value": len(confirmed)}]
 
 
 def _speed_driver_key_checks(driver: str, summary: dict, rounds: list[dict], *,

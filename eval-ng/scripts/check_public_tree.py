@@ -66,7 +66,7 @@ SKIP_SUFFIXES = frozenset({
 MAX_BYTES = 2 * 1024 * 1024
 
 SELF_TEST_BAD = (
-    "instance 8.8.8.8 path /root/ab/arm.json win C:\\Users\\dev\\secret.txt "  # public-tree-scan: ignore-line
+    "instance 8.8.8.8 path /srv/evidence/arm.json win C:\\Users\\dev\\secret.txt "  # public-tree-scan: ignore-line
     "auth Bearer abcdefghijklmnopqrstuvwxyz012345 password=\"Passw0rd!2026\" deny SCNET-INSTANCE-1"  # public-tree-scan: ignore-line
 )
 SELF_TEST_CLEAN = (

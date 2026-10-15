@@ -878,6 +878,51 @@ def test_patch_effect_checks_require_marks_on_disk(tmp_path):
     assert [c["status"] for c in arms.patch_effect_checks(ghost)] == ["FAIL"]
 
 
+# ── D1④（AC2）：卷的声明形态两侧机检 ─────────────────────────────────────
+class TestCorpusPremise:
+    """D1④：声明 `scanned_pdf`/`text_pdf` 必须两侧机检一致，否则测得不是它声明的形态。"""
+
+    @staticmethod
+    def _corpus(**over):
+        base = {"id": "c1", "carrier": "scanned_pdf", "text_chars": 0}
+        base.update(over)
+        return [base]
+
+    @staticmethod
+    def _rounds(is_scanned: bool, item_id: str = "c1"):
+        return [{"items": [{"id": item_id, "parse": {"is_scanned": is_scanned}}]}]
+
+    def test_scanned_declared_and_confirmed_both_sides(self):
+        checks = cli._speed_corpus_premise_checks(self._corpus(), self._rounds(True))
+        assert [c["status"] for c in checks] == ["PASS"], checks
+        assert checks[0]["value"] == 1
+
+    def test_text_declared_with_text_layer_passes(self):
+        checks = cli._speed_corpus_premise_checks(
+            self._corpus(carrier="text_pdf", text_chars=120), self._rounds(False))
+        assert [c["status"] for c in checks] == ["PASS"], checks
+
+    def test_declared_scanned_but_text_layer_present_fails(self):
+        checks = cli._speed_corpus_premise_checks(self._corpus(text_chars=5), self._rounds(True))
+        assert checks[0]["status"] == "FAIL" and "声明" in checks[0]["detail"], checks
+
+    def test_declared_scanned_but_backend_reports_text_pdf_fails(self):
+        checks = cli._speed_corpus_premise_checks(self._corpus(), self._rounds(False))
+        assert checks[0]["status"] == "FAIL" and "parse.is_scanned" in checks[0]["detail"], checks
+
+    def test_missing_local_count_is_unverified_not_pass(self):
+        checks = cli._speed_corpus_premise_checks(self._corpus(text_chars=None), self._rounds(True))
+        assert checks[0]["status"] == "UNVERIFIED" and "pdftotext" in checks[0]["detail"], checks
+
+    def test_missing_parse_evidence_is_unverified(self):
+        checks = cli._speed_corpus_premise_checks(self._corpus(), [])
+        assert checks[0]["status"] == "UNVERIFIED" and "/parse" in checks[0]["detail"], checks
+
+    def test_no_declarable_entry_is_unverified_not_pass(self):
+        checks = cli._speed_corpus_premise_checks(self._corpus(carrier="unknown", text_chars=None), [])
+        assert checks[0]["status"] == "UNVERIFIED", checks
+
+
 # ── CLI：用法错误与退出码（零网络） ────────────────────────────────────────
 def _cli_fixtures(tmp_path):
     corpus = tmp_path / "卷.txt"
@@ -1199,7 +1244,7 @@ class TestCliReportCompleteness:
 
     def test_redact_path_covers_home_and_unc(self):
         """I13：`~` 与 UNC 同属绝对路径，必须压前缀；普通相对路径保持可重放。"""
-        assert report.redact_path("/root/ab/exam_d1.json") == "<abs>/…/exam_d1.json"  # public-tree-scan: ignore-line
+        assert report.redact_path("/srv/evidence/exam_d1.json") == "<abs>/…/exam_d1.json"  # public-tree-scan: ignore-line
         assert report.redact_path("~/private/x.json") == "<abs>/…/x.json"
         assert report.redact_path(r"\\srv\share\report.json") == "<abs>/…/report.json"
         assert report.redact_path("out/report.json") == "out/report.json"
@@ -1207,13 +1252,13 @@ class TestCliReportCompleteness:
     def test_redact_command_masks_credentials_and_paths(self):
         """I13：口令类开关的后一个 token 整体替换；值内 Bearer/口令字面量抹掉。"""
         masked = report.redact_command(
-            ["python", "eval-ng/cli.py", "speed", "/root/ab/exam.json", "--api-pass", "EvalUser!2026",  # public-tree-scan: ignore-line
+            ["python", "eval-ng/cli.py", "speed", "/srv/evidence/exam.json", "--api-pass", "EvalUser!2026",  # public-tree-scan: ignore-line
              "--api-base", "http://127.0.0.1:8000"]
         )
         joined = " ".join(masked)
         assert "EvalUser!2026" not in joined, joined
         assert "<redacted>" in masked
-        assert "/root/ab" not in joined, joined  # public-tree-scan: ignore-line
+        assert "/srv/evidence" not in joined, joined  # public-tree-scan: ignore-line
         assert any(report.scrub_secrets(v) == v for v in ("plain",))  # 无凭据值原样
 
         env = report.redact_env({"API_PASS": "EvalUser!2026", "HAS_NER_GLOBAL_MAX_INFLIGHT": "8",
@@ -1379,13 +1424,13 @@ class TestRedactionScanner:
         assert redact.main(["--self-test"]) == 0
 
     def test_scan_rules(self):
-        hits = redact.scan("ip 10.1.2.3 path /root/ab/d3.json win C:\\Users\\dev\\a.txt",  # public-tree-scan: ignore-line
+        hits = redact.scan("ip 10.1.2.3 path /srv/evidence/d3.json win C:\\Users\\dev\\a.txt",  # public-tree-scan: ignore-line
                            denylist=[], allow_prefixes=[])
         rules = {rule for rule, _ in hits}
         assert {"ip", "abs_path", "win_path"} <= rules
         assert redact.scan("ip 127.0.0.1 ok", denylist=[], allow_prefixes=[]) == []
-        assert redact.scan("path /root/ab/d3.json", denylist=[],  # public-tree-scan: ignore-line
-                           allow_prefixes=["/root/ab"]) == []  # public-tree-scan: ignore-line
+        assert redact.scan("path /srv/evidence/d3.json", denylist=[],  # public-tree-scan: ignore-line
+                           allow_prefixes=["/srv/evidence"]) == []  # public-tree-scan: ignore-line
         assert redact.scan("卷 苏A-某某公司", denylist=["苏A-某某公司"], allow_prefixes=[])
         assert redact.scan("rev abc123", denylist=["re:^rev"], allow_prefixes=[])
 
