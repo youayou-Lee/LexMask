@@ -1,6 +1,6 @@
 # E2E Harness（有头 Chrome，永不无头）
 
-五层闸门的第 3 层。目标由 `E2E_BASE_URL` 决定（默认 `http://localhost:8000`，即隧道到 5090 或本地全栈）。
+五层闸门的第 3 层。目标由 `E2E_BASE_URL` 决定（默认 `http://localhost:8000`，即隧道到目标实例——当前为云 SCNet DCU `scnet-main`——或本地全栈）。
 
 ## 分层
 
