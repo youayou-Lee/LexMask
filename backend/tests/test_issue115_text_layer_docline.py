@@ -661,3 +661,22 @@ def test_volume_level_gates_are_fail_able(monkeypatch, tmp_path):
         )
     )
     assert boxes is None and memo is None, "覆盖率 0.40 < 0.90 必须回落旧路径"
+
+
+def test_map_values_prefers_whole_word_match_over_embedded_one():
+    """子串匹配的过度命中收口：存在「整词恰等」命中时只取它。
+
+    真实卷 14.3% 的「词」是 16-48 字连排段（见验收方案 §12 词粒度实测），所以必须
+    允许子串命中；但短值（年龄 `35`、`张三`）若同时也作为整词出现过，就应当优先
+    取整词，避免命中身份证/银行卡号内部的数字。
+    """
+    pages = [_page(1, ["张三", "张三丰"])]
+    stream, spans = docline.build_stream(pages)
+    entities, failures = docline.map_values(pages, stream, spans, {"姓名": {"张三"}})
+    assert failures == []
+    assert len(entities) == 1, "整词命中优先时不应把词内那次也当成一条"
+    x0, _y0, x1, _y1 = entities[0].bbox
+    # 必须是第一个词「张三」整词（x 从 50/595 起），而不是第二个词「张三丰」内部的「张三」
+    assert abs(x0 - 50.0 / 595.0) < 1e-6
+    assert abs((x1 - x0) - 40.0 / 595.0) < 1e-6
+    assert entities[0].page == 1

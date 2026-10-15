@@ -366,6 +366,16 @@ def map_values(
             # `match_entities_to_ocr` 自身就支持 sub-word positioning，硬校验会让
             # 新链比旧链更窄 ⇒ 静默漏检。框精度改由下面的**词内插值**保证。
             spans = find_value_spans(normalized, index_map, value)
+            if len(spans) > 1:
+                # **子串匹配的过度命中收口**：取消词边界硬校验后，短值（如年龄 `35`）
+                # 可能命中长串内部（身份证/银行卡号里就会出现）。规则：只要存在
+                # 「整词恰等」的命中就只取那些，否则才退回全部子串命中——既保住
+                # 词内子串的召回（真实卷 14.3% 的词是 16-48 字连排段），又不至于
+                # 把带前缀的串当成独立值。
+                aligned_keys = {(span.start, span.end) for span in word_spans}
+                aligned = [(a, b) for a, b in spans if (a, b) in aligned_keys]
+                if aligned:
+                    spans = aligned
             if not spans:
                 failures.append({"type": type_id, "value": value, "reason": "not_found_in_stream"})
                 continue
