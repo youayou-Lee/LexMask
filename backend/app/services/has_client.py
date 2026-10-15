@@ -693,7 +693,10 @@ class HaSClient:
         cache_key = self._ner_cache_key_for(text, types, guidance_text, sample_index)
         cached = self._get_cached_ner(cache_key)
         if cached is not None:
-            # 命中即视为成功：写回口只收「解析成功」的结果（见下方各 return）。
+            # 命中即视为成功——依赖不变量：**缓存里的条目恒为「已确认解析成功」**。
+            # 所以任何 ok=False 的结果都不得落键（⑥ 二审 Critical-1 实证：残缺结果
+            # 一旦落键，下一次同键请求就从这里被洗成 ok=True，服务层的写回门随即
+            # 失效——零模型调用即可把部分并集提升成全类型键）。
             return cached, True
 
         from app.core.config import settings
@@ -885,7 +888,9 @@ If nothing matches, return {{}}.
                             for value in values:
                                 if value not in bucket:
                                     bucket.append(value)
-                    if all_confirmed and merged:
+                    # 三处写回门统一为「全部确认即写」（⑥ 二审 Minor-B）：并集为空
+                    # 只表示「每个子批都合法地答了无实体」，那也是完整结论。
+                    if all_confirmed:
                         self._set_cached_ner(cache_key, merged)
                     return merged, all_confirmed
                 # Issue#108 ⑥ 评审 C1/C2：整段输出不可解析 ≠ 模型答「无实体」，
@@ -898,6 +903,12 @@ If nothing matches, return {{}}.
                 round((time.perf_counter() - started) * 1000),
             )
             confirmed = True
+            # ⑥ 二审 Important-4：解析成功 ≠「回答了请求类型」。提示词要求桶名取
+            # 请求类型；一份**非空**却一个请求类型都不含的回答是契约违背（模型编了
+            # 别的桶名），落键后读侧命中即把请求类型在 TTL 内永久跳过 ⇒ 不算成功。
+            # 合法空答案（`{}`，提示词明确「无匹配就回 {}」）不在此列。
+            if result and not any(t in result for t in types):
+                confirmed = False
             if parse_mode.startswith("json_repair"):
                 # 输出被截断/损坏（如日期桶复读循环耗尽 max_tokens）：
                 # ①末桶的截断残值丢弃；②整桶丢失的请求类型补查一次并合并。
@@ -912,14 +923,17 @@ If nothing matches, return {{}}.
                         # 原样重发（必然同结局），且补查 key 与本调用相同——会
                         # 自连接本调用尚未释放的 inflight 事件、白等满超时
                         # （e2e 复现：批调用 3×120s 挂起）。返回修复的部分结果。
-                        # Issue#108 ⑥ 评审 C1/C2：这一支仍按原样写子键（e2e 加固过
-                        # 的死锁规避路径，不改动它），但 ok=False——调用方据此拒绝
-                        # 把这条残缺结果提升成全类型键。
+                        # Issue#108 ⑥ 一审：这一支不改（e2e 加固过的死锁规避路径），
+                        # 但 ok=False；⑥ 二审 Critical-1/2：**并且不得写缓存**。
+                        # 落键的后果是「洗白」——下次同键请求从不变量分支命中并报
+                        # ok=True，服务层写回门失效，零模型调用就能把 12/19 的部分
+                        # 并集写进全类型键（二审实测 RUN1 门生效、RUN2 写穿）；单批
+                        # 形态下这条键还与读侧探测键重合，`{}` 直接被读侧判命中。
+                        # 死锁规避只要求「不自我补查」，不要求「写缓存」。
                         logger.warning(
                             "HaS NER output recovered via %s but lacks every requested type; skipping self-retry",
                             parse_mode,
                         )
-                        self._set_cached_ner(cache_key, result)
                         return result, False
                     if missing:
                         _record_ner_metrics(truncation_retries=1)

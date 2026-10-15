@@ -9,7 +9,7 @@
 本文件钉三件事：
 1. 客户端写回口 `set_cached_ner` 与读口 `get_cached_ner` 的键**必须一致**
    （键公式两处漂移的表现是「写进去了却永远读不中」，不报错、不告警）；
-2. 服务层预切成 3 个子批后，**完整 19 型**的键必须可读（未改动树为 red：None）；
+2. 服务层预切成多个子批后，**完整 19 型**的键必须可读（真基线为 red：None）；
 3. 只要有子批失败，**不得**写回全类型键——`gather(return_exceptions=True)`
    吞掉的失败批若被合并后写进缓存，该键在 TTL 内会一直返回偏少结果 = 永久漏检。
 
@@ -18,6 +18,39 @@
 分支永不进入 ⇒ 守卫恒不触发（C1）；三批全吐垃圾时服务层照样把 `{}` 写进全类型键，
 读侧 `cached is not None` 判命中 ⇒ 整页 0 实体固化（C2）。判据由
 `has_client.ner_checked` 显式给出；I3 则用真实读侧函数补跨链集成与边界用例。
+
+⑥ 二审（两席独立冷审）又抓出三条并已固化成本文件的用例：
+- `has_client` 把「json_repair 修完但不含任何请求类型」的残缺结果写进缓存 ⇒ 下次
+  同键请求从不变量分支被洗成 ok=True ⇒ 服务层写回门失效（Critical-1，本文件用
+  `_client_where_batches_reply` 复现两趟）；
+- 单批形态下那条键与读侧探测键重合，`{}` 直接被读侧判命中（Critical-2）；
+- 「解析成功但桶名与请求类型毫不相干」也曾算成功（Important-4）。
+
+## 红先基线（逐棵实测，`pytest tests/test_issue108_full_type_cache.py`，共 21 例）
+| 树 | 结果 |
+|---|---|
+| 真基线 `origin/preview` = `dd10490`（#108 之前；无 `set_cached_ner`/`ner_checked`） | 17 failed / 4 passed |
+| `68f0e7b`＝#108 首个（有缺陷）实现 | 13 failed / 8 passed |
+| `dba6b64`＝首修（判据改成「解析成功」，二审的 Critical 尚未关） | 4 failed / 17 passed |
+| 本修复 HEAD（二审 Critical/Important 全部处置） | 21 passed |
+
+⚠️ **判别性分级**（二审 Minor-6／Important-1，别把特征测试当根因证据）：
+- 二审新增的 4 例（洗白链 ×2、单批污染、契约违背桶名）是**唯一**在 `dba6b64` 上仍红的
+  集合，且在真基线与 `68f0e7b` 上也红 ⇒ 纯行为性红，不依赖新 API 是否存在。
+- `test_visual_read_side_reads_back_the_full_type_entry` 只在**真基线**上红（`68f0e7b`
+  起即绿，因为那已是 #108 的第一个实现、本来就会写回全类型键）；它必须用 19 型 /
+  1577 字逼出多批派发，否则那条键是 `ner()` 自己写下的、与服务层写回无关（二审用
+  「把写回门改成 `if False:`」的变异实验证实：3 型版不红、19 型版才红）。
+- 只在真基线红、属「新 API 是否存在」的 3 例：`test_set_and_get_cached_ner_share_one_key_formula`、
+  `test_ner_and_set_cached_ner_write_the_very_same_key`、`test_guided_write_stays_separate_from_unguided_probe`；
+  属「是否写回」的 2 例：`test_full_type_key_is_written_after_preplanned_split`、
+  `test_full_type_key_still_written_when_the_page_genuinely_has_no_entities`。
+- 只在 `68f0e7b` 上红的 2 例：`test_full_type_key_not_written_when_a_batch_call_raises`、
+  `test_full_type_key_not_written_when_every_response_is_unparseable`（首实现无条件写回；
+  真基线上因为压根不写而平凡通过）。
+- 三条基线**全过**的漂移守卫 2 例：`test_full_type_key_not_written_when_any_sub_batch_fails`
+  （走 `raise` 形态，正是「异常被吞成 `{}`」之前的写法，其覆盖缺口已由新增的
+  unparseable 用例补上）与 `test_cross_chain_reuse_requires_byte_identical_text`。
 """
 
 import asyncio
@@ -56,6 +89,13 @@ def _types(count: int) -> list[_TypeStub]:
 
 def _full_chinese(count: int = 19) -> list[str]:
     return [f"类型{i}" for i in range(count)]
+
+
+def _requested_types(prompt: str) -> list[str]:
+    """从 prompt 里取回本次请求的类型表（假模型按此回话，测试按此核对派发形状）。"""
+    marker = "Specified types:"
+    start = prompt.index(marker) + len(marker)
+    return json.loads(prompt[start:prompt.index("\n", start)])
 
 
 @pytest.fixture(autouse=True)
@@ -112,17 +152,26 @@ def test_guided_write_stays_separate_from_unguided_probe():
 
 
 def test_full_type_key_is_written_after_preplanned_split():
-    """核心红先断言：预切 3 子批合并成功后，完整 19 型的键必须可读。
+    """核心红先断言：预切多子批合并成功后，完整 19 型的键必须可读。
 
-    未改动树：`ner()` 只写了 7/7/5 三个子批键 ⇒ 本断言得 None（red）。
+    真基线（`origin/preview`）：`ner()` 只写子批键 ⇒ 本断言得 None（red）。
+
+    **判别性前提**：没有任何一次派发携带完整 19 型类型表——否则这条键可能是
+    `ner()` 自己写的（二审 Important-1 的教训：3 型短文本就是单批，因此那个版本的
+    跨链用例把写回门改成 `if False:` 仍然绿）。所以这里按不变量断言，而不是钉死
+    「必须是 3 批」（并行中的 Issue#104 正在改帽与估算系数这些旋钮）。
     """
     service = HaSService(base_url="http://stub:0")
-    client, prompts = _real_client_with_fake_model()
+    client, prompts = _real_client_with_echo_model()
     service.client = client
 
     asyncio.run(service.extract_entities(_TEXT_1577, _types(19)))
 
-    assert len(prompts) == 3, f"19 型 / 1577 字应派发 3 个子批，实际 {len(prompts)}"
+    dispatched = [_requested_types(p) for p in prompts]
+    assert len(dispatched) > 1, f"19 型 / 1577 字必须被切成多批，实际 {len(dispatched)} 批"
+    assert all(set(batch) != set(_full_chinese()) for batch in dispatched), (
+        "不得有任何一次派发携带完整类型表，否则全类型键可能由 ner() 自己写下"
+    )
     cached = client.get_cached_ner(_TEXT_1577, _full_chinese())
     assert cached is not None, "合并成功后必须按完整类型表写回缓存（Issue#108）"
     assert cached.get("类型0") == ["类型0-值"]
@@ -137,7 +186,7 @@ def test_full_type_key_not_written_when_any_sub_batch_fails():
 
     asyncio.run(service.extract_entities(_TEXT_1577, _types(19)))
 
-    assert flaky.calls == 3, f"三个子批都应被派发，实际 {flaky.calls}"
+    assert flaky.calls >= 2, f"子批应被派发多次，实际 {flaky.calls}"
     assert client.get_cached_ner(_TEXT_1577, _full_chinese()) is None, (
         "有子批失败时不得写回全类型键"
     )
@@ -327,7 +376,7 @@ def test_full_type_key_not_written_when_a_batch_call_raises():
 
     asyncio.run(service.extract_entities(_TEXT_1577, _types(19)))
 
-    assert calls["n"] == 3, f"三个子批都应被派发，实际 {calls['n']}"
+    assert calls["n"] >= 2, f"子批应被派发多次，实际 {calls['n']}"
     assert client.get_cached_ner(_TEXT_1577, _full_chinese()) is None, (
         "有子批被吞成 {} 时不得写回全类型键"
     )
@@ -347,7 +396,7 @@ def test_full_type_key_not_written_when_every_response_is_unparseable():
 
     asyncio.run(service.extract_entities(_TEXT_1577, _types(19)))
 
-    assert len(prompts) == 3, f"三个子批都应被派发，实际 {len(prompts)}"
+    assert len(prompts) >= 2, f"子批应被派发多次，实际 {len(prompts)}"
     assert client.get_cached_ner(_TEXT_1577, _full_chinese()) is None, (
         "解析失败不得写回全类型键（读侧 `cached is not None` 会把它当成命中）"
     )
@@ -409,10 +458,18 @@ def test_visual_read_side_reads_back_the_full_type_entry():
     写侧（`extract_entities` → 全类型写回）与读侧（`_build_has_text_payload` →
     `_get_cached_has_text_ner`，即视觉线 `has_text_analysis` 的探测口）在
     「同一段文本 + 同一套标签」下必须复用同一条缓存。
+
+    **判别性（⑥ 二审 Important-1）**：必须用 19 型 / 1577 字逼出多批派发，这样
+    「完整类型表」的键才只能由服务层写回写下。3 型短文本是单批，`ner()` 自己就写了
+    那条键 ⇒ 把写回门改成 `if False:` 的变异实验下该版本仍然绿（二审实测）。
     """
-    types = _types(3)
-    payload = _build_has_text_payload(_text_blocks("张三", "13800000000"), max_chars=2048)
+    types = _types(19)
+    payload = _build_has_text_payload(_text_blocks(_TEXT_1577), max_chars=2048)
     read_side_types = _build_has_text_type_names(types)
+
+    assert set(read_side_types) == {t.name for t in types}, (
+        "本用例的前提是两侧标签集逐字相同（默认清单下其实不同，见边界用例与源码注释）"
+    )
 
     service = HaSService(base_url="http://stub:0")
     client, prompts = _real_client_with_echo_model()
@@ -420,7 +477,11 @@ def test_visual_read_side_reads_back_the_full_type_entry():
 
     asyncio.run(service.extract_entities(payload.content, types))
 
-    assert prompts, "写侧应至少派发一次"
+    dispatched = [_requested_types(p) for p in prompts]
+    assert len(dispatched) > 1, f"必须切成多批才有判别性，实际 {len(dispatched)} 批"
+    assert all(set(batch) != set(read_side_types) for batch in dispatched), (
+        "被派发的批都不得携带完整类型表，否则写回门不是这条键的唯一来源"
+    )
     cached = _get_cached_has_text_ner(client, payload.content, read_side_types)
 
     assert cached is not None, (
@@ -452,4 +513,181 @@ def test_cross_chain_reuse_requires_byte_identical_text():
     assert client.get_cached_ner("张三\n13800000000", [t.name for t in types]) is not None
     assert _get_cached_has_text_ner(client, page_payload.content, read_side_types) is None, (
         "文本不同 ⇒ 读侧读不中；跨链复用不是本改动的保证"
+    )
+
+
+def test_label_source_divergence_is_the_structural_reason_the_benefit_is_zero():
+    """I3 收益边界（⑥ 二审 Important-3）：读侧标签有两个来源，写侧只有一个。
+
+    写侧 `has_service._convert_entity_types_to_chinese` 只取 `et.name`
+    （`_expand_query_type_names` 是等号函数）；读侧 `_item_query_labels` 在条目配了
+    `query_labels` 时**只返回 query_labels 并丢掉 name**。默认清单
+    `PRESET_OCR_HAS_TYPES` 里就有这类条目（二审实测读 38 标签 / 写 36 标签，差
+    `大写金额`、`诊断`）⇒「两侧标签逐字相同」这一前提在默认清单下**不成立**，
+    跨链复用的收益实际为 0。
+
+    本 PR 只把写回门修对（不再固化残缺结果），**不改**标签来源；标签单一真源列为后续
+    Issue。本用例把这条边界钉成可执行断言，避免 PR 文案把收益说得比事实大。
+    """
+
+    class _Labelled:
+        def __init__(self, type_id: str, name: str, query_labels: list[str]) -> None:
+            self.id = type_id
+            self.name = name
+            self.query_labels = query_labels
+            self.description = ""
+            self.examples: list[str] = []
+            self.use_llm = True
+
+    types = [_Labelled("health_info", "健康信息", ["诊断", "健康信息"])]
+    read_side_types = _build_has_text_type_names(types)
+    write_side_types = [item.name for item in types]
+
+    assert read_side_types == ["诊断", "健康信息"], f"读侧按 query_labels 展开：{read_side_types}"
+    assert write_side_types == ["健康信息"], "写侧只取 name"
+
+    service = HaSService(base_url="http://stub:0")
+    client, prompts = _real_client_with_echo_model()
+    service.client = client
+    text = "标签不同源用例文本"
+
+    asyncio.run(service.extract_entities(text, types))
+
+    assert prompts, "写侧应至少派发一次"
+    assert client.get_cached_ner(text, write_side_types) is not None, "全类型键按写侧标签写下"
+    assert _get_cached_has_text_ner(client, text, read_side_types) is None, (
+        "读侧按 query_labels 探测 ⇒ 读不中：跨链收益在默认清单下结构上为 0"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ⑥ 二审（两席独立冷审）：洗白链 / 单批污染 / 契约违背桶名
+# ---------------------------------------------------------------------------
+
+
+def _client_where_batches_reply(broken_if):
+    """假模型：按请求类型回话；`broken_if(类型表)` 为真的那几次只回 `"{"`。
+
+    真库行为已证实（`json-repair 0.64.0` 实测 `repair_json("{") == "{}"`），而本机默认
+    没装 json_repair ⇒ 这里直接钉住「修复成功但整表为空」这个 parse_mode，与
+    `_truncated_then` 同一套路。返回 `(client, calls)`，`calls` 记录每次派发的类型表。
+    """
+    client = HaSClient()
+    calls: list[list[str]] = []
+    real_parse = HaSClient._try_parse_json_object
+
+    def fake_call_model(messages, *, max_tokens=None, temperature=None):
+        requested = _requested_types(str(messages[0]["content"]))
+        calls.append(requested)
+        if broken_if(requested):
+            return "{"
+        return json.dumps({t: [f"{t}-值"] for t in requested}, ensure_ascii=False)
+
+    def fake_parse(raw: str):
+        if str(raw).strip() == "{":
+            return "json_repair:direct", {}
+        return real_parse(raw)
+
+    client._call_model = fake_call_model
+    client._try_parse_json_object = staticmethod(fake_parse)
+    client._ner_cache_ttl_sec = 1800.0
+    client._ner_cache_max_items = 2048
+    return client, calls
+
+
+def test_repair_to_empty_is_not_cached_so_it_cannot_be_laundered():
+    """⑥ 二审 Critical-1：残缺结果一旦落键，就被「洗白」成确认成功。
+
+    旧实现（`68f0e7b`，以及只改了返回值语义的首修 `dba6b64`）在这一支照样
+    `_set_cached_ner`：第二次同键调用零模型命中缓存、报 ok=True ⇒ 服务层写回门
+    立刻失效。本用例钉住「第二次仍必须去问模型」。
+    """
+    seen = {"n": 0}
+
+    def broken_first(requested):
+        seen["n"] += 1
+        return seen["n"] == 1
+
+    client, calls = _client_where_batches_reply(broken_first)
+
+    first = client.ner_checked("洗白用例文本", ["类型0", "类型1"])
+    assert first == ({}, False), "修复成空表不是「确认成功」"
+    assert client.get_cached_ner("洗白用例文本", ["类型0", "类型1"]) is None, (
+        "ok=False 的结果不得落键（不变量：缓存里的条目恒为已确认解析成功）"
+    )
+
+    client.ner_checked("洗白用例文本", ["类型0", "类型1"])
+    assert len(calls) == 2, "第二次必须重新问模型——命中缓存即等于把残缺结果洗成「确认」"
+
+
+def test_partial_union_cannot_be_laundered_across_two_service_passes():
+    """⑥ 二审 Critical-1 的生产形状：两趟处理同一页，残缺批不得被洗成「确认」。
+
+    二审实测（stub json_repair，19 型 / 1577 字）：旧实现 RUN1 门生效（全类型键
+    None），RUN2 **零模型调用**就写出 `{'类型7'..'类型18'}`——缺 7 型的部分并集被当
+    成了整页结论，正是 C1 要防的漏检固化。
+    """
+    service = HaSService(base_url="http://stub:0")
+    client, calls = _client_where_batches_reply(lambda requested: "类型0" in requested)
+    service.client = client
+
+    asyncio.run(service.extract_entities(_TEXT_1577, _types(19)))
+
+    assert client.get_cached_ner(_TEXT_1577, _full_chinese()) is None, (
+        "RUN1：有批没拿到结论，不得写全类型键"
+    )
+    after_run1 = len(calls)
+    assert after_run1 > 1, f"应切成多批，实际 {after_run1} 批"
+
+    asyncio.run(service.extract_entities(_TEXT_1577, _types(19)))
+
+    assert len(calls) > after_run1, (
+        "RUN2 仍必须为「没拿到结论」的那批调用模型；旧实现它从缓存命中后不再计入"
+        " unconfirmed_batches，于是零模型调用就把部分并集写成了整页结论（洗白）"
+    )
+    assert client.get_cached_ner(_TEXT_1577, _full_chinese()) is None, (
+        "RUN2：两趟都不允许把部分并集写进全类型键"
+    )
+
+
+def test_single_batch_repair_to_empty_does_not_poison_the_read_side_key():
+    """⑥ 二审 Critical-2：请求类型数 ≤ 单批容量时，客户端那次调用的键**就是**读键。
+
+    旧实现把修复成 `{}` 的结果写进这条键 ⇒ 视觉线 `_get_cached_has_text_ner` 拿到
+    `{}`（`isinstance(cached, dict)` 放行）⇒ 整页 0 实体固化一个 TTL、且不再调模型。
+    注：这是**未被关闭的既有缺口**（`68f0e7b` 同样中招），不是本次引入。
+    """
+    service = HaSService(base_url="http://stub:0")
+    client, calls = _client_where_batches_reply(lambda requested: True)
+    service.client = client
+    text = "单批污染用例文本"
+    types = _types(5)
+    read_side_types = [t.name for t in types]
+
+    asyncio.run(service.extract_entities(text, types))
+
+    assert len(calls) == 1, f"5 型短文本应为单批派发，实际 {len(calls)} 批"
+    assert client.get_cached_ner(text, read_side_types) is None
+    assert _get_cached_has_text_ner(client, text, read_side_types) is None, (
+        "修复成 {} 的残缺结果不得被读侧判命中（判命中即整页 0 实体固化一个 TTL）"
+    )
+
+
+def test_foreign_bucket_only_answer_is_not_treated_as_success():
+    """⑥ 二审 Important-4：解析成功 ≠「回答了请求类型」。
+
+    合法 JSON 但桶名与请求类型毫不相干（模型编了别的桶名）不是有效结论：落键后读侧
+    命中即把请求类型在 TTL 内永久跳过。合法空答案 `{}` 仍算成功（见正向对照用例）。
+    """
+    client, _ = _real_client_with_fake_model()
+    client._call_model = lambda messages, **kwargs: json.dumps(
+        {"张三": ["李四"]}, ensure_ascii=False
+    )
+
+    result, ok = client.ner_checked("契约违背用例文本", ["类型0", "类型1"])
+
+    assert result == {"张三": ["李四"]}, "契约违背结果仍原样返回给调用方（尽力而为）"
+    assert ok is False, "一个请求类型都没回答、且回答非空 ⇒ 不算解析成功"
+    assert client.get_cached_ner("契约违背用例文本", ["类型0", "类型1"]) is None, (
+        "不得把编出来的桶名当成请求类型的结论缓存起来"
     )

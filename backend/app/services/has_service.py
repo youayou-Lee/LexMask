@@ -523,6 +523,15 @@ class HaSService:
             # （视觉线 has_text_analysis 的探测口）签名为 (text, entity_types)，
             # 键里的 guidance 摘要恒为空串；若写侧带上 guidance，键就对不上，
             # 等于没写（Issue#108 正文明确要求「用与读侧相同的键」）。
+            #
+            # ⚠️ 收益边界（⑥ 二审 Important-3 / 一审 I3）：即便文本逐字相同，两条链的
+            # **标签表来源仍是两套实现**——写侧取 `et.name`（见
+            # `_convert_entity_types_to_chinese`，`_expand_query_type_names` 现为直通），
+            # 读侧取 `vision/has_text_payload._item_query_labels`（有 `query_labels` 时
+            # **只**返回 query_labels，且跳过 VISUAL_ONLY 类型）。默认清单实测读侧 38 个
+            # 标签 / 写侧 36 个（差 `大写金额`、`诊断`）⇒ 键对不上，跨链复用收益在默认
+            # 配置下 ≈ 0。本改动保证的是「两侧一致时必定复用」的机制本身，以及不再把
+            # 未确认的残缺结论写进这个键；标签来源收敛成单点是后续 Issue。
             if used_chinese_types and not unconfirmed_batches:
                 try:
                     self.client.set_cached_ner(
