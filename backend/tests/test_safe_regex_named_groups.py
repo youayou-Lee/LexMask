@@ -3,11 +3,12 @@
 子进程隔离的 finditer 只回传整段 span，命名组 span 需要一并带回——
 区间拆首尾、出生语境只出日期组都依赖它。既有 group()/start()/end()
 语义不变（向后兼容，唯一使用方是 hybrid Stage 2）。
+
+编译超时协议（含 Issue#109 的去计时敏感用例）移到
+`tests/test_safe_regex_timeout_protocol.py`：本文件只保留命名组传输关注点。
 """
 
-import pytest
-
-from app.core.safe_regex import RegexTimeoutError, safe_compile, safe_finditer
+from app.core.safe_regex import safe_compile, safe_finditer
 
 
 def test_named_groups_transport_across_subprocess():
@@ -38,8 +39,3 @@ def test_optional_group_not_participating_is_omitted():
         ("seg", "12"),
         ("always", "x"),
     ]
-
-
-def test_compile_timeout_still_enforced():
-    with pytest.raises(RegexTimeoutError):
-        safe_compile(r"(a+)+$")
