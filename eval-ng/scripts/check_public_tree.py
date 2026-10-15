@@ -93,9 +93,10 @@ CREDENTIAL_ASSIGN_RE = re.compile(
 CREDENTIAL_FLAG_RE = re.compile(r"(?P<name>--[A-Za-z][A-Za-z0-9_-]{1,40})")
 # 带类型注解的赋值：`NAME: <注解> = "<真口令>"`（Python 惯用写法）。
 # `CREDENTIAL_ASSIGN_RE` 的 `[:=]` 会把注解的冒号吃掉、把 `str` 当值，`finditer` 随即越过真值 ⇒ 整类漏网；
-# 注解段必须锚到标识符开头且**不含引号/等号**，否则会跨到下一个赋值造成误报（⑦冷评审 R7-1）。
+# 注解段必须锚到标识符开头、不含 `=` 与换行（防跨语句/跨赋值误配），但要覆盖 PEP 604 联合 `str | None`、
+# 泛型 `Final[str | None]` / `Literal["a"]` / `Optional["Cfg"]` 等引号与括号形态（⑧冷评审 R8-1）。
 ANNOTATED_ASSIGN_RE = re.compile(
-    r"(?P<name>[A-Za-z_][A-Za-z0-9_]{0,40})\s*:\s*(?P<ann>[A-Za-z_][\w\.\[\], ]{0,60}?)\s*=\s*(?P<val>[^\s,;)]{1,120})"
+    r'(?P<name>[A-Za-z_][A-Za-z0-9_]{0,40})\s*:\s*(?P<ann>[A-Za-z_][\w\.\[\], |"\'()]{0,80}?)\s*=\s*(?P<val>[^\s,;)]{1,120})'
 )
 # 引号字面量用**零宽前瞻**配对（`finditer` 会吃掉共享引号：`"--flag", default="VALUE"` 里
 # 第 2、3 个引号分属两段，普通匹配会把 `", default="` 整段吞掉导致真值漏网）
@@ -201,6 +202,8 @@ SELF_TEST_BAD = (
     "cfg access_token = \"ghp_abcdefghijklmnopqrstuvwxyz0123456\" "  # public-tree-scan: ignore-line
     # R7-1 形态：带类型注解的赋值（注解冒号会吃掉值位置，`str` 被当值 ⇒ 整类漏网）
     "cfg client_secret: str = \"Ab12Cd34\" "  # public-tree-scan: ignore-line
+    'api_key: str | None = "Ab12Cd34"'  # public-tree-scan: ignore-line,
+
 )
 SELF_TEST_CLEAN = (
     "api_base http://127.0.0.1:8000 fixture 203.0.113.9 host 10.1.2.3 "
