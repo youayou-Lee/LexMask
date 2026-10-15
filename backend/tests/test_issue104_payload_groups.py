@@ -324,6 +324,7 @@ def test_d2_residual_groups_fit_but_bridge_stays_single():
 # ---------------------------------------------------------------------------
 
 def test_estimator_never_underestimates_known_payloads():
+    """已知真值锚点(云 D2b 回归表,2026-10-15/16 SCNet 实测)。"""
     estimate = HaSClient._estimate_prompt_tokens
     # 历史 400 现场：4,455 字符 ASCII/数字密集 → 服务端 prompt_tokens=4090。
     dense = _dense_digits(4455)
@@ -333,6 +334,20 @@ def test_estimator_never_underestimates_known_payloads():
     est = estimate(HaSClient._build_ner_prompt(_TYPES_12, "", chinese))
     assert est >= 3073
     assert est <= 3073 * 1.6
+
+
+def test_estimator_astral_and_latin_classes():
+    """D2b 首轮回归抓到的两类低估,系数上调后的锚点:
+    拉丁交替大小写 2000 字符 actual=1494(0.75/字符);emoji/CJK 扩展 B ≈ 3~4 token/字符。"""
+    estimate = HaSClient._estimate_prompt_tokens
+    latin = ("AbCdEfGhIj " * 200)[:2000]
+    assert estimate(HaSClient._build_ner_prompt(_TYPES_12, "", latin)) >= 1494
+    emoji = "😀😁😂🤣😃😄😅😆" * 25  # 200 个星平面字符,云实测 actual=821
+    assert estimate(HaSClient._build_ner_prompt(_TYPES_12, "", emoji)) >= 821
+    extb = "𠀀𠀁𠀂𠀃𠀄𠀅𠀆𠀇" * 25
+    assert estimate(HaSClient._build_ner_prompt(_TYPES_12, "", extb)) >= 821
+    # 长数字串(云实测 6000 字符 actual=6117,1.0 系数差 0.5%)
+    assert estimate(HaSClient._build_ner_prompt(_TYPES_12, "", "1234567890" * 600)) >= 6117
 
 
 # ---------------------------------------------------------------------------

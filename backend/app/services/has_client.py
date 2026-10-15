@@ -42,20 +42,21 @@ _MODEL_TEMPERATURE = 0.0
 _MODEL_TOP_P = 0.6
 # max_tokens 下限（_call_model 单次请求）
 _MIN_CALL_MAX_TOKENS = 32
-# 提示词 token 估算（Issue#104 C2 校准）：按字符类别取**语料经验上界**系数。
-# 旧口径 ascii//4 对 ASCII/数字密集页低估 ~3.2×（4455 字符实发 4090 token），
-# 把预算公式喂出注定 400 的请求。实测锚点（云 SCNet，同模板）：
+# 提示词 token 估算（Issue#104 C2 校准）：按字符类别取**语料经验上界**系数
+# （单位 = token/字符，浮点直读，禁止再引入整数倍刻度——D2b 首轮曾因 ×2/×20
+# 刻度混用把估算放大 10 倍，引发硬切死循环）。实测锚点（云 SCNet 回归表）：
 #   纯中文 ≈ 0.69 token/字符 ⇒ 上界取 1.0；
-#   数字/标点密集 ≈ 0.92 token/字符 ⇒ 数字上界取 1.0、其它 ASCII 取 0.5。
-# 注意：这是经验上界而非可证上界——emoji 代理对、CJK 扩展 B、RTL、组合符
-# 仍可能低估；云端 P1/D2b 回归表（estimate ≥ usage.prompt_tokens 逐行）是
-# 最终裁决，凡回归集出现低估的类别先上调该类系数。
-_PROMPT_TOKENS_PER_DIGIT_X2 = 2       # 数字：1.0 token/字符
-_PROMPT_TOKENS_PER_LATIN_X2 = 1       # 拉丁字母：0.5
-_PROMPT_TOKENS_PER_OTHER_ASCII_X2 = 1  # 其余 ASCII（标点/空白）：0.5
-_PROMPT_TOKENS_PER_NON_ASCII_X2 = 2   # 非 ASCII：1.0
-_PROMPT_TOKENS_PER_CONTROL_X2 = 2     # 控制符：1.0（保守）
-# 提示词 token 估算：固定结构开销（chat 模板包裹层）
+#   数字长串 ≈ 1.02 ⇒ 取 1.05；
+#   拉丁交替大小写 ≈ 0.75 ⇒ 取 0.7（兼顾问模板英文说明的固定计价,纯中文长行比值 ≤1.55）；
+#   星平面字符（emoji/CJK 扩展 B）≈ 3~4 ⇒ 取 4.0（独立类）；
+#   其余 ASCII 0.5、控制符 1.0。
+# 「永不高估」由云端 D2b 回归表裁决（estimate ≥ usage.prompt_tokens 逐行）。
+_PROMPT_TOKENS_PER_DIGIT = 1.05
+_PROMPT_TOKENS_PER_LATIN = 0.7
+_PROMPT_TOKENS_PER_ASTRAL = 4.0
+_PROMPT_TOKENS_PER_OTHER_ASCII = 0.5
+_PROMPT_TOKENS_PER_NON_ASCII = 1.0
+_PROMPT_TOKENS_PER_CONTROL = 1.0
 _PROMPT_TOKEN_OVERHEAD = 32
 # 上下文探测（Issue#104 C1）：按 base_url 缓存服务端自报 max_model_len 的 TTL
 _CONTEXT_PROBE_TTL_SEC = 300.0
@@ -579,21 +580,23 @@ class HaSClient:
         云端 P1/D2b 语料回归表裁决（estimate ≥ usage.prompt_tokens 逐行），
         凡回归集出现低估的类别先上调该类系数再重跑。
         """
-        tokens_x2 = 0
+        tokens = 0.0
         for char in str(text or ""):
             code = ord(char)
-            if code < 32:  # 控制符（\n 等）
-                tokens_x2 += _PROMPT_TOKENS_PER_CONTROL_X2
+            if code > 0xFFFF:  # 星平面（emoji / CJK 扩展 B）：分词 3~4 token/字符
+                tokens += _PROMPT_TOKENS_PER_ASTRAL
+            elif code < 32:  # 控制符（\n 等）
+                tokens += _PROMPT_TOKENS_PER_CONTROL
             elif code < 128:
                 if char.isdigit():
-                    tokens_x2 += _PROMPT_TOKENS_PER_DIGIT_X2
+                    tokens += _PROMPT_TOKENS_PER_DIGIT
                 elif char.isalpha():
-                    tokens_x2 += _PROMPT_TOKENS_PER_LATIN_X2
+                    tokens += _PROMPT_TOKENS_PER_LATIN
                 else:
-                    tokens_x2 += _PROMPT_TOKENS_PER_OTHER_ASCII_X2
+                    tokens += _PROMPT_TOKENS_PER_OTHER_ASCII
             else:
-                tokens_x2 += _PROMPT_TOKENS_PER_NON_ASCII_X2
-        return max(1, tokens_x2 // 2 + _PROMPT_TOKEN_OVERHEAD)
+                tokens += _PROMPT_TOKENS_PER_NON_ASCII
+        return max(1, int(tokens) + _PROMPT_TOKEN_OVERHEAD)
 
     @staticmethod
     def _build_ner_prompt(types: list[str], guidance_text: str, text: str) -> str:
