@@ -459,10 +459,15 @@ def _run_speed(args: argparse.Namespace) -> int:
             raise _Usage(f"--out 目录不可建：{out_dir}（{exc}）") from exc
         if not os.access(out_dir, os.W_OK):
             raise _Usage(f"--out 目录不可写：{out_dir}")
-        payload, payload_source, payload_sha = sk_driver.effective_payload(args.payload_file)
-        arm = sk_arms.load_arm(args.arm)
-        evidence = sk_driver.load_round_evidence(args.round_evidence)
-        corpus, exam_view = _load_speed_corpus(args)
+        try:
+            payload, payload_source, payload_sha = sk_driver.effective_payload(args.payload_file)
+            arm = sk_arms.load_arm(args.arm)
+            evidence = sk_driver.load_round_evidence(args.round_evidence)
+            corpus, exam_view = _load_speed_corpus(args)
+        except OSError as exc:
+            # 文件不存在/不可读是**用法前置错误**（D6②：明确报错非 0），不得冒泡成 traceback，
+            # 也不得混进「装置不可得 ⇒ BLOCKED」把作者的用法错误洗成被测系统问题。
+            raise _Usage(f"前置文件不可读：{exc}") from exc
         total_pages = sum(it["pages"] for it in corpus)
         if args.page_concurrency > total_pages:
             raise _Usage(f"--page-concurrency={args.page_concurrency} > 清单总页数 {total_pages}")

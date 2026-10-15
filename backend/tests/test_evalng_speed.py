@@ -783,6 +783,26 @@ class TestCliUsage:
         _, exam, arm, evidence = _cli_fixtures(tmp_path)
         assert cli.main(_speed_argv(tmp_path / "nope.json", arm, evidence, tmp_path)) == 2
 
+    def test_missing_precondition_files_are_usage_errors(self, tmp_path, capsys):
+        """缺失的载荷/臂/证据文件必须落成**用法错误 exit 2**（带人话），不得冒 traceback。
+
+        判别性来自「不冒泡」：删掉 `_run_speed` 前置加载处的 `except OSError` 即红
+        （会变成 traceback ⇒ 非 2，且把作者的用法错误洗成测量失败）。
+        """
+        _, exam, arm, evidence = _cli_fixtures(tmp_path)
+        missing = tmp_path / "nope.json"
+        cases = {
+            "payload_file": lambda: _speed_argv(exam, arm, evidence, tmp_path, payload_file=missing),
+            "arm": lambda: _speed_argv(exam, missing, evidence, tmp_path),
+            "round_evidence": lambda: _speed_argv(exam, arm, evidence, tmp_path, round_evidence=missing),
+        }
+        for key, build in cases.items():
+            capsys.readouterr()
+            assert cli.main(build()) == 2, f"--{key} 缺失未判用法错误"
+            captured = capsys.readouterr()
+            text = captured.out + captured.err
+            assert "用法错误" in text and "Traceback" not in text, f"--{key} 缺失报错不合格：{text!r}"
+
     def test_item_without_pages(self, tmp_path):
         corpus, exam, arm, evidence = _cli_fixtures(tmp_path)
         _write_json(tmp_path, {"exam_id": "e", "corpus": [{"id": "c1", "path": str(corpus)}]}, "exam.json")
