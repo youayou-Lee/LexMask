@@ -199,6 +199,47 @@ def test_boxes_for_page_uses_memo_once_and_maps_pages(monkeypatch, tmp_path):
     assert memo1 is memo2
 
 
+def test_boxes_for_page_falls_back_on_page_without_layer(monkeypatch, tmp_path):
+    """**混合卷**（部分页无文本层）：无层页必须返回 None 让调用方回落旧路径。
+
+    若返回空列表，调用方会认为「文档级链说这页 0 个实体」⇒ 该页**静默丢检**，
+    正是验收 D8 要挡住的失败模式。
+    """
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+    path = tmp_path / "mixed.pdf"
+    path.write_bytes(b"%PDF-1.4 stub")
+    source.reset_memo()
+
+    pages = [
+        _page(1, ["张三", *[f"证据材料第{i}页" for i in range(20)]]),
+        _page(2, ["李四", *[f"证据材料第{i}页" for i in range(20)]]),
+    ]
+
+    async def fake_run(page_list, labels, *, has_client, **kwargs):
+        return docline.DocLineResult(
+            pages=2, chunks=1, chunk_chars=2000, stream_chars=10, layer_chars=8, covered_chars=10,
+            entities=[docline.DocLineEntity(1, "PERSON", "张三", (0.1, 0.2, 0.3, 0.4))],
+            ner_calls=1, truncated_chunks=0, http_errors=0, residual_calls=0, seconds=0.01,
+        )
+
+    monkeypatch.setattr(source.docline, "extract_text_layer_pages", lambda *a, **k: pages)
+    monkeypatch.setattr(source.docline, "sample_ink_alignment", lambda *a, **k: 0.18)
+    monkeypatch.setattr(source.docline, "run_document_ner", fake_run)
+
+    covered, memo = asyncio.run(
+        source.boxes_for_page(file_id="b" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=None)
+    )
+    assert [b.text for b in covered] == ["张三"]
+    assert memo is not None
+
+    # 第 3 页不在文本层里 ⇒ 必须回落（None），而不是空列表
+    uncovered, memo3 = asyncio.run(
+        source.boxes_for_page(file_id="b" * 8, snapshot=_snapshot(str(path)), page=3, ocr_has_types=None)
+    )
+    assert uncovered is None, "无层页必须回落旧路径，不能返回空列表造成静默丢检"
+    assert memo3 is None
+
+
 def test_label_to_type_id_maps_model_buckets_back_to_canonical_ids():
     """云上首轮真实事故：模型返回的是**中文标签桶**，直接当 type 会让下游按 id
     过滤全部落空（实测召回 0/121）。此用例钉住反向映射。"""

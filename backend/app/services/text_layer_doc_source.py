@@ -131,12 +131,14 @@ async def _build(file_id: str, snapshot: dict, labels: list[str], ocr_has_types)
 
     result = await docline.run_document_ner(pages, labels, has_client=has_client)
     label_to_id = build_label_to_type_id(ocr_has_types)
+    covered_pages = {int(page_meta.no) for page_meta in pages}
     by_page: dict[int, list[BoundingBox]] = {}
     for page_meta in pages:
         by_page[page_meta.no] = _to_boxes(result.entities, page_meta.no, label_to_id)
     memo = {
         "labels": labels,
         "label_to_id": label_to_id,
+        "covered_pages": covered_pages,
         "boxes_by_page": by_page,
         "pages": result.pages,
         "entities": len(result.entities),
@@ -187,6 +189,12 @@ async def boxes_for_page(
                 _MEMO[key] = memo
                 if len(_MEMO) > 16:
                     _MEMO.pop(next(iter(_MEMO)))
+        if int(page) not in memo["covered_pages"]:
+            # **混合卷**：本页没有内嵌文本层。此处绝不能返回空列表——那等于
+            # 「文档级链说这页 0 个实体」，会让该页**静默丢检**。返回 None 让调用方
+            # 原样回落到 OCR+HaS 旧路径，保证逐页覆盖率不降（验收 D8）。
+            logger.info("text_layer_docline page %d 无文本层，回落旧路径 file=%s", page, file_id[:8])
+            return None, None
         boxes = memo["boxes_by_page"].get(int(page))
         return (list(boxes or []), memo)
     except Exception as exc:  # noqa: BLE001 - 本链任何故障都退回旧路径，绝不 5xx
