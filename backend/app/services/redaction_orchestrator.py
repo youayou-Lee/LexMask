@@ -550,13 +550,18 @@ async def detect_vision(
     vision_service = VisionService()
     # Issue#115：扫描件自带**可用**文本层时改走文档级链（整卷一次分块 NER），
     # 本页 OCR 调用为 0；视觉特征（LA）仍走原逐页链。默认关，任何异常都退回旧路径。
-    doc_boxes, doc_memo = await text_layer_doc_boxes_for_page(
-        file_id=file_id,
-        snapshot=snapshot,
-        page=page,
-        ocr_has_types=ocr_has_types,
-        owner_id=owner_id,
-    )
+    if ocr_has_enabled:
+        # 门⑥ 第三轮 Important#3：必须传**总开关生效后**的类型表，且管线被租户整体
+        # 关掉时根本不调用本链——否则「用户关掉的 OCR+HaS」会被文档级链复活。
+        doc_boxes, doc_memo = await text_layer_doc_boxes_for_page(
+            file_id=file_id,
+            snapshot=snapshot,
+            page=page,
+            ocr_has_types=effective_ocr_types,
+            owner_id=owner_id,
+        )
+    else:
+        doc_boxes, doc_memo = None, None
     pipeline_ocr_types = effective_ocr_types
     if doc_boxes is not None:
         pipeline_ocr_types = []
@@ -582,7 +587,11 @@ async def detect_vision(
         doc_took_over = doc_boxes is not None
         pipeline_status["text_layer_doc"] = {
             "ran": doc_took_over,
-            "failed": bool(doc_memo.get("http_errors")) or not doc_took_over,
+            "failed": (
+                bool(doc_memo.get("http_errors"))
+                or bool(doc_memo.get("truncated_chunks"))
+                or not doc_took_over
+            ),
             "pages": doc_memo["pages"],
             "entities": doc_memo["entities"],
             "chunks": doc_memo["chunks"],

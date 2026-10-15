@@ -336,7 +336,6 @@ def test_map_values_keeps_same_column_repeats():
 def test_covered_page_with_zero_boxes_falls_back(monkeypatch, tmp_path):
     """评审 C-1：覆盖页产出 0 框时不得清空 OCR 类型，必须回落旧路径。"""
     monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
-    monkeypatch.setattr(settings, "TEXT_LAYER_EMPTY_PAGE_FALLBACK", True)
     path = tmp_path / "scan.pdf"
     path.write_bytes(b"%PDF-1.4 stub")
     source.reset_memo()
@@ -663,53 +662,62 @@ def test_volume_level_gates_are_fail_able(monkeypatch, tmp_path):
     assert boxes is None and memo is None, "覆盖率 0.40 < 0.90 必须回落旧路径"
 
 
-def test_map_values_prefers_whole_word_match_over_embedded_one():
-    """子串匹配的过度命中收口：存在「整词恰等」命中时只取它。
+def test_map_values_keeps_both_word_and_embedded_hits() -> None:
+    """门⑥ 第三轮 Critical：**不得**做「整词优先」的全文档收口。
 
-    真实卷 14.3% 的「词」是 16-48 字连排段（见验收方案 §12 词粒度实测），所以必须
-    允许子串命中；但短值（年龄 `35`、`张三`）若同时也作为整词出现过，就应当优先
-    取整词，避免命中身份证/银行卡号内部的数字。
+    旧规则「只要该值在本文档里作为整词出现过，就只取整词命中」会把**贴标签**的
+    合法命中一并毙掉（`张三` 在 `张三丰` 里 / 案号在 `编号（2022）…号` 里），
+    且 `failures` 为空 ⇒ 那处保持明文却毫无信号。中文案卷的主流形态正是「标签紧贴值」。
+    现在两侧都出框：整词那次出整词框，词内那次出**收紧到值本身**的框。
     """
     pages = [_page(1, ["张三", "张三丰"])]
     stream, spans = docline.build_stream(pages)
     entities, failures = docline.map_values(pages, stream, spans, {"姓名": {"张三"}})
     assert failures == []
-    assert len(entities) == 1, "整词命中优先时不应把词内那次也当成一条"
-    x0, _y0, x1, _y1 = entities[0].bbox
-    # 必须是第一个词「张三」整词（x 从 50/595 起），而不是第二个词「张三丰」内部的「张三」
-    assert abs(x0 - 50.0 / 595.0) < 1e-6
-    assert abs((x1 - x0) - 40.0 / 595.0) < 1e-6
-    assert entities[0].page == 1
+    assert len(entities) == 2, "整词与词内命中都必须在框里（全文档收口已被删除）"
+    whole = [e for e in entities if abs(e.bbox[0] - 50.0 / 595.0) < 1e-6]
+    embedded = [e for e in entities if e not in whole]
+    assert len(whole) == 1 and len(embedded) == 1
+    assert abs((whole[0].bbox[2] - whole[0].bbox[0]) - 40.0 / 595.0) < 1e-6
+    # 词内那次必须**收紧**到值宽（2 字），不能扩成整词「张三丰」（3 字）
+    w = embedded[0].bbox[2] - embedded[0].bbox[0]
+    assert w < 40.0 / 595.0, f"词内命中未收紧：{w:.4f}"
 
 
-def test_map_values_indexes_word_spans_once(monkeypatch) -> None:
-    """回归（P1 189 页实测暴露）：词区间索引必须**一次性**建立。
+def test_map_values_keeps_label_prefixed_occurrence_when_value_also_standalone() -> None:
+    """门⑥ 第三轮 Critical 的复现场景：同一值「贴标签」与「独立出现」并存。
 
-    修复前 `aligned_keys` 建在「多命中收口」分支里，每个出现多次的值都重建一遍全部
-    词区间 ⇒ O(值数 × 词数)。189 页真实卷 ~20 万词、数千值，实测把事件循环堵死
-    >2 分钟（`/health` 超时、单核 100%）。
-
-    用**调用次数**而不是耗时做断言：确定性、不受机器负载影响（#109 的教训是
-    计时断言会 flaky）。输入里每个值都出现多次，确保收口分支被走到。
+    旧的全文档收口下，只要页 2 有独立整词命中，页 1 的 `编号（2022）京0101刑初123号`
+    里那次就会被丢掉且 `failures` 为空 ⇒ 该处保持明文。此用例钉住两侧都出框。
     """
-    calls = []
-    original = docline._word_span_index
-
-    def counting(word_spans):
-        calls.append(len(word_spans))
-        return original(word_spans)
-
-    monkeypatch.setattr(docline, "_word_span_index", counting)
-
-    pages = [_page(1, [f"值{i % 50}" for i in range(500)])]
+    case_no = "（2022）京0101刑初123号"
+    pages = [_page(1, ["编号" + case_no]), _page(2, [case_no])]
     stream, spans = docline.build_stream(pages)
-    values = {"T": {f"值{i}" for i in range(50)}}
+    entities, failures = docline.map_values(pages, stream, spans, {"案号": {case_no}})
+    assert failures == []
+    assert {e.page for e in entities} == {1, 2}, "贴标签那次被静默毙掉了"
 
-    entities, _failures = docline.map_values(pages, stream, spans, values)
 
-    assert len(entities) == 500
-    assert len(calls) == 1, f"词区间索引被重建了 {len(calls)} 次（应为 1 次）"
+def test_map_values_keeps_embedded_hit_in_same_page() -> None:
+    """A2 变体：两种出现都在同一页时，旧收口同样只留一条。"""
+    case_no = "（2022）京0101刑初123号"
+    pages = [_page(1, ["编号" + case_no, case_no])]
+    stream, spans = docline.build_stream(pages)
+    entities, _failures = docline.map_values(pages, stream, spans, {"案号": {case_no}})
+    assert len(entities) == 2
 
+
+def test_fold_matches_normalized_stream_on_decomposed_marks() -> None:
+    """门⑥ 三轮 Minor#5：带组合记号的姓名不得静默漏检（合成/分解两种写法都要命中）。"""
+    import unicodedata
+
+    pages = [_page(1, ["姓名 Jose\u0301 电话"])]
+    stream, spans = docline.build_stream(pages)
+    composed = unicodedata.normalize("NFC", "Jose\u0301")
+    decomposed = unicodedata.normalize("NFD", composed)
+    for probe in (composed, decomposed, "Jose"):
+        entities, _failures = docline.map_values(pages, stream, spans, {"姓名": {probe}})
+        assert entities, f"带组合记号的姓名漏检：{probe!r}"
 
 def test_overlapping_word_spans_boundaries() -> None:
     """二分定位的边界：词首在区间之前但交叠要收；端点相切（不交叠）要排除。"""
@@ -726,24 +734,37 @@ def test_overlapping_word_spans_boundaries() -> None:
     assert all(s.word.text != "张三挂号" for s in touching), touching
 
 
-def test_map_values_scales_to_large_documents() -> None:
-    """规模回归（P1 189 页实测）：命中区间 → 词的定位不能重扫全部词。
+def test_map_values_word_lookup_is_sublinear_in_document_size() -> None:
+    """规模回归（P1 189 页实测）：命中区间 → 词的定位**不能**对每个命中重扫全部词。
 
-    修复前 `for span in word_spans` 对每个命中都重扫一遍：本用例 6 万个词 ×
-    6 万个命中 ≈ 3.6×10^9 次迭代。实测标定（8 千词输入：修复后 0.10s / 未修复
-    1.39s，二次方增长）⇒ 本规模未修复约 78s、修复后约 0.8s。
-    上限 20s 对修复后有 ~25× 余量、对未修复有 ~4× 反向余量，两侧都不擦边。
+    用**确定性的读取次数**断言，不用耗时（#109 的教训：计时断言会 flaky）。
+    词表换成计数列表：修复前每命中重扫全表 ⇒ 命中数 × 词数（本用例 ≈4×10^8 次）；
+    修复后二分 ⇒ 词数 + 命中数 × log(词数)。
     """
-    import time
+    class CountingSpans(list):
+        def __init__(self, items):
+            super().__init__(items)
+            self.reads = 0
 
-    n_words, n_values = 60000, 12000
+        def __getitem__(self, index):
+            self.reads += 1
+            return super().__getitem__(index)
+
+        def __iter__(self):
+            for item in super().__iter__():
+                self.reads += 1
+                yield item
+
+    n_words, n_values = 20000, 200
     pages = [_page(1, [f"值{i % n_values}号" for i in range(n_words)])]
     stream, spans = docline.build_stream(pages)
+    counting = CountingSpans(spans)
     values = {"T": {f"值{i}号" for i in range(n_values)}}
 
-    started = time.perf_counter()
-    entities, _failures = docline.map_values(pages, stream, spans, values)
-    elapsed = time.perf_counter() - started
+    entities, _failures = docline.map_values(pages, stream, counting, values)
 
     assert len(entities) == n_words
-    assert elapsed < 20.0, f"规模退化到 {elapsed:.1f}s（命中→词定位在重扫全部词？）"
+    bound = len(spans) * 2 + n_words * 64
+    assert counting.reads < bound, (
+        f"词表被读取 {counting.reads} 次（上限 {bound}）⇒ 命中定位退化成了重扫全部词"
+    )

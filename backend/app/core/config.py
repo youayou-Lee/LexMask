@@ -502,9 +502,6 @@ class Settings(BaseSettings):
     # 该页回落 OCR+HaS 旧路径。卷级平均（TEXT_LAYER_MIN_CHARS_PER_PAGE）不能代替
     # 页级判据——薄挂层页会被卷平均「救」进来，从而被永久摘出 OCR 链。
     TEXT_LAYER_PAGE_MIN_CHARS: int = 60
-    # 覆盖页若**一个实体都没出**，是否回落旧路径（评审 C-1）。默认 True：
-    # 宁可多跑一趟 OCR，也不允许「0 框 = 这页没内容」这种静默丢检。
-    TEXT_LAYER_EMPTY_PAGE_FALLBACK: bool = True
     # 块级模型调用失败数上限（评审 I-5）。超过即**整卷回落**旧路径，
     # 不允许「部分块失败」表现为「成功且覆盖 100%」。
     TEXT_LAYER_MAX_BLOCK_ERRORS: int = 0
@@ -525,13 +522,14 @@ class Settings(BaseSettings):
     TEXT_LAYER_INK_SAMPLE_PAGES: int = 3
     # **卷级覆盖率下限**（门⑥ 二轮 Important#5）：覆盖率 = 成功块长度**并集** /
     # 文档流总长；低于它整卷放弃文档级链、回落旧路径。
+    TEXT_LAYER_MAX_TRUNCATED_RATIO: float = 0.50
     TEXT_LAYER_MIN_COVERAGE: float = 0.90
     # **回映失败率上限**：模型给出的值在文本层里定位不到（或跨页拼接）的比例，
     # 超过它就整卷放弃 —— 否则「模型复读/文本层不同源」会被当成正常结果。
     TEXT_LAYER_MAX_MAP_FAILURE_RATIO: float = 0.30
-    # 警告（门⑥ 二轮 Minor#7）：`TEXT_LAYER_EMPTY_PAGE_FALLBACK=False` 会重新打开
-    # C-1 —— 「0 框」被当成「这页已由文档级链处理」⇒ 该页整页丢检。除另有页级
-    # 质量门兜底，否则不要关。
+    # （门⑥ 三轮 Minor#4：原 `TEXT_LAYER_EMPTY_PAGE_FALLBACK` 开关已删除。
+    # 原因：置 False 会把「覆盖页 0 框」当成「这页已由文档级链处理」⇒ 整页丢检，
+    # 一行配置就能把上一轮修掉的 C-1 重新打开。现在 0 框页**无条件**回落旧路径。）
 
     # 兼容旧环境变量 HAS_BASE_URL
     HAS_BASE_URL: str | None = None

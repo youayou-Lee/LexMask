@@ -267,24 +267,44 @@ def iter_chunks(
 # --------------------------------------------------------------------------- 匹配
 
 
+def _fold_char(ch: str) -> str:
+    """单个字符的归一片段：NFKC（全角→半角等）+ NFD 去组合记号。
+
+    `_normalized_stream` 与 `_fold` **必须共用本函数**：两侧粒度不一致时，
+    「基础字 + 组合记号」的姓名（`Jose` + U+0301）在流里是分解形式、在值里被整串
+    NFKC 合成 `José` ⇒ 永不相等、**静默漏检**（门⑥ 三轮 Minor#5）。
+    去组合记号同时让「带重音」与「不带重音」两种写法互为别名。
+    """
+    out: list[str] = []
+    for piece in unicodedata.normalize("NFKC", ch):
+        for base in unicodedata.normalize("NFD", piece):
+            if not unicodedata.combining(base) and not base.isspace():
+                out.append(base)
+    return "".join(out)
+
+
 def _normalized_stream(stream: str) -> tuple[str, list[int]]:
-    """NFKC 归一 + 去空白后的流，以及每个字符回原流的索引表。"""
+    """归一 + 去空白后的流，以及每个字符回原流的索引表。"""
     out: list[str] = []
     index_map: list[int] = []
     for i, ch in enumerate(stream):
-        folded = unicodedata.normalize("NFKC", ch)
-        for piece in folded:
-            if piece.isspace():
-                continue
+        for piece in _fold_char(ch):
             out.append(piece)
             index_map.append(i)
     return "".join(out), index_map
 
 
 def _fold(value: str) -> str:
-    return "".join(
-        piece for piece in unicodedata.normalize("NFKC", str(value or "")) if not piece.isspace()
-    )
+    """逐字 NFKC + 去空白（**必须与 `_normalized_stream` 同粒度**）。
+
+    整串 `NFKC` 会把「基础字 + 组合记号」（`Jose` + U+0301）合成 `José`，而
+    `_normalized_stream` 是逐字处理的、流里仍是分解形式 ⇒ 两侧永不相等、
+    带组合记号的姓名**静默漏检**（门⑥ 第三轮 Minor#5）。
+    """
+    out: list[str] = []
+    for ch in str(value or ""):
+        out.append(_fold_char(ch))
+    return "".join(out)
 
 
 def find_value_spans(
@@ -359,17 +379,6 @@ def _overlapping_word_spans(
     return out
 
 
-def _word_span_index(word_spans: list[_WordSpan]) -> set[tuple[int, int]]:
-    """词区间索引 `{(start, end)}`。
-
-    **必须是独立函数**：Issue#115 P1（189 页真实卷）实测把这段集合构造写在
-    `map_values` 的「多命中收口」分支里 ⇒ 每个出现多次的值都重建全部词区间，
-    O(值数 × 词数) ≈ 6×10^8 次元组构造，把事件循环堵死 >2 分钟（`/health` 超时、
-    单核 100%）。抽成函数后可用『调用次数』做确定性回归（见
-    `test_map_values_indexes_word_spans_once`），不依赖计时。
-    """
-    return {(span.start, span.end) for span in word_spans}
-
 
 def map_values(
     pages: list[TextLayerPage],
@@ -390,10 +399,6 @@ def map_values(
     """
     normalized, index_map = _normalized_stream(stream)
     page_meta = {page.no: page for page in pages}
-    # **一次性**索引：`(start, end)` 词区间集合。189 页真实卷有 ~20 万个词，
-    # 若放在下面的「多命中收口」里逐值重建，就是 O(值数 × 词数) ≈ 6 亿次元组构造
-    # ——P1（189 页）实测把事件循环堵死 >2 分钟（/health 超时、CPU 100% 单核）。
-    aligned_keys = _word_span_index(word_spans)
     span_starts = [span.start for span in word_spans]
     entities: list[DocLineEntity] = []
     failures: list[dict] = []
@@ -406,15 +411,14 @@ def map_values(
             # `match_entities_to_ocr` 自身就支持 sub-word positioning，硬校验会让
             # 新链比旧链更窄 ⇒ 静默漏检。框精度改由下面的**词内插值**保证。
             spans = find_value_spans(normalized, index_map, value)
-            if len(spans) > 1:
-                # **子串匹配的过度命中收口**：取消词边界硬校验后，短值（如年龄 `35`）
-                # 可能命中长串内部（身份证/银行卡号里就会出现）。规则：只要存在
-                # 「整词恰等」的命中就只取那些，否则才退回全部子串命中——既保住
-                # 词内子串的召回（真实卷 14.3% 的词是 16-48 字连排段），又不至于
-                # 把带前缀的串当成独立值。
-                aligned = [(a, b) for a, b in spans if (a, b) in aligned_keys]
-                if aligned:
-                    spans = aligned
+            # **不做「整词优先」的全文档收口**（门⑥ 第三轮 Critical）。
+            # 该规则的判据是「这个值在**本文档**里有没有整词出现」，与「这一刻的
+            # 命中是否过度」无关 ⇒ 只要同一值在别处独立出现过，所有**贴标签**出现
+            # （`编号（2022）京0101刑初123号`）都会被一并毙掉，且 `failures` 为空
+            # ⇒ 该处保持明文却全程无信号。中文案卷的主流形态正是「标签紧贴值」。
+            # 而同一几何无法同时满足「`张三`⊂`张三丰` 不该整词涂黑」与
+            # 「`张三`⊂`被告人张三丰` 必须涂黑」，故按隐私侧不对称取**宁可多涂**：
+            # 保留全部命中，框精度由下面的词内插值收紧到命中字符本身。
             if not spans:
                 failures.append({"type": type_id, "value": value, "reason": "not_found_in_stream"})
                 continue

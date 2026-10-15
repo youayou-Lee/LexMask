@@ -190,6 +190,21 @@ async def _build(
             file_id[:8],
         )
         raise _TransientIneligible(f"block_errors:{result.http_errors}/{result.chunks}")
+    truncated_ratio = (
+        float(result.truncated_chunks) / float(result.chunks) if result.chunks else 0.0
+    )
+    max_truncated = float(settings.TEXT_LAYER_MAX_TRUNCATED_RATIO)
+    if truncated_ratio > max_truncated:
+        # 门⑥ 第三轮 Important#2：模型撞完成帽 ⇒ 该块实体不全（真卷已知失败模态）。
+        # 截断本来只进 memo 与上报，既不过门又写**正缓存**（进程内永久固化），
+        # 召回损失不可见也不可自愈。residual 二遍能找回一部分，但不是保证。
+        logger.warning(
+            "text_layer_docline skipped: %d/%d chunks truncated (limit %.2f) file=%s",
+            result.truncated_chunks, result.chunks, max_truncated, file_id[:8],
+        )
+        raise _TransientIneligible(
+            f"truncated_ratio:{truncated_ratio:.3f}:{result.truncated_chunks}/{result.chunks}"
+        )
     coverage = float(result.coverage_ratio)
     if coverage < float(settings.TEXT_LAYER_MIN_COVERAGE):
         logger.warning(
@@ -343,7 +358,7 @@ async def boxes_for_page(
             logger.info("text_layer_docline page %d 无文本层，回落旧路径 file=%s", page, file_id[:8])
             return None, None
         boxes = list(memo["boxes_by_page"].get(int(page)) or [])
-        if not boxes and settings.TEXT_LAYER_EMPTY_PAGE_FALLBACK:
+        if not boxes:
             # **0 框 ≠ 这页没内容**（评审 C-1）：覆盖页一个实体都没出时，绝不能把
             # `pipeline_ocr_types` 清空当作「文档级链已处理」。宁可多跑一趟 OCR。
             logger.info(
