@@ -336,6 +336,18 @@ def _aligned_to_words(
     return left_ok and right_ok
 
 
+def _word_span_index(word_spans: list[_WordSpan]) -> set[tuple[int, int]]:
+    """词区间索引 `{(start, end)}`。
+
+    **必须是独立函数**：Issue#115 P1（189 页真实卷）实测把这段集合构造写在
+    `map_values` 的「多命中收口」分支里 ⇒ 每个出现多次的值都重建全部词区间，
+    O(值数 × 词数) ≈ 6×10^8 次元组构造，把事件循环堵死 >2 分钟（`/health` 超时、
+    单核 100%）。抽成函数后可用『调用次数』做确定性回归（见
+    `test_map_values_indexes_word_spans_once`），不依赖计时。
+    """
+    return {(span.start, span.end) for span in word_spans}
+
+
 def map_values(
     pages: list[TextLayerPage],
     stream: str,
@@ -355,6 +367,10 @@ def map_values(
     """
     normalized, index_map = _normalized_stream(stream)
     page_meta = {page.no: page for page in pages}
+    # **一次性**索引：`(start, end)` 词区间集合。189 页真实卷有 ~20 万个词，
+    # 若放在下面的「多命中收口」里逐值重建，就是 O(值数 × 词数) ≈ 6 亿次元组构造
+    # ——P1（189 页）实测把事件循环堵死 >2 分钟（/health 超时、CPU 100% 单核）。
+    aligned_keys = _word_span_index(word_spans)
     entities: list[DocLineEntity] = []
     failures: list[dict] = []
     seen: set[tuple[int, str, str, int, int]] = set()
@@ -372,7 +388,6 @@ def map_values(
                 # 「整词恰等」的命中就只取那些，否则才退回全部子串命中——既保住
                 # 词内子串的召回（真实卷 14.3% 的词是 16-48 字连排段），又不至于
                 # 把带前缀的串当成独立值。
-                aligned_keys = {(span.start, span.end) for span in word_spans}
                 aligned = [(a, b) for a, b in spans if (a, b) in aligned_keys]
                 if aligned:
                     spans = aligned

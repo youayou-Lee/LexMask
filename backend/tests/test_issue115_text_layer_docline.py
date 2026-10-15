@@ -680,3 +680,32 @@ def test_map_values_prefers_whole_word_match_over_embedded_one():
     assert abs(x0 - 50.0 / 595.0) < 1e-6
     assert abs((x1 - x0) - 40.0 / 595.0) < 1e-6
     assert entities[0].page == 1
+
+
+def test_map_values_indexes_word_spans_once(monkeypatch) -> None:
+    """回归（P1 189 页实测暴露）：词区间索引必须**一次性**建立。
+
+    修复前 `aligned_keys` 建在「多命中收口」分支里，每个出现多次的值都重建一遍全部
+    词区间 ⇒ O(值数 × 词数)。189 页真实卷 ~20 万词、数千值，实测把事件循环堵死
+    >2 分钟（`/health` 超时、单核 100%）。
+
+    用**调用次数**而不是耗时做断言：确定性、不受机器负载影响（#109 的教训是
+    计时断言会 flaky）。输入里每个值都出现多次，确保收口分支被走到。
+    """
+    calls = []
+    original = docline._word_span_index
+
+    def counting(word_spans):
+        calls.append(len(word_spans))
+        return original(word_spans)
+
+    monkeypatch.setattr(docline, "_word_span_index", counting)
+
+    pages = [_page(1, [f"值{i % 50}" for i in range(500)])]
+    stream, spans = docline.build_stream(pages)
+    values = {"T": {f"值{i}" for i in range(50)}}
+
+    entities, _failures = docline.map_values(pages, stream, spans, values)
+
+    assert len(entities) == 500
+    assert len(calls) == 1, f"词区间索引被重建了 {len(calls)} 次（应为 1 次）"
