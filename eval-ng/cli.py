@@ -648,7 +648,8 @@ def _run_speed(args: argparse.Namespace) -> int:
         agg, harness_seq=harness_seq, backend_seq=backend_seq,
     ))
     checks.extend(sk_collect.key_placement_checks(agg, args.driver))
-    checks.extend(_speed_driver_key_checks(args.driver, summary, rounds))
+    checks.extend(_speed_driver_key_checks(args.driver, summary, rounds,
+                                           corpus_max_bytes=_corpus_max_bytes(corpus)))
     checks.append({
         "id": "D4.wall_agreement",
         "status": "PASS" if wall_agreement.get("within_tolerance") else "FAIL",
@@ -811,8 +812,50 @@ def _install_label() -> str:
     return f"{branch}@{rev}" if branch and rev else (rev or "unknown")
 
 
-def _speed_driver_key_checks(driver: str, summary: dict, rounds: list[dict]) -> list[dict]:
-    """D2④：single 报告不得含 batch 专有键；batch 必须含 jobs 面键。"""
+def _corpus_max_bytes(corpus: list[dict]) -> int:
+    """语料最大件字节数（D6④ 判据的比较基准；取不到按 0，即不比较）。"""
+    sizes = []
+    for item in corpus:
+        try:
+            sizes.append(Path(str(item.get("path"))).stat().st_size)
+        except OSError:
+            continue
+    return max(sizes) if sizes else 0
+
+
+def _batch_upload_checks(rounds: list[dict], corpus_max_bytes: int) -> list[dict]:
+    """D6④：batch 上传体量的机读证据——经反向代理的大件上传不得被截断/限流。
+
+    判据只认「后端实际收到的最大请求体量」（`batch.max_upload_bytes`，来自 job 条目回吐）：
+    缺键/非正数 ⇒ FAIL；收到体量 < 语料最大件 ⇒ FAIL（被代理截断或上限过小）。
+    被测对象主动拒收（413/504）的证据不在此处，而在 `D1.measurement_reachable`（FAIL + HTTP 码）。
+    """
+    timed = [r for r in rounds if not r.get("warmup") and not r.get("invalid")]
+    if not timed:
+        return []
+    sizes: list[float | None] = []
+    for record in timed:
+        value = (record.get("batch") or {}).get("max_upload_bytes")
+        sizes.append(float(value) if isinstance(value, (int, float)) and value > 0 else None)
+    if any(size is None for size in sizes):
+        return [{"id": "D6.batch_upload_bytes", "status": "FAIL",
+                 "detail": f"batch 计时轮缺 max_upload_bytes（D6④ 要求记录经代理的实际上传体量）：{sizes}",
+                 "value": None}]
+    largest = max(sizes)
+    if corpus_max_bytes and largest < corpus_max_bytes:
+        return [{"id": "D6.batch_upload_bytes", "status": "FAIL",
+                 "detail": (f"经代理收到的最大上传体量 {largest:.0f} B < 语料最大件 {corpus_max_bytes} B"
+                            "（被代理截断或上限过小）"),
+                 "value": largest}]
+    return [{"id": "D6.batch_upload_bytes", "status": "PASS",
+             "detail": (f"经代理最大上传体量 {largest:.0f} B ≥ 语料最大件 {corpus_max_bytes} B"
+                        "（HTTP 状态另见 D1.measurement_reachable / D1.round_validity）"),
+             "value": largest}]
+
+
+def _speed_driver_key_checks(driver: str, summary: dict, rounds: list[dict], *,
+                             corpus_max_bytes: int = 0) -> list[dict]:
+    """D2④：single 报告不得含 batch 专有键；batch 必须含 jobs 面键；batch 另加 D6④ 上传体量证据。"""
     from .engine.speedkit import collect as sk_collect
 
     checks: list[dict] = []
@@ -830,6 +873,7 @@ def _speed_driver_key_checks(driver: str, summary: dict, rounds: list[dict]) -> 
                        "detail": ("batch 报告含 job_id 与 job_queue_wait_ms" if not missing
                                   else f"batch 报告缺键：{', '.join(missing)}"),
                        "value": len(missing)})
+        checks.extend(_batch_upload_checks(rounds, corpus_max_bytes))
     return checks
 
 

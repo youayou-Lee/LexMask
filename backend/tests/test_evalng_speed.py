@@ -1058,6 +1058,28 @@ class TestCliReportCompleteness:
         assert "D5.numeric_whitelist" not in failed, [c for c in doc["checks"]
                                                      if c["id"] == "D5.numeric_whitelist"]
         assert "D2.batch_key_set" not in failed
+        assert "D6.batch_upload_bytes" not in failed, [c for c in doc["checks"]
+                                                      if c["id"] == "D6.batch_upload_bytes"]
+
+    def test_batch_upload_bytes_check_is_falsifiable(self):
+        """D6④：缺键 / 体量小于语料最大件 / 正常三种情形必须三态分明。"""
+        cli = boot.load("cli.py")
+        good = [{"batch": {"max_upload_bytes": 9000000}}]
+        missing = [{"batch": {"job_id": "job-1"}}]
+        truncated = [{"batch": {"max_upload_bytes": 1024}}]
+
+        passed = cli._batch_upload_checks(good, corpus_max_bytes=8388608)[0]
+        assert passed["status"] == "PASS" and passed["value"] == 9000000.0
+
+        absent = cli._batch_upload_checks(missing, corpus_max_bytes=8388608)[0]
+        assert absent["status"] == "FAIL" and "缺 max_upload_bytes" in absent["detail"]
+
+        cut = cli._batch_upload_checks(truncated, corpus_max_bytes=8388608)[0]
+        assert cut["status"] == "FAIL" and "被代理截断" in cut["detail"]
+
+        # 无计时轮 ⇒ 不产判据（由 no-data 降级统一处置），不得伪装 PASS
+        assert cli._batch_upload_checks([{"warmup": True, "batch": {"max_upload_bytes": 9000000}}],
+                                        corpus_max_bytes=8388608) == []
 
 
 # ── 脱敏扫描器（D5④） ──────────────────────────────────────────────────────
