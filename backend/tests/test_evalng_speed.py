@@ -4,6 +4,7 @@
 """
 
 import json
+import types
 from pathlib import Path
 
 import evalng_bootstrap as boot
@@ -17,6 +18,7 @@ arms = boot.load("engine/speedkit/arms.py")
 cli = boot.load("cli.py")
 redact = boot.load("scripts/check_report_redaction.py")
 REAL_SPEED_API = driver.SpeedApi  # autouse fixture 会把模块属性替换成抛错版本，这里留真类引用
+EVALNG_ROOT = Path(__file__).resolve().parents[2] / "eval-ng"
 
 RING_LEAVES = {"prepare": 100.0, "ocr": 300.0, "has_ner": 400.0, "match": 80.0, "draw": 120.0}
 
@@ -320,6 +322,11 @@ class TestCollect:
 
 
 # ── report：自足/白名单/判定 ───────────────────────────────────────────────
+def _check_status(checks: list[dict], check_id: str) -> str | None:
+    """按 id 取检查项状态（模块级：多个测试类共用）。"""
+    return next((c["status"] for c in checks if c["id"] == check_id), None)
+
+
 def _footnote(**overrides) -> dict:
     doc = {
         "instance": "local",
@@ -371,7 +378,10 @@ def _report_envelope() -> dict:
 
 
 class TestReport:
-    def test_footnote_eight_keys_pass(self):
+    def test_footnote_eight_keys_pass(self, monkeypatch):
+        # C5：脚注 hardware/image_dtk 必须与指纹交叉一致 ⇒ 本用例把指纹源钉成与脚注同值
+        monkeypatch.setattr(report, "hardware_raw", lambda *a, **kw: "cpu-8c")
+        monkeypatch.setattr(report, "dtk_version_raw", lambda *a, **kw: "dev-image/no-dtk")
         fp = report.build_fingerprints(api_base="http://127.0.0.1:8000")
         errors = report.validate_footnote(
             _footnote(), api_base="http://127.0.0.1:8000", live_code_rev="0" * 40,
@@ -955,7 +965,8 @@ class _StubApi:
     """替身客户端：不建连；只补 CLI 会调用的两个面。"""
 
     def __init__(self, *args, **kwargs):
-        pass
+        # ②冷评审 I15：D2.api_base 现在读客户端的 trust_env（是否为绕过环境代理的证据）
+        self.client = types.SimpleNamespace(trust_env=False)
 
     def close(self):
         pass
@@ -996,7 +1007,7 @@ class TestCliReportCompleteness:
 
     @staticmethod
     def _status(doc: dict, check_id: str) -> str | None:
-        return next((c["status"] for c in doc["checks"] if c["id"] == check_id), None)
+        return _check_status(doc["checks"], check_id)
 
     def test_invalid_timing_round_is_marked_and_excluded(self, tmp_path, monkeypatch):
         """C2 反向用例：零页计时轮必须标记 invalid 并**从计时聚合里剔除**（改 `invalid=False` 即红）。"""
@@ -1081,6 +1092,141 @@ class TestCliReportCompleteness:
         assert cli._batch_upload_checks([{"warmup": True, "batch": {"max_upload_bytes": 9000000}}],
                                         corpus_max_bytes=8388608) == []
 
+
+    def test_footnote_must_cross_check_image_dtk_and_hardware(self):
+        """②冷评审 C5：手填型号/DTK 版本必须被指纹交叉核验抓住（原来只交叉 instance）。"""
+        fp = report.build_fingerprints(api_base="http://127.0.0.1:8000")
+        fp["hardware_raw"] = "Hygon C86 7185 32-core Processor"
+        fp["dtk_version_raw"] = "DTK-24.04.1"
+        good = _footnote(hardware=fp["hardware_raw"], image_dtk=fp["dtk_version_raw"])
+        errors = report.validate_footnote(good, api_base="http://127.0.0.1:8000",
+                                          live_code_rev="0" * 40, fingerprints=fp)
+        assert not [e for e in errors if "image_dtk" in e or "hardware" in e], errors
+
+        fake = _footnote(hardware="假型号", image_dtk="DTK-9.99.9-FAKE")
+        errors = report.validate_footnote(fake, api_base="http://127.0.0.1:8000",
+                                          live_code_rev="0" * 40, fingerprints=fp)
+        assert any("image_dtk" in e and "dtk_version_raw" in e for e in errors), errors
+        assert any("hardware" in e and "hardware_raw" in e for e in errors), errors
+
+    def test_fingerprint_sha256_tamper_is_caught(self):
+        """I14 守卫之一：指纹内容被改但 sha256 未同步 ⇒ 必须报错。"""
+        fp = report.build_fingerprints(api_base="http://127.0.0.1:8000")
+        fp["hostname"] = "tampered-host"
+        errors = report.validate_fingerprints(fp)
+        assert any("sha256" in e for e in errors), errors
+
+    def test_quality_eval_must_stay_not_run(self):
+        """I14 守卫之一：`quality_eval` 是声明位，值必须恒为 'not_run'。"""
+        assert report.quality_key_errors({"quality_eval": "not_run"}) == []
+        errors = report.quality_key_errors({"quality_eval": "f1=0.9"})
+        assert any("not_run" in e for e in errors), errors
+
+    def test_redact_path_covers_home_and_unc(self):
+        """I13：`~` 与 UNC 同属绝对路径，必须压前缀；普通相对路径保持可重放。"""
+        assert report.redact_path("/root/ab/exam_d1.json") == "<abs>/…/exam_d1.json"  # public-tree-scan: ignore-line
+        assert report.redact_path("~/private/x.json") == "<abs>/…/x.json"
+        assert report.redact_path(r"\\srv\share\report.json") == "<abs>/…/report.json"
+        assert report.redact_path("out/report.json") == "out/report.json"
+
+    def test_redact_command_masks_credentials_and_paths(self):
+        """I13：口令类开关的后一个 token 整体替换；值内 Bearer/口令字面量抹掉。"""
+        masked = report.redact_command(
+            ["python", "eval-ng/cli.py", "speed", "/root/ab/exam.json", "--api-pass", "EvalUser!2026",  # public-tree-scan: ignore-line
+             "--api-base", "http://127.0.0.1:8000"]
+        )
+        joined = " ".join(masked)
+        assert "EvalUser!2026" not in joined, joined
+        assert "<redacted>" in masked
+        assert "/root/ab" not in joined, joined  # public-tree-scan: ignore-line
+        assert any(report.scrub_secrets(v) == v for v in ("plain",))  # 无凭据值原样
+
+        env = report.redact_env({"API_PASS": "EvalUser!2026", "HAS_NER_GLOBAL_MAX_INFLIGHT": "8",
+                                 "NOTE": "Bearer abcdefghijklmnopqrstuvwxyz012345"})  # public-tree-scan: ignore-line
+        assert env["API_PASS"] == "<redacted>"
+        assert env["HAS_NER_GLOBAL_MAX_INFLIGHT"] == "8"
+        assert "abcdefghijklmnopqrstuvwxyz" not in env["NOTE"]
+
+    def test_hardware_raw_skips_banner_lines(self):
+        """I17：hy-smi 首行是横幅，取证力为零 ⇒ 必须取第一条承载信息的行。"""
+        assert report._first_meaningful_line("=== System Management Interface ===\n") == ""
+        assert report._first_meaningful_line("----\nHygon C86 7185 32-core Processor\n") == (
+            "Hygon C86 7185 32-core Processor")
+
+    def test_api_base_check_is_discriminative(self):
+        """I15：`D2.api_base` 原来无条件 PASS；现在必须由 trust_env 决定。"""
+        ev = {"rounds": [{"round": 1, "pid": 1, "start_time": "1",
+                          "timestamp": "2026-10-16T01:00:00+0800"}], "env": {"A": "1"},
+              "ready_wait_sec": 20.0, "settle_sec": 10.0}
+        ok = driver.cold_evidence_checks(ev, [{"round": 1, "file_wall_s": 1.0}], cache_policy="cold",
+                                         driver="single", api_base="http://127.0.0.1:8000",
+                                         restart_cmd="bash r.sh", trust_env=False)
+        bad = driver.cold_evidence_checks(ev, [{"round": 1, "file_wall_s": 1.0}], cache_policy="cold",
+                                          driver="single", api_base="http://127.0.0.1:8000",
+                                          restart_cmd="bash r.sh", trust_env=True)
+        unknown = driver.cold_evidence_checks(ev, [{"round": 1, "file_wall_s": 1.0}], cache_policy="cold",
+                                              driver="single", api_base="http://127.0.0.1:8000",
+                                              restart_cmd="bash r.sh")
+        assert _check_status(ok, "D2.api_base") == "PASS"
+        assert _check_status(bad, "D2.api_base") == "FAIL"
+        assert _check_status(unknown, "D2.api_base") == "UNVERIFIED"
+
+    def test_cold_start_time_must_be_unique(self):
+        """I14 守卫之一：pid 不同但 start_time 全同 ⇒ 不是真的重启，必须 FAIL。"""
+        rounds = [{"round": 1, "file_wall_s": 1.0}, {"round": 2, "file_wall_s": 1.0}]
+        ev = {"rounds": [
+            {"round": 1, "pid": 11, "start_time": "1905766371", "timestamp": "t1"},
+            {"round": 2, "pid": 22, "start_time": "1905766371", "timestamp": "t2"},
+        ], "env": {"A": "1"}, "ready_wait_sec": 1.0, "settle_sec": 1.0}
+        checks = driver.cold_evidence_checks(ev, rounds, cache_policy="cold", driver="single",
+                                             api_base="http://127.0.0.1:8000", restart_cmd="bash r.sh",
+                                             trust_env=False)
+        assert _check_status(checks, "D2.cold_evidence") == "FAIL", checks
+        ev["rounds"][1]["start_time"] = "1905766399"
+        checks = driver.cold_evidence_checks(ev, rounds, cache_policy="cold", driver="single",
+                                            api_base="http://127.0.0.1:8000", restart_cmd="bash r.sh",
+                                            trust_env=False)
+        assert _check_status(checks, "D2.cold_evidence") != "FAIL", checks
+
+    def test_arm_post_dirty_fails(self, monkeypatch):
+        """I14 守卫之一：patch 臂跑完工作树必须复原，脏即 FAIL（不许静默继续）。"""
+        arm = arms.load_arm(str(EVALNG_ROOT / "arms" / "example-patch-k1.json"))
+        monkeypatch.setattr(arms, "git_porcelain",
+                            lambda *args, **kwargs: [" M frontend/src/constants/timing.ts"])
+        checks = arms.arm_checks(arm, phase="post", ignore_paths=[])
+        assert _check_status(checks, "D8.patch_arm_revert") == "FAIL", checks
+
+    def test_anchor_reproduction_uses_declared_p50(self):
+        """I16：锚点复现的判定落点必须在引擎里（原来只能肉眼比归档数字）。"""
+        cli = boot.load("cli.py")
+        arm = {"name": "k3", "expect_p50_s": 86.65}
+        ok = cli._speed_anchor_check(arm, {"file_wall_s": {"p50": 92.9}})
+        assert ok[0]["status"] == "PASS", ok
+        bad = cli._speed_anchor_check(arm, {"file_wall_s": {"p50": 200.0}})
+        assert bad[0]["status"] == "FAIL", bad
+        absent = cli._speed_anchor_check({"name": "k3"}, {"file_wall_s": {"p50": 92.9}})
+        assert absent[0]["status"] == "UNVERIFIED", absent
+        assert cli._speed_anchor_check(arm, {"file_wall_s": {"p50": None}}) == []
+
+    def test_self_sufficiency_names_missing_fields(self):
+        """I16：报告自足性缺项必须点名 FAIL；warm 轮不要求 cold_evidence。"""
+        cli = boot.load("cli.py")
+        mode = {"driver": "single", "page_concurrency": 3, "cache_policy": "cold",
+                "warmup_rounds": 1, "timing_rounds": 3, "payload_sha256": "a" * 64,
+                "api_base": "http://127.0.0.1:8000"}
+        summary = {"file_wall_s": {"p50": 1.0}, "pages_per_min": 6.0, "page_ms_p50": 25000.0,
+                   "pages_measured_timing": 30}
+        arm = {"name": "k3", "kind": "env"}
+        ok = cli._speed_self_sufficiency_checks(mode=mode, arm=arm, summary=summary,
+                                                evidence={"rounds": [{"round": 1}]})
+        assert ok[0]["status"] == "PASS", ok
+        bad = cli._speed_self_sufficiency_checks(mode={**mode, "payload_sha256": None}, arm=arm,
+                                                 summary={**summary, "pages_per_min": None},
+                                                 evidence={"rounds": []})
+        assert bad[0]["status"] == "FAIL" and "payload_sha256" in bad[0]["detail"], bad
+        warm = cli._speed_self_sufficiency_checks(mode={**mode, "cache_policy": "warm"}, arm=arm,
+                                                  summary=summary, evidence={"rounds": []})
+        assert warm[0]["status"] == "PASS", warm
 
 # ── 脱敏扫描器（D5④） ──────────────────────────────────────────────────────
 class TestRedactionScanner:

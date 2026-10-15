@@ -196,10 +196,6 @@ class VisionRejected(RuntimeError):
 
 
 # ── 墙钟对（D4②：两个不同源的时钟并列） ────────────────────────────────────
-def _wall_pair(epoch_start: float, mono_start: float) -> tuple[float, float, float, float]:
-    return epoch_start, mono_start, 0.0, 0.0
-
-
 def _close_wall(epoch_start: float, mono_start: float) -> tuple[float, float]:
     """返回 (file_wall_s=epoch 跨度, driver_self_wall_s=monotonic 跨度)。"""
     return round(time.time() - epoch_start, 6), round(time.perf_counter() - mono_start, 6)
@@ -270,7 +266,7 @@ def measure_single_round(
     items_view: list[dict] = []
     rejected: list[dict] = []
     sidecars: dict[str, dict] = {}
-    epoch_start, mono_start, _, _ = _wall_pair(time.time(), time.perf_counter())
+    epoch_start, mono_start = time.time(), time.perf_counter()
 
     for item in corpus_items:
         item_id = str(item["id"])
@@ -416,7 +412,7 @@ def measure_batch_round(
         list(pool.map(lambda p: api.upload(p, job_id), files))
     upload_sec = time.perf_counter() - upload_started
 
-    epoch_start, mono_start, _, _ = _wall_pair(time.time(), time.perf_counter())
+    epoch_start, mono_start = time.time(), time.perf_counter()
     api.submit_job(job_id)
     detail = wait_job(api, job_id, timeout_sec=timeout_sec, progress=progress)
     file_wall_s, driver_self_wall_s = _close_wall(epoch_start, mono_start)
@@ -546,7 +542,9 @@ def timing_rounds_needed(stats: dict) -> tuple[bool, str, str]:
     ratio = stats.get("discretion_ratio")
     if n < MIN_TIMING_ROUNDS:
         return True, "UNVERIFIED", f"计时轮 {n} < {MIN_TIMING_ROUNDS}，不足以判 PASS"
-    if ratio is not None and ratio > MAX_DISCRETION_RATIO:
+    if ratio is None:
+        return True, "UNVERIFIED", f"计时轮 n={n} 但跨轮离散不可算（stats 缺 discretion_ratio）"
+    if ratio > MAX_DISCRETION_RATIO:
         if n < MAX_TIMING_ROUNDS:
             return True, "UNVERIFIED", (f"跨轮离散 {ratio:.1%} > {MAX_DISCRETION_RATIO:.0%}，"
                                         f"需补到总 {MAX_TIMING_ROUNDS + WARMUP_ROUNDS} 轮")
@@ -591,7 +589,8 @@ def _entry_for(evidence: dict, round_no: int) -> dict | None:
 
 
 def cold_evidence_checks(evidence: dict, rounds: list[dict], *, cache_policy: str,
-                         driver: str, api_base: str, restart_cmd: str | None) -> list[dict]:
+                         driver: str, api_base: str, restart_cmd: str | None,
+                         trust_env: bool | None = None) -> list[dict]:
     """逐计时轮的机器证据：pid + /proc start_time + 时间戳；相邻计时轮必须换 pid。"""
     checks: list[dict] = []
     timing = [r for r in rounds if not r.get("warmup") and not r.get("invalid")]
@@ -649,8 +648,21 @@ def cold_evidence_checks(evidence: dict, rounds: list[dict], *, cache_policy: st
                               if collect.is_number(ready) and collect.is_number(settle)
                               else "round-evidence 缺 ready_wait_sec / settle_sec（脚注第 8 项必须实测）"),
                    "value": ready})
-    checks.append({"id": "D2.api_base", "status": "PASS",
-                   "detail": f"api_base={api_base}；driver={driver}", "value": None})
+    # ②冷评审 I15：原来无条件 PASS 只是回显两个字符串，零判别力。真正的机制是客户端
+    # `trust_env=False`（e2e.py:56）——环境里的 HTTP_PROXY/HTTPS_PROXY 不得改写实际链路；
+    # 拿不到客户端信息时如实记 UNVERIFIED，不伪装 PASS。
+    if trust_env is None:
+        checks.append({"id": "D2.api_base", "status": "UNVERIFIED",
+                       "detail": f"api_base={api_base}；driver={driver}；客户端 trust_env 不可核"
+                                 "（环境代理是否被绕过未知）", "value": None})
+    else:
+        bypassed = trust_env is False
+        checks.append({"id": "D2.api_base", "status": "PASS" if bypassed else "FAIL",
+                       "detail": (f"api_base={api_base}；driver={driver}；trust_env=False"
+                                  "（绕过环境代理，链路不由 HTTP_PROXY 改写）" if bypassed else
+                                  f"api_base={api_base}；driver={driver}；客户端 trust_env={trust_env}"
+                                  "（环境代理可改写实际链路，D2① 不成立）"),
+                       "value": trust_env})
     return checks
 
 

@@ -638,6 +638,7 @@ def _run_speed(args: argparse.Namespace) -> int:
     checks.extend(sk_driver.cold_evidence_checks(
         evidence, rounds, cache_policy=args.cache_policy, driver=args.driver,
         api_base=args.api_base, restart_cmd=args.round_restart_cmd,
+        trust_env=(getattr(api.client, "trust_env", None) if api is not None else None),
     ))
     checks.extend(sk_driver.concurrency_dual_evidence(rounds, args.page_concurrency, args.driver))
     checks.extend(sk_driver.expect_reject_checks(rounds, corpus))
@@ -657,6 +658,7 @@ def _run_speed(args: argparse.Namespace) -> int:
                   f"{wall_agreement.get('max_abs_ratio_diff')}（阈值 ≤{sk_driver.WALL_AGREEMENT_TOLERANCE}）",
         "value": wall_agreement.get("max_abs_ratio_diff"),
     })
+    checks.extend(_speed_anchor_check(arm, summary))
     _needs, timing_status, why = sk_driver.timing_rounds_needed(wall_stats)
     checks.append({"id": "D2.timing_rounds", "status": timing_status,
                    "detail": why, "value": wall_stats.get("n")})
@@ -698,6 +700,7 @@ def _run_speed(args: argparse.Namespace) -> int:
         "payload_ocr_types": len(payload["selected_ocr_has_types"]),
         "payload_visual_types": len(payload["selected_visual_feature_types"]),
         "api_base": args.api_base,
+        "proxy_bypass": "trust_env=False",
         "suite": exam_view.get("suite"),
         "install": args.install or _install_label(),
         "upload_workers": args.upload_workers,
@@ -723,9 +726,12 @@ def _run_speed(args: argparse.Namespace) -> int:
              "--round-evidence", args.round_evidence]
             + (["--payload-file", args.payload_file] if args.payload_file else [])
             + (["--cleanup"] if args.cleanup else [])),
-        "env": {key: sk_report.redact_path(value) for key, value in (evidence.get("env") or {}).items()},
+        "env": sk_report.redact_env(evidence.get("env") or {}),
         "requires": ["同实例", "同窗口", "同语料（md5 见 exam.corpus）", "冷跑时逐轮重启后端"],
     }
+    checks.extend(_speed_self_sufficiency_checks(
+        mode=mode, arm=sk_arms.arm_report_block(arm), summary=summary, evidence=evidence,
+    ))
     report = sk_report.build_report(
         exam=exam_view, mode=mode, arm=sk_arms.arm_report_block(arm), rounds=rounds,
         cold_evidence=list(evidence.get("rounds") or []), summary=summary, cache=cache,
@@ -851,6 +857,59 @@ def _batch_upload_checks(rounds: list[dict], corpus_max_bytes: int) -> list[dict
              "detail": (f"经代理最大上传体量 {largest:.0f} B ≥ 语料最大件 {corpus_max_bytes} B"
                         "（HTTP 状态另见 D1.measurement_reachable / D1.round_validity）"),
              "value": largest}]
+
+
+ANCHOR_TOLERANCE = 0.20
+SELF_SUFFICIENCY_ITEMS = (
+    ("mode", "driver"), ("mode", "page_concurrency"), ("mode", "cache_policy"),
+    ("mode", "warmup_rounds"), ("mode", "timing_rounds"), ("mode", "payload_sha256"),
+    ("mode", "api_base"),
+)
+
+
+def _speed_anchor_check(arm: dict, summary: dict) -> list[dict]:
+    """D1：锚点复现由引擎判——臂声明 `expect_p50_s`（#106 归档值）与实测 p50 比，阈值 ±20%。
+
+    ②冷评审 I16：30 个 check id 里原来没有「双仪器锚点复现」的判定落点，只能靠人肉眼比归档数字。
+    """
+    declared = arm.get("expect_p50_s")
+    measured = (summary.get("file_wall_s") or {}).get("p50")
+    if declared is None:
+        return [{"id": "D1.anchor_reproduction", "status": "UNVERIFIED",
+                 "detail": "臂未声明 expect_p50_s（#106 归档锚点 p50 须显式声明才可机判）", "value": None}]
+    if not isinstance(measured, (int, float)):
+        return []
+    declared_f, measured_f = float(declared), float(measured)
+    ratio = abs(measured_f - declared_f) / declared_f
+    return [{"id": "D1.anchor_reproduction",
+             "status": "PASS" if ratio <= ANCHOR_TOLERANCE else "FAIL",
+             "detail": (f"锚点 p50 声明 {declared_f:.3f}s，实测 {measured_f:.3f}s，偏差 {ratio:.1%}"
+                        f"（阈值 ±{ANCHOR_TOLERANCE:.0%}）"),
+             "value": measured_f}]
+
+
+def _speed_self_sufficiency_checks(*, mode: dict, arm: dict, summary: dict,
+                                   evidence: dict) -> list[dict]:
+    """D4②/D4③：报告自足性——重放与复核所需字段必须齐备，缺项点名 FAIL。
+
+    冷跑证据只在 `cache_policy=cold` 时要求（warm 轮本就不重启后端）。
+    """
+    missing: list[str] = []
+    for section, key in SELF_SUFFICIENCY_ITEMS:
+        if (mode or {}).get(key) in (None, ""):
+            missing.append(f"{section}.{key}")
+    for key in ("name", "kind"):
+        if (arm or {}).get(key) in (None, ""):
+            missing.append(f"arm.{key}")
+    for key in ("file_wall_s", "pages_per_min", "page_ms_p50", "pages_measured_timing"):
+        if (summary or {}).get(key) in (None, ""):
+            missing.append(f"summary.{key}")
+    if str((mode or {}).get("cache_policy")) == "cold" and not (evidence or {}).get("rounds"):
+        missing.append("cold_evidence")
+    return [{"id": "D4.self_sufficiency", "status": "PASS" if not missing else "FAIL",
+             "detail": ("报告自足：重放/复核所需字段齐备" if not missing
+                        else f"报告自足性缺项：{', '.join(missing)}"),
+             "value": len(missing)}]
 
 
 def _speed_driver_key_checks(driver: str, summary: dict, rounds: list[dict], *,

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """check_report_redaction.py —— speed 报告脱敏扫描器（验收方案 v2 D5④）。
 
-扫三类痕迹，命中即退 1：
+扫四类痕迹，命中即退 1：
 
 1. **非回环 IP**（`127.*` / `0.0.0.0` 放行——报告里的本地回环不是泄漏）；
 2. **绝对路径**（POSIX 根用户/家目录/挂载点等前缀、Windows 盘符路径；`--allow-prefix` 可放行指定前缀）；
-3. **`--denylist` 词表**（一行一词；`re:<正则>` 前缀走正则）。
+3. **口令面**（`Bearer <token>` / `sk-…` 厂商密钥 / `password=…` 字面量；规则从同族公开树扫描器
+   `check_public_tree.SECRET_RES` **同一真源**导入，避免两处口径漂移——②冷评审 I13 指其原本无机检）；
+4. **`--denylist` 词表**（一行一词；`re:<正则>` 前缀走正则）。
 
 自带阳性对照：`--self-test` 会用含 IP/绝对路径/denylist 词的样本断言「必须命中」，再用干净样本断言
 「必须不命中」——**没有阳性对照的扫描器等于恒真判据**（D5④）。
@@ -26,6 +28,14 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:  # 口令面规则单一真源（同目录同族扫描器）；缺文件即失败，不得留下「口令面无人管」的假干净
+    from check_public_tree import SECRET_RES
+except ImportError:  # pragma: no cover - 只在文件被拆散时触发
+    raise SystemExit(
+        "check_report_redaction: 缺同目录 check_public_tree.py（口令面规则单一真源）"
+    ) from None
+
 IP_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")
 ABS_PATH_RE = re.compile(
     r"(?<![\w.\-/])(/(?:root|home|mnt|data|opt|srv|var|Users|tmp|workspace|media)/[^\s\"'`,)]*)"
@@ -35,6 +45,7 @@ LOOPBACK_PREFIXES = ("127.", "0.0.0.0", "::1")
 
 SELF_TEST_BAD = (
     "instance 10.11.12.13 path /root/ab/d3-after-1.json win C:\\Users\\dev\\secret.txt "  # public-tree-scan: ignore-line
+    'auth Bearer abcdefghijklmnopqrstuvwxyz012345 password="Passw0rd!2026" '  # public-tree-scan: ignore-line
     "case 苏A-某某公司-2021"  # public-tree-scan: ignore-line
 )
 SELF_TEST_CLEAN = "instance local path testdata/canary-issue106-scan-10p.pdf ip 127.0.0.1 ok"
@@ -56,6 +67,9 @@ def scan(text: str, *, denylist: list[str], allow_prefixes: list[str]) -> list[t
     for match in IP_RE.finditer(text):
         if not _is_loopback(match.group(0)):
             findings.append(("ip", match.group(0)))
+    for rule, regex in SECRET_RES:
+        for match in regex.finditer(text):
+            findings.append((rule, match.group(0)))
     for rule, regex in (("abs_path", ABS_PATH_RE), ("win_path", WIN_PATH_RE)):
         for match in regex.finditer(text):
             value = match.group(0)
@@ -81,11 +95,11 @@ def scan_source(name: str, text: str, *, denylist: list[str], allow_prefixes: li
 
 
 def self_test() -> list[str]:
-    """阳性对照：坏样本必须命中三类；干净样本必须零命中。"""
+    """阳性对照：坏样本必须命中四类（含口令面）；干净样本必须零命中。"""
     errors: list[str] = []
     bad = scan(SELF_TEST_BAD, denylist=["苏A-某某公司-2021"], allow_prefixes=[])
     rules = {rule for rule, _ in bad}
-    for expected in ("ip", "abs_path", "win_path", "denylist"):
+    for expected in ("ip", "abs_path", "win_path", "bearer", "credential_literal", "denylist"):
         if expected not in rules:
             errors.append(f"阳性对照失败：坏样本未命中 {expected}（实得 {sorted(rules)}）")
     clean = scan(SELF_TEST_CLEAN, denylist=[], allow_prefixes=[])
@@ -115,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[self-test] {err}", file=sys.stderr)
             exit_code = 1
         else:
-            print("[self-test] 阳性对照通过（坏样本命中 4 类；干净样本零命中）")
+            print("[self-test] 阳性对照通过（坏样本命中 6 类；干净样本零命中）")
 
     if not args.paths:
         if not args.self_test:

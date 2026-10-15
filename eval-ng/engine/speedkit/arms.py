@@ -21,6 +21,8 @@
 - `patch` 臂：引擎**只读**声明并断言 (a) 跑前工作树干净、(b) 声明的替换/`expect` 确实已生效
   （静默未生效即 FAIL）、(c) 臂跑完工作树必须复原（脏 ⇒ FAIL，不许静默继续）。
 - `probe` 指明对照仪器：`python` = 本模块；`vitest` = 归档前端探针（`#106` D3）。
+- `expect_p50_s`（可选）声明该臂的锚点期望 p50（秒，如 #106 归档值）；引擎据此产出
+  `D1.anchor_reproduction`（±20%）——判据落点在引擎里，不靠人肉眼比。
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from pathlib import Path
 
 from . import report
 
-ARM_KEYS = frozenset({"name", "kind", "env", "patches", "expect", "probe", "notes"})
+ARM_KEYS = frozenset({"name", "kind", "env", "patches", "expect", "expect_p50_s", "probe", "notes"})
 ARM_KINDS = frozenset({"env", "patch"})
 PATCH_KEYS = frozenset({"file", "from", "to"})
 EXPECT_KEYS = frozenset({"file", "contains"})
@@ -74,6 +76,9 @@ def load_arm(path: str) -> dict:
     probe = data.get("probe")
     if probe not in PROBE_KINDS:
         raise ValueError(f"臂定义 {path} 的 probe={probe!r} 非法，应为 python / vitest / null")
+    expect_p50_s = data.get("expect_p50_s")
+    if expect_p50_s is not None and not (isinstance(expect_p50_s, (int, float)) and expect_p50_s > 0):
+        raise ValueError(f"臂定义 {path} 的 expect_p50_s 必须是正数（锚点 p50 声明，单位秒）：{expect_p50_s!r}")
     if kind == "patch" and not (patches or expect):
         raise ValueError(f"臂定义 {path} 是 patch 臂却既无 patches 也无 expect（无法判定是否生效）")
     return {
@@ -83,6 +88,7 @@ def load_arm(path: str) -> dict:
         "patches": patches,
         "expect": expect,
         "probe": probe,
+        "expect_p50_s": float(expect_p50_s) if expect_p50_s is not None else None,
         "notes": str(data.get("notes") or ""),
         "source": str(path),
     }
@@ -96,6 +102,7 @@ def arm_report_block(arm: dict) -> dict:
     return {
         "name": arm.get("name"),
         "kind": arm.get("kind"),
+        "expect_p50_s": arm.get("expect_p50_s"),
         "source": report.redact_path(arm.get("source")),
         "env": dict(arm.get("env") or {}),
         "patches": list(arm.get("patches") or []),

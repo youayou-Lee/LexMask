@@ -36,7 +36,7 @@ FOOTNOTE_KEYS = (
 # 同会话环境指纹（D5②：脚注第 1/2/3 项必须与指纹原始输出交叉，禁手填）
 FINGERPRINT_KEYS = ("hostname", "hardware_raw", "dtk_version_raw", "api_base_host")
 FOOTNOTE_PLACEHOLDERS = frozenset({
-    "", "-", "unknown", "n/a", "na", "none", "null", "todo", "tbd", "test", "placeholder", "占位",
+    "", "-", "unknown", "n/a", "na", "none", "null", "todo", "tbd", "test", "placeholder", "占位", "待填",
 })
 
 VERDICT_ORDER = ("FAIL", "BLOCKED", "UNVERIFIED", "PASS")
@@ -56,6 +56,7 @@ _NUMERIC_ALLOW_RES = tuple(re.compile(pattern) for pattern in (
     r"^mode\.(job_timeout_min|payload_ocr_types|payload_visual_types)$",
     # ── 臂定义（声明值：期望值/patch 数量/探针字段） ──────────────────────
     r"^arm\.(expect|patches|probe)\..*$",
+    r"^arm\.expect_p50_s$",
     # ── 机读轮次证据（pid / 时间戳 / 就绪等待与静置实测） ──────────────────
     r"^cold_evidence\[\d+\]\.(round|pid|exit_code|timestamp|start_time)$",
     r"^cold_evidence\[\d+\]\.(ready_wait_s|ready_wait_sec|settle_sec)$",
@@ -136,15 +137,25 @@ def md5_file(path: str) -> str:
     return digest.hexdigest()
 
 
-_ABS_PATH_START_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
+_ABS_PATH_START_RE = re.compile(r"^(?:/|~[\\/]?|\\\\|[A-Za-z]:[\\/])")
 _PATH_SEP_RE = re.compile(r"[\\/]")
+# 口令面（D5④ 机检）：Bearer 令牌、`password=…` 形态、以及键名命中凭据词的环境变量
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/\-]{12,}")
+_CRED_LITERAL_RE = re.compile(r"(?i)\b(pass(?:word|wd)?|secret|token|api[_-]?key)\b\s*[:=]\s*[\"']?([^\s\"',;]{6,})")
+_SECRET_KEY_RE = re.compile(r"(?i)(pass(?:word|wd)?|secret|token|api[_-]?key|credential|auth)")
+_SECRET_FLAG_RE = re.compile(
+    r"(?i)^--?(?:[a-z0-9_]*[-_])?(pass(?:word|wd)?|secret|token|api[_-]?key|credential|auth)(?:=(.*))?$"
+)
 
 
 def redact_path(text) -> str:
-    """报告内绝对路径脱敏：`<任何绝对前缀>/exam_d1.json` → `<abs>/…/exam_d1.json`。
+    """报告内路径脱敏：`<任何绝对前缀>/exam_d1.json` → `<abs>/…/exam_d1.json`。
 
     ④云门实测：合成卷也带实例绝对路径，报告拿不到脱敏扫描器零命中（D5④/G4 是硬门）。这里只压
     前缀、保留 basename 供人核对；同一文件的机检身份由 `md5`/`manifest_sha256` 独立承载。
+    ②冷评审 I13：`~`（家目录）与 UNC（`\\\\server\\share\\x`）同属绝对路径，一并压。
+    **普通相对路径故意不压**——`reproduce.command` 要能照着重放，压了就不是可复现命令了；
+    相对路径不携带主机前缀，D5④ 扫描器只把绝对路径形态列为红线。
     """
     value = str(text)
     if not _ABS_PATH_START_RE.match(value):
@@ -153,9 +164,42 @@ def redact_path(text) -> str:
     return f"<abs>/…/{base}" if base else "<abs>"
 
 
+def scrub_secrets(text) -> str:
+    """值内凭据痕迹：`Bearer <token>` 与 `password=…` 形态一律替换（②冷评审 I13 口令面）。"""
+    out = _BEARER_RE.sub("Bearer <redacted>", str(text))
+    return _CRED_LITERAL_RE.sub(lambda m: f"{m.group(1)}=<redacted>", out)
+
+
+def redact_env(mapping) -> dict:
+    """环境变量回放：键名命中凭据词 ⇒ 整值 `<redacted>`；其余值再过 `scrub_secrets`。"""
+    redacted: dict = {}
+    for key, value in (mapping or {}).items():
+        redacted[key] = "<redacted>" if _SECRET_KEY_RE.search(str(key)) else scrub_secrets(value)
+    return redacted
+
+
 def redact_command(argv) -> list:
-    """命令回放里的路径 token 逐个脱敏（非路径 token 原样保留）。"""
-    return [redact_path(token) if isinstance(token, str) else token for token in (argv or [])]
+    """命令回放：路径 token 压前缀、值内凭据抹掉、凭据类开关的**下一个** token 整体替换。"""
+    out = []
+    mask_next = False
+    for token in argv or []:
+        if not isinstance(token, str):
+            out.append(token)
+            continue
+        if mask_next:
+            out.append("<redacted>")
+            mask_next = False
+            continue
+        flag = _SECRET_FLAG_RE.match(token)
+        if flag:
+            if flag.group(2) is None:  # `--api-pass <值>`：值在下一个 token
+                out.append(redact_path(scrub_secrets(token)))
+                mask_next = True
+            else:  # `--api-pass=<值>`：值在本 token 内
+                out.append(token[: flag.start(2)] + "<redacted>")
+            continue
+        out.append(redact_path(scrub_secrets(token)))
+    return out
 
 
 def runtime_code_rev(root: str | None = None) -> str:
@@ -194,6 +238,20 @@ def is_loopback_host(host: str) -> bool:
 
 
 # ── 脚注 + 指纹 ─────────────────────────────────────────────────────────────
+# ②冷评审 I17：`hy-smi` 第一行是横幅（`=== System Management Interface ===`），形式真值但零取证力
+_BANNER_LINE_RE = re.compile(r"(?i)^[\s=\-*#+]+$|system management interface|^\s*(usage|command)\b")
+
+
+def _first_meaningful_line(text: str) -> str:
+    """跳过横幅/分隔行，取第一条承载信息的原始输出行。"""
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped or _BANNER_LINE_RE.search(stripped):
+            continue
+        return stripped[:200]
+    return ""
+
+
 def hardware_raw(fallback: str = "") -> str:
     """现场硬件原始输出（`nvidia-smi` → `hy-smi` → `/proc/driver`；禁手填）。
 
@@ -207,7 +265,21 @@ def hardware_raw(fallback: str = "") -> str:
         except (OSError, subprocess.SubprocessError):
             continue
         if out.returncode == 0 and out.stdout.strip():
-            return out.stdout.strip().splitlines()[0][:200]
+            line = _first_meaningful_line(out.stdout)
+            if line:
+                return line
+    # 无 GPU 工具（本地 dev 容器）：退到 CPU/机器原始输出，仍是现场机检、非手填
+    try:
+        cpuinfo = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        cpuinfo = ""
+    for line in cpuinfo.splitlines():
+        if line.lower().startswith("model name"):
+            return line.strip()[:200]
+    text = (platform.processor() or platform.machine() or "").strip()
+    if text:
+        return f"{text} (no gpu tool on this box)"[:200]
+    return fallback
     # 无 GPU 工具（本地 dev 容器）：退到 CPU/机器原始输出，仍是现场机检、非手填
     try:
         cpuinfo = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore")
@@ -312,6 +384,15 @@ def validate_footnote(
             errors.append(
                 f"脚注 instance {instance!r} 与指纹 hostname {fingerprints.get('hostname')!r} 不一致（D5②）"
             )
+        # ②冷评审 C5：脚注第 2/3 项必须与指纹**原始输出**逐字交叉，否则手填型号/DTK 版本可逃逸
+        image = str(footnote.get("image_dtk") or "").strip()
+        image_raw = str(fingerprints.get("dtk_version_raw") or "").strip()
+        if image and image_raw and image != image_raw:
+            errors.append(f"脚注 image_dtk {image!r} 与指纹 dtk_version_raw {image_raw!r} 不一致（D5②）")
+        hardware = str(footnote.get("hardware") or "").strip()
+        hardware_raw_value = str(fingerprints.get("hardware_raw") or "").strip()
+        if hardware and hardware_raw_value and hardware != hardware_raw_value:
+            errors.append(f"脚注 hardware {hardware!r} 与指纹 hardware_raw {hardware_raw_value!r} 不一致（D5②）")
     if readiness is not None:
         has_ready = collect.is_number((readiness or {}).get("ready_wait_sec"))
         has_settle = collect.is_number((readiness or {}).get("settle_sec"))
@@ -378,7 +459,7 @@ def quality_key_errors(report: dict) -> list[str]:
 # 故降为 BLOCKED。一旦存在合法计时轮，一律照原样保留 FAIL（判别力不得被降级稀释）。
 NO_DATA_CHECK_IDS = frozenset({
     "D2.batch_key_set", "D3.closure_same_clock", "D3.residual_two_sided",
-    "D4.wall_agreement", "D5.readiness_probe",
+    "D4.wall_agreement", "D4.self_sufficiency", "D5.readiness_probe",
 })
 
 
