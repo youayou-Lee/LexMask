@@ -492,3 +492,15 @@ wall_s
 `has_text_cache_status` 七态；锚点卷 `pdftotext` = 0 字符 / 反例卷 8666 字符；
 实例 node v22.14.0 + `frontend/node_modules` 在、私有仓**未同步**到实例、实例仓无残留探针；
 两轮评审原文已归档私有仓 `LexMask-workspace/docs/acceptance/`。
+
+### 9.1 G4 公开树红线门的调用口径（⑦冷评审点名）
+
+```bash
+# 默认只扫「本次改动」（origin/preview 起 diff + 未提交 + 未跟踪）
+python eval-ng/scripts/check_public_tree.py --allow-prefix /opt/dtk --allow-prefix /opt/hyhal
+# 整树复扫（历史噪声可预期：既有 /mnt、/root 类文档示例会命中，非本 PR 引入）
+python eval-ng/scripts/check_public_tree.py --base "" --allow-prefix /opt/dtk --allow-prefix /opt/hyhal
+```
+
+- 两枚 `--allow-prefix` 是**公开工具链前缀**（DTK/Hygon 运行时的 `/opt/dtk`、`/opt/hyhal`），已在私有验收方案注明理由；缺它们时本 PR 会报 12 条 `abs_path`（不是泄露）。
+- 仓库当前**没有** `.git/hooks/pre-commit`，本门不会自动执行 ⇒ 需在评审/合并流程里显式调用（或在 CI 里加一步）。

@@ -91,7 +91,12 @@ CREDENTIAL_ASSIGN_RE = re.compile(
     r"(?P<name>[A-Za-z_][A-Za-z0-9_]{0,40})\s*[:=]\s*(?P<val>[^\s,;)]{1,120})"
 )
 CREDENTIAL_FLAG_RE = re.compile(r"(?P<name>--[A-Za-z][A-Za-z0-9_-]{1,40})")
-_QUOTED_IN_WINDOW_RE = re.compile(r"[\"'](?P<val>[^\"']{8,})[\"']")
+# 带类型注解的赋值：`NAME: <注解> = "<真口令>"`（Python 惯用写法）。
+# `CREDENTIAL_ASSIGN_RE` 的 `[:=]` 会把注解的冒号吃掉、把 `str` 当值，`finditer` 随即越过真值 ⇒ 整类漏网；
+# 注解段必须锚到标识符开头且**不含引号/等号**，否则会跨到下一个赋值造成误报（⑦冷评审 R7-1）。
+ANNOTATED_ASSIGN_RE = re.compile(
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]{0,40})\s*:\s*(?P<ann>[A-Za-z_][\w\.\[\], ]{0,60}?)\s*=\s*(?P<val>[^\s,;)]{1,120})"
+)
 # 引号字面量用**零宽前瞻**配对（`finditer` 会吃掉共享引号：`"--flag", default="VALUE"` 里
 # 第 2、3 个引号分属两段，普通匹配会把 `", default="` 整段吞掉导致真值漏网）
 _QUOTED_WINDOW_RE = re.compile(r"(?=(?P<q>[\"'])(?P<val>.{8,}?)(?P=q))")
@@ -194,6 +199,8 @@ SELF_TEST_BAD = (
     "cfg API_SECRET = \"Zz9Kk2Lm\" "  # public-tree-scan: ignore-line
     "cfg clientSecret: \"Ab3xY9Qq2\" "  # public-tree-scan: ignore-line
     "cfg access_token = \"ghp_abcdefghijklmnopqrstuvwxyz0123456\" "  # public-tree-scan: ignore-line
+    # R7-1 形态：带类型注解的赋值（注解冒号会吃掉值位置，`str` 被当值 ⇒ 整类漏网）
+    "cfg client_secret: str = \"Ab12Cd34\" "  # public-tree-scan: ignore-line
 )
 SELF_TEST_CLEAN = (
     "api_base http://127.0.0.1:8000 fixture 203.0.113.9 host 10.1.2.3 "
@@ -221,9 +228,9 @@ def load_denylist(path: str | None) -> list[str]:
 def _window_quoted_values(window: str) -> list[str]:
     """取出窗口里的引号字面量（不消费共享引号）。
 
-    `default="VALUE"` 的第 2 个引号同时是上一段（`"--flag"`）的收尾，用 `finditer` 会把
+    `default="VALUE"` 的第 2 个引号同时是上一段（`"--flag"`）的收尾，普通 `finditer` 会把
     `", default="` 整段吃掉，紧随其后的真值（`Qq11Ww22`）再无引号可配对而漏网（R6 实测）。
-    按引号切分取奇数段即可回避该陷阱。
+    实现用**零宽前瞻**（`_QUOTED_WINDOW_RE`）配对，匹配不消费字符，共享引号不再吃值。
     """
     parts = _QUOTED_WINDOW_RE.findall(window)
     return [value for _, value in parts if len(value) >= 8]
@@ -240,7 +247,9 @@ def credential_findings(text: str) -> list[tuple[str, str]]:
     for rule, regex in TOKEN_RES:
         for match in regex.finditer(text):
             findings.append((rule, match.group(0)))
-    for match in CREDENTIAL_ASSIGN_RE.finditer(text):
+    # 普通赋值（`name = val` / `name: val`）与带类型注解的赋值（`name: Type = val`）取并：
+    # 后者若单靠前一个正则，注解冒号会把值位置吃掉 ⇒ 整类漏网（⑦冷评审 R7-1）。
+    for match in list(CREDENTIAL_ASSIGN_RE.finditer(text)) + list(ANNOTATED_ASSIGN_RE.finditer(text)):
         if not is_credential_name(match.group("name")):
             continue
         window = match.group(0)

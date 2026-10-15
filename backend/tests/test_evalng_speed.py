@@ -1581,6 +1581,11 @@ class TestPublicTreeScanner:
             'clientSecret: "Ab3xY9Qq2"',  # public-tree-scan: ignore-line
             'access_token = "ghp_abcdefghijklmnopqrstuvwxyz0123456"',  # public-tree-scan: ignore-line
             'add_argument("--db-password", default="Qq11Ww22")',  # public-tree-scan: ignore-line
+            # R7-1 形态：带类型注解的赋值（`[:=]` 会吃掉注解冒号把 `str` 当值 ⇒ 曾整类漏网）
+            'client_secret: str = "Ab12Cd34"',  # public-tree-scan: ignore-line
+            'DB_PASSWORD: str = "Qq11Ww22"',  # public-tree-scan: ignore-line
+            'API_KEY: Final[str] = "Zz9Kk2Lm"',  # public-tree-scan: ignore-line
+            'db_password: str = "Qq11!Ww22"',  # public-tree-scan: ignore-line
         ):
             assert self._rules(probe) & creds, probe
 
@@ -1595,6 +1600,8 @@ class TestPublicTreeScanner:
             'payload = {"PP-OCRv6": 1}', "max_tokens=4000", "monkey = 'abc12345'",
             # 值形状的真正边界：含分隔符/JSON 片段/CJK 文案（即便带数字）也不是口令
             'key = "abc=123def"', "value = 'x{1}y2z9'", 'data = "密码1错误2，请重试"',
+            # R7-1 反例：注解形态下的 env 读法 / 占位词
+            'api_key: str = os.environ["K"]', 'api_key: str = "changeme123"',
         ):
             assert not self._rules(probe), probe
 
