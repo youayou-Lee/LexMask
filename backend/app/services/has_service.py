@@ -428,6 +428,13 @@ class HaSService:
             max_parallel = max(1, int(settings.HAS_NER_MAX_PARALLEL_REQUESTS))
             semaphore = asyncio.Semaphore(max_parallel)
 
+            # Issue#108：预切之后 has_client.ner 只看到**子批**类型表，只写子批缓存键，
+            # 以完整类型表探测缓存的调用方（视觉线 has_text_analysis → get_cached_ner）
+            # 于是复用不到同一份文本的结果——同一段文字白推两遍。这里在合并成功后
+            # 按完整类型表补写一条，两个下脚料都记：真正派发的类型名 + 失败批计数。
+            used_chinese_types: list[str] = []
+            failed_batches = 0
+
             async def run_batch(batch: list[EntityTypeConfig]) -> dict[str, list[str]]:
                 batch_chinese_types = self._convert_entity_types_to_chinese(batch)
                 for item in batch:
@@ -437,6 +444,7 @@ class HaSService:
                     )
                 if not batch_chinese_types:
                     return {}
+                used_chinese_types.extend(batch_chinese_types)
                 async with semaphore:
                     async with shared_gpu_inference_slot("HaS Text NER batch"):
                         return await asyncio.to_thread(
@@ -459,6 +467,7 @@ class HaSService:
                         "HaS NER batch failed (lost types: %s): %s",
                         lost_types, batch_result,
                     )
+                    failed_batches += 1
                     continue
                 for result_type, values in batch_result.items():
                     if not isinstance(values, list):
@@ -467,6 +476,24 @@ class HaSService:
                     for value in values:
                         if value and value not in bucket:
                             bucket.append(value)
+
+            # Issue#108：只有**全部**子批都成功才按完整类型表写回。
+            # 失败批被 gather(return_exceptions=True) 吞掉后若照样写回，这个键在 TTL 内
+            # 会一直返回偏少的结果 = 永久漏检且无日志（Issue#23 让失败至少留了 warning，
+            # 但缓存会把「一次失败」放大成「一段时间内一直失败」）。
+            # ⚠️ 这里刻意**不传 type_guidance**：读侧 `has_client.get_cached_ner`
+            # （视觉线 has_text_analysis 的探测口）签名为 (text, entity_types)，
+            # 键里的 guidance 摘要恒为空串；若写侧带上 guidance，键就对不上，
+            # 等于没写（Issue#108 正文明确要求「用与读侧相同的键」）。
+            if used_chinese_types and not failed_batches:
+                try:
+                    self.client.set_cached_ner(
+                        content,
+                        used_chinese_types,
+                        dict(ner_result),
+                    )
+                except Exception as exc:  # 缓存写回失败绝不能影响识别结果本身
+                    logger.warning("HaS NER 全类型缓存写回失败(不影响识别): %s", exc)
 
             if not ner_result:
                 return []

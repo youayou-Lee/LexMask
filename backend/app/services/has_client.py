@@ -496,6 +496,26 @@ class HaSClient:
             int(sample_index),
         )
 
+    def _ner_cache_key_for(
+        self,
+        text: str,
+        types: list[str],
+        guidance_text: str = "",
+        sample_index: int = 0,
+    ) -> tuple[str, tuple[str, ...], str, str, int]:
+        """缓存键的**单点**推导（Issue#108）。
+
+        `ner()`（写侧）与 `set_cached_ner()`（Issue#108 新增的公开写回侧）都必须走这里。
+        一旦两处的键公式漂移，表现是「写进去了却永远读不中」——不报错、不告警，
+        只能靠人肉比对 `_ner_cache` 的键，所以键公式只允许有一个出口。
+        """
+        guidance_key = (
+            hashlib.sha256(guidance_text.encode("utf-8", errors="ignore")).hexdigest()
+            if guidance_text
+            else ""
+        )
+        return self._ner_cache_key(text, types, guidance_key, sample_index)
+
     def _get_cached_ner(
         self,
         key: tuple[str, tuple[str, ...], str, str, int],
@@ -529,7 +549,34 @@ class HaSClient:
         slow request.
         """
         types = self._normalize_ner_types(entity_types)
-        return self._get_cached_ner(self._ner_cache_key(text, types))
+        return self._get_cached_ner(self._ner_cache_key_for(text, types))
+
+    def set_cached_ner(
+        self,
+        text: str,
+        entity_types: list[str] | None,
+        result: dict[str, list[str]],
+        type_guidance: list[dict[str, Any]] | None = None,
+        *,
+        sample_index: int = 0,
+    ) -> None:
+        """按**完整类型表**写回缓存条目（`get_cached_ner` 的写侧，Issue#108）。
+
+        Issue#103 把「帽容量分批」从 `ner()` 内部上移到
+        `has_service._preplan_completion_batches` 之后，`ner()` 只会被以**子批**类型表
+        调用，于是只写子批键、不再写全类型键；以完整类型表探测缓存的调用方
+        （视觉线 `has_text_analysis` → `has_client.get_cached_ner`）因此复用不到
+        混合链同一份文本的结果，同一段文字被重复推了两遍。
+
+        ⚠️ 本方法**无条件写入**：调用方必须先在调用点确认**所有**子批都成功。
+        `asyncio.gather(return_exceptions=True)` 吞掉的失败批若被合并后写进缓存，
+        该键在 TTL 内会一直返回**偏少**的结果——表现为永久性漏检，且没有任何日志。
+        """
+        types = self._normalize_ner_types(entity_types)
+        guidance = self._normalize_type_guidance(types, type_guidance)
+        guidance_text = json.dumps(guidance, ensure_ascii=False, separators=(",", ":")) if guidance else ""
+        key = self._ner_cache_key_for(text, types, guidance_text, sample_index)
+        self._set_cached_ner(key, result)
 
     def _set_cached_ner(
         self,
@@ -605,8 +652,7 @@ class HaSClient:
         types = self._normalize_ner_types(entity_types)
         guidance = self._normalize_type_guidance(types, type_guidance)
         guidance_text = json.dumps(guidance, ensure_ascii=False, separators=(",", ":")) if guidance else ""
-        guidance_key = hashlib.sha256(guidance_text.encode("utf-8", errors="ignore")).hexdigest() if guidance_text else ""
-        cache_key = self._ner_cache_key(text, types, guidance_key, sample_index)
+        cache_key = self._ner_cache_key_for(text, types, guidance_text, sample_index)
         cached = self._get_cached_ner(cache_key)
         if cached is not None:
             return cached
