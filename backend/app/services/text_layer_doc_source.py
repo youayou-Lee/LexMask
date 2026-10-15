@@ -131,7 +131,11 @@ async def _build(file_id: str, snapshot: dict, labels: list[str], ocr_has_types)
 
     result = await docline.run_document_ner(pages, labels, has_client=has_client)
     label_to_id = build_label_to_type_id(ocr_has_types)
-    covered_pages = {int(page_meta.no) for page_meta in pages}
+    # **只有真正带词的页才算被覆盖**：`extract_text_layer_pages` 会把无文本层的页
+    # 也返回（`words=[]`）。若按「页存在」算覆盖，混合卷里那些无层页会被判成
+    # 「文档级链已处理、0 个实体」⇒ 静默丢检（云上混合卷实测：10 页里 4 页无层，
+    # 却报 coverage=1.000 / OCR 调用 0）。
+    covered_pages = {int(page_meta.no) for page_meta in pages if page_meta.words}
     by_page: dict[int, list[BoundingBox]] = {}
     for page_meta in pages:
         by_page[page_meta.no] = _to_boxes(result.entities, page_meta.no, label_to_id)

@@ -210,14 +210,16 @@ def test_boxes_for_page_falls_back_on_page_without_layer(monkeypatch, tmp_path):
     path.write_bytes(b"%PDF-1.4 stub")
     source.reset_memo()
 
+    dense = lambda who: [who, *[f"证据材料第{i}页正文内容" for i in range(29)]]
     pages = [
-        _page(1, ["张三", *[f"证据材料第{i}页" for i in range(20)]]),
-        _page(2, ["李四", *[f"证据材料第{i}页" for i in range(20)]]),
+        _page(1, dense("张三")),
+        _page(2, dense("李四")),
+        _page(3, []),  # 云上实测形态：extract 会把无文本层的页也返回，words 为空
     ]
 
     async def fake_run(page_list, labels, *, has_client, **kwargs):
         return docline.DocLineResult(
-            pages=2, chunks=1, chunk_chars=2000, stream_chars=10, layer_chars=8, covered_chars=10,
+            pages=3, chunks=1, chunk_chars=2000, stream_chars=10, layer_chars=8, covered_chars=10,
             entities=[docline.DocLineEntity(1, "PERSON", "张三", (0.1, 0.2, 0.3, 0.4))],
             ner_calls=1, truncated_chunks=0, http_errors=0, residual_calls=0, seconds=0.01,
         )
@@ -232,7 +234,7 @@ def test_boxes_for_page_falls_back_on_page_without_layer(monkeypatch, tmp_path):
     assert [b.text for b in covered] == ["张三"]
     assert memo is not None
 
-    # 第 3 页不在文本层里 ⇒ 必须回落（None），而不是空列表
+    # 第 3 页 words 为空（无文本层）⇒ 必须回落（None），而不是空列表
     uncovered, memo3 = asyncio.run(
         source.boxes_for_page(file_id="b" * 8, snapshot=_snapshot(str(path)), page=3, ocr_has_types=None)
     )
