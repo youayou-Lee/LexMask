@@ -7,8 +7,13 @@
   - **判定面（四态 PASS/UNVERIFIED/BLOCKED/FAIL）**：D2 并发自证（驱动声明 k + 在飞峰值实测 k 双证）、D3 闭合校验（环和 vs 页总**同钟** ≤2%、残差双侧 0≤·≤10%、两序列**非同源**且比值 ∈[1.00,1.25]、键路径压平后必含五个环叶子）、D4 自足（`file_wall_s` 与客户端墙钟互证 ≤5%、md 与 JSON 逐项一致）、D5 脱敏（八项环境脚注硬校验、实例指纹四键 + sha256、数值字段白名单**路径级**表、质量子树判 FALSE）、D6 边界（非法轮排除、载荷同一 `force=true&include_result_image=false`、批作业经网关 ≥8 MiB 单文件）、D8 旁证（计数类只累加、字符串状态不丢、补丁生效断言必须真在文件里）。
   - **名实不一即 FAIL**：`D8.patch_effect` 要求臂声明的 `patches[].to`/`expect[].contains` 真出现在目标文件里；`D5.numeric_whitelist` 按**字段路径**放行（`summary.agg_value` 这种换名会被点名），质量字段换名也走不脱。
   - **新增公开树扫描器** `eval-ng/scripts/check_public_tree.py`（与报告脱敏扫描器同族，含**阳性对照自检**）：公网 IP / 绝对路径 / Windows 盘符路径 / 凭据形态 / `--denylist` 词表五类；默认只扫 `--base` 以来改动过的文件，行内 `public-tree-scan: ignore-line` 可显式放过（扫描器自己的阳性对照夹具用）。
-  - **单测 74 条**（`backend/tests/test_evalng_speed.py`，零网络：`SpeedApi` 构造在单测里被替换成抛错版本，AC24 请求捕获用 `httpx.MockTransport`），eval-ng 全量绿；本机全量 `pytest` 失败名集合与 clean base 逐条一致（无回归）。
-  - ④ 云实例端到端验收（D1 锚点复现 / D6④ 网关 / D7 与 `benchmark_throughput.py` 对照 / D9 真实案卷）待跑，跑完在本条下补实测数字与脚注。
+  - **单测 109 条**（`backend/tests/test_evalng_speed.py`，零网络：`SpeedApi` 构造在单测里被替换成抛错版本，AC24 请求捕获用 `httpx.MockTransport`）；④ 云门实测又钉掉三处死角：`_hardware_capture` 取设备身份行而非 `hy-smi` 表头、`dedupe_checks` 同 id 按四态取最严、k 双证按 `min(声明 k, 该轮页数)`（页数足够仍达不到声明值依旧 FAIL）；eval-ng 全量绿；本机全量 `pytest` 失败名集合与 clean base 逐条一致（无回归）。
+  - ④ 云实例端到端实测（10 页扫描 canary / 3 页真实案卷切片 / 8.3 MiB 单文件过网关；实例：云 DCU 单机 + `SINGLE` 起 uvicorn，后端 `68f0e7ba`，仪器 `de197b74`–`f1f249c`）：
+    - **D1 锚点复现**：`single` 线冷跑各 4 轮（弃第 1 轮取 2–4 中位）——k=3 **92.594s**（离散 10.1%，锚点 86.65s ⇒ +6.9%）、k=1 **207.468s**（离散 2.9%，锚点 198.13s ⇒ +4.7%），**`D1.anchor_ratio` = 2.241× ≥ 1.8× PASS**；两臂闭合/残差/跨钟/键路径/冷跑证据（pid 与 `start_time` 三轮互异）/并发双证全 PASS，判定 UNVERIFIED（无 FAIL；未项只有 env 臂的 `D8.patch_effect` 与无基准的 `D7.parity`）。
+    - **D6④ 网关**：实例装不上真 nginx（无包网 + SCNet 禁 Docker）、本地 registry 不可达 ⇒ 用 stdlib **L4 原字节转发代理**（`equiv_proxy_l4.py`，只窥视每连接首个请求头做上限与记账）并声明偏差；两侧证据——**A 不限体量：8.3 MiB 单文件经网关 `POST /files/upload` 200（0.68s）**、**B 上限 1 MiB：同一请求 413 且不转发上游**（`{"detail":"请求体 8703363 字节超过反向代理上限 1048576 字节"}`，记账 `rejected_413=1`）。
+    - **D9 真实案卷（67 页证据卷前 3 页切片、纯扫描、文本层 0 字符）**：`single` k=3 cold —— 逐页 p50 **19.09s**、`file_wall_s` p50 **24.538s**、闭合 0.001556 / 残差 0.001556 / 跨钟 1.041956 全在阈内、无质量数值、脱敏扫描 clean 且案名自检 0 命中；抽数后真卷报告已删（不留私有产物）。
+    - **D7 与旧基准脚本对照 → BLOCKED（产品侧阻塞，不判 FAIL）**：`smart_batch` 在飞入队后 worker 不取件（提交后长期 `queued`、`processing recognition` 0 次），**仅重启恢复路径**处理——同一作业 `created_at 18:58:56Z` → 重启 `19:12:53Z` → 完成 `19:13:44Z`（51s）；旧脚本与新模块 `--driver batch` 共用此路径，已另立 **Issue#137**，修好后原地补跑即可。
+    - 小数据跑法是用户 2026-10-16 的明确指示（「只验可行性，不做整卷稳定性」）：**只改跑法，阈值一处未放宽**；轮次少 ⇒ `D2.timing_rounds` 落 UNVERIFIED 属设计使然。
 
 ## 2026-10-15
 
