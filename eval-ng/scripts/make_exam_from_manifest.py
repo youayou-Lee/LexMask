@@ -1,8 +1,8 @@
 """旧 run_eval manifest（levels 含 e2e）→ eval-ng e2e 考卷 JSON。
 
 同一 manifest 单一事实源（AC2 前提）；GT json 就地展开为 gt_pages（新考卷形态）。
-用法：python3 eval-ng/scripts/make_exam_from_manifest.py --repo-root /root/redaction/evalng-wt \
-        --suite synthetic --out /tmp/exam_e2e.json [--only id1,id2]
+用法：python3 eval-ng/scripts/make_exam_from_manifest.py --repo-root <evalng-worktree> \
+        --suite synthetic --out <out>/exam_e2e.json [--only id1,id2]
 """
 
 from __future__ import annotations

@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -433,7 +434,7 @@ def main() -> int:
                         help="e2e：只跑指定 id（逗号分隔，冒烟/调试用）")
     parser.add_argument("--api-base", default="http://127.0.0.1:8000")
     parser.add_argument("--api-user", default="eval_user")
-    parser.add_argument("--api-pass", default="EvalUser!2026")
+    parser.add_argument("--api-pass", default=os.environ.get("EVAL_API_PASS"))
     parser.add_argument("--ner-base", default="http://127.0.0.1:8080/v1")
     parser.add_argument("--model", default=None)
     parser.add_argument("--grouping", choices=["off", "semantic"], default="off")
