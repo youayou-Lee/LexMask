@@ -7,7 +7,7 @@
 
 | 臂 | 服务 | 坐标系（原始） | kind |
 |---|---|---|---|
-| `la` | LA `/detect`（`T3_LA_URL`，默认 127.0.0.1:8090） | raw_answer 0-1000 → 页像素（回退：0-1 归一化结构化框） | seal+signature |
+| `la` | LA `/detect`（`T3_LA_URL`，默认 127.0.0.1:8090） | **结构化 `boxes` 0-1 归一化 → 页像素**（与现役管线同契约；回退：`raw_answer` 0-1000，含反向框交换/退化框丢弃/去重） | seal+signature |
 | `mineru_seal` | MinerU sidecar（`T3_MINERU_URL`，默认 16581）一页一任务 | content_list seal 块 bbox=0-1000 归一化 ×页宽高（**云端对拍已实证，T2.1 定案**） | seal |
 | `paddlex_seal` | 本地 paddlex `seal_recognition` 产线（`T3_PADDLEX_PIPELINE`，实例按名缓存） | 页像素（T4 实证零换算） | seal |
 | `sigdet` | sigdet `/detect`（`T3_SIGDET_URL`，默认 28150） | 0-1 归一化 → 页像素 | signature |
@@ -28,12 +28,19 @@
 
 跑批明细额外追加 `status`（ok|failed）/`elapsed_ms`/`error` 评测字段。
 
-## 预注册阈值（spec.py，先于出数锁定）
+## 预注册判据（spec.py，字面常量；跑批前锁死，事后不改阈值）
 
 - `COLLAPSE_DROP_PP = 15`：候选臂桶召回较 **LA 同桶召回**下降 >15pp → 桶塌方（LA 为基线，自身不判）；
 - `FALSE_POS_RATIO_CAP = 2.0`：候选臂 FP/页 > 2×LA FP/页（LA=0 时绝对上限 0.5/页）→ 误报上界突破；
+- **候选臂召回 ≥ LA 同 kind**（Issue#92 首要判据，`report_t3.py:arm_notes` 实现）；
+- **候选臂单页成本不高于 LA**（同上；成本取该臂 ok 页耗时均值）；
 - `ARM_FAIL_PAGE_RATIO = 0.10`：失败页 >10% → 臂无效；
 - 匹配：IoU ≥ 0.5 贪心（预测按 confidence 降序，GT 命中即占用）。
+
+> 五条判据**同时满足**才判「可替代」；单条塌方/误报结论不等于可替代。
+> 阈值本身是字面常量、无「按观测反推」，但 `spec.py` 与跑批同日多次提交成型，
+> **git 历史无法独立证明阈值先于跑批冻结**（该主张依赖私有执行方案的编写顺序记录，
+> 与成绩单「口径与局限」一致）。
 
 ## 数据目录约定（仓库零数据红线）
 

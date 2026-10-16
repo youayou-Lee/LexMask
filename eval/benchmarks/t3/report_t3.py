@@ -69,27 +69,13 @@ def aggregate(
 
     bucket 维度：页面归属 manifest 桶（一页多桶则各桶都计）；无桶归 "(all)"。
     返回 (cells, arm_latency)：cells[(arm, bucket, kind)] = {"tp","fp","fn"}。
+    单页耗时口径 = **ok 页**（该 (arm,page) 上无任何 failed 记录）的墙钟均值；
+    失败页（含重试/超时的墙钟）一律不计入，其 GT 按全漏检（FN）计。
     """
     by_page_kind: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for row in gt_rows:
         by_page_kind[(row["page_id"], row["kind"])].append(row)
 
-    cells: dict[tuple[str, str, str], dict[str, int]] = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
-    pages_by_arm: dict[str, set[str]] = defaultdict(set)
-    page_time: dict[tuple[str, str], float] = {}
-
-    # 跑批明细按 (page, arm, kind) 分组做匹配
-    pred_rows: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
-    for row in details:
-        pages_by_arm[row["arm"]].add(row["page_id"])
-        if row.get("elapsed_ms", 0) > 0:
-            key = (row["arm"], row["page_id"])
-            page_time[key] = max(page_time.get(key, 0.0), row["elapsed_ms"])
-        if row.get("status") == "failed" or not row.get("kind"):
-            continue
-        pred_rows[(row["page_id"], row["arm"], row["kind"])].append(row)
-
-    arms = sorted(pages_by_arm)
     # 页失败索引：单次分组（**任一记录 failed 即整页失败**，与跑批侧
     # metrics.failed_pages 口径一致），避免逐页重扫的 O(n²)
     status_by_arm_page: dict[tuple[str, str], list[str]] = defaultdict(list)
@@ -99,6 +85,27 @@ def aggregate(
         key: any(s == "failed" for s in statuses)
         for key, statuses in status_by_arm_page.items()
     }
+
+    cells: dict[tuple[str, str, str], dict[str, int]] = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
+    pages_by_arm: dict[str, set[str]] = defaultdict(set)
+    page_time: dict[tuple[str, str], float] = {}
+
+    # 跑批明细按 (page, arm, kind) 分组做匹配
+    pred_rows: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    for row in details:
+        arm, page_id = row["arm"], row["page_id"]
+        pages_by_arm[arm].add(page_id)
+        if failed_pages.get((arm, page_id)):
+            # 失败页：不记耗时、不进匹配（GT 侧统一记 FN）
+            continue
+        if row.get("elapsed_ms", 0) > 0:
+            key = (arm, page_id)
+            page_time[key] = max(page_time.get(key, 0.0), row["elapsed_ms"])
+        if not row.get("kind"):
+            continue
+        pred_rows[(page_id, arm, row["kind"])].append(row)
+
+    arms = sorted(pages_by_arm)
     for arm in arms:
         for (page_id, kind), gt_list in by_page_kind.items():
             targets = _targets(page_buckets.get(page_id))
@@ -154,10 +161,11 @@ def arm_notes(
     - 失败页 > 10% 判臂无效。
 
     metrics 里没有 `la` 时**不打印通过**，改为明确报「基线缺失，判读不可用」——
-    否则 `--arms` 子集或未跑基线的复算会静默全过。
+    否则跑批时用 `benchmark_t3.py --arms <子集>` 或未跑基线的复算会静默全过。
     臂的 kind 覆盖面取 metrics.by_kind > 0（如 mineru_seal 只出 seal、sigdet 只出
     signature），避免把「本臂不覆盖该类型」误判成召回 0 失败；by_kind 缺失时退化为
-    全部 kind（保守）。
+    全部 kind（保守）。**边界**：若某臂在它本该覆盖的 kind 上真的 0 出框（多类型候选臂），
+    该 kind 会被跳过 ⇒ 需人工复核（当前四臂均为单类型：la 双通道，其余单类型）。
     """
     stats = metrics.get(arm, {})
     notes: list[str] = []
@@ -287,8 +295,8 @@ def render_markdown(
         lines.append(f"| {arm} | {ms} |")
     lines.append("")
     lines.append(
-        "> 口径：**该臂 ok 页全体**（含零出框页）平均；每页耗时为该页首条记录的墙钟"
-        "（跑批侧逐页记账，见 `benchmark_t3.py`）。"
+        "> 口径：**该臂 ok 页全体**（该 (臂,页) 上无任何 failed 记录，含零出框页）平均；"
+        "每页耗时为该页首条记录的墙钟（跑批侧逐页记账，见 `benchmark_t3.py`）；失败页不计入。"
     )
     lines.append("")
 

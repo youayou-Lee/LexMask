@@ -74,6 +74,29 @@ class TestAggregate:
         assert cells[("la", "(all)", "seal")] == {"tp": 0, "fp": 0, "fn": 2}
         assert cells[("la", "(all)", "signature")] == {"tp": 0, "fp": 0, "fn": 1}
 
+    def test_failed_page_clock_excluded_from_latency(self):
+        """I-2：单页耗时口径是「ok 页平均」，失败页（含重试/超时墙钟）不得计入。
+
+        同一 (臂,页) 上只要有一条 failed 记录，整页即失败：其 ok 记录的墙钟
+        （900ms）与 failed 记录的墙钟（5000ms）都不能进均值，均值只由真 ok 页
+        （p1 = 100ms）决定。同时该页 GT 按全 FN 计、其预测框不计 FP。
+        """
+        gt = [
+            row("v#p1", "gt", "seal", 10, 10, 50, 50),
+            row("v#p2", "gt", "seal", 10, 10, 50, 50),
+        ]
+        details = [
+            row("v#p1", "la", "seal", 11, 11, 49, 49),  # ok 页，elapsed_ms 默认 100
+            row("v#p2", "la", "seal", 11, 11, 49, 49),  # 同页混入 ok 记录
+            {**row("v#p2", "la", "seal", 12, 12, 48, 48), "elapsed_ms": 900.0},
+            {**row("v#p2", "la", "", 0, 0, 0, 0, status="failed"),
+             "elapsed_ms": 5000.0},
+        ]
+        buckets = {"v#p1": ["seal_clean"], "v#p2": ["seal_hard"]}
+        cells, latency = report_t3.aggregate(details, gt, buckets)
+        assert latency["la"] == 100.0  # 只含真 ok 页 p1
+        assert cells[("la", "(all)", "seal")] == {"tp": 1, "fp": 0, "fn": 1}
+
 
 class TestRender:
     def test_verdicts_and_table(self, synthetic):
