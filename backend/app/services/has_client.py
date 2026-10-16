@@ -42,10 +42,24 @@ _MODEL_TEMPERATURE = 0.0
 _MODEL_TOP_P = 0.6
 # max_tokens 下限（_call_model 单次请求）
 _MIN_CALL_MAX_TOKENS = 32
-# 提示词 token 估算：ASCII 字符按 4 字符/token 折算
-_PROMPT_ASCII_CHARS_PER_TOKEN = 4
-# 提示词 token 估算：固定结构开销
+# 提示词 token 估算（Issue#104 C2 校准）：按字符类别取**语料经验上界**系数
+# （单位 = token/字符，浮点直读，禁止再引入整数倍刻度——D2b 首轮曾因 ×2/×20
+# 刻度混用把估算放大 10 倍，引发硬切死循环）。实测锚点（云 SCNet 回归表）：
+#   纯中文 ≈ 0.69 token/字符 ⇒ 上界取 1.0；
+#   数字长串 ≈ 1.02 ⇒ 取 1.05；
+#   拉丁交替大小写 ≈ 0.75 ⇒ 取 0.7（兼顾问模板英文说明的固定计价,纯中文长行比值 ≤1.55）；
+#   星平面字符（emoji/CJK 扩展 B）≈ 3~4 ⇒ 取 4.0（独立类）；
+#   其余 ASCII 0.5、控制符 1.0。
+# 「永不高估」由云端 D2b 回归表裁决（estimate ≥ usage.prompt_tokens 逐行）。
+_PROMPT_TOKENS_PER_DIGIT = 1.05
+_PROMPT_TOKENS_PER_LATIN = 0.7
+_PROMPT_TOKENS_PER_ASTRAL = 4.0
+_PROMPT_TOKENS_PER_OTHER_ASCII = 0.5
+_PROMPT_TOKENS_PER_NON_ASCII = 1.0
+_PROMPT_TOKENS_PER_CONTROL = 1.0
 _PROMPT_TOKEN_OVERHEAD = 32
+# 上下文探测（Issue#104 C1）：按 base_url 缓存服务端自报 max_model_len 的 TTL
+_CONTEXT_PROBE_TTL_SEC = 300.0
 # NER 类型批量目标 token 数下限
 _NER_TYPE_BATCH_TARGET_TOKENS_FLOOR = 320
 # 由目标 token 推导每批类型数的除数
@@ -178,6 +192,24 @@ class HaSResult:
     mapping: dict[str, list[str]]   # {标签: [原文列表]}
 
 
+def _classify_ner_error(e: BaseException) -> str:
+    """Issue#104 C5：兜底异常 → NER_ERRORS{error_type} 的分类标签。"""
+    if isinstance(e, httpx.HTTPStatusError):
+        status = getattr(e.response, "status_code", 0) or 0
+        if status == 400:
+            return "http_400"
+        if status == 422:
+            return "http_422"
+        if status >= 500:
+            return "http_5xx"
+        return f"http_{status}"
+    if isinstance(e, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
+        return "network"
+    return "other"
+
+
 class HaSClient:
     """HaS本地模型客户端"""
 
@@ -187,6 +219,10 @@ class HaSClient:
     ] = OrderedDict()
     _SHARED_NER_INFLIGHT: dict[tuple[str, tuple[str, ...], str, str, int], threading.Event] = {}
     _SHARED_NER_LOCK = threading.Lock()
+    # Issue#104 C1：服务端自报上下文的探测缓存（base_url → ( monotonic, tokens )）。
+    # 类级共享：同进程所有 client 实例对同一端点只探一次（TTL 见模块常量）。
+    _context_probe_cache: dict[str, tuple[float, int]] = {}
+    _context_probe_lock = threading.Lock()
 
 
     def __init__(
@@ -214,6 +250,91 @@ class HaSClient:
         if self._base_url_override:
             return self._base_url_override.rstrip("/")
         return get_has_chat_base_url().rstrip("/")
+
+    def _probe_server_context(self, base_url: str) -> int | None:
+        """GET {base}/models → 该链自报的 max_model_len（Issue#104 C1）。
+
+        按 HAS_TEXT_MODEL_NAME 选条目（多模型端点各链上下文不同）；任何失败
+        （不可达/超时/非 JSON/缺字段/≤0）都返回 None，由调用方回落安全小值。
+        """
+        wanted = ""
+        try:
+            from app.core.config import settings
+
+            wanted = str(getattr(settings, "HAS_TEXT_MODEL_NAME", "") or "").strip()
+        except Exception:
+            wanted = ""
+        url = f"{base_url.rstrip('/')}/models"
+        try:
+            resp = self._http_client.get(url, timeout=_HEALTH_CHECK_TIMEOUT_SEC)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:
+            logger.debug("HaS context probe failed for %s: %s", url, exc)
+            return None
+        entries = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(entries, list):
+            return None
+        selected: dict[str, Any] | None = None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_id = str(entry.get("id") or "").strip()
+            if wanted:
+                if entry_id == wanted:
+                    selected = entry
+                    break
+            elif selected is None:
+                selected = entry
+        if selected is None:
+            return None
+        try:
+            value = int(selected.get("max_model_len") or 0)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _effective_context_tokens(self) -> int:
+        """生效上下文 = min(服务端自报值, 配置值)；探测失败回落安全小值（C1）。
+
+        回落值 = min(HAS_NER_CONTEXT_TOKENS, HAS_NER_CONTEXT_FALLBACK_TOKENS)
+        （默认 8192 与 4096 ⇒ 4096）。**禁止**回落到更大的数：4096 链上回落
+        8192 = 原样退回被 400 的旧病。探测按 base_url 缓存（TTL 300s），首错
+        清缓存；失败打 WARNING 但**不拒服**。同步 httpx——只允许在 worker 线程
+        （ner 本就在 to_thread 里）或经 asyncio.to_thread 调用，不得进事件循环。
+        """
+        from app.core.config import settings
+
+        configured = max(_NER_CONTEXT_TOKENS_FLOOR, int(settings.HAS_NER_CONTEXT_TOKENS))
+        base_url = self._effective_base_url()
+        now = time.monotonic()
+        with self._context_probe_lock:
+            cached = self._context_probe_cache.get(base_url)
+        if cached is not None and now - cached[0] <= _CONTEXT_PROBE_TTL_SEC:
+            return min(cached[1], configured)
+        probed_raw: Any = self._probe_server_context(base_url)
+        try:
+            probed = int(probed_raw)
+        except (TypeError, ValueError):
+            probed = 0
+        if probed <= 0:
+            with self._context_probe_lock:
+                self._context_probe_cache.pop(base_url, None)  # 首错清缓存
+            fallback = min(
+                configured,
+                max(_NER_CONTEXT_TOKENS_FLOOR, int(settings.HAS_NER_CONTEXT_FALLBACK_TOKENS)),
+            )
+            logger.warning(
+                "HaS context probe failed for %s; falling back to %d tokens (min of configured=%d and fallback)",
+                base_url,
+                fallback,
+                configured,
+            )
+            return fallback
+        effective = min(probed, configured)
+        with self._context_probe_lock:
+            self._context_probe_cache[base_url] = (now, effective)
+        return effective
 
     def _do_chat_request(self, base: str, payload: dict[str, Any]) -> httpx.Response:
         """Execute a single chat completions HTTP request (retryable, uses pooled client)."""
@@ -453,19 +574,122 @@ class HaSClient:
     def _estimate_prompt_tokens(text: str) -> int:
         """Conservative local estimate for vLLM context budgeting.
 
-        HaS prompts mix English instructions, Chinese type names, OCR Chinese,
-        JSON punctuation, and scanned text fragments. A len//2 estimate is too
-        optimistic for Chinese-heavy pages and can make vLLM reject the request
-        before inference starts.
+        Issue#104：按字符类别取**语料经验上界**系数（token/字符）：
+        星平面 `_PROMPT_TOKENS_PER_ASTRAL`=4.0、控制符 1.0、数字
+        `_PROMPT_TOKENS_PER_DIGIT`=1.05、拉丁字母 `_PROMPT_TOKENS_PER_LATIN`
+        =0.7、其它 ASCII 0.5、非 ASCII 1.0，再加固定模板开销
+        `_PROMPT_TOKEN_OVERHEAD`=32。
+
+        这不是可证上界：emoji 代理对、CJK 扩展 B、RTL、组合符仍可能低估；
+        「永不高估」由云端 D2b 语料回归表裁决（estimate ≥
+        usage.prompt_tokens 逐行，2026-10-16 扩展版 51 行低估 0），凡回归集
+        出现低估的类别先上调该类系数再重跑。已知高估方向：高度重复的合成串
+        （全大写循环、重复 emoji、无分隔长串）分词压缩明显，比值可达 2–6×，
+        代价只是可能多分组。
         """
-        ascii_chars = 0
-        non_ascii_chars = 0
+        tokens = 0.0
         for char in str(text or ""):
-            if ord(char) < 128:
-                ascii_chars += 1
+            code = ord(char)
+            if code > 0xFFFF:  # 星平面（emoji / CJK 扩展 B）：分词 3~4 token/字符
+                tokens += _PROMPT_TOKENS_PER_ASTRAL
+            elif code < 32:  # 控制符（\n 等）
+                tokens += _PROMPT_TOKENS_PER_CONTROL
+            elif code < 128:
+                if char.isdigit():
+                    tokens += _PROMPT_TOKENS_PER_DIGIT
+                elif char.isalpha():
+                    tokens += _PROMPT_TOKENS_PER_LATIN
+                else:
+                    tokens += _PROMPT_TOKENS_PER_OTHER_ASCII
             else:
-                non_ascii_chars += 1
-        return max(1, ascii_chars // _PROMPT_ASCII_CHARS_PER_TOKEN + non_ascii_chars + _PROMPT_TOKEN_OVERHEAD)
+                tokens += _PROMPT_TOKENS_PER_NON_ASCII
+        return max(1, int(tokens) + _PROMPT_TOKEN_OVERHEAD)
+
+    @staticmethod
+    def _build_ner_prompt(types: list[str], guidance_text: str, text: str) -> str:
+        """与 HaS_Text_0209 模型卡 NER 模板一致（Specified types: 与 JSON 数组之间无空格）。
+
+        ner() 实发与分组规划器（Issue#104 C3）共用本函数——估算/预算只允许
+        一处算术，两处手写必然漂移。
+        """
+        types_str = json.dumps(list(types), ensure_ascii=False, separators=(",", ":"))
+        guidance_block = f"\nType guidance:{guidance_text}" if guidance_text else ""
+        return f"""Recognize the following entity types in the text.
+Specified types:{types_str}
+{guidance_block}
+Return strict JSON only. Include only entity types that have matches in the text.
+Never output empty arrays. Do not return requested types with no matches. Do not explain.
+If nothing matches, return {{}}.
+<text>{text}</text>"""
+
+    @classmethod
+    def _resolve_ner_budget(
+        cls,
+        types: list[str],
+        text: str,
+        *,
+        context_tokens: int,
+        prompt: str | None = None,
+        guidance_text: str = "",
+    ) -> tuple[str, int, int]:
+        """NER 提示词 + 完成预算的**唯一一份算术**（Issue#104 C3；冷审 I1）。
+
+        `ner_checked()` 的实发与分组规划器 `planned_max_tokens()` 都必须走这里。
+        旧实现是两处手抄的 min 链——本 Issue 的根因正是「规划一套、实发一套」的
+        两套算术漂移，故此处不允许再有副本。
+
+        Returns ``(prompt, prompt_token_estimate, max_tokens)``。
+        """
+        from app.core.config import settings
+
+        if prompt is None:
+            prompt = cls._build_ner_prompt(list(types), guidance_text, str(text or ""))
+        configured_max_tokens = int(settings.HAS_NER_MAX_TOKENS)
+        desired_max_tokens = cls._ner_completion_budget(
+            len(types), text, cls._effective_tokens_per_type(settings)
+        )
+        prompt_token_estimate = cls._estimate_prompt_tokens(prompt)
+        context_room = context_tokens - prompt_token_estimate - _NER_CONTEXT_RESERVE_TOKENS
+        completion_cap = max(
+            _NER_COMPLETION_CAP_FLOOR,
+            min(configured_max_tokens, int(context_tokens * _NER_COMPLETION_CONTEXT_RATIO)),
+        )
+        max_tokens = min(
+            configured_max_tokens,
+            desired_max_tokens,
+            completion_cap,
+            max(_NER_MAX_TOKENS_FLOOR, context_room),
+        )
+        hard_cap = cls._effective_completion_hard_cap(settings)
+        if hard_cap > 0:
+            max_tokens = min(max_tokens, hard_cap)
+        return prompt, prompt_token_estimate, int(max_tokens)
+
+    @classmethod
+    def planned_max_tokens(
+        cls,
+        types: list[str],
+        text: str,
+        *,
+        context_tokens: int | None = None,
+        guidance_text: str = "",
+    ) -> int:
+        """给定 (类型, 文本) 的完成预算——**ner() 实发 max_tokens 的同一算术**。
+
+        Issue#104 C3：与 `ner_checked()` 共用 `_resolve_ner_budget`，消除
+        「规划一套、实发一套」的两套算术。context_tokens 缺省用配置值；
+        调方（规划器）应传入客户端探测到的生效上下文。
+        """
+        if context_tokens is None:
+            from app.core.config import settings
+
+            context_tokens = max(_NER_CONTEXT_TOKENS_FLOOR, int(settings.HAS_NER_CONTEXT_TOKENS))
+        return cls._resolve_ner_budget(
+            list(types),
+            text,
+            context_tokens=int(context_tokens),
+            guidance_text=guidance_text,
+        )[2]
 
     @classmethod
     def _normalize_ner_types(cls, entity_types: list[str] | None) -> list[str]:
@@ -634,6 +858,8 @@ class HaSClient:
         temperature: float | None = None,
         sample_index: int = 0,
         _allow_truncation_retry: bool = True,
+        raise_on_error: bool = False,
+        context_tokens: int | None = None,
     ) -> dict[str, list[str]]:
         """
         使用NER能力进行敏感实体识别
@@ -645,6 +871,12 @@ class HaSClient:
                 调用方按趟传(第0趟贪心0.0，后续 temp>0)。
             sample_index: 自洽采样趟号，进缓存键。默认 0=贪心种子/现状键；>0 的趟
                 与种子不共享缓存，避免 temp>0 趟被喂种子结果导致并集塌成 1 趟。
+            raise_on_error: Issue#104 C5——True 时在计数 NER_ERRORS 后**上抛**而非
+                返回 {}。分组派发（主查）用它：组级失败必须让页判失败，不得
+                伪装成「无实体」静默通过。
+            context_tokens: Issue#104 C3/冷审 I1——调用方钉住的生效上下文。分组
+                派发把**规划时**用的值透传进来，保证规划与实发同源（None=自行
+                探测，行为与旧版一致）。
 
         Returns:
             {类型: [实体列表]}
@@ -660,6 +892,8 @@ class HaSClient:
             temperature=temperature,
             sample_index=sample_index,
             _allow_truncation_retry=_allow_truncation_retry,
+            raise_on_error=raise_on_error,
+            context_tokens=context_tokens,
         )[0]
 
     def ner_checked(
@@ -671,6 +905,8 @@ class HaSClient:
         temperature: float | None = None,
         sample_index: int = 0,
         _allow_truncation_retry: bool = True,
+        raise_on_error: bool = False,
+        context_tokens: int | None = None,
     ) -> tuple[dict[str, list[str]], bool]:
         """`ner()` + **显式解析成功标志**（Issue#108 ⑥ 评审 C1/C2）。
 
@@ -735,6 +971,8 @@ class HaSClient:
                         batch_guidance,
                         temperature=temperature,
                         sample_index=sample_index,
+                        raise_on_error=raise_on_error,
+                        context_tokens=context_tokens,
                     )
                     all_confirmed = all_confirmed and part_confirmed
                     for key, values in (part or {}).items():
@@ -779,6 +1017,8 @@ class HaSClient:
                         None,
                         temperature=temperature,
                         sample_index=sample_index,
+                        raise_on_error=raise_on_error,
+                        context_tokens=context_tokens,
                     )
                     all_confirmed = all_confirmed and part_confirmed
                     for key, values in (part or {}).items():
@@ -804,39 +1044,26 @@ class HaSClient:
             # 同 payload 的并发请求跑完却没留下缓存 ⇒ 它也没拿到确认结论。
             logger.warning("HaS NER duplicate request finished without cacheable result")
             return {}, False
-        types_str = json.dumps(types, ensure_ascii=False, separators=(",", ":"))
-        guidance_block = f"\nType guidance:{guidance_text}" if guidance_text else ""
 
-        # 与 HaS_Text_0209 模型卡 NER 模板一致（Specified types: 与 JSON 数组之间无空格）
-        prompt = f"""Recognize the following entity types in the text.
-Specified types:{types_str}
-{guidance_block}
-Return strict JSON only. Include only entity types that have matches in the text.
-Never output empty arrays. Do not return requested types with no matches. Do not explain.
-If nothing matches, return {{}}.
-<text>{text}</text>"""
-        configured_max_tokens = int(settings.HAS_NER_MAX_TOKENS)
-        desired_max_tokens = self._ner_completion_budget(
-            len(types), text, self._effective_tokens_per_type(settings)
+        # 与 HaS_Text_0209 模型卡 NER 模板一致（Specified types: 与 JSON 数组之间
+        # 无空格）。prompt 构造与预算算术另有唯一出口 `_resolve_ner_budget`
+        # （Issue#104 C3；冷审 I1）：ner() 实发与分组规划器共用同一份，不得另写。
+        # Issue#104 C1：上下文真源 = 服务端自报值（/v1/models），探测失败回落
+        # 安全小值 min(配置, 4096)——旧口径全局 8192 在 4096 链上照样 400。
+        # 分组派发会把规划时钉住的上下文透传进来（冷审 I1）：同一页的规划与
+        # 实发必须用同一个值，否则 TTL 到期重探会让两者漂移。
+        resolved_context = (
+            int(context_tokens)
+            if context_tokens is not None
+            else self._effective_context_tokens()
         )
-        # Keep the completion budget inside the locally served HaS context
-        # window. The 16 GB dev profile serves HaS Text with an 8K context so
-        # PaddleOCR-VL, PP-StructureV3 and LocateAnything can stay resident
-        # while giving OCR-derived NER enough completion budget.
-        context_tokens = max(_NER_CONTEXT_TOKENS_FLOOR, int(settings.HAS_NER_CONTEXT_TOKENS))
-        prompt_token_estimate = self._estimate_prompt_tokens(prompt)
-        context_room = context_tokens - prompt_token_estimate - _NER_CONTEXT_RESERVE_TOKENS
-        completion_cap = max(_NER_COMPLETION_CAP_FLOOR, min(configured_max_tokens, int(context_tokens * _NER_COMPLETION_CONTEXT_RATIO)))
-        max_tokens = min(
-            configured_max_tokens,
-            desired_max_tokens,
-            completion_cap,
-            max(_NER_MAX_TOKENS_FLOOR, context_room),
+        prompt, prompt_token_estimate, max_tokens = self._resolve_ner_budget(
+            types,
+            text,
+            context_tokens=resolved_context,
+            guidance_text=guidance_text,
         )
-        if hard_cap > 0:
-            # 帽进预算：对齐模型卡 max_new_tokens，避免生产预算超帽的调用
-            # 被 vLLM 端静默腰斩后触发 json_repair→整类型重查风暴（Issue#41）。
-            max_tokens = min(max_tokens, hard_cap)
+        context_tokens = resolved_context
         logger.info(
             "HaS NER budget prompt_est=%d context=%d max_tokens=%d types=%d text_chars=%d",
             prompt_token_estimate,
@@ -879,6 +1106,8 @@ If nothing matches, return {{}}.
                             None,
                             temperature=temperature,
                             sample_index=sample_index,
+                            raise_on_error=raise_on_error,
+                            context_tokens=context_tokens,
                         )
                         all_confirmed = all_confirmed and part_confirmed
                         for key, values in (part or {}).items():
@@ -955,6 +1184,8 @@ If nothing matches, return {{}}.
                             temperature=temperature,
                             sample_index=sample_index,
                             _allow_truncation_retry=False,
+                            raise_on_error=raise_on_error,
+                            context_tokens=context_tokens,
                         )
                         for key, values in (retry_result or {}).items():
                             if not isinstance(values, list):
@@ -970,7 +1201,25 @@ If nothing matches, return {{}}.
                 self._set_cached_ner(cache_key, result)
             return result, confirmed
         except Exception as e:
-            logger.error("HaS NER 失败: %s", e)
+            # Issue#104 C5：不再静默——按错误类型计数（此前 redaction_ner_errors_total
+            # 声明了但全仓零引用），日志带上估算/长度/上下文，让「少识别」可归因。
+            from app.core.metrics import NER_ERRORS
+
+            error_type = _classify_ner_error(e)
+            try:
+                NER_ERRORS.labels(error_type=error_type).inc()
+            except Exception:
+                logger.debug("NER_ERRORS metric unavailable", exc_info=True)
+            logger.error(
+                "HaS NER 失败(%s): %s | prompt_est=%d text_chars=%d context=%d",
+                error_type,
+                e,
+                prompt_token_estimate,
+                len(text or ""),
+                context_tokens,
+            )
+            if raise_on_error:
+                raise
             return {}, False
         finally:
             self._finish_ner_request(cache_key, request_event)
