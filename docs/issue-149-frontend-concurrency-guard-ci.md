@@ -37,8 +37,13 @@ Issue#106（PR#113，`bdc1f23`）解开「勾选视觉特征 ⇒ 页串行」时
 | AC2-a | 常量改 `1` ⇒ 该步骤**失败** | 本地副本改写 `timing.ts:57` 后跑该用例：**3 failed / 2 passed**（含 `:97` 峰值=3 那条）；还原后 5 passed |
 | AC2-b | 重新引入「勾选视觉特征 ⇒ 串行」⇒ 该步骤**失败** | 本地副本把 `utils.ts:321` 改回 `visualFeatureTypes.length ? 1 : concurrency`：**3 failed / 2 passed**；还原后 5 passed |
 | AC3 | 正常树通过，增时 ≤ 5s | 本地 `npx vitest run …`：**5 passed，Duration 448–535ms**；实例同款跑法 5 passed 885ms |
-| AC4 | 日志可见峰值=3 用例 | 5 例名称含「勾选印章+签名、不传 concurrency 时，在飞 vision POST 峰值为 3」 |
+| AC4 | 日志可见峰值=3 用例 | 步骤命令带 `--reporter=verbose`（Actions 步骤非 TTY，vitest 默认 reporter 全绿时只打文件级一行）；本地以 `CI=true` + 管道同构复现，逐条列出 5 个用例名，含「勾选印章+签名、不传 concurrency 时，在飞 vision POST 峰值为 3」 |
 | AC5 | 不跑全量前端套件 | 只指定单文件路径 |
+
+## 修订记录
+
+- **v1（`d3c4bee`）**：初版只加 `npx vitest run <单文件>`。
+- **v2（本轮）**：③ 独立冷评审（报告 `LexMask-workspace/docs/acceptance/2026-10-16-issue149-③代码冷评审.md`，裁决 REVISE，唯一阻塞项 = AC4）指出：**Actions 步骤非 TTY ⇒ vitest 默认 reporter 全绿只打文件级一行，看不到单条用例名**，与 AC4 冲突。修法＝步骤命令追加 ` --reporter=verbose`（评审者已实测该修法有效）；本地 `CI=true` 同构复现 5 条用例名可见，退出码语义不变。
 
 ## 边界
 
