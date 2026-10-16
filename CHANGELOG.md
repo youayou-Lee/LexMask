@@ -2,6 +2,10 @@
 
 ## 2026-10-16
 
+- fix(docs): 归档仓编号引用约定 + 修复 `eval/scripts/format_report.py` 旧仓 #46 错链（Issue#59）
+  - `render_md` 不再拼 `github.com/youayou-Lee/LexMask/issues/46`（本仓 #46 语义完全不同），改标「归档仓 #46（DataInfra-RedactionEverything）」
+  - `docs/协同开发规范-gh使用与仓库纪律.md` 新增 §5：外链必须指向本仓真实 Issue、指旧仓写「归档仓 #NN」、历史叙事不批量清理
+  - `backend/tests/test_eval46_format_matrix.py::test_render_md_snapshot` 钉住「不再拼本仓 #46 错链」
 - fix(gt): GT 写盘 warning 不再当致命错误——真实卷一处同类型实体部分重叠不再致整案写不出（Issue#73）
   - `eval/gt/gt_schema.py` 新增 `split_problems(problems) -> (errors, warnings)`（按 `warning:` 前缀分级；`validate_pagepack` 返回契约不变）
   - `write_gt_jsonl` 改为：仅真 error raise（文案只列真 error）且不落盘；warning 放行写出并**返回** warning 列表 + `logger.warning` 留痕（不再静默）
