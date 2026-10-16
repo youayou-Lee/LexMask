@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.core.config import settings
-from app.core.safe_regex import RegexTimeoutError, safe_compile, safe_finditer
+from app.core.safe_regex import RegexTimeoutError, match_items, safe_compile, safe_finditer, scaled_timeout
 from app.models.schemas import Entity
 from app.models.type_mapping import canonical_type_id, linkage_groups_for_type
 from app.services.has_service import HaSService, has_service
@@ -155,6 +155,9 @@ class HybridNERService:
 
     def __init__(self, has_service_instance: HaSService = None):
         self.has_service = has_service_instance or has_service
+        # 正则兜底超时事件计数（Issue#65）：超时会让整篇该类型的保证层命中
+        # 静默失效，必须可观测（logger.warning + 本计数），不能只留 warning。
+        self._regex_timeout_events = 0
 
     async def extract(
         self,
@@ -297,45 +300,51 @@ class HybridNERService:
             pattern = str(getattr(entity_type, "regex_pattern", "") or "").strip()
             if not raw_type_id or not pattern:
                 continue
+            # 时间预算按文本长度放缩（Issue#65）：固定 2.0s 对长文本会整篇
+            # 丢弃该类型的正则保证层（实测 0.14–0.19 s/MB ⇒ 约 10–14MB 越线）。
+            budget = scaled_timeout(text)
             try:
                 compiled = safe_compile(pattern, timeout=1.0)
-                matches = safe_finditer(compiled, text, timeout=2.0)
-            except (re.error, RegexTimeoutError) as exc:
+                matches = safe_finditer(compiled, text, timeout=budget)
+            except RegexTimeoutError as exc:
+                # 超时不是「跳过一条规则」而是「整篇该类型失效」，必须可观测
+                # （Issue#65）：warning 带类型/文本长度/实际预算，并累计计数。
+                self._regex_timeout_events += 1
+                logger.warning(
+                    "Custom regex TIMEOUT for %s (text_len=%d, budget=%.1fs, "
+                    "timeout_events=%d): %s — 该类型本轮保证层命中整体丢弃",
+                    raw_type_id,
+                    len(text),
+                    budget,
+                    self._regex_timeout_events,
+                    exc,
+                )
+                continue
+            except re.error as exc:
                 logger.warning("Custom regex skipped for %s: %s", raw_type_id, exc)
                 continue
-            # 命名捕获组（Issue#52）：每个参与匹配的组各出一个实体——
-            # 区间 pattern 用 seg_a/seg_b 拆首尾（分隔符不入实体），
-            # 出生语境 pattern 用 birth_date* 只出日期（语境词不入实体）。
-            # 无命名组或组未参与的 pattern 维持整 match 一个实体的既有语义。
+            # 命名捕获组语义（Issue#52）唯一事实源 = safe_regex.match_items：
+            # 区间 pattern 用 seg_a/seg_b 拆首尾（分隔符不入实体），出生语境
+            # pattern 用 birth_date* 只出日期（语境词不入实体）；无命名组或组
+            # 未参与的 pattern 维持整 match 一个实体的既有语义。
             for index, match in enumerate(matches):
                 named_groups = match.named_groups()
-                if named_groups:
-                    for sub_index, (_name, group_start, group_end, group_text) in enumerate(named_groups):
-                        if not group_text:
-                            continue
-                        entities.append(Entity(
-                            id=f"regex_{raw_type_id}_{index}_{sub_index}",
-                            text=group_text,
-                            type=raw_type_id,
-                            start=group_start,
-                            end=group_end,
-                            page=1,
-                            source="regex",
-                        ))
-                    continue
-                matched_text = match.group()
-                if not matched_text:
-                    continue
-                entities.append(Entity(
-                    id=f"regex_{raw_type_id}_{index}",
-                    text=matched_text,
-                    type=raw_type_id,
-                    start=match.start(),
-                    end=match.end(),
-                    page=1,
-                    # A regex either matched or it did not; there is nothing to score.
-                    source="regex",
-                ))
+                for sub_index, (item_text, item_start, item_end) in enumerate(match_items(match)):
+                    entities.append(Entity(
+                        # 编号沿用旧格式：有命名组 ⇒ regex_{type}_{i}_{j}，
+                        # 整 match ⇒ regex_{type}_{i}。
+                        id=(
+                            f"regex_{raw_type_id}_{index}_{sub_index}" if named_groups
+                            else f"regex_{raw_type_id}_{index}"
+                        ),
+                        text=item_text,
+                        type=raw_type_id,
+                        start=item_start,
+                        end=item_end,
+                        page=1,
+                        # A regex either matched or it did not; there is nothing to score.
+                        source="regex",
+                    ))
         return entities
 
     @staticmethod

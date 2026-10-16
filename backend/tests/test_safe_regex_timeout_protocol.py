@@ -34,38 +34,7 @@ import pytest
 
 from app.core import safe_regex
 from app.core.safe_regex import RegexTimeoutError, safe_compile, safe_finditer
-
-
-def _process_pool_unusable_reason() -> str | None:
-    """本环境建不出进程池时返回原因，可用则返回 `None`。
-
-    部分开发容器/CI 沙箱禁用 POSIX 信号量，`ProcessPoolExecutor(...)` 在**构造期**
-    就抛 `PermissionError: [Errno 13] Permission denied`（`multiprocessing/
-    synchronize.py` 的 `SemLock.__init__`）。真实池用例在这种环境下是「无法执行」
-    而不是「断言失败」，故跳过而不是报错；CI（完整权限的 Linux）会执行它们。
-
-    只把 `OSError`（含 `PermissionError`）当作「环境不可用」；其他异常应当炸出来，
-    而不是被宽 `except` 静默吞掉、把用例伪装成「跳过」。
-    """
-    try:
-        with ProcessPoolExecutor(
-            max_workers=1, mp_context=multiprocessing.get_context("spawn")
-        ):
-            pass
-    except OSError as exc:  # 含 PermissionError（SemLock 受限）
-        return (
-            f"本环境无法创建进程池（{type(exc).__name__}: {exc}）"
-            "，真实池用例跳过；见 Issue#109"
-        )
-    return None
-
-
-_POOL_SKIP_REASON = _process_pool_unusable_reason()
-
-requires_process_pool = pytest.mark.skipif(
-    _POOL_SKIP_REASON is not None,
-    reason=_POOL_SKIP_REASON or "",
-)
+from process_pool_guard import requires_process_pool
 
 
 class _TimedOutFuture:

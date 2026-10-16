@@ -2,6 +2,13 @@
 
 ## 2026-10-16
 
+- fix(ner): **正则兜底的「match → 待遮盖文本」语义与超时策略收敛到单一事实源**（#64、#65）。
+  - **新增 `backend/app/core/safe_regex.py` 三件套**：`match_items(match)`（有命名组 ⇒ 逐非空组一项；声明了命名组但组全空 ⇒ 不产出、**不回退整 match**；无命名组 ⇒ 整 match 一项）+ `scaled_timeout(text)`（**2 s/MB**，对比实测 0.14–0.19 s/MB ≈10× 余量）+ `safe_finditer_many(compiled, texts, timeout)`（一次子进程扫本页**全部块文本**，预算按合计长度放缩）。
+  - **#64 视觉兜底与文本链同粒度**：`ocr_has_vision_service._apply_regex_fallback` 由裸 `re.compile` + `finditer` + `(m.group(0) or "").strip()` 改为 `safe_compile` / `safe_finditer_many` / `match_items` ⇒ 出生语境只出日期（`出生日期：1992年10月5日` 不再整段进）、区间拆首尾两个实体、`\s*` 空白与分隔符不入伪实体——与 Issue#52 已定的文本链语义一致，消除欠遮盖方向的粒度分歧。
+  - **#65 超时按长度放缩且可观测**：文本链 `_custom_regex_extract` 由写死 `timeout=2.0` 改为 `scaled_timeout(text)`；超时拆出独立 `except RegexTimeoutError` ⇒ `HybridNERService._regex_timeout_events` 计数 + `logger.warning`（带类型 / `text_len` / 预算 / 事件数），**不再与 `re.error` 共用一条静默 warning 而整篇保证层无声丢弃**；`re.error` 保持旧文案、不计入超时事件。
+  - **实体编号逐字不变**（`regex_{type}_{index}_{sub_index}` / 无命名组 `regex_{type}_{index}`）⇒ Issue#52 既有契约与前端映射不受影响。
+  - **测试**：新增 `backend/tests/test_safe_regex_match_items.py`、`backend/tests/test_issue64_65_regex_fallback.py`（语义三态 + 编号不变 + 预算放缩 + 超时可观测/不抛 + 畸形 pattern 回落）；把 Issue#109 的进程池守卫抽成共享 `backend/tests/process_pool_guard.py`，`test_issue43_case_number_floor.py` 两条 vision 真实池用例改挂 `@requires_process_pool`。本机全量 **12 failed / 2073 passed / 50 skipped**，失败集合与改动前基线逐条 `comm` **完全相同**（零新增失败）；`+2 skipped` 即上述两条真实池用例（本机沙箱建不出进程池，CI/Linux 真执行）。
+
 - feat(eval): 新增 **T3 框级视觉检测对比框架**（`eval/benchmarks/t3/`：预注册判读 spec / 四臂适配器 / 跑批 / 报告 / GT 复核 + **85 单测**）与成绩单 `eval/reports/2026-10-11-t3-visual-bench-issue92.md`（#92，PR #95）——回答 v2.0「印章 / 手写签名四条视觉臂能否替代现役 LocateAnything（LA）」，**选型工具不做闸门、现役管线零改动**。
   - **预注册判读跑批前锁死在 `spec.py`**（候选臂召回 ≥ LA 同 kind；难例桶不塌方=较 LA 同桶下降 >15pp 即判塌方；误报上界=FP/页 ≤2×LA；单页成本不高于 LA；失败页 >10% 判臂无效），事后不改阈值；样本 64 页真实案卷扫描页、GT 174 框（seal 69 / signature 105），GT 方法=四臂并集预标 → 轮 A 四人确认 → 轮 B 两人独立盲标 → 差集裁决（83 候选收 18）→ 轮 C 独立抽查 64 框 + 27 疑点，通过率 **95.31% ≥95% 门**。
   - **印章职责具备切换条件**：MinerU seal 召回 **58.0%** ≥ LA **43.5%**（clean 71.4 / hard 64.7，难例桶无塌方），FP 0.05/页 ≤2×LA 0.08，单页 **3.40s**（< LA 4.48s，且可 CPU，GPU 可让渡语义层）；后续接遮盖管线另立工程专项（#96）。

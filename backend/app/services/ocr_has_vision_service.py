@@ -17,6 +17,13 @@ logger = logging.getLogger(__name__)
 
 from PIL import Image
 
+from app.core.safe_regex import (
+    RegexTimeoutError,
+    match_items,
+    safe_compile,
+    safe_finditer_many,
+    scaled_timeout,
+)
 from app.core.visual_feature_categories import VISUAL_ONLY_ENTITY_TYPES
 from app.models.type_mapping import canonical_type_id
 
@@ -273,21 +280,28 @@ class OcrHasVisionService:
         new_regions: list[SensitiveRegion] = []
         for item in regex_types:
             try:
-                pat = re.compile(item.regex_pattern)
-            except Exception as exc:  # noqa: BLE001 - never raise on bad pattern
+                compiled = safe_compile(str(item.regex_pattern or ""), timeout=1.0)
+            except (re.error, RegexTimeoutError) as exc:
                 logger.warning("Regex fallback skipping type %s (bad pattern): %s", item.id, exc)
                 continue
+            block_texts = [block.text or "" for block in ocr_blocks]
+            try:
+                # 一次子进程调用扫完本页所有 block（预算按本页总文本长度放缩，
+                # Issue#65）：既拿到 ReDoS 超时保护，又不为每个 block 付一次
+                # IPC 往返。
+                per_block = safe_finditer_many(
+                    compiled, block_texts, timeout=scaled_timeout("".join(block_texts))
+                )
+            except RegexTimeoutError as exc:
+                logger.warning("Regex fallback search timed out for type %s: %s", item.id, exc)
+                continue
             pseudo_entities: list[dict] = []
-            for block in ocr_blocks:
-                text = block.text or ""
-                try:
-                    matches = list(pat.finditer(text))
-                except Exception as exc:  # noqa: BLE001 - never raise on bad block text
-                    logger.warning("Regex fallback search failed for type %s: %s", item.id, exc)
-                    break
+            for matches in per_block:
                 for m in matches:
-                    matched = (m.group(0) or "").strip()
-                    if matched:
+                    # 命名组语义唯一事实源（Issue#64）：命中文本与文本链同粒度
+                    # ——出生语境只出日期、区间拆首尾，语境词/分隔符不入伪实体
+                    # （旧实现取 m.group(0) 会把「出生日期：」「至」整段吞入）。
+                    for matched, _start, _end in match_items(m):
                         pseudo_entities.append({"type": item.id, "text": matched})
             if not pseudo_entities:
                 continue
