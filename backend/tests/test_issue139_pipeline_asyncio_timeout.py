@@ -454,8 +454,11 @@ def test_t8_page_count_normalisation(
 # T12：首错取消语义——`as_completed` 消费循环里首错触发 `page_task.cancel()` 后，
 #      ①仍在飞的兄弟页**绝不能**被记成 failed（`CancelledError` 是 `BaseException`，
 #      `run_page` 的 `except Exception:` 捕不到 ⇒ 兄弟页不会写 failed 页账）；
-#      ②兄弟页任务**确实被 cancel() 掉**（`task.cancelled()` 为真）——门⑥ 二轮 M6'
-#      指出：只有①时，删掉 `page_task.cancel()` 用例仍全绿 ⇒ ①不能判别取消动作本身。
+#      ②兄弟页**确实收到取消**——观测点必须放在协程内部（`except asyncio.CancelledError`
+#      记录），不能是「睡 0.05s 再查 `task.cancelled()`」：门⑥ 二轮 M6' 先证明「只有①时
+#      删 `page_task.cancel()` 仍全绿」，按此加固后的『延时查 task 状态』版又在**负载下假红**
+#      （`AssertionError: [False, False]`，非确定性），且 3.10 的 `wait_for` 会多包一层 task
+#      使断言主语随版本漂移。本版取消投递用 `gather(..., return_exceptions=True)` 确定性等待。
 # ---------------------------------------------------------------------------
 def test_t12_first_error_cancels_siblings_without_recording_failed(
     monkeypatch: pytest.MonkeyPatch,
@@ -468,21 +471,26 @@ def test_t12_first_error_cancels_siblings_without_recording_failed(
     queue = _queue(store)
     started: list[int] = []
     siblings: list[asyncio.Task[Any]] = []
+    cancelled: list[int] = []
 
     async def _detect(file_id: str, page: int, **kwargs: Any) -> dict[str, Any]:
         started.append(page)
         if page == 1:
             # 给事件循环足够时间把 2/3 号页一并启动（保证它们是「在飞」兄弟页），再抛超时。
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.2)
             raise _Fake310AsyncTimeoutError()
-        # 记录承载本页的 task 对象：这是 T12 与 `page_task.cancel()` 的**唯一**判别点。
-        # 门⑥ 二轮 M6'（删掉 `page_task.cancel()`）在原断言下全绿 ⇒ 原断言只钉住了
-        # `except Exception` 吞不吞 `CancelledError`，钉不住取消动作本身；补此断言后
-        # 删 `cancel()` 会让兄弟页一直 sleep ⇒ `task.cancelled()` 为假 ⇒ T12 判红。
+        # 取消动作的**唯一**判别点在协程**内部**：`task.cancel()` 最终以 `CancelledError`
+        # 送达本协程（3.10 上 `wait_for` 还会再包一层 task，3.11+ inline ⇒ 只有在这里
+        # 观测才与版本无关）。删掉 `page_task.cancel()` 时本协程会自然返回、`cancelled`
+        # 保持为空 ⇒ T12 判红（变异 M6'）。
         current = asyncio.current_task()
         assert current is not None
         siblings.append(current)
-        await asyncio.sleep(5.0)
+        try:
+            await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            cancelled.append(page)
+            raise
         return {"boxes": []}
 
     _vision_stubs(monkeypatch, pages=3, detect=_detect)
@@ -490,12 +498,11 @@ def test_t12_first_error_cancels_siblings_without_recording_failed(
     async def scenario() -> None:
         with pytest.raises(TimeoutError):
             await queue._run_vision(_item(), dict(_VISION_CFG))
-        # 让 `cancel()` 的取消真正送达兄弟页任务（否则此刻它们仍在 sleep 里）。
-        await asyncio.sleep(0.05)
+        # 确定性等待兄弟页归位（无墙钟竞态）：gather 返回时取消必然已投递；若
+        # `page_task.cancel()` 被删，兄弟页自然返回、`cancelled` 仍为空 ⇒ 下面判红。
         assert len(siblings) == 2, siblings
-        assert all(task.cancelled() for task in siblings), [
-            task.cancelled() for task in siblings
-        ]
+        await asyncio.gather(*siblings, return_exceptions=True)
+        assert sorted(cancelled) == [2, 3], cancelled
 
     _run(scenario)
 
