@@ -133,7 +133,6 @@ services:
       - --kv-cache-memory-bytes
       - "671088640"
       - --no-enable-prefix-caching
-      - --enforce-eager
       - --default-chat-template-kwargs
       - '{"enable_thinking":false}'
     deploy:

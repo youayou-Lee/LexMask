@@ -154,7 +154,7 @@ venv 只绑 Python 小版本（3.10）不绑镜像——快照/卷在任意 py3.
 2. **加密案卷**：真实卷宗存在 user-password 加密 PDF（上传后 vision 404 "document closed or encrypted"），需前置解密或明确报错引导。
 3. vision 响应 `entities` 恒空、实体信息在 `bounding_boxes`（API 契约待理顺）。
 
-## 10. 坑清单（15 条，按类）
+## 10. 坑清单（16 条，按类）
 
 **DTK/驱动**
 1. 非交互 shell 必须显式 `source /opt/dtk/env.sh`，且 `set +u; source; set -u` 包裹（env.sh 引用未定义变量）
@@ -180,6 +180,7 @@ venv 只绑 Python 小版本（3.10）不绑镜像——快照/卷在任意 py3.
 
 **运维**
 15. `pkill -f xxx` 若模式串在同条 ssh 命令明文出现会自杀（exit 255）；保存镜像**全程实例必须开机**（commit 中途关机=容器消失）
+16. **gfx928 生产已开 cudagraph（2026-10-17）**：HaS vLLM（8080）启动行去掉 `--enforce-eager` 开 CUDA Graph——单变量 A/B 实测 decode 31.5→126.9 tok/s（**4.0×**，超 llama.cpp Q8_0 的 118.8，见 Issue#166）；第 10 条的「cudagraph 捕获必崩」是 **gfx906 专属**，gfx928 实测 capture 正常且 #118 §7.2 有 67/67 全过裁决，勿混读
 
 ## 11. 相关文档
 
