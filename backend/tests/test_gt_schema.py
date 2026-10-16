@@ -11,6 +11,7 @@
 #   残留，去除。
 import importlib.util
 import json
+import logging
 import re
 import sys
 from datetime import date
@@ -307,3 +308,57 @@ def test_write_gt_jsonl_refuses_if_any_pack_invalid(tmp_path):
         gt_schema.write_gt_jsonl([good, bad], out, VERSION)
     assert "packs[1]" in str(ei.value)
     assert not out.exists()
+
+
+# ---- Issue#73：warning 只留痕、不阻断写盘 ----------------------------------------
+
+def _overlap_pack(page_id: str = "t-p0") -> dict:
+    """一条**只含 warning** 的 pack：同类型 span 部分重叠，零真 error。"""
+    pack = _min_pack()
+    pack["page_id"] = page_id
+    base = pack["entities"][0]
+    pack["entities"] = [dict(base, span_original=[0, 10], span_normalized=[0, 10]),
+                        dict(base, span_original=[5, 15], span_normalized=[5, 15])]
+    return pack
+
+
+def test_split_problems_classifies_by_prefix():
+    # validate_pagepack 返回契约不变（混合列表），拆分按 "warning:" 前缀
+    errs, warns = gt_schema.split_problems(
+        ["page_id 缺失或为空", "warning: entities[0] 与 entities[1] 部分重叠（允许，留痕）"])
+    assert errs == ["page_id 缺失或为空"]
+    assert warns == ["warning: entities[0] 与 entities[1] 部分重叠（允许，留痕）"]
+
+
+def test_write_gt_jsonl_lets_warning_only_pack_through(tmp_path, caplog):
+    # Issue#73 核心回归：一处同类型部分重叠不再致整案写不出
+    pack = _overlap_pack()
+    assert all(p.startswith("warning:") for p in gt_schema.validate_pagepack(pack))
+    out = tmp_path / "gt.jsonl"
+    with caplog.at_level(logging.WARNING, logger="gt.gt_schema"):
+        warnings = gt_schema.write_gt_jsonl([pack], out, VERSION)
+    assert out.exists()                                              # warning 不阻断写盘
+    assert len(out.read_text(encoding="utf-8").splitlines()) == 1
+    assert len(warnings) == 1 and warnings[0].startswith("packs[0]: warning:")
+    # 可观测：warning 级日志留痕（不再静默）
+    assert any(r.levelno == logging.WARNING and "warning" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_write_gt_jsonl_error_wins_over_warning(tmp_path):
+    # 混合输入：真 error 优先，raise 文案只列真 error，文件不落盘
+    bad, warn = _min_pack(), _overlap_pack("t-warn")
+    bad["entities"][0]["type"] = "人名"
+    out = tmp_path / "gt.jsonl"
+    with pytest.raises(ValueError) as ei:
+        gt_schema.write_gt_jsonl([bad, warn], out, VERSION)
+    assert "packs[0]" in str(ei.value) and "type" in str(ei.value)
+    assert "warning:" not in str(ei.value)
+    assert not out.exists()
+
+
+def test_write_gt_jsonl_returns_empty_when_no_warning(tmp_path):
+    # 无 warning 时返回空 list（调用方无需特判；写盘行为与旧版一致）
+    out = tmp_path / "gt.jsonl"
+    assert gt_schema.write_gt_jsonl([_min_pack()], out, VERSION) == []
+    assert out.exists()

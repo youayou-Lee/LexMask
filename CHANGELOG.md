@@ -2,6 +2,14 @@
 
 ## 2026-10-16
 
+- fix(docs): 归档仓编号引用约定 + 修复 `eval/scripts/format_report.py` 旧仓 #46 错链（Issue#59）
+  - `render_md` 不再拼 `github.com/youayou-Lee/LexMask/issues/46`（本仓 #46 语义完全不同），改标「归档仓 #46（DataInfra-RedactionEverything）」
+  - `docs/协同开发规范-gh使用与仓库纪律.md` 新增 §5：外链必须指向本仓真实 Issue、指旧仓写「归档仓 #NN」、历史叙事不批量清理
+  - `backend/tests/test_eval46_format_matrix.py::test_render_md_snapshot` 钉住「不再拼本仓 #46 错链」
+- fix(gt): GT 写盘 warning 不再当致命错误——真实卷一处同类型实体部分重叠不再致整案写不出（Issue#73）
+  - `eval/gt/gt_schema.py` 新增 `split_problems(problems) -> (errors, warnings)`（按 `warning:` 前缀分级；`validate_pagepack` 返回契约不变）
+  - `write_gt_jsonl` 改为：仅真 error raise（文案只列真 error）且不落盘；warning 放行写出并**返回** warning 列表 + `logger.warning` 留痕（不再静默）
+  - `backend/tests/test_gt_schema.py` 新增 4 例；变异自证：warning 当 error ⇒ 新用例 FAILED
 - fix(ner): **正则兜底的「match → 待遮盖文本」语义与超时策略收敛到单一事实源**（#64、#65）。
   - **新增 `backend/app/core/safe_regex.py` 同源件**：`match_items_indexed(match)`（有命名组 ⇒ 按**声明顺序**逐组输出 `(sub_index, text, start, end)`、空组照样占位；声明了命名组但组全空 ⇒ 不产出、**不回退整 match**；无命名组 ⇒ 整 match 一项；`match_items` 是其去下标视图）+ `scaled_timeout(text)`（**2 s/MB**、上限 120 s；实测参考 0.14–0.19 s/MB ≈10× 余量，**出处＝Issue#65 正文记录的 PR#63 评审期实测**）+ `safe_finditer_many(compiled, texts, timeout)`（一次子进程扫本页**全部块文本**，预算按合计长度放缩）。
   - **三处 runner 全部同源**（冷审 C1）：`ocr_has_vision_service._apply_regex_fallback`（视觉兜底，原裸 `re.compile`/`finditer`/`group(0).strip()`）、`hybrid_ner_service._custom_regex_extract`（文本链）、`text_layer_docline_service`（**文档级 docline 保证层**，原裸 `re.finditer(pattern, stream)` 全卷流无预算、且该链默认开启 `TEXT_LAYER_DOCLINE_ENABLED=True`）现在统一走 `safe_compile` / `safe_finditer`(`_many`) / `match_items`；用户可控 pattern 在三条链上都有执行预算。**同源带来的两条行为面变化（冷审 M-1，已知且有意）**：① 三条链统一继承 `safe_compile` 的 `re.IGNORECASE`（旧 vision 的 `re.compile(regex_pattern)` 与旧 docline 的 `re.finditer(pattern, stream)` 均无 flag）⇒ 小写形态首次可命中（如 `悬挂粤rh0472号牌`）；② 命中值不再 `strip()` 边缘空白（docline 侧 `find_value_spans` 先 `_fold(value)` 归一去空白，**无漏检**）。两条方向均为**只增遮盖**。

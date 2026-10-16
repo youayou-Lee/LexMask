@@ -45,9 +45,11 @@ pack 契约（Task 7 按此组装）::
 
 ``write_gt_jsonl``：一页一行 JSONL，每行注入 ``"gt_version": version``（写入
 副本，入参 pack 不被修改）；每个 adjudication 条目同时注入 ``"at"`` = 定稿日
-（写入当日 ISO 日期，spec §4——pack 定稿前不落任何日期）；任一 pack 校验失败
-即 raise ``ValueError``（错误清单带 ``packs[i]`` 定位），文件不落盘。中文按
-``ensure_ascii=False`` 原文写出（GT 底稿可读性优先）。
+（写入当日 ISO 日期，spec §4——pack 定稿前不落任何日期）；任一 pack 含**真 error**
+即 raise ``ValueError``（错误清单带 ``packs[i]`` 定位），文件不落盘；**仅含**
+``"warning:"`` 条目（同类型 span 部分重叠）时**放行写出**，warning 以返回值 +
+日志留痕（Issue#73：warning 曾被并入 error 一起 raise，真实卷一处重叠就整案
+写不出）。中文按 ``ensure_ascii=False`` 原文写出（GT 底稿可读性优先）。
 
 依赖注记：本模块经 common_api 间接依赖 httpx 与 backend/config/
 preset_entity_types.json（import 时读取）——精简环境运行需先安装。
@@ -56,8 +58,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 from datetime import date
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # ---- 常量（单一事实源） ---------------------------------------------------------
 
@@ -184,20 +189,45 @@ def validate_pagepack(pack: dict) -> list[str]:
     return errors
 
 
-def write_gt_jsonl(packs: list[dict], out_path: Path, version: str) -> None:
+def split_problems(problems: list[str]) -> tuple[list[str], list[str]]:
+    """把 ``validate_pagepack`` 的混合返回列表拆成 ``(errors, warnings)``。
+
+    warning = 以 ``"warning:"`` 开头的条目（模块契约：同类型 span 部分重叠
+    允许留痕，见上「重叠策略」）。**error 表示 pack 不合法，必须拒绝写盘；
+    warning 只留痕，不阻断写出**（Issue#73——两者曾混为一谈，warning 也 raise）。
+    ``validate_pagepack`` 自身的返回契约不变（仍是同一个混合列表）。
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    for problem in problems:
+        (warnings if problem.startswith("warning:") else errors).append(problem)
+    return errors, warnings
+
+
+def write_gt_jsonl(packs: list[dict], out_path: Path, version: str) -> list[str]:
     """逐页校验并写 GT JSONL（一页一行，每行注入 ``"gt_version": version``）。
 
-    先校验后写出：任一 pack 不合法即 raise ``ValueError``（错误清单带
-    ``packs[i]`` 定位），文件不落盘。入参 pack 不被修改（``gt_version`` 与
-    adjudications 的 ``"at"`` 定稿日均注入在写出副本上；``at`` = 写出当日
-    ISO 日期，spec §4——``validate_pagepack`` 不要求该字段，pack 定稿前
-    不落任何日期）。
+    先校验后写出：任一 pack 含真 error 即 raise ``ValueError``（错误清单带
+    ``packs[i]`` 定位），文件不落盘；只有 ``"warning:"`` 条目（同类型 span
+    部分重叠，见上「重叠策略」）时**照常写出**，warning 以返回值 + 日志留痕
+    （Issue#73）。入参 pack 不被修改（``gt_version`` 与 adjudications 的
+    ``"at"`` 定稿日均注入在写出副本上；``at`` = 写出当日 ISO 日期，spec §4——
+    ``validate_pagepack`` 不要求该字段，pack 定稿前不落任何日期）。
+
+    Returns:
+        放行的 warning 列表（带 ``packs[i]`` 定位；无 warning 时为空 list）。
     """
-    problems: list[str] = []
+    errors: list[str] = []
+    warnings: list[str] = []
     for idx, pack in enumerate(packs):
-        problems.extend(f"packs[{idx}]: {err}" for err in validate_pagepack(pack))
-    if problems:
-        raise ValueError("GT pagepack 校验失败（未写出文件）：\n" + "\n".join(problems))
+        pack_errors, pack_warnings = split_problems(validate_pagepack(pack))
+        errors.extend(f"packs[{idx}]: {err}" for err in pack_errors)
+        warnings.extend(f"packs[{idx}]: {warn}" for warn in pack_warnings)
+    if errors:
+        raise ValueError("GT pagepack 校验失败（未写出文件）：\n" + "\n".join(errors))
+    if warnings:
+        logger.warning("GT 写盘放行 %d 条 warning（同类型 span 部分重叠留痕）：%s",
+                       len(warnings), "；".join(warnings))
     at = date.today().isoformat()  # 定稿日：一次定稿一个日期（整批一致）
     with Path(out_path).open("w", encoding="utf-8") as f:
         for pack in packs:
@@ -205,3 +235,4 @@ def write_gt_jsonl(packs: list[dict], out_path: Path, version: str) -> None:
             f.write(json.dumps({**pack, "gt_version": version,
                                 "adjudications": adjs},
                                ensure_ascii=False) + "\n")
+    return warnings
