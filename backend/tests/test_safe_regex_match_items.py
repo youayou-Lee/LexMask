@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 
+from app.core import safe_regex
 from app.core.safe_regex import (
     TIMEOUT_BASE_SECONDS,
     TIMEOUT_MAX_SECONDS,
@@ -103,7 +104,6 @@ def test_indexed_keeps_declaration_order_when_leading_group_is_empty():
     是 1 而不是 0。租户自定义 pattern（如 `(?P<opt>X*)(?P<date>\\d{4})`）可命中此情形，
     首版实现「先滤空再编号」会让已对外承诺的实体 id 漂移（冷审 I1）。
     """
-    text = "1992年"
     date = "1992"
     match = _MatchProxy(
         "1992", 0, 4,
@@ -113,7 +113,6 @@ def test_indexed_keeps_declaration_order_when_leading_group_is_empty():
     assert match_items_indexed(match) == [(1, date, 0, 4)]
     # 去下标视图不受影响
     assert match_items(match) == [(date, 0, 4)]
-    assert text.startswith(date)
 
 
 def test_indexed_multiple_groups_keep_declaration_index():
@@ -162,10 +161,16 @@ def test_scaled_timeout_is_capped():
 
 # ── safe_finditer_many：空输入短路（冷审 N3）───────────────
 
-def test_safe_finditer_many_empty_texts_short_circuits():
-    """空块列表必须直接返回 `[]`，不建池、不碰子进程（空白页高频路径）。
+def test_safe_finditer_many_empty_texts_short_circuits(monkeypatch):
+    """空块列表必须直接返回 `[]`，**不建池**、不碰子进程（空白页高频路径）。
 
-    本用例在无进程池的沙箱里也必须通过——若短路的 `if not texts` 被删，本用例
-    会实实在在去建池而失败（冷审 N3 指该分支此前无覆盖）。
+    冷审 M-2：只断言返回值在能建池的 CI 上没有杀变力（删掉短路后
+    `_finditer_many_in_process([])` 同样返回 `[]`），故这里把 `_get_pool`
+    换成会炸的替身——只要空输入走了建池路径，本用例立刻失败，任何环境都成立。
     """
+
+    def _boom():
+        raise AssertionError("空输入不得建池（safe_finditer_many 应先短接）")
+
+    monkeypatch.setattr(safe_regex, "_get_pool", _boom)
     assert safe_finditer_many(re.compile("x"), []) == []

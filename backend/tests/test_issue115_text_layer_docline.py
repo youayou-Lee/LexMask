@@ -32,8 +32,11 @@ def _inproc_safe_compile(pattern, timeout=2.0):
     `safe_compile` / `safe_finditer`；本机沙箱建不出进程池（Issue#109），故用
     替身保留本文件对语义的覆盖，真实池的端到端对照在
     `test_issue64_65_regex_fallback.py` / `test_issue43_case_number_floor.py`。
+
+    与产线 `safe_compile` 一致带 `re.IGNORECASE`（冷审 M-1：同源后三条链都继承
+    `safe_compile` 的大小写不敏感，替身不一致会让 flag 行为失去覆盖）。
     """
-    return re.compile(pattern)
+    return re.compile(pattern, re.IGNORECASE)
 
 
 def _inproc_safe_finditer(compiled, text, timeout=5.0):
@@ -551,6 +554,18 @@ def test_docline_regex_layer_uses_named_group_semantics(monkeypatch):
     )
     dates = sorted(e.value for e in interval.entities if e.type == "DATE")
     assert dates == ["1月31日", "2022年1月1日"], f"区间必须拆两项且不含「至」，实际 {dates}"
+
+    # 冷审 M-1：同源后继承 `safe_compile` 的 `re.IGNORECASE`（旧 docline 裸
+    # `re.finditer` 无 flag）⇒ 小写车牌也应命中，且方向只增遮盖。
+    plate_pattern = r"[京津沪渝粤][A-HJ-NP-Z]\s*[A-HJ-NP-Z0-9]{4,5}号?牌?"
+    plate_pages = [_page(1, ["悬挂粤rh0472号牌"])]
+    plate = asyncio.run(
+        docline.run_document_ner(
+            plate_pages, [], has_client=_NullClient(), regex_types=[("LICENSE_PLATE", plate_pattern)]
+        )
+    )
+    plates = sorted(e.value for e in plate.entities if e.type == "LICENSE_PLATE")
+    assert plates == ["粤rh0472号牌"], f"大小写不敏感必须继承自 safe_compile，实际 {plates}"
 
 
 def test_docline_regex_layer_budget_scales_and_timeout_is_survivable(monkeypatch, caplog):
