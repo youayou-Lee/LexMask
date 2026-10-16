@@ -1,4 +1,8 @@
-"""Issue #46 格式矩阵报告渲染（纯函数，快照单测）：JSON 结果 → Obsidian 风格 md。
+"""归档仓 #46 格式矩阵报告渲染（纯函数，快照单测）：JSON 结果 → Obsidian 风格 md。
+
+编号注记（Issue #59）：本文件的 #46 指**归档仓** DataInfra-RedactionEverything 的 #46（2026-10-06 弃用冻结），
+与本仓 Issue #46 无关（两仓编号空间碰撞）。生成的外链必须指向本仓真实 Issue，禁止再拼本仓 #46 链接；
+需要点明来源时写「归档仓 #46」。
 
 版式（沿用 #37 报告骨架，轻量化——本矩阵只产 PASS/FAIL 与召回数值）：
   一句话诊断（含手册口径决策建议）→ 三档结论速览表 → 失败/异常明细 → 逐格式小节。
@@ -38,10 +42,10 @@ def render_md(data: dict) -> str:
 
     lines: list[str] = []
     lines.append("> [!tip] 相关文档")
-    lines.append("> Issue：[#46](https://github.com/youayou-Lee/LexMask/issues/46)"
+    lines.append("> Issue：归档仓 #46（DataInfra-RedactionEverything，2026-10-06 弃用冻结）"
                  " ｜ 设计：[[issue-46-format-matrix-testing]] ｜ 样张：`eval/datasets/formats/`")
     lines.append("")
-    lines.append("# Issue #46：格式 × 处理方式实测矩阵报告")
+    lines.append("# 归档仓 #46：格式 × 处理方式实测矩阵报告")
     lines.append("")
     lines.append(f"- 环境：`{meta.get('env', '?')}`（{meta.get('base_url', '?')}）　"
                  f"suite：{meta.get('suite', '?')}　"

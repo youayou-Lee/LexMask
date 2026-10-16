@@ -2,6 +2,14 @@
 
 ## 2026-10-16
 
+- fix(docs): 归档仓编号引用约定 + 修复 `eval/scripts/format_report.py` 旧仓 #46 错链（Issue#59）
+  - `render_md` 不再拼 `github.com/youayou-Lee/LexMask/issues/46`（本仓 #46 语义完全不同），改标「归档仓 #46（DataInfra-RedactionEverything）」
+  - `docs/协同开发规范-gh使用与仓库纪律.md` 新增 §5：外链必须指向本仓真实 Issue、指旧仓写「归档仓 #NN」、历史叙事不批量清理
+  - `backend/tests/test_eval46_format_matrix.py::test_render_md_snapshot` 钉住「不再拼本仓 #46 错链」
+- fix(gt): GT 写盘 warning 不再当致命错误——真实卷一处同类型实体部分重叠不再致整案写不出（Issue#73）
+  - `eval/gt/gt_schema.py` 新增 `split_problems(problems) -> (errors, warnings)`（按 `warning:` 前缀分级；`validate_pagepack` 返回契约不变）
+  - `write_gt_jsonl` 改为：仅真 error raise（文案只列真 error）且不落盘；warning 放行写出并**返回** warning 列表 + `logger.warning` 留痕（不再静默）
+  - `backend/tests/test_gt_schema.py` 新增 4 例；变异自证：warning 当 error ⇒ 新用例 FAILED
 - test(frontend): **补齐 `ClampTooltipText` 组件级回归测试（#48）**——PR#42 门⑥ 遗留的 Important 项，该组件的行为变更当时只经人工浏览器验证（PR#42 当时 85 条前端测试无一条覆盖该不变量；**当前基线为 133 例**）。
   - **引入组件测试基建**：devDeps 新增 `jsdom` + `@testing-library/react` + `@testing-library/dom`；`vite.config.ts` 仍默认 `environment: 'node'`（纯逻辑测试不受影响），组件测试文件用 `// @vitest-environment jsdom` **逐文件**切换。
   - **新增 `src/features/settings/components/entity-type-list.clamp-tooltip.test.tsx`（4 例）**：直接渲染导出的 `ClampTooltipText`（本次改为 `export`，仅加导出、渲染逻辑零改动），断言 ①三种 `kind`（title/description/regex）截断翻转前后**根节点是同一 DOM 节点**（`isSameNode`）且标签类型不变（span/p/code）；②未截断时无 `tabIndex`、截断时 `tabIndex=0`，翻转回未截断时移除；③几何量用可变 `scrollHeight/clientHeight` 桩驱动，不依赖真实排版；④**Tooltip 包裹与气泡都真的还在**（`data-state="closed"` + 聚焦后气泡出现，假定时器推进 `delayDuration`），且**翻转期间键盘焦点仍在同一节点**（`document.activeElement`）——即 Issue#48 报告的原症状本身。后两条由门⑥ 冷审 I-1 指出并补齐：原断言无法区分「Tooltip 还在」与「Tooltip 已被删」（删整块 `<TooltipContent>` 或删整个包裹时用例仍全绿），补齐后两类变异均 KILLED。**第二轮增量复审（`0b8eaec..c060850`）另指出 4 条 Minor 并已处置**：气泡内容断言由 `toContain('一')` 收紧为**精确等于当前全文**（否则把气泡内容换成任意一个字仍全绿，该变异现已 KILLED）、删除经变异证实为死代码的 `vi.hoisted(IS_REACT_ACT_ENVIRONMENT)` 块（`@testing-library/react` 自身会在 act() 外围置位）、去掉与 `toBe` 严格蕴含的重复 `isSameNode` 断言、在 `data-state` 旁标注「绑定 Radix 内部属性，升级时须复核」。
