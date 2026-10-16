@@ -95,11 +95,26 @@ def _finish_has_text_ner_inflight(
     key: tuple[Any, ...],
     future: asyncio.Future,
     result: Any,
+    error: BaseException | None = None,
 ) -> None:
     if _HAS_TEXT_NER_INFLIGHT.get(key) is future:
         _HAS_TEXT_NER_INFLIGHT.pop(key, None)
-    if not future.done():
-        future.set_result(_copy_has_text_ner_result(result))
+    if future.done():
+        return
+    if error is not None:
+        # owner 失败：同组文本的等待方必须同样失败。若在此填 None，等待方拿到
+        # 的是「非异常」的 None ⇒ 组失败数不增、整页被判成功并按半结果继续，
+        # 即本 Issue 要消灭的静默少实体。
+        future.set_exception(error)
+
+        def _consume_failure(done: asyncio.Future) -> None:
+            # 无等待方时取一次异常，避免 asyncio 报 "exception was never retrieved"。
+            if not done.cancelled():
+                done.exception()
+
+        future.add_done_callback(_consume_failure)
+        return
+    future.set_result(_copy_has_text_ner_result(result))
 
 
 def _has_recent_negative_health(has_client: Any) -> bool:
