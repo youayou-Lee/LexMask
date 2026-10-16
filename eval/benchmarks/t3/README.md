@@ -50,7 +50,7 @@ PYTHONPATH=$PWD python3 eval/benchmarks/t3/build_sample.py \
 PYTHONPATH=$PWD python3 eval/benchmarks/t3/build_sample.py --validate testdata/benchmarks/t3/manifest.private.json
 
 # 2. 四臂跑批（--arms la,sigdet --limit 3 冒烟）
-#    paddlex 臂注意：export PADDLE_PDX_CACHE_HOME=/root/private_data/redaction-persist/paddlex-cache
+#    paddlex 臂注意：export PADDLE_PDX_CACHE_HOME=<实例持久卷下的独立缓存目录>
 #    （独立缓存目录，别写 ~/.paddlex 共享目录——T4 实测避坑）
 PYTHONPATH=$PWD python3 eval/benchmarks/t3/benchmark_t3.py \
   --manifest testdata/benchmarks/t3/manifest.private.json \
