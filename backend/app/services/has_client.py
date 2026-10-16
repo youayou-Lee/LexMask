@@ -681,6 +681,8 @@ If nothing matches, return {{}}.
         调方（规划器）应传入客户端探测到的生效上下文。
         """
         if context_tokens is None:
+            from app.core.config import settings
+
             context_tokens = max(_NER_CONTEXT_TOKENS_FLOOR, int(settings.HAS_NER_CONTEXT_TOKENS))
         return cls._resolve_ner_budget(
             list(types),

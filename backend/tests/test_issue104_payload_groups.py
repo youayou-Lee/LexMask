@@ -310,6 +310,20 @@ def test_d2_planned_equals_ner_actual_max_tokens():
     assert actual == planned
 
 
+def test_i1_planned_max_tokens_default_context_uses_configured_value():
+    """冷审 I1：`context_tokens` 缺省时必须取配置值而不是 NameError。
+
+    CI 的 ruff 曾抓出该分支引用未导入的 `settings`（F821）——本用例把该缺省
+    路径纳入回归（缺省值应与显式传 `HAS_NER_CONTEXT_TOKENS` 完全一致）。
+    """
+    text = _dense_digits(400)
+    default_planned = HaSClient.planned_max_tokens(["身份证号"], text)
+    explicit_planned = HaSClient.planned_max_tokens(
+        ["身份证号"], text, context_tokens=settings.HAS_NER_CONTEXT_TOKENS
+    )
+    assert default_planned == explicit_planned > 0
+
+
 @pytest.mark.parametrize("context_tokens", [4096, 8192, 32768])
 @pytest.mark.parametrize("n_types", [1, 6, 12])
 def test_d2_every_actual_request_fits_the_fill_budget(context_tokens, n_types):
