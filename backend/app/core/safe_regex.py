@@ -31,6 +31,31 @@ def _compile_and_probe(pattern: str) -> re.Pattern:
     return compiled
 
 
+def _finditer_many_in_process(
+    pattern_str: str, flags: int, texts: list[str]
+) -> list[list[tuple[str, int, int, list[tuple[str, int, int, str]]]]]:
+    """Run finditer over several texts in ONE subprocess call.
+
+    Same per-match payload as :func:`_finditer_in_process`, grouped per input
+    text. Batched so callers that scan many short texts (per OCR block, see
+    ``Issue#64``) pay one IPC round-trip instead of one per text.
+    """
+    compiled = re.compile(pattern_str, flags)
+    group_order = sorted(compiled.groupindex, key=compiled.groupindex.get)
+    per_text = []
+    for text in texts:
+        rows = []
+        for m in compiled.finditer(text):
+            named = [
+                (name, m.start(name), m.end(name), m.group(name))
+                for name in group_order
+                if m.start(name) != -1
+            ]
+            rows.append((m.group(), m.start(), m.end(), named))
+        per_text.append(rows)
+    return per_text
+
+
 def _finditer_in_process(
     pattern_str: str, flags: int, text: str
 ) -> list[tuple[str, int, int, list[tuple[str, int, int, str]]]]:
@@ -40,17 +65,7 @@ def _finditer_in_process(
     groups as ``(name, start, end, text)`` with absolute offsets (Issue#52:
     interval / birth-context patterns emit per-group entities).
     """
-    compiled = re.compile(pattern_str, flags)
-    group_order = sorted(compiled.groupindex, key=compiled.groupindex.get)
-    out = []
-    for m in compiled.finditer(text):
-        named = [
-            (name, m.start(name), m.end(name), m.group(name))
-            for name in group_order
-            if m.start(name) != -1
-        ]
-        out.append((m.group(), m.start(), m.end(), named))
-    return out
+    return _finditer_many_in_process(pattern_str, flags, [text])[0]
 
 
 # Reusable process pool (spawned once, avoids per-call fork overhead).
@@ -123,6 +138,82 @@ class _MatchProxy:
         return list(self._named_groups)
 
 
+# ---- 时间预算放缩与「match → 实体文本」语义（Issue#64 / Issue#65）----
+
+#: 每 MB 文本给 2 秒（Issue#65 建议量级）。量级依据是 Issue#65 正文引用的 PR#63
+#: 实测「0.14–0.19 s/MB」——该数字**在仓库内没有可复跑的仪器/环境脚注**，仅作
+#: 量级参考，本模块不据此宣称任何对外性能结论。
+TIMEOUT_SECONDS_PER_MEGABYTE = 2.0
+TIMEOUT_BASE_SECONDS = 2.0
+#: 预算上限。无上限时超长文档的单请求可挂到分钟级，而超时后
+#: :func:`_kill_and_replace_pool` 的 ``shutdown(wait=False)`` **无法终止已在运行的
+#: worker**，会留下继续烧 CPU 的孤儿进程；120 s 已远超 2 s/MB 线性下 60 MB 文本的
+#: 名义预算。
+TIMEOUT_MAX_SECONDS = 120.0
+
+
+def scaled_timeout(text: str, base: float = TIMEOUT_BASE_SECONDS) -> float:
+    """按文本长度放缩的 finditer 时间预算（Issue#65）。
+
+    返回 ``min(TIMEOUT_MAX_SECONDS, max(base, len(text) / 1e6 *
+    TIMEOUT_SECONDS_PER_MEGABYTE))``：每 MB 文本给 2 秒，短文本仍用 *base*，
+    超长文本被 :data:`TIMEOUT_MAX_SECONDS` 封顶。
+    """
+    megabytes = len(text) / 1_000_000.0
+    return min(TIMEOUT_MAX_SECONDS, max(base, megabytes * TIMEOUT_SECONDS_PER_MEGABYTE))
+
+
+def match_items_indexed(
+    match: "re.Match[str] | _MatchProxy",
+) -> list[tuple[int, str, int, int]]:
+    """同 :func:`match_items`，但附**命名组声明顺序下标**（Issue#64 编号契约）。
+
+    返回 ``[(group_index, text, start, end), ...]``。命名组命中时 ``group_index``
+    是该组在 ``named_groups()``（按组声明顺序、只含**参与匹配**的组）中的位置，
+    **空组照样占位**——与旧实现
+    ``for sub_index, (...) in enumerate(named_groups): if not text: continue``
+    的编号基准逐字一致（Issue#52 起 ``regex_{type}_{i}_{j}`` 是对外契约）。
+    无命名组时下标恒为 0，调用方用 ``named_groups`` 是否为空决定是否带后缀。
+
+    语义本体只在这里实现一次：:func:`match_items` 是本函数的去下标视图。
+    """
+    named = match.named_groups() if hasattr(match, "named_groups") else []
+    if named:
+        return [
+            (index, text, start, end)
+            for index, (_name, start, end, text) in enumerate(named)
+            if text
+        ]
+    whole = match.group() or ""
+    if not whole:
+        return []
+    return [(0, whole, match.start(), match.end())]
+
+
+def match_items(match: "re.Match[str] | _MatchProxy") -> list[tuple[str, int, int]]:
+    """一次正则匹配 → ``[(text, start, end), ...]``（Issue#64 唯一事实源）。
+
+    命名组语义（与 Issue#52 文本链一致）：**有参与匹配的命名组**时，每个非空
+    组各出一项——区间 pattern 的 ``seg_a``/``seg_b`` 拆成首尾两项、出生语境
+    pattern 的 ``birth_date*`` 只出日期，分隔符与语境词不入实体；声明了命名组
+    但全组为空 ⇒ 不产出（保持文本链既有语义，不回退整 match）；**无命名组** ⇒
+    整 match 非空时出一项。
+
+    文本链（``hybrid_ner_service._custom_regex_extract``）、vision 兜底
+    （``ocr_has_vision_service._apply_regex_fallback``）与文档级链
+    （``text_layer_docline_service``）共用本函数（或它的带下标版本），避免各链
+    粒度分歧——vision 侧曾直接用 ``m.group(0)``，把「出生日期：」「至」等
+    语境词/分隔符整段吞成伪实体（Issue#64，欠遮盖方向）。
+
+    兼容 ``_MatchProxy``（有 ``named_groups``）与真 ``re.Match``（无 ⇒ 按
+    无命名组处理）。
+    """
+    return [
+        (text, start, end)
+        for _index, text, start, end in match_items_indexed(match)
+    ]
+
+
 def safe_finditer(
     compiled: re.Pattern, text: str, timeout: float = 5.0
 ) -> list:
@@ -145,6 +236,35 @@ def safe_finditer(
             f"pattern may cause catastrophic backtracking (ReDoS)"
         )
     return [_MatchProxy(t, s, e, named) for t, s, e, named in raw]
+
+
+def safe_finditer_many(
+    compiled: re.Pattern, texts: list[str], timeout: float = 5.0
+) -> list[list]:
+    """Run ``compiled.finditer`` over *texts* in ONE worker call (Issue#64).
+
+    Returns one match list per input text, in order. Callers that scan many
+    short texts (vision fallback: per OCR block) need the ReDoS timeout but
+    must not pay one subprocess round-trip per text.
+
+    Raises ``RegexTimeoutError`` on timeout (the whole batch is abandoned).
+    """
+    if not texts:
+        return []
+    pool = _get_pool()
+    future = pool.submit(
+        _finditer_many_in_process, compiled.pattern, compiled.flags, list(texts)
+    )
+    try:
+        raw = future.result(timeout=timeout)
+    except FuturesTimeoutError:
+        future.cancel()
+        _kill_and_replace_pool()
+        raise RegexTimeoutError(
+            f"Regex finditer timed out after {timeout}s over {len(texts)} texts — "
+            f"pattern may cause catastrophic backtracking (ReDoS)"
+        )
+    return [[_MatchProxy(t, s, e, named) for t, s, e, named in rows] for rows in raw]
 
 
 def _kill_and_replace_pool() -> None:

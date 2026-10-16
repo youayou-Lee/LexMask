@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from process_pool_guard import requires_process_pool
+
 REPO_ROOT = Path(__file__).resolve().parents[1]  # backend/
 
 ENTITY_PRESET = json.loads(
@@ -77,6 +79,9 @@ def test_plate_regex_does_not_overmatch(text):
 
 
 # ── regex 兜底：精确 span（不再整行打码）──────────────────────
+# 两条 span 用例走真实进程池（`_apply_regex_fallback` 经 `safe_compile` +
+# `safe_finditer_many` 拿 ReDoS 预算，Issue#64/#65）⇒ 沙箱建不出池时跳过，
+# CI 真执行。
 
 def _block_with_chars(text: str, char_px: int = 10, height: int = 20):
     from app.services.ocr_has_vision_service import OCRTextBlock
@@ -88,6 +93,7 @@ def _block_with_chars(text: str, char_px: int = 10, height: int = 20):
     )
 
 
+@requires_process_pool
 def test_regex_fallback_masks_plate_span_not_whole_line():
     from app.services.ocr_has_vision_service import OcrHasVisionService
     svc = OcrHasVisionService()
@@ -103,6 +109,7 @@ def test_regex_fallback_masks_plate_span_not_whole_line():
     assert r.width < 10 * len(line), "必须精确到车牌 span，不得整行打码"
 
 
+@requires_process_pool
 def test_regex_fallback_masks_case_number_span():
     from app.services.ocr_has_vision_service import OcrHasVisionService
     svc = OcrHasVisionService()

@@ -52,3 +52,12 @@ gh issue close  --repo $R <编号>
 gh pr create --repo $R --base main --head feat/xxx
 gh pr view / gh pr merge --repo $R <编号>
 ```
+
+## 5. 归档仓编号引用约定（Issue #59，2026-10-16 定稿）
+
+旧仓 `DataInfra-RedactionEverything` 已于 2026-10-06 弃用冻结（见 `docs/memory/2026-10-06-old-repo-retired.md`），但 v1.0.0 整体迁移把大批旧仓编号带进了本仓文件，而**两仓编号空间碰撞**（如 `#37`/`#40`/`#46` 在仓各有所指）。约定：
+
+1. **外链必须指向本仓真实 Issue**：任何**自动生成或对外可点**的 Issue 引用，都必须指本仓对应编号；**禁止**把旧仓编号拼成 `github.com/youayou-Lee/LexMask/issues/<旧编号>` 的错链（本仓同号 Issue 语义完全不同，读者会被误导）。
+2. **指旧仓就写「归档仓 #NN」**并给底稿/文档指针（目标形态示例：`docs/issue-46-format-matrix-testing.md`、`eval/reports/2026-09-15-format-matrix.md` 的「旧仓时期产物，故正文标题保留原 Issue 号」注记）。
+3. **历史叙事不批量清理**：代码注释、方案文档、评测底稿里作为历史记录的裸编号**保留原样**（批量改写会擦掉可考据的迁移痕迹，且收益极低）；顺手改动这些文件时可加「归档仓」注记，但**不是义务**。
+4. **已识别错链与处置**：`eval/scripts/format_report.py`（render_md 曾拼本仓 #46 错链，Issue #59 修复，并由 `backend/tests/test_eval46_format_matrix.py::test_render_md_snapshot` 钉住）；其余 sweep（`eval/scripts/*`、`eval/datasets/generators/*`、`frontend/src/features/playground/*`、`backend/{app,tests}` 等地约 50+ 处裸编号）按第 3 条**不清理**。
