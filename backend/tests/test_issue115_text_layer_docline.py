@@ -8,13 +8,43 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 
 import pytest
 
 from app.core.config import settings
+from app.core.safe_regex import (
+    RegexTimeoutError,
+    _finditer_many_in_process,
+    _MatchProxy,
+    scaled_timeout,
+)
 from app.services import text_layer_doc_source as source
 from app.services import text_layer_docline_service as docline
 from app.services import text_layer_quality as quality
+
+
+def _inproc_safe_compile(pattern, timeout=2.0):
+    """替身 `safe_compile`：只做语法编译，不跑子进程探针。
+
+    regex 保证层自 Issue#64/#65 起与文本链/vision 同源（冷审 C1），走
+    `safe_compile` / `safe_finditer`；本机沙箱建不出进程池（Issue#109），故用
+    替身保留本文件对语义的覆盖，真实池的端到端对照在
+    `test_issue64_65_regex_fallback.py` / `test_issue43_case_number_floor.py`。
+    """
+    return re.compile(pattern)
+
+
+def _inproc_safe_finditer(compiled, text, timeout=5.0):
+    """替身 `safe_finditer`：复用真实序列化语义，只是不跨进程。"""
+    rows = _finditer_many_in_process(compiled.pattern, compiled.flags, [text])[0]
+    return [_MatchProxy(t, s, e, named) for t, s, e, named in rows]
+
+
+class _NullClient:
+    def ner(self, text, entity_types=None, **kwargs):
+        return {}
 
 # ------------------------------------------------------------------ Issue#129 默认值
 
@@ -460,11 +490,16 @@ def test_thin_page_is_not_covered(monkeypatch, tmp_path):
     assert thin is None, "薄挂层页必须回落旧路径（该页的图像内容只能靠 OCR 拿到）"
 
 
-def test_regex_guarantee_layer_runs_on_document_stream():
+def test_regex_guarantee_layer_runs_on_document_stream(monkeypatch):
     """评审 I-3：regex 保证层必须在文档级链上补跑（旧链有 regex 回落）。
 
     否则配置了正则类型的租户在覆盖页上会丢掉这些类型（静默漏检）。
+
+    冷审 C1 后本链改走 `safe_compile` / `safe_finditer`（全卷流上也有预算），
+    故这里挂 in-process 替身——语义断言不变，进程池由专项用例覆盖。
     """
+    monkeypatch.setattr(docline, "safe_compile", _inproc_safe_compile)
+    monkeypatch.setattr(docline, "safe_finditer", _inproc_safe_finditer)
     pages = [_page(1, ["案号", "（2022）京0101刑初123号", "姓名", "张三"])]
 
     class Client:
@@ -485,6 +520,78 @@ def test_regex_guarantee_layer_runs_on_document_stream():
     assert cn and "刑初123号" in cn[0].value
     # 框必须收紧到命中的那几个字（而不是整词涂掉）
     assert (cn[0].bbox[2] - cn[0].bbox[0]) < 0.5, f"框被插值收紧了才对，实际 {cn[0].bbox}"
+
+
+def test_docline_regex_layer_uses_named_group_semantics(monkeypatch):
+    """冷审 C1 附带：第三条 runner 与文本链/vision **同粒度**。
+
+    旧实现取 `m.group(0).strip()`：出生语境会把「出生日期：」一起当成命中值。
+    同源后命名组决定命中值 ⇒ 语境词/分隔符不入，与 Issue#52 文本链一致。
+    """
+    monkeypatch.setattr(docline, "safe_compile", _inproc_safe_compile)
+    monkeypatch.setattr(docline, "safe_finditer", _inproc_safe_finditer)
+    pages = [_page(1, ["出生日期：1992年10月5日"])]
+    pattern = r"出生日期：?(?P<birth_date>\d{4}年\d{1,2}月\d{1,2}日)"
+
+    result = asyncio.run(
+        docline.run_document_ner(
+            pages, [], has_client=_NullClient(), regex_types=[("BIRTH_DATE", pattern)]
+        )
+    )
+    values = sorted(e.value for e in result.entities if e.type == "BIRTH_DATE")
+    assert values == ["1992年10月5日"], f"语境词不得进命中值，实际 {values}"
+
+    # 区间同理：拆首尾两项、分隔符不入（pattern 落在单个词内，避免词分隔符干扰）
+    interval_pages = [_page(1, ["本案于2022年1月1日至1月31日期间审理"])]
+    interval_pattern = r"(?P<seg_a>\d{4}年\d{1,2}月\d{1,2}日)至(?P<seg_b>\d{1,2}月\d{1,2}日)"
+    interval = asyncio.run(
+        docline.run_document_ner(
+            interval_pages, [], has_client=_NullClient(), regex_types=[("DATE", interval_pattern)]
+        )
+    )
+    dates = sorted(e.value for e in interval.entities if e.type == "DATE")
+    assert dates == ["1月31日", "2022年1月1日"], f"区间必须拆两项且不含「至」，实际 {dates}"
+
+
+def test_docline_regex_layer_budget_scales_and_timeout_is_survivable(monkeypatch, caplog):
+    """冷审 C1：全卷流上必须有预算，且超时只告警不打断整卷（旧实现裸 finditer）。"""
+    captured: dict = {}
+
+    def capturing_finditer(compiled, text, timeout=5.0):
+        captured["text"] = text
+        captured["timeout"] = timeout
+        return []
+
+    monkeypatch.setattr(docline, "safe_compile", _inproc_safe_compile)
+    monkeypatch.setattr(docline, "safe_finditer", capturing_finditer)
+    pages = [_page(1, ["案号", "（2022）京0101刑初123号"])]
+
+    result = asyncio.run(
+        docline.run_document_ner(
+            pages, [], has_client=_NullClient(), regex_types=[("CASE_NUMBER", r"刑初\d{1,6}号")]
+        )
+    )
+    assert captured["timeout"] == scaled_timeout(captured["text"]) == 2.0, "短流取 base 预算"
+    assert captured["text"] == "".join(w.text + docline._WORD_SEP for w in pages[0].words)
+    assert not [e for e in result.entities if e.type == "CASE_NUMBER"]
+
+    def exploding_finditer(compiled, text, timeout=5.0):
+        raise RegexTimeoutError("Regex finditer timed out")
+
+    monkeypatch.setattr(docline, "safe_finditer", exploding_finditer)
+    with caplog.at_level(logging.WARNING, logger="app.services.text_layer_docline_service"):
+        timed_out = asyncio.run(
+            docline.run_document_ner(
+                pages, [], has_client=_NullClient(), regex_types=[("CASE_NUMBER", r"刑初\d{1,6}号")]
+            )
+        )
+
+    assert not [e for e in timed_out.entities if e.type == "CASE_NUMBER"]
+    message = next(
+        r.getMessage() for r in caplog.records if "SEARCH TIMEOUT" in r.getMessage()
+    )
+    assert "CASE_NUMBER" in message
+    assert "chars=" in message and "budget=" in message
 
 
 def test_boxes_for_page_passes_tenant_regex_types_into_build(monkeypatch, tmp_path):

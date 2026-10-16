@@ -140,6 +140,9 @@ class OcrHasVisionService:
         self.last_duration_ms: dict[str, Any] = {}
         self.last_ocr_blocks: list[OCRTextBlock] = []
         self.current_owner_id: str | None = None
+        # 正则兜底超时事件计数（Issue#65 / 冷审 I2）：vision 链的失效面是
+        # 「整页该类型失效」，比文本链更值得可观测。
+        self._regex_timeout_events = 0
         self._init_services()
 
     def _init_services(self):
@@ -279,10 +282,21 @@ class OcrHasVisionService:
 
         new_regions: list[SensitiveRegion] = []
         for item in regex_types:
+            # 编译/探针与检索**分开**捕获（Issue#64 冷审 I2）：探针预算固定
+            # 1.0s、与页文本长度无关，混在同一个 except 里会把探针超时误标成
+            # 「bad pattern」（那是语法错误），排查时分不清。
             try:
                 compiled = safe_compile(str(item.regex_pattern or ""), timeout=1.0)
-            except (re.error, RegexTimeoutError) as exc:
+            except re.error as exc:
                 logger.warning("Regex fallback skipping type %s (bad pattern): %s", item.id, exc)
+                continue
+            except RegexTimeoutError as exc:
+                self._regex_timeout_events += 1
+                logger.warning(
+                    "Regex fallback PROBE TIMEOUT for type %s (probe_budget=1.0s, "
+                    "timeout_events=%d): %s",
+                    item.id, self._regex_timeout_events, exc,
+                )
                 continue
             block_texts = [block.text or "" for block in ocr_blocks]
             try:
@@ -293,7 +307,13 @@ class OcrHasVisionService:
                     compiled, block_texts, timeout=scaled_timeout("".join(block_texts))
                 )
             except RegexTimeoutError as exc:
-                logger.warning("Regex fallback search timed out for type %s: %s", item.id, exc)
+                self._regex_timeout_events += 1
+                logger.warning(
+                    "Regex fallback SEARCH TIMEOUT for type %s (blocks=%d, chars=%d, "
+                    "timeout_events=%d): %s — 该类型本页失效",
+                    item.id, len(block_texts), len("".join(block_texts)),
+                    self._regex_timeout_events, exc,
+                )
                 continue
             pseudo_entities: list[dict] = []
             for matches in per_block:

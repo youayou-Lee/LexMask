@@ -19,7 +19,13 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.core.config import settings
-from app.core.safe_regex import RegexTimeoutError, match_items, safe_compile, safe_finditer, scaled_timeout
+from app.core.safe_regex import (
+    RegexTimeoutError,
+    match_items_indexed,
+    safe_compile,
+    safe_finditer,
+    scaled_timeout,
+)
 from app.models.schemas import Entity
 from app.models.type_mapping import canonical_type_id, linkage_groups_for_type
 from app.services.has_service import HaSService, has_service
@@ -301,17 +307,36 @@ class HybridNERService:
             if not raw_type_id or not pattern:
                 continue
             # 时间预算按文本长度放缩（Issue#65）：固定 2.0s 对长文本会整篇
-            # 丢弃该类型的正则保证层（实测 0.14–0.19 s/MB ⇒ 约 10–14MB 越线）。
+            # 丢弃该类型的正则保证层。
             budget = scaled_timeout(text)
+            # 编译/探针与检索**分开**捕获（Issue#64 冷审 I2）：探针预算固定
+            # 1.0s，与文档预算无关，混在一个 except 里会把 1.0s 的探针超时按
+            # 文档预算报出来，误导排查。
             try:
                 compiled = safe_compile(pattern, timeout=1.0)
+            except re.error as exc:
+                # 畸形 pattern 沿用旧文案，且不计入超时事件（它不是超时）。
+                logger.warning("Custom regex skipped for %s: %s", raw_type_id, exc)
+                continue
+            except RegexTimeoutError as exc:
+                self._regex_timeout_events += 1
+                logger.warning(
+                    "Custom regex PROBE TIMEOUT for %s (probe_budget=1.0s, "
+                    "text_len=%d, timeout_events=%d): %s — 该类型本轮保证层命中整体丢弃",
+                    raw_type_id,
+                    len(text),
+                    self._regex_timeout_events,
+                    exc,
+                )
+                continue
+            try:
                 matches = safe_finditer(compiled, text, timeout=budget)
             except RegexTimeoutError as exc:
-                # 超时不是「跳过一条规则」而是「整篇该类型失效」，必须可观测
+                # 检索超时不是「跳过一条规则」而是「整篇该类型失效」，必须可观测
                 # （Issue#65）：warning 带类型/文本长度/实际预算，并累计计数。
                 self._regex_timeout_events += 1
                 logger.warning(
-                    "Custom regex TIMEOUT for %s (text_len=%d, budget=%.1fs, "
+                    "Custom regex SEARCH TIMEOUT for %s (text_len=%d, budget=%.1fs, "
                     "timeout_events=%d): %s — 该类型本轮保证层命中整体丢弃",
                     raw_type_id,
                     len(text),
@@ -320,16 +345,14 @@ class HybridNERService:
                     exc,
                 )
                 continue
-            except re.error as exc:
-                logger.warning("Custom regex skipped for %s: %s", raw_type_id, exc)
-                continue
-            # 命名捕获组语义（Issue#52）唯一事实源 = safe_regex.match_items：
+            # 命名捕获组语义（Issue#52）唯一事实源 = safe_regex.match_items_indexed：
             # 区间 pattern 用 seg_a/seg_b 拆首尾（分隔符不入实体），出生语境
             # pattern 用 birth_date* 只出日期（语境词不入实体）；无命名组或组
-            # 未参与的 pattern 维持整 match 一个实体的既有语义。
+            # 未参与的 pattern 维持整 match 一个实体的既有语义。下标取命名组
+            # **声明顺序**（空组占位）⇒ 实体编号与旧实现逐字一致（冷审 I1）。
             for index, match in enumerate(matches):
                 named_groups = match.named_groups()
-                for sub_index, (item_text, item_start, item_end) in enumerate(match_items(match)):
+                for sub_index, item_text, item_start, item_end in match_items_indexed(match):
                     entities.append(Entity(
                         # 编号沿用旧格式：有命名组 ⇒ regex_{type}_{i}_{j}，
                         # 整 match ⇒ regex_{type}_{i}。

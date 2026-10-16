@@ -27,7 +27,6 @@
 
 import inspect
 import multiprocessing
-from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 import pytest

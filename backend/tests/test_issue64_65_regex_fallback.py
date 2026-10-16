@@ -27,6 +27,7 @@ from app.services import entity_type_service as ets
 from app.services import hybrid_ner_service as hns
 from app.services import ocr_has_vision_service as vision
 from app.services.vision import ocr_entity_match, ocr_pipeline
+from process_pool_guard import requires_process_pool
 from test_issue43_case_number_floor import _block_with_chars
 
 _PRESET = json.loads(
@@ -121,6 +122,32 @@ def test_text_chain_bad_pattern_keeps_legacy_warning(monkeypatch, caplog):
     )
 
 
+def test_text_chain_probe_timeout_is_distinct_from_search_timeout(monkeypatch, caplog):
+    """编译探针超时与检索超时必须区分（冷审 I2）。
+
+    旧实现把 `safe_compile(timeout=1.0)` 与 `safe_finditer(timeout=budget)` 放同一
+    个 try ⇒ 1.0s 探针超时被算成「文档级超时」，warning 打出的 `budget=…` 却是
+    文档预算（误导排查）。
+    """
+    def probe_timeout_compile(pattern, timeout=2.0):
+        raise RegexTimeoutError("Regex compile probe timed out after 1.0s")
+
+    monkeypatch.setattr(hns, "safe_compile", probe_timeout_compile)
+
+    svc = hns.HybridNERService(has_service_instance=None)
+    with caplog.at_level(logging.WARNING, logger="app.services.hybrid_ner_service"):
+        assert svc._custom_regex_extract("2020年1月1日", [_type("DATE")]) == []
+
+    assert svc._regex_timeout_events == 1
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("PROBE TIMEOUT" in m and "probe_budget=1.0s" in m for m in messages)
+    assert any("timeout_events=1" in m for m in messages)
+    assert not any("SEARCH TIMEOUT" in m for m in messages)
+    assert not any(
+        re.search(r"(?<!probe_)budget=", m) for m in messages
+    ), "探针超时不得打出文档检索预算（`budget=…`）"
+
+
 def test_text_chain_group_semantics_and_ids_survive_refactor(monkeypatch):
     """文本链语义与实体编号不变（Issue#52 已在 CI 钉住的契约）。"""
     monkeypatch.setattr(hns, "safe_compile", _inproc_safe_compile)
@@ -144,14 +171,58 @@ def test_text_chain_group_semantics_and_ids_survive_refactor(monkeypatch):
     assert [e.text for e in plate] == ["粤RH0472号牌"], "无命名组 ⇒ 整 match（预设 pattern 含「号牌」）"
     assert [e.id for e in plate] == ["regex_LICENSE_PLATE_0"], "整 match 沿用无后缀编号"
 
+    # 冷审 I1：空声明组**占位** —— 首个非空组的 sub_index 必须是 1（旧实现基准）。
+    # 租户自定义 pattern（前端 preset-column 判 custom_ + regex_pattern）可达此形态，
+    # 首版实现「先滤空再编号」会把已承诺的实体 id 漂移成 `_0_0`。
+    custom = _Type("custom_x", r"(?P<opt>X*)(?P<date>\d{4})")
+    dated = svc._custom_regex_extract("1992年", [custom])
+    assert [(e.id, e.text) for e in dated] == [("regex_custom_x_0_1", "1992")], (
+        "sub_index 以声明顺序为基准，空组照样占位（Issue#52 对外契约）"
+    )
+
+
+@requires_process_pool
+def test_real_pool_search_timeout_is_survivable(monkeypatch, caplog):
+    """B10：**真实进程池**下的超时也必须是「不抛出 + 可观测」。
+
+    冷审指出此前所有超时用例都靠 monkeypatch 注入 `RegexTimeoutError`，没人证明
+    真实池会如期抛错、且被服务层接住。这里只把预算压到 0.05s，其余全走真实
+    `safe_compile` / `safe_finditer` / 子进程；`(a+)+$` 在 40 个 `a` 上是经典
+    ReDoS 形态，0.05s 内不可能完成。
+    """
+    monkeypatch.setattr(hns, "scaled_timeout", lambda text, base=2.0: 0.05)
+
+    svc = hns.HybridNERService(has_service_instance=None)
+    with caplog.at_level(logging.WARNING, logger="app.services.hybrid_ner_service"):
+        entities = svc._custom_regex_extract("a" * 40 + "b", [_Type("custom_slow", r"(a+)+$")])
+
+    assert entities == []
+    assert svc._regex_timeout_events >= 1, "真实池超时必须计入事件"
+    assert any("TIMEOUT" in r.getMessage() for r in caplog.records)
+
 
 # ── Issue#64：vision 兜底与文本链同粒度 ─────────────────────
 
 def _vision_fallback_entities(monkeypatch, line: str, type_id: str) -> list[dict]:
-    """跑一次 vision 兜底，返回喂给 `match_entities_to_ocr` 的伪实体。"""
+    """跑一次 vision 兜底，返回喂给 `match_entities_to_ocr` 的伪实体。
+
+    冷审 N4：`_apply_regex_fallback` 内的 `safe_*` 目前是**函数体内 import**，
+    若将来提到模块级，这里的 patch 会失效、用例静默变假绿。故本 helper 断言
+    两个替身**确实各被调用一次**。
+    """
     captured: list[dict] = []
-    monkeypatch.setattr(vision, "safe_compile", _inproc_safe_compile)
-    monkeypatch.setattr(vision, "safe_finditer_many", _inproc_finditer_many)
+    calls = {"compile": 0, "finditer": 0}
+
+    def counting_compile(pattern, timeout=2.0):
+        calls["compile"] += 1
+        return _inproc_safe_compile(pattern, timeout)
+
+    def counting_many(compiled, texts, timeout=5.0):
+        calls["finditer"] += 1
+        return _inproc_finditer_many(compiled, texts, timeout)
+
+    monkeypatch.setattr(vision, "safe_compile", counting_compile)
+    monkeypatch.setattr(vision, "safe_finditer_many", counting_many)
     monkeypatch.setattr(ets, "get_regex_types", lambda owner_id=None: [_type(type_id)])
     monkeypatch.setattr(
         ocr_pipeline, "match_entities_to_ocr",
@@ -161,6 +232,9 @@ def _vision_fallback_entities(monkeypatch, line: str, type_id: str) -> list[dict
 
     svc = vision.OcrHasVisionService()
     svc._apply_regex_fallback([_block_with_chars(line)], 10 * len(line), 20)
+    assert calls == {"compile": 1, "finditer": 1}, (
+        "替身未被调用 ⇒ patch 失效、用例会假绿（冷审 N4）"
+    )
     return captured
 
 
@@ -228,6 +302,33 @@ def test_vision_fallback_bad_pattern_warns_and_continues(monkeypatch, caplog):
         assert svc._apply_regex_fallback([_block_with_chars("2022年1月1日")], 120, 20) == []
 
     assert any("bad pattern" in r.getMessage() for r in caplog.records)
+    # 语法错误不是超时：不得计入超时事件、不得打 PROBE TIMEOUT（冷审 I2）
+    assert svc._regex_timeout_events == 0
+    assert not any("PROBE TIMEOUT" in r.getMessage() for r in caplog.records)
+
+
+def test_vision_fallback_probe_timeout_is_distinct_and_counted(monkeypatch, caplog):
+    """编译探针（固定 1.0s）超时不得被误标成 bad pattern，且必须可观测（冷审 I2）。
+
+    旧实现把 `safe_compile` 的 `RegexTimeoutError` 与 `re.error` 归为同一条
+    「bad pattern」warning，排查时分不清「pattern 写错」与「探针超时」，且 vision
+    侧全程没有计数器。
+    """
+    def probe_timeout_compile(pattern, timeout=1.0):
+        raise RegexTimeoutError("Regex compile probe timed out after 1.0s")
+
+    monkeypatch.setattr(vision, "safe_compile", probe_timeout_compile)
+    monkeypatch.setattr(ets, "get_regex_types", lambda owner_id=None: [_type("DATE")])
+
+    svc = vision.OcrHasVisionService()
+    with caplog.at_level(logging.WARNING, logger="app.services.ocr_has_vision_service"):
+        assert svc._apply_regex_fallback([_block_with_chars("2022年1月1日")], 120, 20) == []
+
+    assert svc._regex_timeout_events == 1
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("PROBE TIMEOUT" in m and "probe_budget=1.0s" in m for m in messages)
+    assert any("timeout_events=1" in m for m in messages)
+    assert not any("bad pattern" in m for m in messages), "探针超时不是语法错误"
 
 
 def test_vision_fallback_search_timeout_warns_and_continues(monkeypatch, caplog):
@@ -244,3 +345,32 @@ def test_vision_fallback_search_timeout_warns_and_continues(monkeypatch, caplog)
         assert svc._apply_regex_fallback([_block_with_chars("2022年1月1日")], 120, 20) == []
 
     assert any("timed out" in r.getMessage() for r in caplog.records)
+    # 检索超时必须与探针超时区分、且计入同一计数器（冷审 I2）
+    assert svc._regex_timeout_events == 1
+    message = next(r.getMessage() for r in caplog.records if "SEARCH TIMEOUT" in r.getMessage())
+    assert "blocks=1" in message
+    assert "chars=9" in message
+    assert "timeout_events=1" in message
+
+
+def test_vision_fallback_regions_are_tagged_as_regex_fallback(monkeypatch):
+    """命中区域必须打上 `source="regex_fallback"`（冷审 N3：该边界此前无用例）。"""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(vision, "safe_compile", _inproc_safe_compile)
+    monkeypatch.setattr(vision, "safe_finditer_many", _inproc_finditer_many)
+    monkeypatch.setattr(ets, "get_regex_types", lambda owner_id=None: [_type("DATE")])
+    monkeypatch.setattr(
+        ocr_pipeline, "match_entities_to_ocr",
+        lambda blocks, entities: [SimpleNamespace(source="")],
+    )
+    monkeypatch.setattr(
+        ocr_entity_match, "split_regions_across_lines",
+        lambda regions, blocks: list(regions),
+    )
+
+    svc = vision.OcrHasVisionService()
+    regions = svc._apply_regex_fallback([_block_with_chars("2022年1月1日")], 120, 20)
+
+    assert len(regions) == 1
+    assert regions[0].source == "regex_fallback"

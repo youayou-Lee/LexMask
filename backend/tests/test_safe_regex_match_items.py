@@ -1,10 +1,11 @@
 """`safe_regex.match_items` 与 `scaled_timeout`（Issue#64 / Issue#65）。
 
-`match_items` 是「一次正则匹配 → 待遮盖文本」的**唯一事实源**：文本链
-（`hybrid_ner_service._custom_regex_extract`）与 vision 兜底
-（`ocr_has_vision_service._apply_regex_fallback`）都经它产出实体文本。旧
-vision 实现取 `m.group(0)`，会把「出生日期：」语境词、区间分隔符整段吞成
-伪实体（欠遮盖方向，Issue#64）。
+`match_items` / `match_items_indexed` 是「一次正则匹配 → 待遮盖文本」的**唯一事实
+源**：文本链（`hybrid_ner_service._custom_regex_extract`）、vision 兜底
+（`ocr_has_vision_service._apply_regex_fallback`）与文档级 docline 保证层
+（`text_layer_docline_service`）都经它产出实体文本。旧 vision 实现取
+`m.group(0)`，会把「出生日期：」语境词、区间分隔符整段吞成伪实体（欠遮盖方向，
+Issue#64）。
 
 本文件只构造 `_MatchProxy` / 真 `re.Match`，**不碰进程池**，故任何环境都能跑。
 """
@@ -15,8 +16,11 @@ import re
 
 from app.core.safe_regex import (
     TIMEOUT_BASE_SECONDS,
+    TIMEOUT_MAX_SECONDS,
     _MatchProxy,
     match_items,
+    match_items_indexed,
+    safe_finditer_many,
     scaled_timeout,
 )
 
@@ -92,6 +96,40 @@ def test_real_re_match_is_treated_as_unescaped_whole_match():
     assert match_items(match) == [("aaa", 1, 4)]
 
 
+# ── match_items_indexed：声明顺序编号基准（冷审 I1）─────────
+
+def test_indexed_keeps_declaration_order_when_leading_group_is_empty():
+    """空声明组**占位**：旧实现按 `enumerate(named_groups)` 编号，故首个非空组的下标
+    是 1 而不是 0。租户自定义 pattern（如 `(?P<opt>X*)(?P<date>\\d{4})`）可命中此情形，
+    首版实现「先滤空再编号」会让已对外承诺的实体 id 漂移（冷审 I1）。
+    """
+    text = "1992年"
+    date = "1992"
+    match = _MatchProxy(
+        "1992", 0, 4,
+        [("opt", 0, 0, ""), ("date", 0, 4, date)],
+    )
+
+    assert match_items_indexed(match) == [(1, date, 0, 4)]
+    # 去下标视图不受影响
+    assert match_items(match) == [(date, 0, 4)]
+    assert text.startswith(date)
+
+
+def test_indexed_multiple_groups_keep_declaration_index():
+    match = _MatchProxy(
+        "ab", 0, 2, [("first", 0, 1, "a"), ("second", 1, 2, "b")],
+    )
+
+    assert match_items_indexed(match) == [(0, "a", 0, 1), (1, "b", 1, 2)]
+
+
+def test_indexed_without_named_groups_uses_index_zero():
+    match = _MatchProxy("粤RH0472号牌", 2, 11, [])
+
+    assert match_items_indexed(match) == [(0, "粤RH0472号牌", 2, 11)]
+
+
 # ── scaled_timeout：预算放缩 ───────────────────────────────
 
 def test_scaled_timeout_keeps_base_for_short_text():
@@ -102,7 +140,11 @@ def test_scaled_timeout_keeps_base_for_short_text():
 
 
 def test_scaled_timeout_grows_two_seconds_per_megabyte():
-    """1M 字符 ⇒ 2.0s，5M 字符 ⇒ 10.0s（2 s/MB，对照实测 0.14–0.19 s/MB ≈10×）。"""
+    """1M 字符 ⇒ 2.0s，5M 字符 ⇒ 10.0s（2 s/MB）。
+
+    对照口径：Issue#65 正文记录的 PR#63 评审期实测 0.14–0.19 s/MB（线性），
+    故 2 s/MB 约留 10× 余量；该实测无独立仪器附注，只作量级参考。
+    """
     assert scaled_timeout("x" * 1_000_000) == 2.0
     assert scaled_timeout("x" * 5_000_000) == 10.0
     assert scaled_timeout("x" * 10_000_000) > scaled_timeout("x" * 1_000_000)
@@ -110,3 +152,20 @@ def test_scaled_timeout_grows_two_seconds_per_megabyte():
 
 def test_scaled_timeout_base_override_still_applies():
     assert scaled_timeout("x" * 10_000, base=0.5) == 0.5
+
+
+def test_scaled_timeout_is_capped():
+    """放缩预算必须有上限（冷审 N2）：100 MB 不再线性外推到 200 s。"""
+    assert scaled_timeout("x" * 100_000_000) == TIMEOUT_MAX_SECONDS
+    assert scaled_timeout("x" * 200_000_000) == TIMEOUT_MAX_SECONDS
+
+
+# ── safe_finditer_many：空输入短路（冷审 N3）───────────────
+
+def test_safe_finditer_many_empty_texts_short_circuits():
+    """空块列表必须直接返回 `[]`，不建池、不碰子进程（空白页高频路径）。
+
+    本用例在无进程池的沙箱里也必须通过——若短路的 `if not texts` 被删，本用例
+    会实实在在去建池而失败（冷审 N3 指该分支此前无覆盖）。
+    """
+    assert safe_finditer_many(re.compile("x"), []) == []
