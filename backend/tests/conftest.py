@@ -6,7 +6,9 @@
   复位窗口 30s；
 * ``HaSClient._SHARED_NER_CACHE`` / ``_SHARED_NER_INFLIGHT`` 以及
   ``HaSClient._context_probe_cache``（``app/services/has_client.py:216-224``）是
-  **类级共享状态**。
+  **类级共享状态**；
+* ``text_layer_doc_source._MEMO``（``app/services/text_layer_doc_source.py:34``）
+  是**模块级** doc 级 memo，且负缓存 marker 带 120s TTL（门⑥ 第二段 Minor②）。
 
 在 HTTP 边界注入失败的用例（HTTP 400 / 超时 / 不可解析）会经
 ``_do_chat_request`` → ``ner_breaker.call_sync`` 记失败；而 ``RETRYABLE_HTTPX``
@@ -25,6 +27,7 @@ import pytest
 
 def _reset_ner_global_state() -> None:
     from app.core.circuit_breaker import ner_breaker
+    from app.services import text_layer_doc_source
     from app.services.has_client import HaSClient
 
     ner_breaker._failure_count = 0
@@ -34,6 +37,10 @@ def _reset_ner_global_state() -> None:
     HaSClient._SHARED_NER_CACHE.clear()
     HaSClient._SHARED_NER_INFLIGHT.clear()
     HaSClient._context_probe_cache.clear()
+
+    # 门⑥ 第二段 Minor②：``text_layer_doc_source._MEMO`` 也是模块级状态（含
+    # ``unusable`` 负缓存 marker 与 120s TTL），跨用例残留会让入口层用例互相污染。
+    text_layer_doc_source.reset_memo()
 
 
 @pytest.fixture(autouse=True)

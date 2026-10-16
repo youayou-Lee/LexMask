@@ -363,6 +363,11 @@ def test_e4_fallback_is_memoized_and_does_not_rehit_upstream(monkeypatch, tmp_pa
     诚实边界：这里钉的是 `text_layer_doc_source` 这一层接缝——负缓存 ⇒ 不产出框 ⇒
     调用方回落经典 OCR+NER 链。真正的 orchestrator 端到端终态与
     `pipeline_status["text_layer_doc"]` 观测面须在云门④ canary 上验（本机无 GPU/HaS）。
+
+    判别面（门⑥ 第二段 Minor③ 具名声明）：本用例对「负缓存落地 + TTL 内不重打上游」敏感，
+    **不**覆盖「失败计数进入可观测面」——`stats["failed_chunks"]` 只写不读、
+    `pipeline_status["text_layer_doc"]["http_errors"]` 在失败卷上结构性不可见，
+    该缺口由 follow-up Issue#165 跟踪（不在本 PR 范围内）。
     """
     monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
     pages = _mixed_pages()
@@ -433,3 +438,64 @@ def test_e6_degenerate_inputs_keep_ratio_defined():
     blank = asyncio.run(docline.run_document_ner([_page(1, [])], ["姓名"], has_client=client))
     assert blank.coverage_ratio == 0.0
 
+
+class _ResidualFailDoclineClient:
+    """**主 pass 成功并给出值**，但**残差子请求**返回 ``ok=False``（不抛异常）。
+
+    门⑥ 第二段 I-1：head 把「残差子请求失败」这条分支**由死分支激活**
+    —— base 的 ``ask()`` 恒返回 dict，``residual_result is None`` 永不成立。
+    """
+
+    def __init__(self, main_value: str = "张三"):
+        self.main_value = main_value
+        self.calls: list[str] = []
+
+    def ner(self, text, labels=None, **kwargs):
+        return {}
+
+    def ner_checked(self, text, labels=None, **kwargs):
+        self.calls.append(text)
+        if len(self.calls) == 1:
+            return {"姓名": [self.main_value]}, True
+        return {}, False
+
+
+def _residual_pages() -> list:
+    """单块页面：主 pass 命中一个值，未覆盖文本远长于 ``_MIN_RESIDUAL_CHARS(80)``。"""
+    return [_page(1, ["被告人张三"] + ["填充材料文字"] * 16)]
+
+
+def test_i1_residual_subrequest_failure_is_visible(monkeypatch):
+    """门⑥ 第二段 I-1：主 pass 成功 + 残差 ``ok=False`` ⇒ 整块按失败计（覆盖旧死分支）。"""
+    pages = _residual_pages()
+    _stream, chunks = _chunk_layout(monkeypatch, pages, chunk_chars=5000)
+    assert len(chunks) == 1, "本用例只关心单块的残差失败路径"
+
+    client = _ResidualFailDoclineClient()
+    result = asyncio.run(docline.run_document_ner(pages, ["姓名"], has_client=client))
+
+    assert len(client.calls) == 2, "主 pass 与残差子请求各一次调用"
+    assert result.failed_chunks == 1, "残差子请求失败必须计入失败块（旧代码上这里恒 0）"
+    assert result.http_errors == 1
+    assert result.residual_calls == 0, "失败的残差不得计入 residual_calls"
+    assert result.covered_chars == 0
+    assert result.coverage_ratio == 0.0, "该块必须不计入覆盖率"
+    assert "张三" in {entity.value for entity in result.entities}, (
+        "主 pass 已命中的值不得被残差失败抹掉（失败是可见的，已得数据仍保留）"
+    )
+
+
+def test_i1_residual_pass_off_is_the_control(monkeypatch):
+    """对照组：``residual_pass=False`` ⇒ 不发残差子请求，该块按成功计。"""
+    pages = _residual_pages()
+    _chunk_layout(monkeypatch, pages, chunk_chars=5000)
+
+    client = _ResidualFailDoclineClient()
+    result = asyncio.run(
+        docline.run_document_ner(pages, ["姓名"], has_client=client, residual_pass=False)
+    )
+
+    assert len(client.calls) == 1, "关掉残差就只应有主 pass 一次调用"
+    assert result.failed_chunks == 0
+    assert result.http_errors == 0
+    assert result.coverage_ratio > 0.0
