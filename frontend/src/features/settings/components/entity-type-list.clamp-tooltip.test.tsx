@@ -1,0 +1,83 @@
+// Copyright 2026 LexMask Contributors
+
+// Issue #48：ClampTooltipText 组件级回归测试。
+// 钉住 Issue#25 A2 的不变量——Tooltip 包裹与根节点（span/p/code）**无条件**渲染，
+// 截断状态翻转时根 DOM 节点不得被重建（否则键盘焦点静默丢失）。
+// 注意：全站 vitest 默认 node 环境，组件测试逐文件切 jsdom（见本文件头部指令）。
+// @vitest-environment jsdom
+
+import { cleanup, render } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { ClampTooltipText } from './entity-type-list'
+
+/** jsdom 无 ResizeObserver；hook 有 undefined 兜底，这里给哑实现以覆盖 observer 分支。 */
+class FakeResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+/**
+ * jsdom 不做布局，scroll/client 尺寸恒为 0（= 未截断）。截断态用实例属性打桩模拟：
+ * Element.prototype 上的这四个 getter 可被实例属性遮蔽，observer/effect 读到的即桩值。
+ */
+function setGeometry(
+  el: Element,
+  { scrollHeight, clientHeight }: { scrollHeight: number; clientHeight: number },
+) {
+  Object.defineProperty(el, 'scrollHeight', { value: scrollHeight, configurable: true })
+  Object.defineProperty(el, 'clientHeight', { value: clientHeight, configurable: true })
+}
+
+// 三种 kind 各自必须保持的根节点标签（Issue#25 A2 语义）
+const KINDS = [
+  { kind: 'title', tag: 'SPAN' },
+  { kind: 'description', tag: 'P' },
+  { kind: 'regex', tag: 'CODE' },
+] as const
+
+const SHORT = '短文案'
+const LONG = '一'.repeat(200) // 长度远超 line-clamp，翻转后必须判为截断
+
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+})
+
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
+
+describe('ClampTooltipText · Issue#48 组件级回归', () => {
+  for (const { kind, tag } of KINDS) {
+    it(`${kind}：未截断 → 截断翻转时根节点不重建（标签恒定 + isSameNode）`, () => {
+      const { container, rerender } = render(<ClampTooltipText text={SHORT} kind={kind} />)
+      const root = container.querySelector(tag.toLowerCase())
+      expect(root).not.toBeNull()
+      // 无条件 Tooltip 包裹不引入包装 DOM：根节点直接挂在容器下
+      expect(root!.parentElement).toBe(container)
+      // 未截断：不挂 tabIndex（不可聚焦，与原实现一致）
+      expect(root!.hasAttribute('tabindex')).toBe(false)
+
+      // 同一节点翻转成截断态：文案变长（key 变化）使 hook 复测，几何量由桩提供
+      setGeometry(root!, { scrollHeight: 100, clientHeight: 20 })
+      rerender(<ClampTooltipText text={LONG} kind={kind} />)
+
+      const after = container.querySelector(tag.toLowerCase())
+      expect(after).toBe(root) // 同一 DOM 节点
+      expect(root!.isSameNode(after)).toBe(true) // 根 DOM 未重建（焦点不丢的底层条件）
+      expect(root!.tagName).toBe(tag) // 根节点类型未切换
+      expect(root!.parentElement).toBe(container) // 层级未变
+      expect(root!.textContent).toBe(LONG) // 文案已更新
+      expect(root!.getAttribute('tabindex')).toBe('0') // 截断：可键盘聚焦
+
+      // 再翻转回未截断：节点仍不重建，tabIndex 复原
+      setGeometry(root!, { scrollHeight: 20, clientHeight: 20 })
+      rerender(<ClampTooltipText text={SHORT} kind={kind} />)
+      expect(root!.isSameNode(container.querySelector(tag.toLowerCase()))).toBe(true)
+      expect(root!.tagName).toBe(tag)
+      expect(root!.hasAttribute('tabindex')).toBe(false)
+    })
+  }
+})

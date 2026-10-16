@@ -66,8 +66,9 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    // Pure-logic tests only for now; switch to jsdom (and install it) when
-    // component tests arrive.
+    // 默认 node（纯逻辑测试）。组件测试不全局切 jsdom，而是在文件头用
+    // `// @vitest-environment jsdom` 逐文件切换，见
+    // src/features/settings/components/entity-type-list.clamp-tooltip.test.tsx（Issue#48）。
     environment: 'node',
     setupFiles: [],
   },

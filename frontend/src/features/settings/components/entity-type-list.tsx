@@ -295,8 +295,11 @@ export function EntityTypeList({
  * Issue #9：标题/描述/正则被截断时悬浮/聚焦显示全文；未截断时与原实现渲染一致。
  * Issue #25 A2：Tooltip 包裹与根节点（span/p/code）无条件渲染、仅按 truncated 控制内容与
  * tabIndex——避免截断状态翻转时根节点类型切换导致 DOM 重建、键盘焦点静默丢失。
+ *
+ * 导出供组件级回归测试使用（Issue#48）：`entity-type-list.clamp-tooltip.test.tsx` 直接渲染本
+ * 组件以钉住「截断翻转时根节点不重建」的不变量——该不变量在 UI 上无法用纯逻辑测试覆盖。
  */
-function ClampTooltipText({
+export function ClampTooltipText({
   text,
   kind,
 }: {
