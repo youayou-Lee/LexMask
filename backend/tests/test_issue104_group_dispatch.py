@@ -626,3 +626,33 @@ def test_d3_every_deploy_chain_is_at_or_above_the_probe_fallback():
     cfg = (root / "backend/app/core/config.py").read_text(encoding="utf-8")
     assert re.search(r"HAS_NER_CONTEXT_TOKENS:\s*int\s*=\s*8192\b", cfg)
     assert re.search(r"HAS_NER_CONTEXT_FALLBACK_TOKENS:\s*int\s*=\s*4096\b", cfg)
+
+
+def test_i1_pinned_planning_context_reaches_every_dispatched_request(monkeypatch):
+    """规划 pin 的 context 必须透传到每个实发 HaS 请求（不得逐请求重新探测）。
+
+    判据锚在 ``has_text_analysis`` 的派发链上：``_resolve_effective_context`` 只探测一次，
+    该值既用于规划分组、也必须作为 ``ner(..., context_tokens=...)`` 传给每个实发请求。
+    变异判据：把派发处的 ``context_tokens=context_tokens`` 改成 ``context_tokens=None``
+    ⇒ 每个请求各探一次 ⇒ 本用例必须变红（探测次数 > 1）。
+    """
+    probes: list[int] = []
+    client = _ModelFake(context_tokens=8192, reply=lambda text, types: {})
+    base_probe = client._effective_context_tokens
+
+    def counting_probe() -> int:
+        probes.append(client._ctx)
+        return base_probe()
+
+    monkeypatch.setattr(client, "_effective_context_tokens", counting_probe)
+
+    lines = [_unique_dense(800, f"pin块{i}") for i in range(8)]
+    stage: dict = {}
+    asyncio.run(run_has_text_analysis(_blocks(*lines), client, [_VT("ID_CARD", "身份证号")], stage))
+
+    groups = int(stage["has_text_payload_group_count"])
+    assert groups >= 2, f"判据失效：只规划出 {groups} 组"
+    assert len(client.calls) >= 2, f"判据失效：只有 {len(client.calls)} 次实发请求"
+    assert probes == [8192], (
+        f"规划 pin 的 context 未透传到实发请求：探测 {len(probes)} 次 {probes}（应为 1 次）"
+    )
