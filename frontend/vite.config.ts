@@ -66,9 +66,8 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    // 默认 node（纯逻辑测试）。组件测试不全局切 jsdom，而是在文件头用
-    // `// @vitest-environment jsdom` 逐文件切换，见
-    // src/features/settings/components/entity-type-list.clamp-tooltip.test.tsx（Issue#48）。
+    // 默认 node 环境（纯逻辑测试）；组件测试文件用 `// @vitest-environment jsdom` 逐文件切换。
+    // 首个组件测试：src/features/settings/components/entity-type-list.clamp-tooltip.test.tsx（Issue#48）。
     environment: 'node',
     setupFiles: [],
   },

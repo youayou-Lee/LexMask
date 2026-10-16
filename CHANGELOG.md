@@ -2,11 +2,11 @@
 
 ## 2026-10-16
 
-- test(frontend): **补齐 `ClampTooltipText` 组件级回归测试（#48）**——PR#42 门⑥ 遗留的 Important 项，该组件的行为变更当时只经人工浏览器验证，85 条前端测试无一条覆盖「截断翻转时根节点不重建」的不变量。
+- test(frontend): **补齐 `ClampTooltipText` 组件级回归测试（#48）**——PR#42 门⑥ 遗留的 Important 项，该组件的行为变更当时只经人工浏览器验证（PR#42 当时 85 条前端测试无一条覆盖该不变量；**当前基线为 133 例**）。
   - **引入组件测试基建**：devDeps 新增 `jsdom` + `@testing-library/react` + `@testing-library/dom`；`vite.config.ts` 仍默认 `environment: 'node'`（纯逻辑测试不受影响），组件测试文件用 `// @vitest-environment jsdom` **逐文件**切换。
-  - **新增 `src/features/settings/components/entity-type-list.clamp-tooltip.test.tsx`（3 例）**：直接渲染导出的 `ClampTooltipText`（本次改为 `export`，仅加导出、渲染逻辑零改动），断言 ①三种 `kind`（title/description/regex）截断翻转前后**根节点是同一 DOM 节点**（`isSameNode`）且标签类型不变（span/p/code）；②未截断时无 `tabIndex`、截断时 `tabIndex=0`，翻转回未截断时移除；③几何量用可变 `scrollHeight/clientHeight` 桩驱动，不依赖真实排版。
+  - **新增 `src/features/settings/components/entity-type-list.clamp-tooltip.test.tsx`（4 例）**：直接渲染导出的 `ClampTooltipText`（本次改为 `export`，仅加导出、渲染逻辑零改动），断言 ①三种 `kind`（title/description/regex）截断翻转前后**根节点是同一 DOM 节点**（`isSameNode`）且标签类型不变（span/p/code）；②未截断时无 `tabIndex`、截断时 `tabIndex=0`，翻转回未截断时移除；③几何量用可变 `scrollHeight/clientHeight` 桩驱动，不依赖真实排版；④**Tooltip 包裹与气泡都真的还在**（`data-state="closed"` + 聚焦后气泡出现，假定时器推进 `delayDuration`），且**翻转期间键盘焦点仍在同一节点**（`document.activeElement`）——即 Issue#48 报告的原症状本身。后两条由门⑥ 冷审 I-1 指出并补齐：原断言无法区分「Tooltip 还在」与「Tooltip 已被删」（删整块 `<TooltipContent>` 或删整个包裹时用例仍全绿），补齐后两类变异均 KILLED。
   - **CI 纳入前端测试**：`.github/workflows/ci.yml` 的 `frontend` job 在 Build 前新增 `npm test` 步骤（原先只 `npm ci` + build，测试从未在 CI 跑过）。
-  - 本地三道门：`npm test` **21 文件 / 136 测试全绿**、`npm run build` 成功、`npm run lint` 输出与改动前逐行相同（6 条既有问题：2 error + 4 warning，均在未触碰的文件里，属基线）。
+  - 本地三道门：`npm test` **21 文件 / 137 测试全绿**、`npm run build` 成功、`npm run lint` 输出与改动前逐行相同（6 条既有问题：2 error + 4 warning，均在未触碰的文件里，属基线）。
 
 - feat(eval): 新增 **T3 框级视觉检测对比框架**（`eval/benchmarks/t3/`：预注册判读 spec / 四臂适配器 / 跑批 / 报告 / GT 复核 + **85 单测**）与成绩单 `eval/reports/2026-10-11-t3-visual-bench-issue92.md`（#92，PR #95）——回答 v2.0「印章 / 手写签名四条视觉臂能否替代现役 LocateAnything（LA）」，**选型工具不做闸门、现役管线零改动**。
   - **预注册判读跑批前锁死在 `spec.py`**（候选臂召回 ≥ LA 同 kind；难例桶不塌方=较 LA 同桶下降 >15pp 即判塌方；误报上界=FP/页 ≤2×LA；单页成本不高于 LA；失败页 >10% 判臂无效），事后不改阈值；样本 64 页真实案卷扫描页、GT 174 框（seal 69 / signature 105），GT 方法=四臂并集预标 → 轮 A 四人确认 → 轮 B 两人独立盲标 → 差集裁决（83 候选收 18）→ 轮 C 独立抽查 64 框 + 27 疑点，通过率 **95.31% ≥95% 门**。
