@@ -474,6 +474,28 @@ def test_c5_split_batch_sub_request_failure_is_not_swallowed(monkeypatch):
     assert seen["n"] >= 2, "用例前提：确实触发了分批（多个子请求）"
 
 
+def test_d1_10_budget_too_small_fails_the_page_explicitly(monkeypatch):
+    """D1⑩ 接线：上下文小到放不下一个字符 ⇒ 页判失败 + 专属状态，不抛通用异常。
+
+    规划器对极小上下文显式 `ValueError`；页级调用点必须把它落成「该页失败」
+    与可观测状态（budget_error），而不是让它冒到通用兜底被记成 failed。
+    """
+    monkeypatch.setattr(settings, "HAS_NER_SELF_CONSIST_SAMPLES", 1)
+    _group_texts, blocks, _head, _tail = _two_group_page()
+    client = _ModelFake(context_tokens=200, reply=lambda text, types: {})
+
+    # `_resolve_effective_context` 走 client 的 `_effective_context_tokens`；
+    # 200 token 减去 reserve 与装填余量后为负 ⇒ 规划器 ValueError。
+    monkeypatch.setattr(HaSClient, "_NER_CONTEXT_TOKENS_FLOOR", 1, raising=False)
+    stage: dict = {}
+    vision_types = [_VT("ID_CARD", "身份证号"), _VT("PHONE", "电话")]
+    page = asyncio.run(run_has_text_analysis(blocks, client, vision_types, stage))
+
+    assert page == []
+    assert stage["has_text_cache_status"] == "budget_error"
+    assert client.calls == [], "预算不足时不得发出任何模型请求"
+
+
 def test_d_cm_group_failure_fails_the_page_and_survives_repeat(monkeypatch):
     monkeypatch.setattr(settings, "HAS_NER_SELF_CONSIST_SAMPLES", 1)
     group_texts, blocks, _head_group, _tail_group = _two_group_page()

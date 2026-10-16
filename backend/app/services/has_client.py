@@ -574,11 +574,18 @@ class HaSClient:
     def _estimate_prompt_tokens(text: str) -> int:
         """Conservative local estimate for vLLM context budgeting.
 
-        Issue#104：按字符类别取**语料经验上界**系数（数字 1.0、拉丁/其它
-        ASCII 0.5、非 ASCII 1.0、控制符 1.0 token/字符）。这不是可证上界：
-        emoji 代理对、CJK 扩展 B、RTL、组合符仍可能低估；「永不高估」由
-        云端 P1/D2b 语料回归表裁决（estimate ≥ usage.prompt_tokens 逐行），
-        凡回归集出现低估的类别先上调该类系数再重跑。
+        Issue#104：按字符类别取**语料经验上界**系数（token/字符）：
+        星平面 `_PROMPT_TOKENS_PER_ASTRAL`=4.0、控制符 1.0、数字
+        `_PROMPT_TOKENS_PER_DIGIT`=1.05、拉丁字母 `_PROMPT_TOKENS_PER_LATIN`
+        =0.7、其它 ASCII 0.5、非 ASCII 1.0，再加固定模板开销
+        `_PROMPT_TOKEN_OVERHEAD`=32。
+
+        这不是可证上界：emoji 代理对、CJK 扩展 B、RTL、组合符仍可能低估；
+        「永不高估」由云端 D2b 语料回归表裁决（estimate ≥
+        usage.prompt_tokens 逐行，2026-10-16 扩展版 51 行低估 0），凡回归集
+        出现低估的类别先上调该类系数再重跑。已知高估方向：高度重复的合成串
+        （全大写循环、重复 emoji、无分隔长串）分词压缩明显，比值可达 2–6×，
+        代价只是可能多分组。
         """
         tokens = 0.0
         for char in str(text or ""):

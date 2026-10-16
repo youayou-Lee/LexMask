@@ -594,9 +594,17 @@ async def run_has_text_analysis(
             # 整页文本按 token 预算分成若干次主查。单组时组文本 == 整页文本，
             # 与现状逐字等价（C6：同一 payload、同一闸位数、同一 K 趟采样）。
             context_tokens = await _resolve_effective_context(has_client)
-            group_texts = plan_has_text_group_texts(
-                has_payload.texts, chinese_types, context_tokens=context_tokens
-            )
+            try:
+                group_texts = plan_has_text_group_texts(
+                    has_payload.texts, chinese_types, context_tokens=context_tokens
+                )
+            except ValueError as exc:
+                # D1⑩：上下文小到连一个字符都放不下时规划器**显式**报错。这里
+                # 必须把它落成「该页判失败 + 专属状态」，否则只会看到通用兜底的
+                # has_text_cache_status=failed，运维无法判断是预算口径配错。
+                _record_has_text_metric(stage_status, "has_text_cache_status", "budget_error")
+                logger.error("HaS text NER page judged FAILED (context budget): %s", exc)
+                return []
             _record_has_text_metric(stage_status, "has_text_payload_group_count", len(group_texts))
             logger.info(
                 "HaS payload planned into %d group(s) (context=%d tokens, emitted_chars=%d)",
