@@ -10,6 +10,17 @@
   - 验证：整树 `python eval-ng/scripts/check_public_tree.py --base "" --allow-prefix /opt/dtk --allow-prefix /opt/hyhal` 的 `credential_*` 命中 **14 → 0**；`--self-test` 仍全中；本机门③ 与同刻基线的 FAILED 集合逐条一致
   - ⚠️ **代码清理不等于暴露撤销**：该测试账号口令自 `55002ec`（v1.0.0 首发）起就留在公开提交历史里（`git log -S` 可查），本 PR 只清工作区与后续提交。**须轮换/停用该测试账号口令**（#141 AC2，由部署方执行，本 PR 无法代劳）
 
+- fix(docline): **文本层文档级链的单块 NER 失败不再被静默当成「成功且零实体」**（Issue#148）
+  - 根因：`backend/app/services/text_layer_docline_service.py` 的 `ask()` 只捕异常，而 `has_client.ner()` 把 HTTP 400 / 超时 / 整段输出不可解析 / 熔断开路四类失败**吞成 `{}`** 返回（与「模型合法地回答本块没有实体」在返回值上同形）⇒ 失败块被计入 coverage、`stats["http_errors"]`/`failed_chunks` 恒 0、整卷既不回落也不判不合格
+  - 修复：`ask()` 改取 `ner_checked()` 的 `ok` 位（取口方式与 `has_service._call_client_ner_checked` 同源），`ok=False` 走与异常**完全相同**的失败路径（`http_errors`/`failed_chunks` 各 +1、该块不计入 coverage）⇒ 由 `text_layer_doc_source.py:192` 既有的 `failed_chunks > 0` 门把整卷判为「回落旧路径」；没有 `ner_checked` 的对象（旧 client/替身）退回 `ner()` 并**保守报 `ok=False`**（宁可判失败，也不把未确认结论当完整结论）
+  - 口径边界（门①.5 段2 D2）：`stats["http_errors"]` 是**块级 `ask()` 失败次数**，而 `NER_ERRORS`（`has_client` 侧）记的是**上游异常分类**且经 `retry_sync` 重试后才计 1 次 ⇒ 同一块失败在两侧数字**天然不等，不可做差分对账**
+  - 既有 `TEXT_LAYER_MAX_BLOCK_ERRORS`（`text_layer_doc_source.py:205`）在现行判定顺序下**结构性不可达**（`:192` 的 `failed_chunks > 0` 先抛 `_TransientIneligible`）；`TEXT_LAYER_MIN_COVERAGE`（`:230`）另有一个不可达原因——**不是** `:192`，而是更早的**质量分类器早退**（`:181-185` `verdict.usable` 为假先返回 `None`）（门⑥ 第二段 Minor①订正：全空白文本层卷的 `coverage_ratio` 本为 `0.0`，该门本会触发）；本次维持该语义（拍板 D1=方案 A：任一失败块即回落），只把「失败识别」修对、不改失败容忍度
+  - 新增 `backend/tests/conftest.py`（此前 `backend/tests/` 下没有 conftest）：autouse fixture 每例前后复位模块级单例 `ner_breaker` 与 `HaSClient` 的三个类级缓存——否则注入超时会经 `retry_sync` 重试 3 次把 breaker 打到 open，污染同进程后续用例（门①.5 段2 Critical C-1）
+  - 新增 `backend/tests/test_issue148_docline_ner_failure.py`（**14 例**）：`has_client` 侧三类故障各一条（HTTP 400 不重试 1 次 / `ReadTimeout` 重试 3 次 / 单批不可解析）+ `json_repair` 修复后仍缺全部请求类型 + 正向对照 + 同 payload 并发无可缓存结论 + 多批聚合翻转；文档级链侧混合块失败（≥2 块、失败词恰落一块、coverage 精确保留成功块并集）、并发部分失败保值、入口层负缓存 marker、回落被 memo 化且 TTL 内不重打上游；既有桩（`test_issue115_text_layer_docline.py` 的 5 处 fake）补 `ner_checked` 委派以保持旧语义
+  - 变异自证：M1 退回旧语义（不取 `ok` 位）/ M2 取到 `ok` 但不处理 / M4 强制 `ok=True`——三者均被 **E1/E3/E4/E5/G2b 五条用例**同时 kill；M3（不 bump `stats["failed_chunks"]`）为**等价变异**：`DocLineResult.failed_chunks` 由 `len(failed_ranges)` 推导（`text_layer_docline_service.py:686`），该计数无读者，不是测试缺口
+  - 门③：本机 head 与同刻基线 `b8a3398` 的 FAILED 集合逐条一致（`comm -3` 双向为空）
+  - 诚实边界：本机无 GPU / 无 HaS 权重 ⇒ 门④（云 DCU 端到端 canary）待云窗口；`pipeline_status["text_layer_doc"]["http_errors"]` 观测面只在「无失败块」的卷上可见（失败卷在写 `doc_memo` 之前就回落旧链）
+
 ## 2026-10-16
 
 - fix(eval-ng): **公开树红线扫描器非 ASCII 文件名不再静默漏扫 + 加两道自检**（Issue#154）
