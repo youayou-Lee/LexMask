@@ -6,8 +6,6 @@
 from __future__ import annotations
 
 import importlib.util
-import json
-import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -46,7 +44,7 @@ def test_corpus_id_card_checksum():
     for seq in range(30):
         card = corpus_mod.id_card(seq)
         assert len(card) == 18
-        expect = "10X98765432"[sum(int(d) * w for d, w in zip(card[:17], weights)) % 11]
+        expect = "10X98765432"[sum(int(d) * w for d, w in zip(card[:17], weights, strict=True)) % 11]
         assert card[17] == expect
 
 
