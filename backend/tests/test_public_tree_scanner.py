@@ -12,6 +12,13 @@
 - `--paths` 模式校验、空区间与 git 失败的文案区分（M-6/M-7）
 - C locale 下打印中文路径不崩（C2）
 
+第三轮增量复核（With fixes）补的覆盖：
+- **已跟踪文件改了但没提交**也必须进扫描集（I2，`diff -z … HEAD` 那条命令）
+- `--exclude-standard` 必须留着：`.gitignore` 掉的路径一律不进扫描集（M1）
+- `AMRT` **不含 `D`**：删除的文件不进扫描集，否则任何删文件的 PR 假红（M2）
+- 同一轮里既有命中又有坏路径时，自检② 的「路径解析」文案不得被绕过（M3）
+- 非 UTF-8 文件系统编码下的警告，只在候选集合含非 ASCII 名时才打（M4）
+
 本文件在 tmp_path 里现搭 git 仓，零网络、不碰真实仓。
 注意：任何含红线样本字面量的行都必须带 `# public-tree-scan: ignore-line` 标记（本文件自身会被扫描）。
 """
@@ -318,3 +325,87 @@ class TestSelfChecks:
             assert "零命中" not in proc.stdout, proc.stdout
         else:  # 有些 Python 版本/平台仍给 UTF-8 ⇒ 至少不许静默说干净
             assert proc.returncode == 1, (proc.returncode, proc.stdout)
+
+
+class TestThirdRoundFollowups:
+    """门⑥ 增量复核（第三轮）抓出的覆盖缺口与文案瑕疵，逐条配钉子。"""
+
+    def test_uncommitted_tracked_change_is_scanned(self, repo, capsys):
+        """I2：`diff -z … HEAD` 那条命令 —— **已跟踪文件改了但没提交**也必须进扫描集。
+
+        这条命令就是 docstring 点名的「门禁在提交前就能跑」；第三轮冷审实测把它整条删掉仍 19/19 全绿。
+        这里把基线取在提交**之后**，让 `<base>...HEAD` 与未跟踪清单都为空，只有它能把文件捞回来。
+        """
+        root, _ = repo
+        (root / _CN_NAME).write_text("干净。\n", encoding="utf-8")
+        _commit_all(root, "track clean non-ascii file")
+        base = _git(root, "rev-parse", "HEAD")  # 基线 = 提交后 ⇒ 只剩工作区改动
+        (root / _CN_NAME).write_text("干净。\n" + _SAMPLE + "\n", encoding="utf-8")
+        assert ptree.changed_files(root, base) == [_CN_NAME], ptree.changed_files(root, base)
+        rc = ptree.main(["--repo-root", str(root), "--base", base])
+        captured = capsys.readouterr()
+        assert rc == 1, captured
+        assert _CN_NAME in captured.out, captured.out
+        assert "1 文件，命中" in captured.err, captured.err
+
+    def test_gitignored_files_are_not_scanned(self, repo, capsys):
+        """M1：`--exclude-standard` 必须留着 —— `.gitignore` 掉的路径不进扫描集（否则假红 + 巨慢）。"""
+        root, _ = repo
+        (root / _CN_NAME).write_text("干净。\n", encoding="utf-8")
+        (root / ".gitignore").write_text("docs/ignored-note.md\n", encoding="utf-8")
+        _commit_all(root, "track clean non-ascii file and gitignore")
+        base = _git(root, "rev-parse", "HEAD")
+        (root / "docs" / "ignored-note.md").write_text(_SAMPLE + "\n", encoding="utf-8")  # 埋雷但被忽略
+        (root / "docs" / "clean-note.md").write_text("干净。\n", encoding="utf-8")  # 保证候选集合非空
+        rels = ptree.changed_files(root, base)
+        assert "docs/ignored-note.md" not in rels, rels
+        assert "docs/clean-note.md" in rels, rels
+        rc = ptree.main(["--repo-root", str(root), "--base", base])
+        captured = capsys.readouterr()
+        assert rc == 0, captured
+        assert "ignored-note.md" not in captured.out + captured.err, captured
+        assert "1 文件，零命中" in captured.out, captured.out
+
+    def test_deleted_file_is_not_a_parse_error(self, repo, capsys):
+        """M2：`--diff-filter=AMRT` **不含 `D`** —— 删除的文件不进扫描集，否则任何删文件的 PR 一律假红。"""
+        root, _ = repo
+        (root / "docs" / "obsolete.md").write_text("将被删除。\n", encoding="utf-8")
+        _commit_all(root, "track file to delete")
+        base = _git(root, "rev-parse", "HEAD")
+        (root / _CN_NAME).write_text("干净。\n", encoding="utf-8")
+        _git(root, "rm", "-q", "docs/obsolete.md")
+        _commit_all(root, "modify non-ascii + delete obsolete")
+        rels = ptree.changed_files(root, base)
+        assert "docs/obsolete.md" not in rels, rels
+        assert _CN_NAME in rels, rels
+        rc = ptree.main(["--repo-root", str(root), "--base", base])
+        captured = capsys.readouterr()
+        assert rc == 0, captured
+        assert "路径解析" not in captured.err, captured.err
+
+    def test_self_check2_message_survives_findings(self, repo, capsys, monkeypatch):
+        """M3：自检② 的早退不得被 `and not findings` 这类改写绕过 —— 文案仍须指向「路径解析」。"""
+        root, base = repo
+        monkeypatch.setattr(ptree, "changed_files", lambda r, b: [_GHOST_NAME, _CN_NAME])
+        monkeypatch.setattr(ptree, "default_paths", lambda r, b: [r / _GHOST_NAME, r / _CN_NAME])
+        rc = ptree.main(["--repo-root", str(root), "--base", base])
+        err = capsys.readouterr().err
+        assert rc == 2, err
+        assert "路径解析" in err, err  # 同时有命中时，也仍要说清是「路径解析可疑」
+        assert "未解释的候选文件" not in err, err
+
+    def test_fs_encoding_warning_only_when_non_ascii_candidates(self, repo, capsys, monkeypatch):
+        """M4：非 UTF-8 文件系统编码下，**全 ASCII 的树不该被吓人警告**（噪声），有非 ASCII 名时才提示。"""
+        root, base = repo
+        monkeypatch.setattr(ptree, "_filesystem_encoding_note", lambda: "文件系统编码是 ascii（测试替身）")
+        (root / _CN_NAME).unlink()  # 夹具那个中文名候选去掉 ⇒ 树内全 ASCII
+        (root / "docs" / "plain.md").write_text("干净。\n", encoding="utf-8")
+        rc = ptree.main(["--repo-root", str(root), "--base", base])
+        err = capsys.readouterr().err
+        assert rc == 0, err
+        assert "文件系统编码" not in err, err
+        (root / _ACCENT_NAME).write_text("干净。\n", encoding="utf-8")  # 出现非 ASCII 名 ⇒ 必须提示
+        rc = ptree.main(["--repo-root", str(root), "--base", base])
+        err = capsys.readouterr().err
+        assert rc == 0, err
+        assert "文件系统编码" in err, err

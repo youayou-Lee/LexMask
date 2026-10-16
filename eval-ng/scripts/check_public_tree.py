@@ -537,9 +537,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--self-test", action="store_true", help="只跑阳性对照")
     args = parser.parse_args(argv)
     _ensure_utf8_output()  # C locale / 管道下打印中文路径不得崩（Issue#154 冷审 C2）
+    # 非 UTF-8 文件系统编码下**只在真有非 ASCII 候选时**才警告（冷审第三轮 M4）：全 ASCII 的树
+    # 不存在 stat/读取风险，无条件打印只会让「干净」看起来像有问题。`not_a_file` 分支另给提示。
     fs_note = _filesystem_encoding_note()
-    if fs_note:
-        print(f"[public-tree] 警告：{fs_note}", file=sys.stderr)
 
     denylist = load_denylist(args.denylist)
     if args.self_test:
@@ -573,9 +573,16 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError:
             return str(path)
 
-    # Issue#154 自检①：**内部不变量**——`default_paths` 与 `changed_files` 的口径必须一致
-    #（防未来误改过滤/去重）。注意：这一条是**同源**比对，抓不到转义类漏扫；抓漏扫的是自检②
-    # 与循环后的「未解释余数」对账（冷审 I-3 说清了这条的能抓与不能抓）。
+    if fs_note and any(not _rel(path).isascii() for path in targets):
+        print(f"[public-tree] 警告：{fs_note}", file=sys.stderr)
+
+    # Issue#154 自检①：**内部不变量**——`default_paths` 与 `changed_files` 的口径必须一致。
+    # 能抓：`default_paths`（Python 侧后处理）未来偏离 `changed_files`（正对照实测 `rc=2`）。
+    # 抓不到：**`changed_files` 内部**给某条 git 命令加过滤/去重/截断——`default_paths` 就是
+    #   `[repo_root / rel for rel in changed_files(...)]`，两侧同时变小、恒等 ⇒ 静默绿。
+    #   含 `--diff-filter` 回退（`AM` ↔ `AMRT`）这类 I-2 回归形状：那类**只能靠用例钉**
+    #   （`TestNonAsciiPaths::test_renamed_file_is_still_scanned`），不是靠这条自检。
+    #   （冷审第三轮 I1：原文把这份功劳记在自检① 头上，方向恰好相反，已更正。）
     if not args.paths and args.base:
         expected = len(changed_files(repo_root, args.base))
         if expected != len(targets):
@@ -641,8 +648,13 @@ def main(argv: list[str] | None = None) -> int:
     explained_skips = len(skipped["skip_suffix"]) + len(skipped["too_large"]) + len(skipped["unreadable"])
     unexplained = unexplained_candidates(len(targets), scanned, skipped)
     if unexplained != 0:
+        # 正负分开写（冷审第三轮 M7）：负值意味着两侧重复计数，「未解释的候选文件 -2 个」会误导人。
+        if unexplained > 0:
+            head = f"未解释的候选文件 {unexplained} 个"
+        else:
+            head = f"已扫描 + 已解释跳过 比候选数多 {-unexplained} 个（两侧有重复计数）"
         print(
-            f"[public-tree] 未解释的候选文件 {unexplained} 个（候选 {len(targets)}、已扫描 {scanned}、"
+            f"[public-tree] {head}（候选 {len(targets)}、已扫描 {scanned}、"
             f"已解释跳过 {explained_skips}）— 宁可红，不可静默漏",
             file=sys.stderr,
         )
