@@ -7,14 +7,18 @@
 1. **公网 IP**：回环 / RFC1918 私网 / RFC5737 文档段放行（测试夹具与示例常用），
    其余一律命中——真实实例地址另经 `--denylist` 点名；
 2. **绝对路径**：POSIX 根用户/家目录/挂载点等前缀、Windows 盘符路径（`--allow-prefix` 放行指定前缀）；
-3. **凭据形态**：`Bearer <token>`、`sk-…`/`ghp_…`/`AKIA…`，以及 `password|api_key|secret|token`
-   后跟**像真口令的**字面量（≥10 字符且同时含数字与非字母数字；`<你的密码>`/`self._password`
-   /`os.environ[…]` 这类占位或引用不算）；
+3. **凭据形态**（`--self-test` 逐类断言的 10 类）：键名含凭据词的普通赋值 / 带类型注解赋值（含
+   PEP 604 联合、泛型、前向引用）/ 引号键（JSON·YAML·dict，键名允许 `-`）/ `--flag` 后的引号
+   字面量或空格裸值 / 无引号字母数字混合值 / `Bearer <≥24 字符>` / 厂商前缀密钥（`sk-`·`ghp_`·
+   `AKIA…`）/ URL 内联凭据 / HTTP Basic。带键名的分支要求值 ≥8 字符且**像真口令**（含数字或非
+   字母数字符号，且非占位词/模板/类型名/ID 形态/JSON 片段/CJK 文案）；`os.environ[…]`、
+   `self._password` 这类引用与代码取值不算。**覆盖与不覆盖的完整边界**见文件内 `_COVERAGE_NOTE`；
 4. **`--denylist` 词表**（一行一词，`re:` 前缀走正则）——真实案卷名、实例域名、口令进这里。
 
-行内放过：含 `public-tree-scan: ignore-line` 的行跳过（扫描器自己的阳性对照夹具需要它）。
+行内放过：含 `public-tree-scan: ignore-line` 的行跳过（扫描器自己的阳性对照夹具、以及确非凭据
+的既有行需要它；每处都有就地说明）。
 
-自带阳性对照：`--self-test` 用含上述五类痕迹的样本断言「必须全部命中」，再用干净样本断言
+自带阳性对照：`--self-test` 用含上述 10 类痕迹的样本断言「必须全部命中」，再用干净样本断言
 「必须零命中」——**没有阳性对照的扫描器等于恒真判据**。
 
 用法::
@@ -84,8 +88,14 @@ CODE_VALUE_PREFIXES = (
 # 值本身就是令牌形态（与键名无关）：`Bearer <长串>`、厂商前缀密钥、URL 内联凭据、HTTP Basic
 TOKEN_RES = (
     ("bearer", re.compile(r"\bBearer\s+[A-Za-z0-9\-._~+/]{24,}")),
-    # 必须带厂商分隔符，否则 `skeletonButtonSize` / `skippedNoCandidates` 这类标识符会误报
-    ("api_key", re.compile(r"\b(?:sk|rk|ghp|gho|ghs|github_pat)-[A-Za-z0-9_-]{16,}\b|AKIA[0-9A-Z]{16}")),
+    # 必须带厂商分隔符，否则 `skeletonButtonSize` / `skippedNoCandidates` 这类标识符会误报。
+    # 分隔符两种都要认：GitHub 系真实形态用**下划线**（`ghp_…`/`gho_…`/`ghs_…`/`github_pat_…`，
+    # ⑩冷评审 R10-1 实测：硬写 `-` 时这些在无凭据键名的语境整类静默通过）。
+    ("api_key", re.compile(
+        r"\b(?:sk|rk)-[A-Za-z0-9_-]{16,}\b"
+        r"|\b(?:ghp|gho|ghs|github_pat)[-_][A-Za-z0-9_-]{16,}\b"
+        r"|AKIA[0-9A-Z]{16}"
+    )),
     # 连接串内联凭据（`协议://用户:口令@主机` 形态；口令 ≥8 字符，避免占位/变量形态）
     ("url_credential", re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]{1,40}:(?P<urlsecret>[^\s/@]{8,})@")),
     # HTTP Basic 的 base64 凭据（≥16 字符，且必须长到不像普通词）
@@ -231,6 +241,8 @@ SELF_TEST_CLEAN = (
     "token_count=12 token_type: \"refresh_token\" secret_name = \"my-secret-name\" "
     "credentials: \"same-origin\" api_key_id = \"key-1234567\" "
     "password=body.password secret = json.load token = getCsrfToken monkey = \"abc12345\" "
+    # R10-1 假阳性守卫：厂商前缀正则的字母标识符邻居（`skeleton…`/`skippedNoCandidates`）不得命中
+    "skeletonButtonSize skippedNoCandidates "
     "--api-pass\", default=os.environ.get(\"EVAL_API_PASS\")"
 )
 
@@ -241,14 +253,14 @@ def _is_public_ip(ip: str) -> bool:
     return not PRIVATE_IP_RE.match(ip)
 
 
-# ── 凭据面覆盖边界（⑦⑧冷评审反复追问的口径，明写以免「静默盲区」）────────────────────
-#   覆盖：普通赋值 `n = "v"`、带类型注解赋值 `n: Ann = "v"`（含 PEP 604 `|`、泛型、前向引用）、
-#         引号键（JSON/YAML/dict）、`--flag <字面量>`、无引号字母数字混合值、Bearer / 厂商前缀密钥 /
-#         URL 内联凭据 / HTTP Basic。
-#   不覆盖（设计边界，非静默盲区）：① 编码/拼接/运行时构造的口令（如 base64 常量、`"a"+"b"`、
-#         f-string 插值——后者按模板豁免）；② 跨行材料（PEM 私钥正文逐行 `-`，形状判定视为分隔符）；
-#         ③ 仅在密钥库/环境/凭据文件中出现、代码内无字面量的凭据；④ 长度 <8 或纯占位词的值。
-#   值形状判定要求「含数字或非字母数字符号」且非分隔符/JSON 片段/CJK 文案/类型名/ID 形态。
+_COVERAGE_NOTE = """凭据面覆盖边界（⑦⑧⑨冷评审反复追问的口径，明写以免「静默盲区」）。
+覆盖：普通赋值 `n = "v"`；带类型注解赋值 `n: Ann = "v"`（含 PEP 604 `|`、泛型、顶层前向引用）；
+引号键（JSON/YAML/dict，键名可含 `-`）；`--flag` 后的引号字面量**与空格裸值**；无引号字母数字
+混合值；Bearer / 厂商前缀密钥 / URL 内联凭据 / HTTP Basic。
+不覆盖（设计边界，非静默盲区）：① 编码/拼接/运行时构造的口令（base64 常量、`"a"+"b"`、f-string
+插值——后者按模板豁免）；② 跨行材料（PEM 私钥正文逐行 `-`，形状判定视为分隔符）；③ 仅在密钥库/
+环境/凭据文件中出现、代码内无字面量的凭据；④ 长度 <8 或纯占位词的值。
+值形状判定要求「含数字或非字母数字符号」且非分隔符/JSON 片段/CJK 文案/类型名/ID 形态。"""
 def load_denylist(path: str | None) -> list[str]:
     if not path:
         return []
@@ -397,7 +409,7 @@ def _iter_targets(repo_root: Path, paths: list[str], base: str | None) -> list[P
 
 
 def self_test(denylist: list[str] | None = None) -> int:
-    """阳性对照：坏样本必须四类全中，干净样本必须零命中。"""
+    """阳性对照：坏样本必须**逐类**全中（类别清单见 `required`），干净样本必须零命中。"""
     words = list(denylist or [])
     bad = scan_source("self-test-bad", SELF_TEST_BAD, denylist=words + ["SCNET-INSTANCE-1"],
                       allow_prefixes=[])

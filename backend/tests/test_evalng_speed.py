@@ -1387,6 +1387,13 @@ class TestCliReportCompleteness:
         assert "/srv/evidence" not in joined, joined  # public-tree-scan: ignore-line
         assert any(report.scrub_secrets(v) == v for v in ("plain",))  # 无凭据值原样
 
+    def test_scrub_secrets_thresholds_are_pinned(self):
+        """⑩ 冷评审 note：报告侧 Bearer 脱敏下限（12 字）与口令字面量下限一旦放宽必须红。"""
+        assert report.scrub_secrets("Authorization: Bearer abcdefghijkl") == "Authorization: Bearer <redacted>"
+        assert report.scrub_secrets("Authorization: Bearer abcdefgh") == "Authorization: Bearer abcdefgh"
+        assert report.scrub_secrets("password=Hunter2Hunter2") == "password=<redacted>"
+
+
         env = report.redact_env({"API_PASS": _UNIT_API_PASS, "HAS_NER_GLOBAL_MAX_INFLIGHT": "8",
                                  "NOTE": "Bearer abcdefghijklmnopqrstuvwxyz012345"})  # public-tree-scan: ignore-line
         assert env["API_PASS"] == "<redacted>"
@@ -1646,6 +1653,19 @@ class TestPublicTreeScanner:
 
     def test_self_test_covers_all_required_rules(self):
         assert ptree.self_test([]) == 0
+
+    def test_vendor_token_separators_are_covered(self):
+        """R10-1 钉子：厂商前缀的**下划线**形态（GitHub 系真实写法）在无凭据键名语境也必须命中。"""
+        for probe in (
+            "Authorization: token ghp_abcdefghijklmnopqrstuvwx1234567890",  # public-tree-scan: ignore-line
+            "curl -H 'Authorization: gho_abcdefghijklmnopqrstuvwx1234'",  # public-tree-scan: ignore-line
+            "git https://ghs_abcdefghijklmnopqrstuvwx1234@example.invalid/repo",  # public-tree-scan: ignore-line
+            "remote: github_pat_abcdefghijklmnopqrstuvwx1234",  # public-tree-scan: ignore-line
+        ):
+            assert "api_key" in self._rules(probe), probe
+        # 假阳性守卫：厂商前缀的字母标识符邻居仍不得命中（分隔符必须真存在）
+        for clean in ("skeletonButtonSize", "skippedNoCandidates", "skateboard"):
+            assert not self._rules(clean), clean
 
     def test_credential_thresholds_are_pinned(self):
         """M8/M10 钉子（⑨冷评审）：值下限与 Bearer 下限被放宽 ⇒ 这里必须红（多报方向的反向缺口）。"""
