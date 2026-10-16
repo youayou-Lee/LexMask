@@ -9,11 +9,9 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// React 19 只在 `IS_REACT_ACT_ENVIRONMENT === true` 时支持 act(...)，且该标志在
-// react-dom 模块加载时就读取一次 —— 故用 vi.hoisted 抢在 import 之前写入。
-vi.hoisted(() => {
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-});
+// 注：`IS_REACT_ACT_ENVIRONMENT` 无需手工置位 —— @testing-library/react 自身会在
+// 每次 act() 外围 setReactActEnvironment(true)（第二轮机审 M-8：此前的 vi.hoisted
+// 块经变异证实是死代码，删掉后 4/4 仍绿、0 act 告警）。
 
 import { ClampTooltipText } from './entity-type-list';
 
@@ -67,6 +65,7 @@ describe('ClampTooltipText · Issue#48 组件级回归', () => {
       // 包裹机制**真的还在**：Radix trigger 会把 data-state 合并到子元素上。
       // 若 TooltipProvider/Tooltip/TooltipTrigger 被整体删掉（冻结评审 X8b 变异），
       // 根节点就没有该属性 —— 这条断言专门杀「包裹消失」而 parentElement 看不出来。
+      // 注意：data-state 是 Radix 内部属性（现 1.2.8），升级 Radix 时须复核本断言。
       expect(root!.getAttribute('data-state')).toBe('closed');
       // 未截断：不挂 tabIndex（不可聚焦，与原实现一致）
       expect(root!.hasAttribute('tabindex')).toBe(false);
@@ -76,8 +75,8 @@ describe('ClampTooltipText · Issue#48 组件级回归', () => {
       rerender(<ClampTooltipText text={LONG} kind={kind} />);
 
       const after = container.querySelector(tag.toLowerCase());
-      expect(after).toBe(root); // 同一 DOM 节点
-      expect(root!.isSameNode(after)).toBe(true); // 根 DOM 未重建（焦点不丢的底层条件）
+      // 同一 DOM 节点（`toBe` 即 `isSameNode` 的判别力来源），根 DOM 未重建、焦点不丢
+      expect(after).toBe(root);
       expect(root!.tagName).toBe(tag); // 根节点类型未切换
       expect(root!.parentElement).toBe(container); // 层级未变
       expect(root!.textContent).toBe(LONG); // 文案已更新
@@ -110,13 +109,15 @@ describe('ClampTooltipText · Issue#48 组件级回归', () => {
       rerender(<ClampTooltipText text={`${LONG}更长的补充文案`} kind="title" />);
       expect(document.activeElement?.isSameNode(root)).toBe(true);
 
-      // B6：气泡内容真的挂上来了。删掉 TooltipContent（冷审 X8a 变异）时本断言必须失败。
+      // B6：气泡内容真的挂上来了，且展示的是**当前全文**（不是任意占位文字）。
+      // 删掉 TooltipContent（冷审 X8a 变异）或把内容换成别的字（二轮机审 X8c/
+      // M-7：原先 `toContain('一')` 近乎恒真）时，本断言都必须失败。
       // Radix 的 delayDuration=200ms 用假定时器推进，避免测试下的异步状态更新告警。
       act(() => {
         fireEvent.focus(root);
         vi.advanceTimersByTime(400);
       });
-      expect(screen.getByRole('tooltip').textContent).toContain('一');
+      expect(screen.getByRole('tooltip').textContent).toBe(`${LONG}更长的补充文案`);
     } finally {
       vi.useRealTimers();
     }
