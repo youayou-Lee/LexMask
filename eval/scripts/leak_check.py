@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -127,7 +128,7 @@ def main() -> int:
     parser.add_argument("--mapping", required=True, type=Path, help="对照表 CSV（私有目录，不入库）")
     parser.add_argument("--api-base", default=None, help="可选：识别复扫的 backend 地址")
     parser.add_argument("--api-user", default="eval_user")
-    parser.add_argument("--api-pass", default="EvalUser!2026")
+    parser.add_argument("--api-pass", default=os.environ.get("EVAL_API_PASS"))
     parser.add_argument("--out", default=None, type=Path, help="结果 JSON 输出路径")
     args = parser.parse_args()
 
