@@ -94,7 +94,10 @@ CPU 兜底：纯 CPU wheel `paddlepaddle==3.2.2`（pip 普通源）全镜像可�
 |---|---|---|
 | **vLLM 0.9.2 (8081)** | **0.49–0.54s** | paged KV + cudagraph；backend 切换只需改 `HAS_BASE_URL` |
 | transformers 自包 (8080) | 1.4–4.3s | 全卡可用（gfx906 唯一选项） |
-| llama-server（GGUF） | 待实测 | 仓库已有 DTK 脚本（Issue #23 轴B） |
+| **llama-server（GGUF, llama.cpp b6100 HIP）** | **2.15s**（256 token 输出，**≈118.8 t/s**） | **Q8_0**（604 MiB）；空载 `tg128` **140.45 t/s**、`pp512` **4785 t/s**、`-np 4` 聚合 **223.2 t/s**；⚠️ 短 prompt 触发 `KERNEL VMFault`（见 Issue#162） |
+
+> **llama-server 行口径（2026-10-17 实测）**：环境 = 云 SCNet 单卡 DCU（K500SM_AI / `gfx928`）+ DTK 25.04.2 + llama.cpp **b6100** HIP 构建（`--offload-arch=gfx928`）；模型 = `has_text_model.Q8_0.gguf`（604.15 MiB / 596.05 M 参数，**Q8_0 非 bf16**）；`-ngl 999 -c 8192 -np 1`，生产 prompt（399 token 入 / 256 token 出，服务端自报 prefill 4033.6 t/s、decode 118.83 t/s）。同机同期对照生产 vLLM（bf16）：decode 28.3–31.4 t/s、prefill ≈138 t/s ⇒ **decode ≈3.7×、prefill ≈29×**——**混精度对照，不可当同精度结论**（质量未对照）。
+> **已知阻断**：prompt/ubatch 落 **9–128 token** 区间稳定崩（实测 9、11–16、32、64、115、128 崩；8 与 ≥129 正常），`Invalid address access … Error code: 1` + `KERNEL VMFault`，**一个 11 字请求即可打死 llama-server**；故当前不可用于生产。原始日志、复现步骤见 [Issue #162](https://github.com/youayou-Lee/LexMask/issues/162)。构建脚本 `cloud-deploy/llama_ner_dtk.sh`（**归档仓 #23** 轴 B，非本仓 #23）。
 
 NER 切 vLLM 后单页管道预估 10–12s（LA 仍是大头）——性能优化主战场在 LA 与整卷并行。
 
