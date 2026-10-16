@@ -96,6 +96,16 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # Issue#149：Issue#106 的页并发回归判据（`utils.vision-page-concurrency.test.ts`
+      # 断言「勾选印章+签名、不传 concurrency 时在飞 vision POST 峰值 = 3」）此前只在本地跑：
+      # 常量被改回 1、或重新引入「勾选视觉特征 ⇒ 串行」分支时 CI 全绿、生产静默退回串行。
+      # 该用例纯 mock、不依赖后端，实测 <1s，故钉在 build 之前 fail-fast。
+      # `--reporter=verbose`：Actions 的步骤非 TTY，vitest 默认 reporter 全绿时只打文件级一行
+      # （看不到单条用例名）⇒ 本轮 ③ 冷评审 AC4 判未达成，故显式用 verbose 列出 5 条用例名。
+      - name: Frontend page-concurrency guard (Issue#106)
+        working-directory: frontend
+        run: npx vitest run src/features/playground/utils.vision-page-concurrency.test.ts --reporter=verbose
+
       - name: Build frontend
         working-directory: frontend
         run: npm run build
