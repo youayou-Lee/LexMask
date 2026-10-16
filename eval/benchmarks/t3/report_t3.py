@@ -69,7 +69,8 @@ def aggregate(
 
     bucket 维度：页面归属 manifest 桶（一页多桶则各桶都计）；无桶归 "(all)"。
     返回 (cells, arm_latency)：cells[(arm, bucket, kind)] = {"tp","fp","fn"}。
-    单页耗时口径 = **ok 页**（该 (arm,page) 上无任何 failed 记录）的墙钟均值；
+    单页耗时口径 = **ok 页**（该 (arm,page) 上无任何 failed 记录）的墙钟均值
+    （每页取该页记录的最大墙钟）；
     失败页（含重试/超时的墙钟）一律不计入，其 GT 按全漏检（FN）计。
     """
     by_page_kind: dict[tuple[str, str], list[dict]] = defaultdict(list)
@@ -165,7 +166,7 @@ def arm_notes(
     臂的 kind 覆盖面取 metrics.by_kind > 0（如 mineru_seal 只出 seal、sigdet 只出
     signature），避免把「本臂不覆盖该类型」误判成召回 0 失败；by_kind 缺失时退化为
     全部 kind（保守）。**边界**：若某臂在它本该覆盖的 kind 上真的 0 出框（多类型候选臂），
-    该 kind 会被跳过 ⇒ 需人工复核（当前四臂均为单类型：la 双通道，其余单类型）。
+    该 kind 会被跳过 ⇒ 需人工复核（当前四臂的 kind 覆盖为 la = seal+signature 双通道，其余三臂各单类型）。
     """
     stats = metrics.get(arm, {})
     notes: list[str] = []
@@ -296,7 +297,7 @@ def render_markdown(
     lines.append("")
     lines.append(
         "> 口径：**该臂 ok 页全体**（该 (臂,页) 上无任何 failed 记录，含零出框页）平均；"
-        "每页耗时为该页首条记录的墙钟（跑批侧逐页记账，见 `benchmark_t3.py`）；失败页不计入。"
+        "每页耗时取该页记录中的墙钟最大值（当前跑批每 ok 页仅一条带耗时记录 ⇒ 等同该页墙钟，见 `benchmark_t3.py`）；失败页不计入。"
     )
     lines.append("")
 

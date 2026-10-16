@@ -61,6 +61,6 @@ la 4.48s/页（GPU 8090 常驻）· mineru_seal 3.40s/页（16581 sidecar）· p
 
 ## 产物索引
 
-- 评测代码：`eval/benchmarks/t3/`（spec/adapters/benchmark/report/gt_review/build_sample + **84 单测**）
+- 评测代码：`eval/benchmarks/t3/`（spec/adapters/benchmark/report/gt_review/build_sample + **85 单测**）
 - 私有区：GT（testdata/benchmarks/t3/gt.jsonl + gt_meta.json + spotcheck.json）、四臂原始输出与叠加图（LexMask-workspace/perf-work/issue92-t1/、云实例私有区，路径见私有执行方案）
 - 执行方案+冷评审记录：LexMask-workspace/github-issues/2026-10-11-issue92-visual-bench-plan.md

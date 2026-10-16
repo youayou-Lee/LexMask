@@ -7,10 +7,10 @@
   `{"image_base64":..., "categories":["official_seal","signature"]}`。响应
   `{"boxes":[{x,y,width,height,category,confidence?},...], "raw_answer":...}`。
   raw_answer 按 `[category]` 前缀分段，段内 `<box><x1><y1><x2><y2></box>` 为
-  **0-1000 相对坐标**（对齐 locate_anything_eval._parse_boxes），本适配器优先
-  解析 raw_answer 的 0-1000 坐标 × 页宽高 → 像素（kind 按通道：
-  official_seal→seal、signature→signature）；raw_answer 解析不出时回退响应
-  的 0-1 归一化结构化 boxes × 页宽高。confidence：HF 模式无分数 → 按 1.0
+  **0-1000 相对坐标**（对齐 locate_anything_eval._parse_boxes）。本适配器
+  **优先消费响应里的 0-1 归一化结构化 `boxes`**（与现役管线同一契约，服务端已
+  做退化框过滤/去重），仅当 `boxes` 为空或全被丢弃时才回退解析 raw_answer 的
+  0-1000 坐标 × 页宽高（旧版服务端回退路径，附带反向框交换/退化框丢弃/去重）。confidence：HF 模式无分数 → 按 1.0
   （与 MinerU「无分数填 1.0」口径一致，非测量值）；vLLM logprobs 分数有则透传。
 
 - mineru_seal   MinerU sidecar（16581）。请求/响应形态全部对齐 T0
