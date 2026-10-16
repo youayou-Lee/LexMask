@@ -46,6 +46,15 @@ def _inproc_safe_finditer(compiled, text, timeout=5.0):
 
 
 class _NullClient:
+    def ner_checked(self, text, labels=None, **kwargs):
+        """Issue#148：`run_document_ner` 现在按 `ner_checked()` 的 ok 位判成败。
+
+        本文件这些替身**从不模拟上游失败**，故包装旧 `ner()` 并一律报 ok=True——
+        与改动前「只要不抛异常就当成功」的语义逐字等价；ok=False 的分支由
+        本文件 Issue#148 专项用例（`TestIssue148*`）单独覆盖。
+        """
+        return self.ner(text, labels, **kwargs), True
+
     def ner(self, text, entity_types=None, **kwargs):
         return {}
 
@@ -171,6 +180,15 @@ def test_run_document_ner_calls_model_and_counts_residual():
     calls: list[tuple[str, tuple[str, ...]]] = []
 
     class Client:
+        def ner_checked(self, text, labels=None, **kwargs):
+            """Issue#148：`run_document_ner` 现在按 `ner_checked()` 的 ok 位判成败。
+
+            本文件这些替身**从不模拟上游失败**，故包装旧 `ner()` 并一律报 ok=True——
+            与改动前「只要不抛异常就当成功」的语义逐字等价；ok=False 的分支由
+            本文件 Issue#148 专项用例（`TestIssue148*`）单独覆盖。
+            """
+            return self.ner(text, labels, **kwargs), True
+
         def ner(self, text, labels=None, *args, **kwargs):
             calls.append((text, tuple(labels or [])))
             return {labels[0]: ["张三"] if "张三" in text else []}
@@ -506,6 +524,15 @@ def test_regex_guarantee_layer_runs_on_document_stream(monkeypatch):
     pages = [_page(1, ["案号", "（2022）京0101刑初123号", "姓名", "张三"])]
 
     class Client:
+        def ner_checked(self, text, labels=None, **kwargs):
+            """Issue#148：`run_document_ner` 现在按 `ner_checked()` 的 ok 位判成败。
+
+            本文件这些替身**从不模拟上游失败**，故包装旧 `ner()` 并一律报 ok=True——
+            与改动前「只要不抛异常就当成功」的语义逐字等价；ok=False 的分支由
+            本文件 Issue#148 专项用例（`TestIssue148*`）单独覆盖。
+            """
+            return self.ner(text, labels, **kwargs), True
+
         def ner(self, text, entity_types=None, **kwargs):
             return {}
 
@@ -684,6 +711,15 @@ def test_document_ner_dispatches_through_global_gpu_gate(monkeypatch):
         yield
 
     class Client:
+        def ner_checked(self, text, labels=None, **kwargs):
+            """Issue#148：`run_document_ner` 现在按 `ner_checked()` 的 ok 位判成败。
+
+            本文件这些替身**从不模拟上游失败**，故包装旧 `ner()` 并一律报 ok=True——
+            与改动前「只要不抛异常就当成功」的语义逐字等价；ok=False 的分支由
+            本文件 Issue#148 专项用例（`TestIssue148*`）单独覆盖。
+            """
+            return self.ner(text, labels, **kwargs), True
+
         def ner(self, text, entity_types=None, **kwargs):
             return {}
 
@@ -750,6 +786,15 @@ def test_coverage_drops_when_a_chunk_fails(monkeypatch):
     state = {"n": 0}
 
     class _FakeHas:
+        def ner_checked(self, text, labels=None, **kwargs):
+            """Issue#148：`run_document_ner` 现在按 `ner_checked()` 的 ok 位判成败。
+
+            本文件这些替身**从不模拟上游失败**，故包装旧 `ner()` 并一律报 ok=True——
+            与改动前「只要不抛异常就当成功」的语义逐字等价；ok=False 的分支由
+            本文件 Issue#148 专项用例（`TestIssue148*`）单独覆盖。
+            """
+            return self.ner(text, labels, **kwargs), True
+
         def ner(self, _text: str, _labels: list[str]) -> dict[str, list[str]]:
             state["n"] += 1
             if state["n"] == 2:

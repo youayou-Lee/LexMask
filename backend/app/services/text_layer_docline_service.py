@@ -544,13 +544,46 @@ async def run_document_ner(
                 # 若自建信号量就会绕开 HAS_NER_GLOBAL_MAX_INFLIGHT 的全局上限
                 # （Issue#115 评审 I-5）。
                 async with shared_gpu_inference_slot("TextLayerDocLine NER"):
-                    result = await asyncio.to_thread(has_client.ner, text, use_labels)
+                    # **Issue#148**：这里必须拿「本次到底有没有得到结论」的显式标志，
+                    # 不能只靠异常。`ner()` 把 HTTP 400/超时/输出不可解析/熔断开路
+                    # 四类失败**吞成 `{}`**，与「模型合法地回答本块没有实体」在返回值上
+                    # 完全同形（见 `has_client.ner()` 文档串）⇒ 旧写法把这些块判成
+                    # 「成功且零实体」：块计入 coverage、`http_errors`/`failed_chunks`
+                    # 恒 0、整卷既不回落也不判不合格（Issue#148 三类故障全中）。
+                    # 取口方式与 `has_service._call_client_ner_checked` 同源：优先
+                    # `ner_checked()`；没有该口的对象（旧 client/替身）退回 `ner()`
+                    # 并**保守报 ok=False**——宁可让块判失败，也不把未确认结论当成
+                    # 完整结论。
+                    checked = getattr(has_client, "ner_checked", None)
+                    if callable(checked):
+                        result, ok = await asyncio.to_thread(checked, text, use_labels)
+                    else:
+                        result, ok = await asyncio.to_thread(
+                            has_client.ner, text, use_labels
+                        ), False
             except Exception as exc:  # noqa: BLE001 - 单块失败不得拖垮整卷
                 logger.warning("docline NER chunk failed: %s", exc)
                 async with lock:
                     stats["http_errors"] += 1
                     stats["failed_chunks"] += 1
                 return None
+        if not ok:
+            # 上游没给出可用结论（HTTP 错/超时/整段不可解析/熔断开路，或同 payload
+            # 并发请求跑完却没留下可缓存结论）：走与异常**完全相同**的失败路径——
+            # 计数、该块不计入 coverage，再由
+            # `text_layer_doc_source.py` 的 `failed_chunks > 0` 把整卷判为「回落旧路径」。
+            # **口径提醒**（门①.5 段2 D2）：本计数是**块级 `ask()` 失败次数**，
+            # 而 `NER_ERRORS`（`has_client` 侧）记的是**上游异常分类**且经
+            # `retry_sync` 重试后才计 1 次 ⇒ 同一块失败在两侧数字**天然不等，
+            # 不可做差分对账**，只可各自与自己的期望值比对。
+            logger.warning(
+                "docline NER chunk returned no usable result (ok=False); "
+                "counting it as a failed chunk"
+            )
+            async with lock:
+                stats["http_errors"] += 1
+                stats["failed_chunks"] += 1
+            return None
         async with lock:
             stats["calls"] += 1
             for _label, found in (result or {}).items():
