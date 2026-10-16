@@ -116,7 +116,7 @@ class RecognitionPipelineMixin:
         # 顺序必须在 `(FileNotFoundError, OSError)` 之前——内建 `TimeoutError` 自 Python 3.3 起
         # 就是 `OSError` 的子类（3.11 变的只是把 `asyncio.TimeoutError` 并进来，不是这条亲缘
         # 关系本身），否则超时会被 I/O 分支抢先吞掉、记成「recognition I/O error」。
-        # `# noqa: UP041` 必须保留（pyproject `target-version = "py311"`）。
+        # 行尾 noqa 指令（UP041）必须保留（pyproject `target-version = "py311"`）。
         except (TimeoutError, asyncio.TimeoutError) as e:  # noqa: UP041
             err_msg = str(e)[:_ERROR_MSG_MAX_LEN] or "recognition timed out"
             logger.error("[queue] item=%s recognition timeout: %s", task.item_id[:8], err_msg)
