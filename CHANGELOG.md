@@ -2,6 +2,12 @@
 
 ## 2026-10-17
 
+- perf(dcu): **HaS vLLM 去 `--enforce-eager` 开 CUDA Graph——单流 decode 31.5→126.9 tok/s（4.0×）**（Issue#166）
+  - 实测：生产 8080 现役启动参数带 `--enforce-eager`（#118 §7.2 已裁决 gfx928 cudagraph 67/67 OK 但生产从未开过）；测试口 18090 与生产**唯一差异=去该 flag**，同轮对测（399 in / 256 out、temp 0、k=1×3，`tps_probe`）：31.24/31.47/31.77 → 88.21/127.22/126.57 tok/s，中位 **31.5→126.9（4.0×）**，超过 llama.cpp Q8_0 的 118.8（#162，该路线已因 GPU 输出错误关闭）；CUDA Graph 不改数学（同 kernel 批量重放），零精度风险、零代码改动
+  - `docker-compose.yml`：`ner` 服务（`vllm/vllm-openai`，HaS 8080 同款参数组合）去掉 `--enforce-eager`
+  - `docs/dcu/海光DCU适配总览.md` 坑清单 15→16 条：补「gfx928 生产已开 cudagraph + A/B 4×」；第 10 条 gfx906「cudagraph 捕获必崩」**不适用于 gfx928**，勿混读
+  - 实例持久卷 `start_all_dcu.sh:34`（生产运行时真身，主仓无此文件）同步去 flag 并重启 vllm-ner（部署侧动作）；上线验收 AC：六服务 200、同探针 decode ≥95 tok/s、hardcase F1=0.6696 锚、exam-v3 F1=0.8294 锚
+
 - chore(security): **公开树预存凭据痕迹清零 + 云侧审计/E2E 脚本口令外置**（Issue#140、Issue#141）
   - `cloud-deploy/audit_scan_output.py`、`cloud-deploy/e2e_real_cases.py`：认证口令不再以字面量写死在登录循环里，改为 `os.environ.get("LEXMASK_EVAL_PASSWORD")`（账号名 `LEXMASK_EVAL_USER`，默认 `apitester`）；未设置时 `sys.exit` 并指向 README 的「凭据注入」小节；两个脚本文档串与 `cloud-deploy/README_CLOUD.md` 补运行前置（#141 AC1/AC4）
   - `backend/scripts/eval/benchmark_throughput.py` 用法示例里的口令改为 shell 环境变量形态（#140 AC1）
