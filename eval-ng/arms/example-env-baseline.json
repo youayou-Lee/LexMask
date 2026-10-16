@@ -1,0 +1,10 @@
+{
+  "name": "example-env-baseline",
+  "kind": "env",
+  "env": {
+    "HAS_NER_GLOBAL_MAX_INFLIGHT": "8",
+    "TEXT_LAYER_DOCLINE_ENABLED": "true"
+  },
+  "probe": "python",
+  "notes": "示例臂：文本层文档级链默认开启（Issue#129 起）+ HaS 全局在飞上限 8（backend/app/core/config.py:425 默认值）。env 臂由编排在重启后端时生效，引擎本身不 spawn 进程；真实臂清单在私有仓。"
+}

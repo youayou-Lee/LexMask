@@ -399,22 +399,37 @@ class Settings(BaseSettings):
     HAS_NER_TYPE_BATCH_TARGET_TOKENS: int = 8072
     HAS_NER_SINGLE_PASS_MAX_TYPES: int = 96
     HAS_NER_SINGLE_PASS_MAX_TEXT_CHARS: int = 1600
-    HAS_NER_MAX_PARALLEL_REQUESTS: int = 4
+    # Issue#103：4 → 8。同款 prompt 直压 vLLM 实测（2026-10-15 DCU，
+    # HaS_Text_0209_0.6B @ 8192 ctx）：短文本 1600 字 7 型 k=1 3.62s→k=16 4.26s
+    # （0.28→3.76 req/s，13.4×）、19 型 13.7×、38 型 14.1×；长 prompt 6000 字/38 型
+    # k=1 8.15s / k=4 9.23s / k=8 10.38s（甜点）/ k=16 20.41s / k=32 32.61s
+    # —— 长 prompt 在 k≈8 之后转差，故统一取 8（validator 上限亦为 8）。
+    # 同卷 A/B：78 页文本卷闸门 4→8 = 53.30s→33.03s（1.61×），36 次调用与 1468
+    # 实体逐条不变（同工作量、仅更并行）。
+    HAS_NER_MAX_PARALLEL_REQUESTS: int = 8
     # Issue #23 轴A：类型语义分组并发。off = 现状（token 预算单批/自适应分批）；
     # semantic = 按 G1 人员/组织、G2 标识号码、G3 时空固定映射拆组并发，每组
     # 输出 token 少（60~100），配合服务端 batch（轴B）摊薄 decode 带宽。
     # 组间类型按构造不相交；未映射类型（自定义/扩展）全部落入兜底批。
     HAS_NER_TYPE_GROUPING: str = "off"
     # 全进程 HaS NER 并发闸门（shared_gpu_inference_slot 的信号量大小）。
-    # 1 = 历史串行行为（单卡小显存部署安全默认）；vLLM 多实例部署可放开
-    # （双卡 5090 生产 = 6：双实例 × 每实例 ~3，受 KV cache 预算约束）。
+    # 1 = 历史串行行为（单卡小显存部署安全默认）；vLLM 多实例部署可放开。
     # Issue#33: 默认 4——vLLM 服务端 continuous batching 需要看到并发请求；
     # inflight registry 保证同负载不重复计算。
-    HAS_NER_GLOBAL_MAX_INFLIGHT: int = 4
+    # Issue#103：4 → 8，与 HAS_NER_MAX_PARALLEL_REQUESTS 同源同值（同一条实测
+    # 曲线）。这是**唯一真正绑定并发**的闸门（shared_gpu_inference_slot 的信号量），
+    # 但 SERIALIZE_SHARED_GPU_MODELS=False 时整闸被旁路。
+    # 注意：8 的证据来自 DCU 云实例（单卡专跑 HaS）。**双卡 5090 生产机的 KV cache
+    # 预算更紧**（双实例 × 每实例 ~3），该部署在 deploy/dual-5090/backend_g0.sh 里
+    # 显式钉住改前档位——未在该机实测前，不要跟随本默认值放开。
+    HAS_NER_GLOBAL_MAX_INFLIGHT: int = 8
     # residual verify 段的页内并发窗口（Issue#33 PR-B）。独立于闸门的硬界：
     # 闸门旁路（SERIALIZE_SHARED_GPU_MODELS=False）时防止 N 个值同时砸 vLLM。
     # 实际并发 = min(CAP, GLOBAL_MAX_INFLIGHT, 待验证值数)。
-    HAS_NER_VERIFY_PARALLEL_CAP: int = 4
+    # Issue#103：4 → 8。生产台账 9845 次带槽位调用里 9743 次（99.0%）是
+    # `OCR HaS Text residual verify NER`，即扫描件逐页耗时几乎全由本窗口决定；
+    # verify 是"单值单类型"短 prompt，实测短文本曲线支持到 k=16，取 8 留余量。
+    HAS_NER_VERIFY_PARALLEL_CAP: int = 8
     # 批量自证（第二级杠杆，默认关）。>0 时同类型待验证值按 N 个一批合并问。
     # 长列表召回稀释正是 residual 机制诞生的原因（0712 实证），开启前必须
     # 在真实案卷页 A/B 实证。
@@ -450,8 +465,13 @@ class Settings(BaseSettings):
     STRUCTURED_MAX_EXPORT_ROWS: int = 5_000_000  # 库表导出硬护栏：超限报错，绝不静默截断
     STRUCTURED_MAX_FILE_SIZE: int = 200 * 1024**2  # /structured/files 上传上限
     HAS_NER_BUILTIN_GUIDANCE_ENABLED: bool = False
-    HAS_NER_CACHE_TTL_SEC: float = 300.0
-    HAS_NER_CACHE_MAX_ITEMS: int = 256
+    # Issue#103：300/256 → 1800/2048。单文件页反复预览、同文件重识别、同一
+    # 页在批量向导里被多次触达时命中率显著提高；TTL 取 30min 覆盖一次人工
+    # 复核节奏，容量 2048 覆盖多卷并发。注意 config.py 另有 inflight 去重
+    # （_begin_ner_request），它只是"同负载合并计算"，不改变调用次数台账——
+    # 验收必须用调用次数**精确相等**取证，防拿去重当提速。
+    HAS_NER_CACHE_TTL_SEC: float = 1800.0
+    HAS_NER_CACHE_MAX_ITEMS: int = 2048
     # Structured table profiling uses HaS only as an enrichment layer. Keep it
     # short so a cold or busy text model cannot block table review and delivery.
     STRUCTURED_HAS_TIMEOUT: float = 6.0
@@ -463,6 +483,64 @@ class Settings(BaseSettings):
     # Conservative default keeps existing recall; raise only to skip low-signal
     # OCR pages before sending them to HaS Text.
     HAS_VISION_MIN_TEXT_CHARS_FOR_NER: int = 1
+
+    # --- Issue#115 扫描件内嵌文本层 → 文档级 NER 链 ---
+    # Issue#129 起**默认开启**：本链接管「扫描页 + 可用内嵌文本层」的页，逐页 OCR 归零。
+    # 置 False 时行为与 Issue#115 改动前**完全一致**（验收 G4 的硬前提）。
+    # 开启代价：任一页**首次**请求须等整卷分块建流完成（60 页约 115s、189 页约 231s；
+    # memo 命中后逐页秒级）。无可用文本层的页 / 卷级门不达标 / 建卷异常一律逐页回落旧视觉线。
+    TEXT_LAYER_DOCLINE_ENABLED: bool = True
+    # 文档级分块的段长。实测 2000 字档比 6000 字档**又快又全**（6000 字档
+    # 6/30 块撞 2048 完成帽、召回只有页线的 40%，2000 字档 73%）。
+    TEXT_LAYER_DOCLINE_CHUNK_CHARS: int = 2_000
+    # 相邻块重叠：保证跨块边界的实体不被切碎（验收 D9）。
+    TEXT_LAYER_DOCLINE_CHUNK_OVERLAP: int = 200
+    # 文档级并发（块级）。块级派发走 shared_gpu_inference_slot，不绕开既有闸门。
+    TEXT_LAYER_DOCLINE_CONCURRENCY: int = 4
+    # 单卷上限：超过则**只处理前 N 页**（不做分段落盘，见 Issue#115 评审 M-3）。
+    # 注意：<=0 表示无上限（不推荐，长卷会把整卷词框常驻内存）。
+    TEXT_LAYER_DOCLINE_MAX_PAGES: int = 1_000
+    # **建流预算闸**（Issue#129 评审 I1）：整卷建流是**在首个请求里同步跑完**的，
+    # 若预计耗时超预算，本卷就不走文档级线、逐页回落旧视觉线——否则首发请求会超过
+    # 网关 `proxy_read_timeout`（`frontend/nginx.conf.template`，与前端
+    # `VISION_TIMEOUT=900s` 对齐）被打成 504，而**这条路径不经过任何回落**。
+    # 0 = 不限制（不推荐）。默认 600s 覆盖到约 375 页（按下面的 s/页 估算）。
+    TEXT_LAYER_DOCLINE_MAX_BUILD_SEC: float = 600.0
+    # 建流速率的保守估算值（秒/页），仅用于上面的预算闸。实测：189 页卷 231s
+    # ≈ 1.22 s/页（并发 8）；60 页卷 115–171s。取 1.6 留约 1.3× 余量。
+    TEXT_LAYER_DOCLINE_BUILD_SEC_PER_PAGE: float = 1.6
+    # **页级**覆盖下限（评审 C-2）：该页自身文本层的字符数低于此值就**不算被覆盖**，
+    # 该页回落 OCR+HaS 旧路径。卷级平均（TEXT_LAYER_MIN_CHARS_PER_PAGE）不能代替
+    # 页级判据——薄挂层页会被卷平均「救」进来，从而被永久摘出 OCR 链。
+    TEXT_LAYER_PAGE_MIN_CHARS: int = 60
+    # 块级模型调用失败数上限（评审 I-5）。超过即**整卷回落**旧路径，
+    # 不允许「部分块失败」表现为「成功且覆盖 100%」。
+    TEXT_LAYER_MAX_BLOCK_ERRORS: int = 0
+    # --- 文本层质量判定阈值（Issue#115 C1）---
+    # 不对称代价（用户 2026-10-15 拍板）：漏用可用层的代价可接受，
+    # **错用不可用层不可接受**，因此阈值偏保守。
+    TEXT_LAYER_MIN_CHARS_PER_PAGE: int = 120
+    TEXT_LAYER_MAX_SHORT_WORD_RATIO: float = 0.55
+    TEXT_LAYER_MAX_GARBAGE_RATIO: float = 0.15
+    TEXT_LAYER_MIN_AVG_WORD_LEN: float = 1.6
+    # 词框内暗像素中位数的下限。真卷实测 0.1183、随机空白 0.0000；
+    # 合成对齐样本 0.1778、下移半行 0.0614 ⇒ 取 0.02 只拦「层与图完全不对齐」。
+    TEXT_LAYER_MIN_INK_ALIGNMENT: float = 0.02
+    # 单「词」最大字数（C1 粘连层判据）：真实卷 60 页样本实测最长 48 字（999 分位 34），
+    # 而把整页文字拼成一个 word 的坏层会到 2000+。上限取 400，离真实分布有 8× 余量。
+    TEXT_LAYER_MAX_WORD_CHARS: int = 400
+    # 墨迹采样页数（每卷取前 N 页做一次渲染采样）。
+    TEXT_LAYER_INK_SAMPLE_PAGES: int = 3
+    # **卷级覆盖率下限**（门⑥ 二轮 Important#5）：覆盖率 = 成功块长度**并集** /
+    # 文档流总长；低于它整卷放弃文档级链、回落旧路径。
+    TEXT_LAYER_MAX_TRUNCATED_RATIO: float = 0.50
+    TEXT_LAYER_MIN_COVERAGE: float = 0.90
+    # **回映失败率上限**：模型给出的值在文本层里定位不到（或跨页拼接）的比例，
+    # 超过它就整卷放弃 —— 否则「模型复读/文本层不同源」会被当成正常结果。
+    TEXT_LAYER_MAX_MAP_FAILURE_RATIO: float = 0.30
+    # （门⑥ 三轮 Minor#4：原 `TEXT_LAYER_EMPTY_PAGE_FALLBACK` 开关已删除。
+    # 原因：置 False 会把「覆盖页 0 框」当成「这页已由文档级链处理」⇒ 整页丢检，
+    # 一行配置就能把上一轮修掉的 C-1 重新打开。现在 0 框页**无条件**回落旧路径。）
 
     # 兼容旧环境变量 HAS_BASE_URL
     HAS_BASE_URL: str | None = None
@@ -629,6 +707,58 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_pdf_text_layer_min_chars(cls, v: int) -> int:
         return max(0, min(10_000, v))
+
+    @field_validator("TEXT_LAYER_DOCLINE_CHUNK_CHARS")
+    @classmethod
+    def _validate_text_layer_chunk_chars(cls, v: int) -> int:
+        return max(200, min(20_000, v))
+
+    @field_validator("TEXT_LAYER_DOCLINE_CHUNK_OVERLAP")
+    @classmethod
+    def _validate_text_layer_chunk_overlap(cls, v: int) -> int:
+        return max(0, min(4_000, v))
+
+    @field_validator("TEXT_LAYER_DOCLINE_CONCURRENCY")
+    @classmethod
+    def _validate_text_layer_docline_concurrency(cls, v: int) -> int:
+        return max(1, min(32, v))
+
+    @field_validator("TEXT_LAYER_PAGE_MIN_CHARS")
+    @classmethod
+    def _validate_text_layer_page_min_chars(cls, v: int) -> int:
+        return max(0, min(10_000, v))
+
+    @field_validator("TEXT_LAYER_MAX_BLOCK_ERRORS")
+    @classmethod
+    def _validate_text_layer_max_block_errors(cls, v: int) -> int:
+        return max(0, min(1_000, v))
+
+    @field_validator("TEXT_LAYER_MIN_COVERAGE")
+    @classmethod
+    def _validate_text_layer_min_coverage(cls, v: float) -> float:
+        return max(0.0, min(1.0, v))
+
+    @field_validator("TEXT_LAYER_MAX_MAP_FAILURE_RATIO")
+    @classmethod
+    def _validate_text_layer_max_map_failure_ratio(cls, v: float) -> float:
+        return max(0.0, min(1.0, v))
+
+    @field_validator("TEXT_LAYER_MAX_WORD_CHARS")
+    @classmethod
+    def _validate_text_layer_max_word_chars(cls, v: int) -> int:
+        return max(40, min(100000, v))
+
+    @field_validator("TEXT_LAYER_DOCLINE_MAX_BUILD_SEC")
+    @classmethod
+    def _validate_text_layer_docline_max_build_sec(cls, v: float) -> float:
+        # 0 = 不限制；上限 3600s 与其它长任务（MINERU_TASK_TIMEOUT 等）同量级。
+        return max(0.0, min(3600.0, v))
+
+    @field_validator("TEXT_LAYER_DOCLINE_BUILD_SEC_PER_PAGE")
+    @classmethod
+    def _validate_text_layer_docline_build_sec_per_page(cls, v: float) -> float:
+        # 只影响预算闸的估算，钳到 (0, 60] 防止除零/荒谬值。
+        return max(0.01, min(60.0, v))
 
     @field_validator("OCR_TEXT_BLOCK_CACHE_TTL_SEC")
     @classmethod

@@ -94,9 +94,11 @@ server {
         # 也可用 NGINX_CLIENT_MAX_BODY_SIZE 显式覆盖（nginx 尺寸语法）。
         client_max_body_size ${NGINX_CLIENT_MAX_BODY_SIZE};
 
-        # 与后端 OCR 超时对齐
-        proxy_read_timeout 400s;
-        proxy_send_timeout 400s;
+        # 与后端 OCR 超时对齐；并覆盖 Issue#129 文档级文本层链的**整卷建流**：
+        # 该链在首个 /vision 请求里同步跑完整卷（预算 TEXT_LAYER_DOCLINE_MAX_BUILD_SEC
+        # 默认 600s），故此处须 > 该预算，且与前端 VISION_TIMEOUT=900_000ms 对齐。
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
     }
 
     # 健康检查代理（不在 /api 路径下）

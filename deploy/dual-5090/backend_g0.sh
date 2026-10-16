@@ -30,7 +30,13 @@ export DATA_DIR=/data/ubuntu/lh/projects/LexMask/backend/data
 export UPLOAD_DIR=/data/ubuntu/lh/projects/LexMask/backend/uploads
 export OUTPUT_DIR=/data/ubuntu/lh/projects/LexMask/backend/outputs
 mkdir -p "$DATA_DIR" "$UPLOAD_DIR" "$OUTPUT_DIR"
+# Issue#103：本机**不跟随**代码新默认值 8。理由：8 的证据来自 DCU 云实例（单卡专跑
+# HaS），本机是双卡 5090 且 OCR/LocateAnything 与 HaS 共享显存，KV cache 预算更紧
+# （双实例 × 每实例 ~3）。这里显式钉住改前档位（GLOBAL=6，MAX_PARALLEL/VERIFY=4，
+# 即改前默认值），待本机实测后再放开。
 export HAS_NER_GLOBAL_MAX_INFLIGHT=6
+export HAS_NER_MAX_PARALLEL_REQUESTS=4
+export HAS_NER_VERIFY_PARALLEL_CAP=4
 export BATCH_VISUAL_MERGE_PAGE_CONCURRENCY=2
 export GPU_SATURATION_RATIO=0.95
 export LOCATE_ANYTHING_CONSENSUS_SAMPLES=1
