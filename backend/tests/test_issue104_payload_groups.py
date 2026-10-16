@@ -19,7 +19,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 
 import httpx
 import pytest
@@ -51,6 +53,11 @@ def _max_tokens_for(types: list[str], context_tokens: int):
 def _dense_digits(n: int) -> str:
     # 数字/标点密集（编号、账号、日期串形态）——历史 400 的触发形态。
     return ("370702199001014521," * (n // 19 + 2))[:n]
+
+
+def _filler_digits(n: int) -> str:
+    # 与植入真值**不同形**的密集填充（用于「真值没有被切」类断言，避免真值满页皆是）。
+    return ("991122334455667788," * (n // 19 + 2))[:n]
 
 
 def make_client(responses=None):
@@ -165,9 +172,18 @@ def test_d1_5_hard_split_loses_no_characters():
 
 def test_d1_7_hard_split_never_cuts_inside_a_planted_value():
     # 植入 18 位身份证（真值）：切点不得落在其内部。
+    # 填充值必须与真值**形态不同**（`_dense_digits` 本身就是身份证串的重复），
+    # 否则「植入值」满页皆是、断言失去判别力（冷审 I3：原断言 `a not in p or
+    # a in p` 对任意字符串恒真）。
     id_card = "370702199001014521"
-    filler = _dense_digits(12000)
-    block = filler + "," + id_card + "," + _dense_digits(6000)
+    # 真值刻意**跨在中点**上：若切点退化为「中点对半」（冷审 M2 变异形态），
+    # 中点必然落在真值内部 ⇒ 该判据必须变红；而正常实现会退到真值左侧的逗号
+    # 边界（切点 == 真值起点，允许），故本用例对新旧切法有判别力。
+    filler = _filler_digits(9001)
+    assert id_card not in filler
+    block = filler + "," + id_card + "," + _filler_digits(8999)
+    value_start = block.index(id_card)
+    assert value_start < len(block) // 2 < value_start + len(id_card)
     groups = plan_has_text_groups(
         [block],
         context_tokens=8192,
@@ -176,12 +192,39 @@ def test_d1_7_hard_split_never_cuts_inside_a_planted_value():
         max_tokens_for=_max_tokens_for(_TYPES_12, 8192),
     )
     assert len(groups) > 1
-    joined_all = "\n".join(piece for group in groups for piece in group)
-    assert id_card in joined_all  # 不丢
-    for group in groups:
-        for piece in group:
-            # 每个切片要么包含完整身份证，要么完全不含其任何片段
-            assert id_card not in piece or id_card in piece
+    pieces = [piece for group in groups for piece in group]
+    assert "".join(pieces) == block  # 不丢
+    assert id_card in "".join(pieces)
+    _assert_no_boundary_inside(block, pieces, id_card)
+
+
+def test_d1_7b_midpoint_cut_is_caught_by_the_same_guard():
+    """判别力自查：把切点钉在中点（冷审 M2 变异形态）必须被同一判据抓到。"""
+    id_card = "370702199001014521"
+    block = _filler_digits(300) + "," + id_card + "," + _filler_digits(300)
+    value_start = block.index(id_card)
+    midpoint = len(block) // 2
+    assert value_start < midpoint < value_start + len(id_card)  # 真值恰好跨中点
+    with pytest.raises(AssertionError):
+        _assert_no_boundary_inside(block, [block[:midpoint], block[midpoint:]], id_card)
+
+
+def _assert_no_boundary_inside(block: str, pieces: list[str], value: str) -> None:
+    """切片边界不得落在 ``value`` 的字符区间内部（非恒真，可被变异触发）。
+
+    注意判据方向：切片**包含**整个真值是允许的（此时边界在区间之外），
+    只有边界落在 ``(start, end)`` 开区间内部才算把真值拦腰切断。
+    """
+    start = block.index(value)
+    end = start + len(value)
+    offset = 0
+    for piece in pieces:
+        piece_start = offset
+        offset += len(piece)
+        assert not (start < piece_start < end), f"切片起始边界落在真值内部: {piece_start}"
+        assert not (start < offset < end), f"切片结束边界落在真值内部: {offset}"
+        if piece_start <= start and end <= offset:
+            assert value in piece  # 覆盖该区间的切片必须完整包含真值
 
 
 def test_d1_9_partition_property_groups_cover_input_in_order():
@@ -265,6 +308,74 @@ def test_d2_planned_equals_ner_actual_max_tokens():
     actual = calls[0]["max_tokens"]
     planned = HaSClient.planned_max_tokens(_TYPES_12, text, context_tokens=8192)
     assert actual == planned
+
+
+@pytest.mark.parametrize("context_tokens", [4096, 8192, 32768])
+@pytest.mark.parametrize("n_types", [1, 6, 12])
+def test_d2_every_actual_request_fits_the_fill_budget(context_tokens, n_types):
+    """D2（冷审 I1 改写为「观测实发请求」口径）。
+
+    逐条检查**真正发出去的**每个请求：`estimate(实发 prompt) + 实发
+    max_tokens <= context - reserve - 64`。类型分批（一个组内可能发多个请求）
+    也必须逐条满足——这比「planned == actual 单点相等」更强：单点相等只在
+    未分批时成立（分批后每批的 desired 预算更小），而装填上限对每条请求都
+    必须成立。
+    """
+    types = _TYPES_12[:n_types]
+    corpus = {
+        "dense_digits": _dense_digits(1200),
+        "chinese_prose": "甲方李四，电话13800138000，住址北京市朝阳区建国路88号。" * 20,
+        "latin_mixed": "Contract No. 2026-1016, Party A Li Si, Tel 13800138000. " * 30,
+    }
+    fill = context_tokens - 160 - 64
+    for label, text in corpus.items():
+        # 类级共享缓存会跨用例命中（键不含上下文），命中就一条请求都不发——
+        # 对「观测实发请求」的断言必须先清缓存。
+        HaSClient._SHARED_NER_CACHE.clear()
+        client, calls = make_client(responses=["{}"])
+        client._effective_context_tokens = lambda ctx=context_tokens: ctx
+        client.ner(text, types)
+        assert calls, f"{label}: 未发出任何请求（缓存命中会掩盖实发口径）"
+        for call in calls:
+            estimate = HaSClient._estimate_prompt_tokens(call["content"])
+            assert estimate + call["max_tokens"] <= fill, (
+                f"{label}: ctx={context_tokens} types={n_types} "
+                f"est={estimate} + max_tokens={call['max_tokens']} > fill={fill}"
+            )
+
+
+def _types_in_prompt(content: str) -> list[str]:
+    match = re.search(r"Specified types:(\[.*?\])\n", content)
+    assert match, f"实发 prompt 里没有类型清单: {content[:200]!r}"
+    return json.loads(match.group(1))
+
+
+def test_i1_pinned_context_propagates_to_every_request():
+    """冷审 I1：调用方钉住的上下文必须贯穿**每个**实发请求（含分批递归）。
+
+    旧实现里 ner() 自行 `_effective_context_tokens()`——探测缓存 TTL 到期后，
+    规划用的上下文与实发用的上下文会漂移，装填上限失效。这里把探测值钉成
+    一个刻意不同的 32768：若任何一层递归漏传钉住值，它就会按 32768 算预算，
+    与「按 4096 重算」不符。
+    """
+    client, calls = make_client(responses=["{}"])
+    probes: list[int] = []
+
+    def _probe() -> int:
+        probes.append(1)
+        return 32768
+
+    client._effective_context_tokens = _probe
+    text = _dense_digits(400)
+    client.ner(text, _TYPES_12, context_tokens=4096)
+    assert probes == [], "钉住上下文时不得再探测（规划/实发同源）"
+    assert calls, "应有实发请求"
+    for call in calls:
+        batch = _types_in_prompt(call["content"])
+        expected = HaSClient._resolve_ner_budget(batch, text, context_tokens=4096)[2]
+        assert call["max_tokens"] == expected, (
+            f"类型批 {batch} 实发 {call['max_tokens']} != 按钉住上下文 4096 重算 {expected}"
+        )
 
 
 def test_d2_stubbing_smaller_context_increases_group_count():

@@ -450,6 +450,30 @@ def _cm_reply(text, types):
     return {"身份证号": values} if values and "身份证号" in types else {}
 
 
+def test_c5_split_batch_sub_request_failure_is_not_swallowed(monkeypatch):
+    """C5（冷审 I1 连带）：类型分批递归里任一子请求 400 也必须上抛。
+
+    12 型 × 长密文会在 `ner_checked` 内走分批路径；递归调用若不透传
+    raise_on_error，子批失败只会变成「该类型没拿到」，组级失败被半结果掩盖
+    ——正是本 Issue 在修的病。
+    """
+    monkeypatch.setattr(settings, "HAS_NER_SELF_CONSIST_SAMPLES", 1)
+    seen = {"n": 0}
+
+    def reply(text, types):
+        seen["n"] += 1
+        if seen["n"] >= 2:
+            raise _http_400()
+        return {}
+
+    client = _ModelFake(context_tokens=4096, reply=reply)
+    # 1200 密字符 + 12 型在 4096 上下文下正好分成 2 批（plan_completion_batches==2）。
+    text = ("370702199001014521," * 70)[:1200]
+    with pytest.raises(httpx.HTTPStatusError):
+        client.ner(text, _TYPES_12, raise_on_error=True, context_tokens=4096)
+    assert seen["n"] >= 2, "用例前提：确实触发了分批（多个子请求）"
+
+
 def test_d_cm_group_failure_fails_the_page_and_survives_repeat(monkeypatch):
     monkeypatch.setattr(settings, "HAS_NER_SELF_CONSIST_SAMPLES", 1)
     group_texts, blocks, _head_group, _tail_group = _two_group_page()
@@ -495,6 +519,42 @@ def test_d_cm_group_failure_fails_the_page_and_survives_repeat(monkeypatch):
     assert client.calls_with(_MARK_HEAD) == head_calls_before
     assert len(client.calls) > calls_before
     assert head_block_text in payload.content
+
+
+def test_d_cm_concurrent_sibling_page_sharing_a_failed_group_also_fails(monkeypatch):
+    """并发兄弟页共享同一组文本时，**两边都必须判失败**（冷审 Critical）。
+
+    组文本相同的两个并发请求：一个 owner 跑真调用、另一个走 inflight 等待。
+    owner 的组失败后，等待方必须同样计入失败——否则 `gather` 拿到的是
+    `None`（非 BaseException）⇒ `failed_groups=0` ⇒ 该页被判成功并按**半
+    结果**继续，正是本 Issue 要消灭的「静默少实体」。
+    """
+    monkeypatch.setattr(settings, "HAS_NER_SELF_CONSIST_SAMPLES", 1)
+    _group_texts, blocks, _head_group, _tail_group = _two_group_page()
+    # delay 撑开 owner 的在飞窗口，让第二个请求稳稳成为 waiter
+    client = _ModelFake(context_tokens=4096, reply=_cm_reply, delay=0.3)
+    vision_types = [_VT("ID_CARD", "身份证号"), _VT("PHONE", "电话")]
+
+    async def _both():
+        stage_a: dict = {}
+        stage_b: dict = {}
+        page_a, page_b = await asyncio.gather(
+            run_has_text_analysis(blocks, client, vision_types, stage_a),
+            run_has_text_analysis(blocks, client, vision_types, stage_b),
+        )
+        return page_a, page_b, stage_a, stage_b
+
+    page_a, page_b, stage_a, stage_b = asyncio.run(_both())
+
+    # ① 两边都不给半结果（等待方最容易被漏掉）
+    assert page_a == []
+    assert page_b == []
+    # ② 两边都必须把「兄弟组失败」计入失败数
+    assert stage_a["has_text_ner_failed_groups"] == 1
+    assert stage_b["has_text_ner_failed_groups"] == 1
+    # ③ 两边都必须标成组级失败，不得落在「成功」语义上
+    assert stage_a["has_text_cache_status"] == "group_failed"
+    assert stage_b["has_text_cache_status"] == "group_failed"
 
 
 # ---------------------------------------------------------------------------

@@ -616,25 +616,27 @@ If nothing matches, return {{}}.
 <text>{text}</text>"""
 
     @classmethod
-    def planned_max_tokens(
+    def _resolve_ner_budget(
         cls,
         types: list[str],
         text: str,
         *,
-        context_tokens: int | None = None,
+        context_tokens: int,
+        prompt: str | None = None,
         guidance_text: str = "",
-    ) -> int:
-        """给定 (类型, 文本) 的完成预算——**ner() 实发 max_tokens 的同一算术**。
+    ) -> tuple[str, int, int]:
+        """NER 提示词 + 完成预算的**唯一一份算术**（Issue#104 C3；冷审 I1）。
 
-        Issue#104 C3：把 ner() 内的 min 链原样抽出供分组规划器调用，消除
-        「规划一套、实发一套」的两套算术。context_tokens 缺省用配置值；
-        调方（规划器）应传入客户端探测到的生效上下文。
+        `ner_checked()` 的实发与分组规划器 `planned_max_tokens()` 都必须走这里。
+        旧实现是两处手抄的 min 链——本 Issue 的根因正是「规划一套、实发一套」的
+        两套算术漂移，故此处不允许再有副本。
+
+        Returns ``(prompt, prompt_token_estimate, max_tokens)``。
         """
         from app.core.config import settings
 
-        prompt = cls._build_ner_prompt(list(types), guidance_text, str(text or ""))
-        if context_tokens is None:
-            context_tokens = max(_NER_CONTEXT_TOKENS_FLOOR, int(settings.HAS_NER_CONTEXT_TOKENS))
+        if prompt is None:
+            prompt = cls._build_ner_prompt(list(types), guidance_text, str(text or ""))
         configured_max_tokens = int(settings.HAS_NER_MAX_TOKENS)
         desired_max_tokens = cls._ner_completion_budget(
             len(types), text, cls._effective_tokens_per_type(settings)
@@ -654,7 +656,31 @@ If nothing matches, return {{}}.
         hard_cap = cls._effective_completion_hard_cap(settings)
         if hard_cap > 0:
             max_tokens = min(max_tokens, hard_cap)
-        return int(max_tokens)
+        return prompt, prompt_token_estimate, int(max_tokens)
+
+    @classmethod
+    def planned_max_tokens(
+        cls,
+        types: list[str],
+        text: str,
+        *,
+        context_tokens: int | None = None,
+        guidance_text: str = "",
+    ) -> int:
+        """给定 (类型, 文本) 的完成预算——**ner() 实发 max_tokens 的同一算术**。
+
+        Issue#104 C3：与 `ner_checked()` 共用 `_resolve_ner_budget`，消除
+        「规划一套、实发一套」的两套算术。context_tokens 缺省用配置值；
+        调方（规划器）应传入客户端探测到的生效上下文。
+        """
+        if context_tokens is None:
+            context_tokens = max(_NER_CONTEXT_TOKENS_FLOOR, int(settings.HAS_NER_CONTEXT_TOKENS))
+        return cls._resolve_ner_budget(
+            list(types),
+            text,
+            context_tokens=int(context_tokens),
+            guidance_text=guidance_text,
+        )[2]
 
     @classmethod
     def _normalize_ner_types(cls, entity_types: list[str] | None) -> list[str]:
@@ -824,6 +850,7 @@ If nothing matches, return {{}}.
         sample_index: int = 0,
         _allow_truncation_retry: bool = True,
         raise_on_error: bool = False,
+        context_tokens: int | None = None,
     ) -> dict[str, list[str]]:
         """
         使用NER能力进行敏感实体识别
@@ -838,6 +865,9 @@ If nothing matches, return {{}}.
             raise_on_error: Issue#104 C5——True 时在计数 NER_ERRORS 后**上抛**而非
                 返回 {}。分组派发（主查）用它：组级失败必须让页判失败，不得
                 伪装成「无实体」静默通过。
+            context_tokens: Issue#104 C3/冷审 I1——调用方钉住的生效上下文。分组
+                派发把**规划时**用的值透传进来，保证规划与实发同源（None=自行
+                探测，行为与旧版一致）。
 
         Returns:
             {类型: [实体列表]}
@@ -854,6 +884,7 @@ If nothing matches, return {{}}.
             sample_index=sample_index,
             _allow_truncation_retry=_allow_truncation_retry,
             raise_on_error=raise_on_error,
+            context_tokens=context_tokens,
         )[0]
 
     def ner_checked(
@@ -866,6 +897,7 @@ If nothing matches, return {{}}.
         sample_index: int = 0,
         _allow_truncation_retry: bool = True,
         raise_on_error: bool = False,
+        context_tokens: int | None = None,
     ) -> tuple[dict[str, list[str]], bool]:
         """`ner()` + **显式解析成功标志**（Issue#108 ⑥ 评审 C1/C2）。
 
@@ -930,6 +962,8 @@ If nothing matches, return {{}}.
                         batch_guidance,
                         temperature=temperature,
                         sample_index=sample_index,
+                        raise_on_error=raise_on_error,
+                        context_tokens=context_tokens,
                     )
                     all_confirmed = all_confirmed and part_confirmed
                     for key, values in (part or {}).items():
@@ -974,6 +1008,8 @@ If nothing matches, return {{}}.
                         None,
                         temperature=temperature,
                         sample_index=sample_index,
+                        raise_on_error=raise_on_error,
+                        context_tokens=context_tokens,
                     )
                     all_confirmed = all_confirmed and part_confirmed
                     for key, values in (part or {}).items():
@@ -1001,33 +1037,24 @@ If nothing matches, return {{}}.
             return {}, False
 
         # 与 HaS_Text_0209 模型卡 NER 模板一致（Specified types: 与 JSON 数组之间
-        # 无空格）。prompt 构造与预算算术抽到 _build_ner_prompt/planned_max_tokens
-        # （Issue#104 C3）：ner() 实发与分组规划器共用同一份，不得另写。
-        prompt = self._build_ner_prompt(types, guidance_text, text)
-        configured_max_tokens = int(settings.HAS_NER_MAX_TOKENS)
-        desired_max_tokens = self._ner_completion_budget(
-            len(types), text, self._effective_tokens_per_type(settings)
-        )
-        # Keep the completion budget inside the locally served HaS context
-        # window. The 16 GB dev profile serves HaS Text with an 8K context so
-        # PaddleOCR-VL, PP-StructureV3 and LocateAnything can stay resident
-        # while giving OCR-derived NER enough completion budget.
+        # 无空格）。prompt 构造与预算算术另有唯一出口 `_resolve_ner_budget`
+        # （Issue#104 C3；冷审 I1）：ner() 实发与分组规划器共用同一份，不得另写。
         # Issue#104 C1：上下文真源 = 服务端自报值（/v1/models），探测失败回落
         # 安全小值 min(配置, 4096)——旧口径全局 8192 在 4096 链上照样 400。
-        context_tokens = self._effective_context_tokens()
-        prompt_token_estimate = self._estimate_prompt_tokens(prompt)
-        context_room = context_tokens - prompt_token_estimate - _NER_CONTEXT_RESERVE_TOKENS
-        completion_cap = max(_NER_COMPLETION_CAP_FLOOR, min(configured_max_tokens, int(context_tokens * _NER_COMPLETION_CONTEXT_RATIO)))
-        max_tokens = min(
-            configured_max_tokens,
-            desired_max_tokens,
-            completion_cap,
-            max(_NER_MAX_TOKENS_FLOOR, context_room),
+        # 分组派发会把规划时钉住的上下文透传进来（冷审 I1）：同一页的规划与
+        # 实发必须用同一个值，否则 TTL 到期重探会让两者漂移。
+        resolved_context = (
+            int(context_tokens)
+            if context_tokens is not None
+            else self._effective_context_tokens()
         )
-        if hard_cap > 0:
-            # 帽进预算：对齐模型卡 max_new_tokens，避免生产预算超帽的调用
-            # 被 vLLM 端静默腰斩后触发 json_repair→整类型重查风暴（Issue#41）。
-            max_tokens = min(max_tokens, hard_cap)
+        prompt, prompt_token_estimate, max_tokens = self._resolve_ner_budget(
+            types,
+            text,
+            context_tokens=resolved_context,
+            guidance_text=guidance_text,
+        )
+        context_tokens = resolved_context
         logger.info(
             "HaS NER budget prompt_est=%d context=%d max_tokens=%d types=%d text_chars=%d",
             prompt_token_estimate,
@@ -1070,6 +1097,8 @@ If nothing matches, return {{}}.
                             None,
                             temperature=temperature,
                             sample_index=sample_index,
+                            raise_on_error=raise_on_error,
+                            context_tokens=context_tokens,
                         )
                         all_confirmed = all_confirmed and part_confirmed
                         for key, values in (part or {}).items():
@@ -1146,6 +1175,8 @@ If nothing matches, return {{}}.
                             temperature=temperature,
                             sample_index=sample_index,
                             _allow_truncation_retry=False,
+                            raise_on_error=raise_on_error,
+                            context_tokens=context_tokens,
                         )
                         for key, values in (retry_result or {}).items():
                             if not isinstance(values, list):

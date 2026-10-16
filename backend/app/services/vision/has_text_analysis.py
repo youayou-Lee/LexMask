@@ -150,6 +150,8 @@ async def _run_has_text_ner_groups(
     stage_status: dict[str, Any] | None,
     group_texts: list[str],
     chinese_types: list[str],
+    *,
+    context_tokens: int | None = None,
 ) -> tuple[dict[str, list[str]], int]:
     """逐组派发 HaS 主查（Issue#104 C3/C5）。
 
@@ -160,6 +162,8 @@ async def _run_has_text_ner_groups(
       闸门被 SERIALIZE_SHARED_GPU_MODELS=False 旁路时扇出仍有界，D5②）。
     - 组内 ner(raise_on_error=True)：组失败**上抛**而非返回 {}，页级据此判
       失败——组级静默漏检（本 Issue 的病）不得在组上复发（C5/D-cm）。
+    - context_tokens：规划时钉住的生效上下文，透传给 ner()（冷审 I1）——
+      否则 ner() 自行重探，TTL 到期后规划与实发会漂移到两套上下文。
 
     Returns ``(merged_union, failed_group_count)``；失败组不参与合并（调用方
     据此整页判失败）。
@@ -202,6 +206,7 @@ async def _run_has_text_ner_groups(
                                 temperature=(0.0 if pass_index == 0 else sample_temp),
                                 sample_index=pass_index,
                                 raise_on_error=True,
+                                context_tokens=context_tokens,
                             )
 
                         result, passes_run = await asyncio.to_thread(
@@ -220,8 +225,10 @@ async def _run_has_text_ner_groups(
                         )
             _finish_has_text_ner_inflight(inflight_key, inflight_future, result)
             return result if isinstance(result, dict) else {}
-        except BaseException:
-            _finish_has_text_ner_inflight(inflight_key, inflight_future, None)
+        except BaseException as exc:
+            # 失败也必须通知 inflight 的等待方：填异常而非 None，否则兄弟页/兄弟组
+            # 会拿到非异常的 None 而被判成功，按半结果继续（冷审 Critical）。
+            _finish_has_text_ner_inflight(inflight_key, inflight_future, None, error=exc)
             raise
 
     results = await asyncio.gather(
@@ -598,7 +605,11 @@ async def run_has_text_analysis(
                 has_payload.emitted_chars,
             )
             ner_result, groups_failed = await _run_has_text_ner_groups(
-                has_client, stage_status, group_texts, chinese_types
+                has_client,
+                stage_status,
+                group_texts,
+                chinese_types,
+                context_tokens=context_tokens,
             )
             if groups_failed:
                 # Issue#104 C5：任一组失败 ⇒ 该页主查整体判失败——组级部分结果
@@ -782,7 +793,12 @@ async def run_has_text_analysis(
                                 residual_group_results.append(cached_group)
                                 continue
                             model_start = time.perf_counter()
-                            result = await asyncio.to_thread(has_client.ner, residual_group_text, chinese_types)
+                            result = await asyncio.to_thread(
+                                has_client.ner,
+                                residual_group_text,
+                                chinese_types,
+                                context_tokens=residual_context,
+                            )
                             _add_has_text_duration(
                                 stage_status,
                                 "has_text_model_ms",
