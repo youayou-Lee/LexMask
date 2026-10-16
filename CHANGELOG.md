@@ -2,6 +2,13 @@
 
 ## 2026-10-16
 
+- fix(eval-ng): **公开树红线扫描器非 ASCII 文件名不再静默漏扫 + 加两道自检**（Issue#154）
+  - 根因：`eval-ng/scripts/check_public_tree.py` 取改动清单用 `git diff --name-only`（未加 `-z`）⇒ 中文名被 git 转义成 `"docs/\345..."`，`Path(escaped).is_file()` 判假 ⇒ 整份文件**静默跳过**（门显示「零命中」，实际那几个文件没被看；实证 PR#146 改 4 文件只报 3）
+  - 新增 `changed_files(repo_root, base) -> list[str]`：三条 git 命令一律 `-z`（`diff -z --name-only --diff-filter=AM <base>...HEAD`、`diff -z ... HEAD`、`ls-files -z --others --exclude-standard`），路径按 NUL 切分、不经转义；`default_paths` 改为复用它
+  - 新增**自检①**：改动文件数与候选集合不一致 ⇒ 打印差值 + `exit 2`（宁可红，不可静默漏）；**自检②**：候选路径「不是普通文件」（转义/解析回归的典型症状）⇒ 逐条列名 + `exit 2`
+  - 有意跳过（后缀不在扫描范围 / 超 2MiB / 非 UTF-8）改为**逐类打印原因**，仍不判红（整树巡检 `--base ""` 必须可用：实测 991 文件、跳过明细 = 35 后缀 + 3 超上限 + 1 非 UTF-8）
+  - 新增 `backend/tests/test_public_tree_scanner.py`（8 例，tmp_path 现搭 git 仓）：中文名/含空格名改动文件必被扫到、红线必被报出、计数不一致与幻影路径必 `exit 2`、有意跳过必留痕、`--self-test` 与整树模式不回退；**变异自证 M1–M5 全 KILLED**（退回不带 `-z` 的旧口径 / 删计数自检 / 路径异常不判红 / 跳过不打印 / 漏未跟踪文件，各自都有指名用例栽掉）
+  - 门③：本机全量 **12 failed / 2152 passed / 51 skipped**，与同刻基线（`8722503`）**12 failed / 2144 passed / 51 skipped** 的 `FAILED` 集合逐条 `comm` **完全一致**（零新增失败；12 条均为本机沙箱建不出进程池的既有环境失败）；`+8 passed` = 新增用例；`ruff check app/` 干净；扫描器对本次改动自扫 `2 文件，零命中`
 - fix(docs): 归档仓编号引用约定 + 修复 `eval/scripts/format_report.py` 旧仓 #46 错链（Issue#59）
   - `render_md` 不再拼 `github.com/youayou-Lee/LexMask/issues/46`（本仓 #46 语义完全不同），改标「归档仓 #46（DataInfra-RedactionEverything）」
   - `docs/协同开发规范-gh使用与仓库纪律.md` 新增 §5：外链必须指向本仓真实 Issue、指旧仓写「归档仓 #NN」、历史叙事不批量清理

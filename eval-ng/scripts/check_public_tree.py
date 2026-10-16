@@ -369,6 +369,11 @@ def scan_source(name: str, text: str, *, denylist: list[str], allow_prefixes: li
 
 
 def _git_lines(repo_root: Path, args: list[str]) -> list[str]:
+    """跑 git 并按行返回路径；带 `-z` 时按 NUL 切分（原始字节口径，不经 git 的 shell 转义）。
+
+    历史坑（Issue#154）：不带 `-z` 时 git 会把非 ASCII 路径**转义**成 `"docs/\345..."` 形态，
+    下游 `Path(...).is_file()` 判假 ⇒ 整份中文名文件被**静默漏扫**（只会少报、不会报错）。
+    """
     try:
         out = subprocess.run(
             ["git", "-C", str(repo_root), *args], check=True, capture_output=True, text=True,
@@ -376,6 +381,18 @@ def _git_lines(repo_root: Path, args: list[str]) -> list[str]:
     except (OSError, subprocess.CalledProcessError):
         return []
     return [line for line in out.split("\0" if "-z" in args else "\n") if line.strip()]
+
+
+def changed_files(repo_root: Path, base: str) -> list[str]:
+    """`--base` 以来**改动过的文件**（已提交改动 + 工作区未提交 + 未跟踪），`-z` 机器口径。
+
+    `-z` 是硬要求：本仓公开文档大量使用中文文件名（`docs/开发门禁-*.md`、
+    `docs/协同开发规范-*.md` 等），转义形态会让「零命中」变成「没看那几个文件」（Issue#154）。
+    """
+    rels = _git_lines(repo_root, ["diff", "-z", "--name-only", "--diff-filter=AM", f"{base}...HEAD"])
+    rels += _git_lines(repo_root, ["diff", "-z", "--name-only", "--diff-filter=AM", "HEAD"])
+    rels += _git_lines(repo_root, ["ls-files", "-z", "--others", "--exclude-standard"])
+    return list(dict.fromkeys(rels))
 
 
 def default_paths(repo_root: Path, base: str | None) -> list[Path]:
@@ -387,10 +404,7 @@ def default_paths(repo_root: Path, base: str | None) -> list[Path]:
     """
     if not base:
         return [repo_root / rel for rel in _git_lines(repo_root, ["ls-files", "-z"])]
-    rels = _git_lines(repo_root, ["diff", "--name-only", "--diff-filter=AM", f"{base}...HEAD"])
-    rels += _git_lines(repo_root, ["diff", "--name-only", "--diff-filter=AM", "HEAD"])
-    rels += _git_lines(repo_root, ["ls-files", "--others", "--exclude-standard"])
-    return [repo_root / rel for rel in dict.fromkeys(rels)]
+    return [repo_root / rel for rel in changed_files(repo_root, base)]
 
 
 def _iter_targets(repo_root: Path, paths: list[str], base: str | None) -> list[Path]:
@@ -459,30 +473,77 @@ def main(argv: list[str] | None = None) -> int:
         print("没有可扫的文件（git 不可用且未给 --paths）", file=sys.stderr)
         return 2
 
+    def _rel(path: Path) -> str:
+        try:
+            return str(path.relative_to(repo_root))
+        except ValueError:
+            return str(path)
+
+    # Issue#154 自检①：改动清单必须与候选集合对得上；对不上就是取清单时漏了解析（宁可红不可静默漏）。
+    if not args.paths and args.base:
+        expected = len(changed_files(repo_root, args.base))
+        if expected != len(targets):
+            print(
+                f"[public-tree] 改动文件数 {expected} 与候选文件数 {len(targets)} 不一致 —"
+                " 取改动清单时可能漏了解析（宁可红，不可静默漏）",
+                file=sys.stderr,
+            )
+            return 2
+
     findings: list[str] = []
     scanned = 0
+    # 跳过必须**逐类说明**：intentional 两类放行但打印，其余（非文件/不可读）视为门被绕过的信号。
+    skipped: dict[str, list[str]] = {"skip_suffix": [], "not_a_file": [], "too_large": [], "unreadable": []}
     for path in targets:
-        if path.suffix.lower() in SKIP_SUFFIXES or not path.is_file():
+        if path.suffix.lower() in SKIP_SUFFIXES:
+            skipped["skip_suffix"].append(_rel(path))
+            continue
+        if not path.is_file():
+            skipped["not_a_file"].append(_rel(path))
             continue
         try:
-            if path.stat().st_size > MAX_BYTES:
-                continue
+            size = path.stat().st_size
+        except OSError:
+            skipped["unreadable"].append(_rel(path))
+            continue
+        if size > MAX_BYTES:
+            skipped["too_large"].append(_rel(path))
+            continue
+        try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
+            skipped["unreadable"].append(_rel(path))
             continue
         scanned += 1
-        try:
-            rel = path.relative_to(repo_root)
-        except ValueError:
-            rel = path
-        findings.extend(scan_source(str(rel), text, denylist=denylist, allow_prefixes=args.allow_prefix))
+        findings.extend(scan_source(_rel(path), text, denylist=denylist, allow_prefixes=args.allow_prefix))
+
+    # Issue#154 自检②：改动清单里的文件**凭空消失**（路径解析/转义回归的典型症状）⇒ 报错退出。
+    # 其余跳过类别（后缀/超上限/非 UTF-8）都是「解释了为什么没扫」，打印出来但不判红。
+    if skipped["not_a_file"]:
+        print("[public-tree] 以下改动文件不是普通文件（路径解析可疑 — 宁可红）：", file=sys.stderr)
+        for item in skipped["not_a_file"]:
+            print(f"  - {item}", file=sys.stderr)
+        print(
+            f"[public-tree] 扫描 {scanned} 文件；路径解析异常 {len(skipped['not_a_file'])} 个（exit 2）",
+            file=sys.stderr,
+        )
+        return 2
+    for items, reason in (
+        (skipped["skip_suffix"], "后缀不在扫描范围"),
+        (skipped["too_large"], f"超过 {MAX_BYTES // (1024 * 1024)}MiB 上限"),
+        (skipped["unreadable"], "非 UTF-8 文本（读取失败）"),
+    ):
+        if items:
+            shown = "、".join(items[:5]) + ("…" if len(items) > 5 else "")
+            print(f"[public-tree] 有意跳过 {len(items)} 个（{reason}）：{shown}", file=sys.stderr)
 
     if findings:
         for line in findings:
             print(line)
         print(f"[public-tree] {scanned} 文件，命中 {len(findings)} 处（exit 1）", file=sys.stderr)
         return 1
-    print(f"[public-tree] {scanned} 文件，零命中")
+    tail = f"，跳过 {sum(len(v) for v in skipped.values())} 个（有意）" if any(skipped.values()) else ""
+    print(f"[public-tree] {scanned} 文件，零命中{tail}")
     return 0
 
 
