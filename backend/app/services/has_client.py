@@ -874,7 +874,7 @@ If nothing matches, return {{}}.
             raise_on_error: Issue#104 C5——True 时在计数 NER_ERRORS 后**上抛**而非
                 返回 {}。分组派发（主查）用它：组级失败必须让页判失败，不得
                 伪装成「无实体」静默通过。
-            context_tokens: Issue#104 C3/冷审 I1——调用方钉住的生效上下文。分组
+            context_tokens: 说明见 Issue#104 C3/冷审 I1——调用方钉住的生效上下文。分组
                 派发把**规划时**用的值透传进来，保证规划与实发同源（None=自行
                 探测，行为与旧版一致）。
 

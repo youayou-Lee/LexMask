@@ -82,7 +82,7 @@ def test_viewer_can_still_change_own_password():
     resp = client.post(
         "/api/v1/auth/change-password",
         headers=headers,
-        json={"old_password": "Wrong0ne!", "new_password": "NewPassw0rd!"},
+        json={"old_password": "placeholder-old-pw1", "new_password": "placeholder-new-pw1"},
     )
     # 401 wrong-old-password proves the request reached the endpoint (not 403).
     assert resp.status_code == 401

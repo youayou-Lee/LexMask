@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-10-17
+
+- chore(security): **公开树预存凭据痕迹清零 + 云侧审计/E2E 脚本口令外置**（Issue#140、Issue#141）
+  - `cloud-deploy/audit_scan_output.py`、`cloud-deploy/e2e_real_cases.py`：认证口令不再以字面量写死在登录循环里，改为 `os.environ.get("LEXMASK_EVAL_PASSWORD")`（账号名 `LEXMASK_EVAL_USER`，默认 `apitester`）；未设置时 `sys.exit` 并指向 README 的「凭据注入」小节；两个脚本文档串与 `cloud-deploy/README_CLOUD.md` 补运行前置（#141 AC1/AC4）
+  - `backend/scripts/eval/benchmark_throughput.py` 用法示例里的口令改为 shell 环境变量形态（#140 AC1）
+  - `backend/tests/test_pdf_encryption.py`、`backend/tests/test_ldap_auth.py`（bob/carol/dave/erin 共四处）、`backend/tests/test_role_matrix.py`、`backend/tests/test_dicom_core_realdata.py`（`mapping_secret` 两处）的夹具口令改为显式 `placeholder-*` 合成值
+  - `backend/app/services/has_client.py` 的 `context_tokens` 文档行改书写形态：该行原本是 `键名: 值` 形态，被扫描器按 `credential_bare` 误报（键名尾巴 `token` 在 `CREDENTIAL_WORDS` 里，而值是文档引用 `Issue#104`）。**没有放宽任何规则**（#140 AC4）：把 `token` 整体挪进 `META_TAIL_WORDS` 会让真 `api_token: <真值>` 整类漏网，故只改被扫文件的写法
+  - 验证：整树 `python eval-ng/scripts/check_public_tree.py --base "" --allow-prefix /opt/dtk --allow-prefix /opt/hyhal` 的 `credential_*` 命中 **14 → 0**；`--self-test` 仍全中；本机门③ 与同刻基线的 FAILED 集合逐条一致
+  - ⚠️ **代码清理不等于暴露撤销**：该测试账号口令自 `55002ec`（v1.0.0 首发）起就留在公开提交历史里（`git log -S` 可查），本 PR 只清工作区与后续提交。**须轮换/停用该测试账号口令**（#141 AC2，由部署方执行，本 PR 无法代劳）
+
 ## 2026-10-16
 
 - fix(eval-ng): **公开树红线扫描器非 ASCII 文件名不再静默漏扫 + 加两道自检**（Issue#154）

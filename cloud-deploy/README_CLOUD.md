@@ -10,6 +10,11 @@
 
 > 凭据：平台代理经环境变量注入，运行前 `export PLATFORM_PROXY_URL='http://<user>:<pass>@<代理地址:端口>'`
 
+> **测试账号口令只从环境变量注入**（Issue#140/#141）：`audit_scan_output.py` 与
+> `e2e_real_cases.py` 运行前先 `export LEXMASK_EVAL_PASSWORD=<测试账号口令>`（账号名默认
+> `apitester`，可用 `LEXMASK_EVAL_USER` 覆盖）。口令不写进仓、不贴进 Issue/PR 正文；
+> 若曾以字面量形式进过公开历史，**删代码不撤销暴露**——须轮换该账号口令。
+
 ## 部署的是什么
 
 | 端口 | 进程 | 对应 Docker 容器 | 运行环境 |

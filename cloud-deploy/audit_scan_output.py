@@ -2,9 +2,11 @@
 """扫描件成品泄漏审计：上传→vision→execute→下载成品→逐页OCR→正则找残留PII。
 对图片型 PDF 的真审计（文本层提取对扫描件无效）。
 用法: python3 audit_scan_output.py <pdf路径> [更多pdf...]
+凭据: 先 export LEXMASK_EVAL_PASSWORD=<测试账号口令>（口令只从环境变量注入，见 Issue#140/#141）
 """
 import base64
 import io
+import os
 import re
 import sys
 import time
@@ -26,10 +28,16 @@ def find_pii(text):
     return {k: v for k, v in hits.items() if v}
 
 
+# 凭据只从环境变量注入：公开仓不留任何口令字面量（Issue#140/#141）
+EVAL_USER = os.environ.get("LEXMASK_EVAL_USER", "apitester")
+EVAL_PASSWORD = os.environ.get("LEXMASK_EVAL_PASSWORD")
+if not EVAL_PASSWORD:
+    sys.exit("缺少环境变量 LEXMASK_EVAL_PASSWORD：测试账号口令不入公开仓（见 cloud-deploy/README_CLOUD.md）")
+
 r = None
 token = None
-for path, body in [("/auth/setup", {"username": "apitester", "password": "ApiTest#2026"}),
-                   ("/auth/login", {"username": "apitester", "password": "ApiTest#2026"})]:
+for path, body in [("/auth/setup", {"username": EVAL_USER, "password": EVAL_PASSWORD}),
+                   ("/auth/login", {"username": EVAL_USER, "password": EVAL_PASSWORD})]:
     r = c.post(f"{BASE}{path}", json=body)
     if r.status_code == 200:
         token = (r.json() or {}).get("access_token") or (r.json() or {}).get("token")
