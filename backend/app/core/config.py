@@ -382,6 +382,11 @@ class Settings(BaseSettings):
     HAS_TEXT_MODEL_NAME: str = ""
     HAS_TIMEOUT: float = 120.0
     HAS_NER_CONTEXT_TOKENS: int = 8192
+    # Issue#104：上下文探测（GET /v1/models → max_model_len）失败时的安全回落值。
+    # 4096 = 已知最小部署链上下文（docker-compose 与 cloud start_cloud 都是 4096）；
+    # 探测失败时回落到 min(HAS_NER_CONTEXT_TOKENS, 本值)——绝不允许回落到比它
+    # 更大的数（4096 链上回落 8192 = 原样退回被 400 的旧病）。
+    HAS_NER_CONTEXT_FALLBACK_TOKENS: int = 4096
     HAS_NER_MAX_TOKENS: int = 8192
     # Second-pass HaS query label that extracts the bare value token from an
     # AMOUNT entity（人民币每亩每年100元 → 100元）. Queried as 金额, HaS keeps
@@ -480,6 +485,9 @@ class Settings(BaseSettings):
     # unbounded OCR text into a cold local NER queue.
     HAS_VISION_MAX_TEXT_CHARS: int = 32_000
     HAS_VISION_MAX_BLOCK_CHARS: int = 8_000
+    # Issue#104：分组派发的页内独立并发窗口（与 GPU 闸门无关的硬界）。闸门被
+    # SERIALIZE_SHARED_GPU_MODELS=False 整体旁路时，组扇出仍被本信号量钳住。
+    HAS_VISION_MAX_GROUPS_INFLIGHT: int = 4
     # Conservative default keeps existing recall; raise only to skip low-signal
     # OCR pages before sending them to HaS Text.
     HAS_VISION_MIN_TEXT_CHARS_FOR_NER: int = 1
@@ -784,6 +792,17 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_has_ner_context_tokens(cls, v: int) -> int:
         return max(512, min(262_144, v))
+
+    @field_validator("HAS_NER_CONTEXT_FALLBACK_TOKENS")
+    @classmethod
+    def _validate_has_ner_context_fallback_tokens(cls, v: int) -> int:
+        # 上限 8192：回落值比现网最大链还大就失去「安全小值」意义。
+        return max(512, min(8192, v))
+
+    @field_validator("HAS_VISION_MAX_GROUPS_INFLIGHT")
+    @classmethod
+    def _validate_has_vision_max_groups_inflight(cls, v: int) -> int:
+        return max(1, min(16, v))
 
     @field_validator("HAS_NER_MAX_TYPES_PER_REQUEST")
     @classmethod
