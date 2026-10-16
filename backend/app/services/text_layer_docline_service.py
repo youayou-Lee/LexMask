@@ -32,6 +32,13 @@ import fitz  # PyMuPDF
 
 from app.core.config import settings
 from app.core.gpu_inference_gate import shared_gpu_inference_slot
+from app.core.safe_regex import (
+    RegexTimeoutError,
+    match_items,
+    safe_compile,
+    safe_finditer,
+    scaled_timeout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -594,16 +601,38 @@ async def run_document_ner(
     # **regex 保证层**（Issue#115 评审 I-3）：租户配置的 regex 类型在既有 OCR+HaS 链里
     # 由 `_apply_regex_fallback` 兜底；文档级链没有那一步，若不在此补上，配置了正则类型的
     # 租户会在覆盖页上**丢掉这些类型**（漏检）。这里直接在整卷流上跑同一批正则，命中的值
-    # 交给同一套回映（含词边界校验）出框，语义与旧链一致。
+    # 交给同一套回映（含词边界校验）出框。
+    # 第三条 runner 也必须同源（Issue#64/#65 冷审 C1）：此前是裸 `re.finditer(pattern,
+    # stream)` —— 用户可控 pattern 在全卷流上**没有任何执行预算**（ReDoS/挂死敞口），且命中
+    # 取的是旧粒度 `group(0).strip()`，与文本链/vision 兜底的命名组粒度不一致。现在统一走
+    # `safe_compile` / `safe_finditer` / `match_items`，与另外两条链同语义、同预算。
     regex_type_ids: set[str] = set()
     for type_id, pattern in regex_types or []:
         if not type_id or not pattern:
             continue
         try:
-            hits = {m.group(0).strip() for m in re.finditer(pattern, stream)}
+            compiled = safe_compile(pattern, timeout=1.0)
         except re.error as exc:
             logger.warning("docline regex type %s has bad pattern: %s", type_id, exc)
             continue
+        except RegexTimeoutError as exc:
+            logger.warning(
+                "docline regex type %s PROBE TIMEOUT (probe_budget=1.0s): %s",
+                type_id, exc,
+            )
+            continue
+        try:
+            matches = safe_finditer(compiled, stream, timeout=scaled_timeout(stream))
+        except RegexTimeoutError as exc:
+            logger.warning(
+                "docline regex type %s SEARCH TIMEOUT (chars=%d, budget=%.1fs): %s "
+                "— 该类型整卷保证层丢弃",
+                type_id, len(stream), scaled_timeout(stream), exc,
+            )
+            continue
+        # 命名组语义唯一事实源（与文本链/vision 兜底同一函数）：区间拆首尾、
+        # 出生语境只出日期，语境词/分隔符不入命中值。
+        hits = {text for m in matches for text, _start, _end in match_items(m)}
         hits.discard("")
         if hits:
             values_by_type.setdefault(type_id, set()).update(hits)
