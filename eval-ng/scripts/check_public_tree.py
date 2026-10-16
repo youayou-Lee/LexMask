@@ -39,6 +39,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+class GitError(RuntimeError):
+    """取改动清单时 git 失败（base 不可解析 / 非 git 仓 / 浅克隆缺对象…）。
+
+    必须与「真的没有改动」区分：把失败吞成空列表会让门**绿着放行**一个根本没扫的改动面（Issue#154 冷审 I-1）。
+    """
+
 # 前面不得是数字或点：DICOM/OID 这类点分数字长串（`1.2.840.10008.5.1.4.1.1.2`）里的四个八位组
 # 曾被当成公网 IP（⑨冷评审期间的实测假阳性），所以把「点/数字紧跟在前」的候选整类排除。
 IP_RE = re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")
@@ -369,18 +376,35 @@ def scan_source(name: str, text: str, *, denylist: list[str], allow_prefixes: li
 
 
 def _git_lines(repo_root: Path, args: list[str]) -> list[str]:
-    """跑 git 并按行返回路径；带 `-z` 时按 NUL 切分（原始字节口径，不经 git 的 shell 转义）。
+    """跑 git 并返回路径项；带 `-z` 时按 NUL 切分（原始字节口径，不经 git 的 shell 转义）。
 
     历史坑（Issue#154）：不带 `-z` 时 git 会把非 ASCII 路径**转义**成 `"docs/\345..."` 形态，
     下游 `Path(...).is_file()` 判假 ⇒ 整份中文名文件被**静默漏扫**（只会少报、不会报错）。
+
+    **失败必须抛出 `GitError`**：把 `CalledProcessError` 吞成 `[]` 会让「base 写错 / 浅克隆缺对象」
+    与「真的没有改动」不可区分，门于是绿着放行（Issue#154 冷审 I-1）。
     """
+    cmd = ["git", "-C", str(repo_root), *args]
     try:
         out = subprocess.run(
-            ["git", "-C", str(repo_root), *args], check=True, capture_output=True, text=True,
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
         ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return []
-    return [line for line in out.split("\0" if "-z" in args else "\n") if line.strip()]
+    except FileNotFoundError as exc:  # 环境里没有 git
+        raise GitError(f"找不到 git 可执行文件：{exc}") from exc
+    except OSError as exc:
+        raise GitError(f"调用 git 失败：{exc}") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = [line for line in (exc.stderr or "").splitlines() if line.strip()]
+        raise GitError(
+            f"git {' '.join(args)} 失败（rc={exc.returncode}）：{detail[-1] if detail else '无 stderr'}"
+        ) from exc
+    # 只丢**空项**（`-z` 的尾随空串）。**不要**用 `strip()` 当谓词：名字全是空白的文件会被静默丢掉（冷审 M-1）。
+    return [item for item in out.split("\0" if "-z" in args else "\n") if item]
 
 
 def changed_files(repo_root: Path, base: str) -> list[str]:
@@ -388,9 +412,13 @@ def changed_files(repo_root: Path, base: str) -> list[str]:
 
     `-z` 是硬要求：本仓公开文档大量使用中文文件名（`docs/开发门禁-*.md`、
     `docs/协同开发规范-*.md` 等），转义形态会让「零命中」变成「没看那几个文件」（Issue#154）。
+
+    `--diff-filter=AMRT`：**R（重命名）/T（类型变更）也要进扫描集**——旧实现用 `AM` 会把
+    「git mv 后又改了内容」的文件整体排除，只要同批还有别的改动就静默漏扫（冷审 I-2）。
+    `-z --name-only` 对重命名只输出**目标路径**，NUL 切分口径无需额外处理。
     """
-    rels = _git_lines(repo_root, ["diff", "-z", "--name-only", "--diff-filter=AM", f"{base}...HEAD"])
-    rels += _git_lines(repo_root, ["diff", "-z", "--name-only", "--diff-filter=AM", "HEAD"])
+    rels = _git_lines(repo_root, ["diff", "-z", "--name-only", "--diff-filter=AMRT", f"{base}...HEAD"])
+    rels += _git_lines(repo_root, ["diff", "-z", "--name-only", "--diff-filter=AMRT", "HEAD"])
     rels += _git_lines(repo_root, ["ls-files", "-z", "--others", "--exclude-standard"])
     return list(dict.fromkeys(rels))
 
@@ -447,6 +475,55 @@ def self_test(denylist: list[str] | None = None) -> int:
     return 0
 
 
+def _ensure_utf8_output() -> None:
+    """把 stdout/stderr 切到 UTF-8（打印中文路径不得在 C locale / 管道下抛 UnicodeEncodeError）。
+
+    Issue#154 冷审 C2：本仓公开文档大量中文名，命中行会把路径打出来；`LC_ALL=C` 时
+    默认的 ASCII 编码器会直接崩，虽然「崩=红」但如果红在无关问题上就没法定位。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # 被测试替换过的流（如 capsys 捕获对象）
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, ValueError):
+            continue
+
+
+def _filesystem_encoding_note() -> str | None:
+    """文件系统编码不是 UTF-8 时返回一句说明；正常 UTF-8 环境返回 None。
+
+    实测（Issue#154 冷审 C2 / M-5）：`LC_ALL=C LANG=C PYTHONCOERCECLOCALE=0 PYTHONUTF8=0` 下
+    Python 的文件系统编码退化成 ASCII，`Path.is_file()` 对中文名返回 False（`os.stat` 的
+    `UnicodeEncodeError` 被 `is_file()` 吞成 False）⇒ 会被误报成「路径解析可疑」。这不是静默漏扫
+    （自检② 会红），但文案会把人带偏，所以显式点名原因并给出补救办法。
+    """
+    encoding = (sys.getfilesystemencoding() or "").lower().replace("-", "")
+    if encoding in ("utf8", "utf8mb4"):
+        return None
+    return (
+        f"当前进程的文件系统编码是 {sys.getfilesystemencoding()}（非 UTF-8）：非 ASCII 文件名无法 "
+        "stat/读取，会被误判为「不是普通文件」。请用 `PYTHONUTF8=1`（或 UTF-8 locale）重跑。"
+    )
+
+
+def unexplained_candidates(n_targets: int, scanned: int, skipped: dict[str, list[str]]) -> int:
+    """未解释的候选余数（Issue#154 自检③ / AC2 的字面项）。
+
+    「候选数」应恒等于「已扫描 + 已解释跳过（后缀/超上限/非 UTF-8）」；余数非零即有人新增了
+    跳过路径却没说明。抽成纯函数是为了让它自己也有单测（否则只能靠端到端路径触发）。
+    `not_a_file` **不算**已解释：那是路径解析异常，调用方在此之前已 return 2。
+    返回值不夹到 0：调用方按 `!= 0` 判红，正负都说明两侧账不平。
+    """
+    explained = (
+        len(skipped.get("skip_suffix", []))
+        + len(skipped.get("too_large", []))
+        + len(skipped.get("unreadable", []))
+    )
+    return n_targets - (scanned + explained)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="公开树红线扫描器（G4）")
     parser.add_argument("--repo-root", default=".", help="公开仓根（默认当前目录）")
@@ -459,6 +536,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-prefix", action="append", default=[], help="放行的路径前缀（可重复）")
     parser.add_argument("--self-test", action="store_true", help="只跑阳性对照")
     args = parser.parse_args(argv)
+    _ensure_utf8_output()  # C locale / 管道下打印中文路径不得崩（Issue#154 冷审 C2）
+    fs_note = _filesystem_encoding_note()
+    if fs_note:
+        print(f"[public-tree] 警告：{fs_note}", file=sys.stderr)
 
     denylist = load_denylist(args.denylist)
     if args.self_test:
@@ -468,9 +549,22 @@ def main(argv: list[str] | None = None) -> int:
     if not repo_root.is_dir():
         print(f"仓根不存在：{repo_root}", file=sys.stderr)
         return 2
-    targets = _iter_targets(repo_root, list(args.paths or []), args.base or None)
+    try:
+        targets = _iter_targets(repo_root, list(args.paths or []), args.base or None)
+    except GitError as exc:
+        print(f"[public-tree] 取改动清单失败：{exc}", file=sys.stderr)
+        print(
+            "[public-tree] 宁可红，不可静默漏（Issue#154）：请检查 --base 是否存在、是否在 git 仓内"
+            "（浅克隆请先 fetch 该 base）。",
+            file=sys.stderr,
+        )
+        return 2
     if not targets:
-        print("没有可扫的文件（git 不可用且未给 --paths）", file=sys.stderr)
+        print(
+            "[public-tree] 本次范围内没有候选文件（--base 范围内无新增/修改，且无未跟踪文件）；"
+            "若确要扫别的文件请显式给 --paths。注意：这与「取清单失败」是两回事。",
+            file=sys.stderr,
+        )
         return 2
 
     def _rel(path: Path) -> str:
@@ -479,13 +573,15 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError:
             return str(path)
 
-    # Issue#154 自检①：改动清单必须与候选集合对得上；对不上就是取清单时漏了解析（宁可红不可静默漏）。
+    # Issue#154 自检①：**内部不变量**——`default_paths` 与 `changed_files` 的口径必须一致
+    #（防未来误改过滤/去重）。注意：这一条是**同源**比对，抓不到转义类漏扫；抓漏扫的是自检②
+    # 与循环后的「未解释余数」对账（冷审 I-3 说清了这条的能抓与不能抓）。
     if not args.paths and args.base:
         expected = len(changed_files(repo_root, args.base))
         if expected != len(targets):
             print(
-                f"[public-tree] 改动文件数 {expected} 与候选文件数 {len(targets)} 不一致 —"
-                " 取改动清单时可能漏了解析（宁可红，不可静默漏）",
+                f"[public-tree] 内部不变量被破坏：改动清单条目数 {expected} 与候选集合数 {len(targets)} 不一致"
+                "（default_paths 与 changed_files 口径漂移）",
                 file=sys.stderr,
             )
             return 2
@@ -523,6 +619,8 @@ def main(argv: list[str] | None = None) -> int:
         print("[public-tree] 以下改动文件不是普通文件（路径解析可疑 — 宁可红）：", file=sys.stderr)
         for item in skipped["not_a_file"]:
             print(f"  - {item}", file=sys.stderr)
+        if fs_note:
+            print(f"[public-tree] 提示：{fs_note}", file=sys.stderr)
         print(
             f"[public-tree] 扫描 {scanned} 文件；路径解析异常 {len(skipped['not_a_file'])} 个（exit 2）",
             file=sys.stderr,
@@ -536,6 +634,19 @@ def main(argv: list[str] | None = None) -> int:
         if items:
             shown = "、".join(items[:5]) + ("…" if len(items) > 5 else "")
             print(f"[public-tree] 有意跳过 {len(items)} 个（{reason}）：{shown}", file=sys.stderr)
+
+    # Issue#154 自检③（AC2 的字面项）：候选数 vs「已扫描 + 已解释跳过」的**未解释余数**必须为零。
+    # 今天余数恒等于 not_a_file（上一分支已 return 2）；这条的价值是**结构性对账**：将来任何人新增
+    # 一个跳过类别而忘了说明/打印，余数会在这里变红，而不是静默配平（冷审 I-3）。
+    explained_skips = len(skipped["skip_suffix"]) + len(skipped["too_large"]) + len(skipped["unreadable"])
+    unexplained = unexplained_candidates(len(targets), scanned, skipped)
+    if unexplained != 0:
+        print(
+            f"[public-tree] 未解释的候选文件 {unexplained} 个（候选 {len(targets)}、已扫描 {scanned}、"
+            f"已解释跳过 {explained_skips}）— 宁可红，不可静默漏",
+            file=sys.stderr,
+        )
+        return 2
 
     if findings:
         for line in findings:

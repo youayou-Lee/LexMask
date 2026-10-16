@@ -4,11 +4,14 @@
 
 - fix(eval-ng): **公开树红线扫描器非 ASCII 文件名不再静默漏扫 + 加两道自检**（Issue#154）
   - 根因：`eval-ng/scripts/check_public_tree.py` 取改动清单用 `git diff --name-only`（未加 `-z`）⇒ 中文名被 git 转义成 `"docs/\345..."`，`Path(escaped).is_file()` 判假 ⇒ 整份文件**静默跳过**（门显示「零命中」，实际那几个文件没被看；实证 PR#146 改 4 文件只报 3）
-  - 新增 `changed_files(repo_root, base) -> list[str]`：三条 git 命令一律 `-z`（`diff -z --name-only --diff-filter=AM <base>...HEAD`、`diff -z ... HEAD`、`ls-files -z --others --exclude-standard`），路径按 NUL 切分、不经转义；`default_paths` 改为复用它
-  - 新增**自检①**：改动文件数与候选集合不一致 ⇒ 打印差值 + `exit 2`（宁可红，不可静默漏）；**自检②**：候选路径「不是普通文件」（转义/解析回归的典型症状）⇒ 逐条列名 + `exit 2`
+  - 新增 `changed_files(repo_root, base) -> list[str]`：三条 git 命令一律 `-z`（`diff -z --name-only --diff-filter=AMRT <base>...HEAD`、`diff -z ... HEAD`、`ls-files -z --others --exclude-standard`），路径按 NUL 切分、不经转义；`default_paths` 改为复用它
+  - 新增**自检①（内部不变量）**：`default_paths`（目录+文件候选）与 `changed_files` 的条目数不一致 ⇒ 打印差值 + `exit 2`（**能抓**=未来有人给某一条 git 命令加过滤/去重/截断；**不能抓**=`-z` 口径本身被退回，因为两边同源同错——门⑥ 冷审 I-3 要求说清这个能抓与不能抓的边界）；**自检②**：候选路径「不是普通文件」（转义/解析回归的典型症状）⇒ 逐条列名 + `exit 2`；**自检③（Issue#154 AC2 的字面项）**：候选数 ≠「已扫描 + 已解释跳过」⇒ 打印三项计数 + `exit 2`（判定抽成纯函数 `unexplained_candidates`，便于单测）
+  - **取改动清单失败必须报红（冷审 I-1）**：`_git_lines` 不再把 `CalledProcessError`/`OSError` 吞成 `[]`，改抛 `GitError` ⇒ `main` 打印「取改动清单失败：…」+ `exit 2`。旧行为在「`--base` 写错 + 仓里有未跟踪文件」时会**绿着放行**（冷审实测：bogus base → `1 文件，零命中` rc 0；正确 base → 命中 2 处 rc 1）；空区间的「没有候选文件」与取清单失败文案已分开（冷审 M-7）
+  - **重命名/类型变更也进扫描集（冷审 I-2）**：`--diff-filter=AM` → `AMRT`（`-z --name-only` 对重命名只输出目标路径，NUL 口径下无需额外处理）；旧口径下 `git mv` 再改文件，只要同批还有别的改动就静默漏扫（冷审实测 R092 → rc 0）
+  - 解析层只丢**空项**（不再用 `strip()` 当谓词：文件名全为空白的文件曾被静默丢掉，冷审 M-1）；子进程显式 `encoding="utf-8"` + `errors="surrogateescape"`，C locale / 非 UTF-8 文件系统编码下**说明原因**而非含糊报「路径解析可疑」（冷审 M-5/C2；`test_c_locale_run_*` 真子进程验证不崩）
   - 有意跳过（后缀不在扫描范围 / 超 2MiB / 非 UTF-8）改为**逐类打印原因**，仍不判红（整树巡检 `--base ""` 必须可用：实测 991 文件、跳过明细 = 35 后缀 + 3 超上限 + 1 非 UTF-8）
-  - 新增 `backend/tests/test_public_tree_scanner.py`（8 例，tmp_path 现搭 git 仓）：中文名/含空格名改动文件必被扫到、红线必被报出、计数不一致与幻影路径必 `exit 2`、有意跳过必留痕、`--self-test` 与整树模式不回退；**变异自证 M1–M5 全 KILLED**（退回不带 `-z` 的旧口径 / 删计数自检 / 路径异常不判红 / 跳过不打印 / 漏未跟踪文件，各自都有指名用例栽掉）
-  - 门③：本机全量 **12 failed / 2152 passed / 51 skipped**，与同刻基线（`8722503`）**12 failed / 2144 passed / 51 skipped** 的 `FAILED` 集合逐条 `comm` **完全一致**（零新增失败；12 条均为本机沙箱建不出进程池的既有环境失败）；`+8 passed` = 新增用例；`ruff check app/` 干净；扫描器对本次改动自扫 `2 文件，零命中`
+  - 新增 `backend/tests/test_public_tree_scanner.py`（**19 例**，tmp_path 现搭 git 仓 + 两个真子进程用例）：中文名/含空格/**含双引号**/重音名必被扫到、**已提交区间 `<base>...HEAD` 与 `git mv` 重命名**必须覆盖非 ASCII、红线必被报出、**bogus base 必须报红且不得出现「零命中」**、空区间与取清单失败文案可区分、自检②幻影路径与自检③余数必 `exit 2`、`--paths` 模式双向、有意跳过必留痕、C locale 下打印中文不崩、`--self-test` 与整树模式不回退；**变异自证 M1–M8 全 KILLED**（退回无 `-z` 旧口径 / **仅 `<base>...HEAD` 退回无 `-z`** / 过滤退回 `AM` / 解析退回 `strip()` / 吞 `CalledProcessError` / 去掉显式 `encoding` / 自检③接线改恒静默 / **`core.quotepath=false` 替代方案**，各自都有指名用例栽掉）
+  - 门③：本机全量 **12 failed / 2163 passed / 51 skipped**，与同刻基线（PR base `8722503`）**12 failed / 2144 passed / 51 skipped** 及上一版 head（`bbbfa41`，12F/2152P/51S）的 `FAILED` 集合逐条 `comm` **完全一致**（零新增失败；12 条均为本机沙箱建不出进程池 / `safe_regex` 子进程的既有环境失败）；`+19 passed` = 新增用例；`ruff check app/`（CI 唯一的 lint 门）干净——改动文件在本仓 ruff 下除 base 既有的 `EXE001`（脚本有 shebang 但无 exec 位；`eval-ng/*` 与 `backend/tests/*` 均不在 CI lint 门范围，冷审 M-9）外无新增告警；扫描器对本次改动自扫 `3 文件，零命中`
 - fix(docs): 归档仓编号引用约定 + 修复 `eval/scripts/format_report.py` 旧仓 #46 错链（Issue#59）
   - `render_md` 不再拼 `github.com/youayou-Lee/LexMask/issues/46`（本仓 #46 语义完全不同），改标「归档仓 #46（DataInfra-RedactionEverything）」
   - `docs/协同开发规范-gh使用与仓库纪律.md` 新增 §5：外链必须指向本仓真实 Issue、指旧仓写「归档仓 #NN」、历史叙事不批量清理
