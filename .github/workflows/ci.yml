@@ -106,6 +106,13 @@ jobs:
         working-directory: frontend
         run: npx vitest run src/features/playground/utils.vision-page-concurrency.test.ts --reporter=verbose
 
+      # Issue#48：全量前端测试进 CI（原先只 npm ci + build，测试从未在 CI 跑过）。
+      # 上面那条是 #106/#149 的定点并发护栏（带 verbose 列出用例名）；
+      # 本条跑全量（含同一条护栏），保证新组件用例等以后新增用例都在 CI 里。
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
+
       - name: Build frontend
         working-directory: frontend
         run: npm run build
