@@ -111,16 +111,21 @@ class RecognitionPipelineMixin:
             # 3) 完成识别
             self._mark_recognition_complete(task, job, store)
 
-        except (FileNotFoundError, OSError) as e:
-            err_msg = str(e)[:_ERROR_MSG_MAX_LEN]
-            logger.error("[queue] item=%s recognition I/O error: %s", task.item_id[:8], err_msg)
+        # Issue#139：Python 3.10 上 `asyncio.TimeoutError` 与内建 `TimeoutError` 不是同一个类
+        # （3.11+ 才合并），只捕内建类时超时会落到通用分支被记成 failed；故两处都显式列出。
+        # 顺序必须在 `(FileNotFoundError, OSError)` 之前——3.11+ 内建 `TimeoutError` 是 `OSError`
+        # 子类，否则超时会被 I/O 分支抢先吞掉、记成「recognition I/O error」。
+        # `# noqa: UP041` 必须保留（pyproject `target-version = "py311"`）。
+        except (TimeoutError, asyncio.TimeoutError) as e:  # noqa: UP041
+            err_msg = str(e)[:_ERROR_MSG_MAX_LEN] or "recognition timed out"
+            logger.error("[queue] item=%s recognition timeout: %s", task.item_id[:8], err_msg)
             try:
                 store.update_item_status(task.item_id, JobItemStatus.FAILED, error_message=err_msg)
             except (KeyError, ValueError):
                 logger.warning("failed to mark item %s as FAILED (item not found or invalid transition)", task.item_id[:8])
-        except TimeoutError as e:
-            err_msg = str(e)[:_ERROR_MSG_MAX_LEN] or "recognition timed out"
-            logger.error("[queue] item=%s recognition timeout: %s", task.item_id[:8], err_msg)
+        except (FileNotFoundError, OSError) as e:
+            err_msg = str(e)[:_ERROR_MSG_MAX_LEN]
+            logger.error("[queue] item=%s recognition I/O error: %s", task.item_id[:8], err_msg)
             try:
                 store.update_item_status(task.item_id, JobItemStatus.FAILED, error_message=err_msg)
             except (KeyError, ValueError):
@@ -346,7 +351,8 @@ class RecognitionPipelineMixin:
                         ),
                         timeout=page_timeout,
                     )
-                except TimeoutError as exc:
+                # Issue#139：见 _run_recognition 处的同类说明（3.10 两类分立 + 必须重排到 OSError 之前）。
+                except (TimeoutError, asyncio.TimeoutError) as exc:  # noqa: UP041
                     page_ms = _elapsed_ms(page_started)
                     active_pages = max(0, active_pages - 1)
                     self._record_item_performance(
@@ -519,7 +525,8 @@ class RecognitionPipelineMixin:
                 page_concurrency,
                 max_active_pages,
             )
-        except TimeoutError as exc:
+        # Issue#139：见 _run_recognition 处的同类说明（3.10 两类分立 + 必须重排到 OSError 之前）。
+        except (TimeoutError, asyncio.TimeoutError) as exc:  # noqa: UP041
             raise TimeoutError(
                 f"vision recognition timed out after {page_timeout:.0f}s per page"
             ) from exc

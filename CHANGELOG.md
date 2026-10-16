@@ -2,6 +2,14 @@
 
 ## 2026-10-17
 
+- fix(queue): **Python 3.10 上页级/管线级超时被记成 `failed`、并被 I/O 分支抢吞**（Issue#139）
+  - `backend/app/services/task_queue_pipelines.py`：三处 `except TimeoutError` 改为 `except (TimeoutError, asyncio.TimeoutError)  # noqa: UP041`（`:119` `_run_recognition` 终段、`:355` `_run_vision` 的 `run_page`、`:529` `_run_vision` 外层）。3.10 实测 `asyncio.TimeoutError is TimeoutError` 为 `False`、`issubclass(asyncio.TimeoutError, TimeoutError)` 为 `False`（3.11+ 才合并为内建类），只捕内建类时 `asyncio.wait_for` 抛出的超时会落到通用分支记成 `recognition failed (unexpected)`；`# noqa: UP041` 必须保留（`backend/pyproject.toml` `target-version = "py311"` 会把它误自动改写掉）
+  - **同文件必须一并重排**：3.11+ 内建 `TimeoutError` 是 `OSError` 子类，而 `_run_recognition` 的 `except (FileNotFoundError, OSError)` 原本排在 `except TimeoutError` 之前 ⇒ 页级超时转换出的内建 `TimeoutError` 会被 I/O 分支抢先吞掉、记成「recognition I/O error」。改为超时分支在前（M4 变异实证：三处类型都改对但不重排时 T4 判红）
+  - 新增 `backend/tests/test_issue139_pipeline_asyncio_timeout.py`（**14 例**）：以「非 `TimeoutError` 子类」的替身类（与 #137 D1 同一注入手法 + `**assert not issubclass(替身, TimeoutError)**` 空转护栏）触发超时，断言三处超时语义；另有**反向护栏**（真 `ValueError` 仍走 `failed`、真 `OSError`/`PermissionError` 仍走 I/O 分支）防止用「把捕获放宽成 `except Exception`」蒙过；T6 钉 `CancelledError` 不被吞、T7 钉多页批量页账不串页、T8 钉页数归一化；T11 是 3.10 环境前置门（3.11+ 上 `skipif` 跳过，**不计修复证据**）
+  - **改前红 / 改后绿（原始输出）**：基线 `b8a3398` 树 + 同一测试文件 = **5 failed（T1/T2/T3/T4/T7）/ 8 passed / 1 skipped**；修复树 = **13 passed / 1 skipped**
+  - **变异自证 M1–M5d 全 KILLED**（各自指名用例栽掉）：收窄 `:119`→T1；收窄 `:355`→T2+T7；收窄 `:529`→T3；三处类型都改对但不重排→T4；放宽 `:119` 为 `Exception`→T5+T9；放宽 `:355`→T10a；放宽 `:529`→T10a+T10b；放宽 `:119` 为 `BaseException`→T5+T6+T9
+  - **有意未处置**：`backend/app/services/task_queue.py:566` 的 worker 顶层 `except (TimeoutError, OSError, RuntimeError, ValueError, KeyError, json.JSONDecodeError)` 仍未列 `asyncio.TimeoutError`。该分支在本树**不可达**（三条管线的终端梯 `task_queue_pipelines.py:146/661/793` 都已吞掉 `Exception` 子类，只有 `PdfEncryptedError` 经 `:141`/`:790` 逃到 worker），触发条件＝管线去掉终端 `except Exception`
+  - **归因纪律**：本 PR 只负责 `task_queue_pipelines.py` 的同类根因，`recognition failed (unexpected)` 这类观测**不得**归因 #137（#137 修的是 `task_queue.py` 的另一处）
 - chore(security): **公开树预存凭据痕迹清零 + 云侧审计/E2E 脚本口令外置**（Issue#140、Issue#141）
   - `cloud-deploy/audit_scan_output.py`、`cloud-deploy/e2e_real_cases.py`：认证口令不再以字面量写死在登录循环里，改为 `os.environ.get("LEXMASK_EVAL_PASSWORD")`（账号名 `LEXMASK_EVAL_USER`，默认 `apitester`）；未设置时 `sys.exit` 并指向 README 的「凭据注入」小节；两个脚本文档串与 `cloud-deploy/README_CLOUD.md` 补运行前置（#141 AC1/AC4）
   - `backend/scripts/eval/benchmark_throughput.py` 用法示例里的口令改为 shell 环境变量形态（#140 AC1）
