@@ -63,17 +63,17 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh"><head><meta charset="utf-8">
 <title>T3 GT 标注核对</title>
 <style>
-  body {{ font-family: sans-serif; margin: 16px; }}
-  .page {{ margin-bottom: 40px; }}
-  .wrap {{ position: relative; display: inline-block; border: 1px solid #999; }}
-  img {{ display: block; }}
-  svg.overlay {{ position: absolute; left: 0; top: 0; pointer-events: none; }}
-  rect.box {{ fill: none; stroke-width: 2; }}
-  rect.sel {{ stroke-dasharray: 4 2; stroke-width: 3; }}
-  .controls {{ margin: 6px 0; }}
-  .kind-picker button {{ margin-right: 6px; }}
-  button {{ cursor: pointer; }}
-  .export {{ position: fixed; top: 10px; right: 10px; padding: 8px 14px; }}
+  body { font-family: sans-serif; margin: 16px; }
+  .page { margin-bottom: 40px; }
+  .wrap { position: relative; display: inline-block; border: 1px solid #999; }
+  img { display: block; }
+  svg.overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
+  rect.box { fill: none; stroke-width: 2; }
+  rect.sel { stroke-dasharray: 4 2; stroke-width: 3; }
+  .controls { margin: 6px 0; }
+  .kind-picker button { margin-right: 6px; }
+  button { cursor: pointer; }
+  .export { position: fixed; top: 10px; right: 10px; padding: 8px 14px; }
 </style></head><body>
 <button class="export" onclick="exportGt()">导出 gt.jsonl</button>
 <h1>T3 GT 标注核对（页像素坐标，左上原点）</h1>

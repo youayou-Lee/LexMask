@@ -111,8 +111,8 @@ class TestRender:
         md = report_t3.render_markdown(cells, {"la": 1.0, "sigdet": 1.0}, metrics, buckets, None)
         assert "**桶塌方** seal/seal_hard" in md
         assert "较 LA 同桶 100.0% 下降 100.0pp" in md
-        # LA 自身行不判塌方（判读段 la 行直接通过）
-        assert "- **la**：通过全部预注册阈值" in md
+        # LA 自身行只作基线（不判塌方）
+        assert "- **la**：基线臂" in md
         # 接入成本：实测单页均值动态带出，sigdet 不再写死 ~ms 级
         assert "实测单页均值 4476 ms" in md
         assert "实测单页均值 100439 ms" in md
@@ -167,6 +167,126 @@ class TestRender:
         assert "成绩单" in md and "自动判读" in md
 
 
+class TestArmNotes:
+    """门⑥ 冷审 Critical/Important 的回归钉：C1/C2/I1/I2。"""
+
+    def test_gtless_fp_counted_once_per_arm(self):
+        """C1：无 GT 的 (page,kind) 预测只按**自己那一臂**记一次 FP。
+
+        旧实现把该累加块放在 `for arm in arms:` 内，每个臂跑一遍 → 同一预测
+        被记 N_arms 次（4 臂时 fp=4），且各臂放大倍数不同可让误报门翻面。
+        """
+        gt = [row("v#p1", "gt", "seal", 10, 10, 50, 50),
+              row("v#p2", "gt", "signature", 100, 100, 60, 30)]
+        details = [
+            row("v#p1", "la", "seal", 12, 12, 48, 48, conf=0.9),          # TP
+            row("v#p2", "la", "seal", 800, 400, 40, 40),                  # p2 无 seal GT → FP
+            row("v#p2", "sigdet", "seal", 800, 400, 40, 40),              # 另一臂同页同 kind
+            row("v#p2", "paddlex_seal", "seal", 800, 400, 40, 40),
+            row("v#p2", "mineru_seal", "seal", 800, 400, 40, 40),
+        ]
+        buckets = {"v#p1": ["seal_clean"], "v#p2": ["sig_hard"]}
+        cells, _ = report_t3.aggregate(details, gt, buckets)
+        for arm in ("la", "sigdet", "paddlex_seal", "mineru_seal"):
+            assert cells[(arm, "(all)", "seal")]["fp"] == 1, arm  # 旧代码 = 4
+        # 分桶同样只记一次
+        for arm in ("sigdet", "paddlex_seal", "mineru_seal"):
+            assert cells[(arm, "sig_hard", "seal")]["fp"] == 1, arm
+
+    def test_no_manifest_does_not_double_count_all(self, synthetic):
+        """I1：缺 manifest / 无桶页时 (all) 不得被计两次（tp/fp/fn 翻倍）。"""
+        gt, details, _, manifest = synthetic
+        empty = report_t3.aggregate(details, gt, {})[0]
+        unbucketed = report_t3.aggregate(
+            details, gt, {m["page_id"]: [] for m in manifest}
+        )[0]
+        for cells in (empty, unbucketed):
+            assert cells[("la", "(all)", "seal")] == {"tp": 1, "fp": 1, "fn": 1}
+            assert cells[("la", "(all)", "signature")] == {"tp": 0, "fp": 0, "fn": 1}
+
+    def test_all_row_renders_fp_per_page(self, synthetic):
+        """I2：主表 (all) 行的 FP/页 必须渲染（误报门判据用的就是这个量）。"""
+        gt, details, metrics, manifest = synthetic
+        buckets = {m["page_id"]: m["buckets"] for m in manifest}
+        cells, latency = report_t3.aggregate(details, gt, buckets)
+        md = report_t3.render_markdown(cells, latency, metrics, buckets, "manifest.private.json")
+        all_rows = [ln for ln in md.splitlines() if ln.startswith("| (all) |")]
+        assert len(all_rows) == 2  # seal / signature 各一行
+        seal_row = next(ln for ln in all_rows if "TP=1" in ln)
+        assert " / 0.33 (" in seal_row  # la: 1 FP / 3 页 = 0.333 → 不再显示 "-"
+        assert " / - (" not in seal_row
+
+    def test_missing_la_baseline_never_passes(self):
+        """C2：metrics 无 la 臂时不得打印「通过全部预注册判据」。
+
+        注意用「候选臂有明细」的构造：否则会被「无明细记录」守卫遮住，
+        测不出基线缺失分支本身（旧实现直接跳过两条检查照打「通过全部预注册阈值」）。
+        """
+        gt = [row("v#p1", "gt", "seal", 10, 10, 50, 50)]
+        details = [row("v#p1", "mineru_seal", "seal", 11, 11, 49, 49)]
+        metrics = {
+            "metrics": {
+                "mineru_seal": {"pages": 1, "ok_pages": 1, "failed_pages": 0,
+                                "avg_page_elapsed_s": 3.4, "by_kind": {"seal": 1, "signature": 0}},
+            }
+        }
+        buckets = {"v#p1": ["seal_clean"]}
+        cells, latency = report_t3.aggregate(details, gt, buckets)
+        notes = report_t3.arm_notes(
+            "mineru_seal", cells, metrics["metrics"], ["seal_clean", "(all)"]
+        )
+        assert any("基线缺失" in n for n in notes)
+        md = report_t3.render_markdown(cells, latency, metrics, buckets, None)
+        assert "基线缺失" in md
+        assert "通过全部预注册判据" not in md
+
+    def test_recall_and_cost_criteria_encode_issue_rules(self):
+        """C2：Issue 首要判据「候选召回 ≥ LA」「单页成本不高于 LA」必须落成判读。"""
+        gt = [row("v#p1", "gt", "seal", 10, 10, 50, 50),
+              row("v#p2", "gt", "seal", 200, 200, 50, 50)]
+        details = [
+            row("v#p1", "la", "seal", 12, 12, 48, 48),
+            row("v#p2", "la", "seal", 202, 202, 48, 48),                 # la 召回 100%
+            row("v#p1", "sigdet", "seal", 800, 400, 40, 40, conf=0.5),   # 召回 0% + 1 FP
+        ]
+        metrics = {"metrics": {
+            "la": {"pages": 2, "failed_pages": 0, "avg_page_elapsed_s": 4.0,
+                   "by_kind": {"seal": 2, "signature": 0}},
+            "sigdet": {"pages": 2, "failed_pages": 0, "avg_page_elapsed_s": 100.0,
+                       "by_kind": {"seal": 1, "signature": 0}},
+        }}
+        buckets = {"v#p1": ["seal_clean"], "v#p2": ["seal_clean"]}
+        cells, latency = report_t3.aggregate(details, gt, buckets)
+        md = report_t3.render_markdown(cells, latency, metrics, buckets, None)
+        assert "**召回低于 LA** seal：0.0% < 100.0%" in md
+        assert "（不满足「召回 ≥ LA」）" in md
+        assert "**单页成本高于 LA**：100000 ms > 4000 ms" in md
+        assert "通过全部预注册判据" not in md
+
+    def test_clean_candidate_passes_all_criteria(self):
+        """正例：召回≥LA、无塌方、误报≤上界、成本更低 → 判「通过全部预注册判据」。"""
+        gt = [row("v#p1", "gt", "seal", 10, 10, 50, 50),
+              row("v#p2", "gt", "seal", 200, 200, 50, 50)]
+        details = [
+            row("v#p1", "la", "seal", 12, 12, 48, 48),
+            row("v#p1", "la", "seal", 900, 900, 20, 20),                 # la 1 FP/2 页
+            row("v#p2", "la", "seal", 202, 202, 48, 48),
+            row("v#p1", "mineru_seal", "seal", 11, 11, 49, 49),          # 召回 100%
+            row("v#p2", "mineru_seal", "seal", 201, 201, 49, 49),
+        ]
+        metrics = {"metrics": {
+            "la": {"pages": 2, "failed_pages": 0, "avg_page_elapsed_s": 4.476,
+                   "by_kind": {"seal": 3, "signature": 0}},
+            "mineru_seal": {"pages": 2, "failed_pages": 0, "avg_page_elapsed_s": 3.398,
+                            "by_kind": {"seal": 2, "signature": 0}},
+        }}
+        buckets = {"v#p1": ["seal_clean"], "v#p2": ["seal_clean"]}
+        cells, latency = report_t3.aggregate(details, gt, buckets)
+        md = report_t3.render_markdown(cells, latency, metrics, buckets, None)
+        assert "**mineru_seal**：通过全部预注册判据" in md
+        assert "召回低于 LA" not in md and "桶塌方" not in md
+
+
 class TestGtReview:
     def test_build_html_embeds_prefill(self, tmp_path, synthetic):
         gt, details, _, _ = synthetic
@@ -200,6 +320,23 @@ class TestGtReview:
         # 不传 out_path（向后兼容）：src 相对 pages 目录本身
         html2 = gt_review.build_html(str(pages), {})
         assert '"src": "v#p1.png"' in html2
+
+    def test_emitted_html_css_is_valid(self, tmp_path):
+        """I4：模板 CSS 必须是可用单花括号。
+
+        旧模板用双花括号（`body {{ … }}`）却只做 `.replace('__PAGES_DATA__')`、
+        从不 `.format()`，产出 HTML 里每条 CSS 都带 `{{ }}` → `svg.overlay
+        { position: absolute }` 失效、叠加框与页图脱位。
+        """
+        from PIL import Image
+
+        pages = tmp_path / "pages"
+        pages.mkdir()
+        Image.new("RGB", (100, 80), "white").save(pages / "v#p1.png")
+        html_text = gt_review.build_html(str(pages), {}, out_path=str(tmp_path / "gt.html"))
+        assert "{{" not in html_text and "}}" not in html_text
+        assert "svg.overlay { position: absolute" in html_text
+        assert ".wrap { position: relative" in html_text
 
     def test_prefill_arm_filter_skips_failed(self, tmp_path):
         rows = [

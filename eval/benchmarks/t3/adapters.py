@@ -159,10 +159,40 @@ def _pred(kind: str, px: tuple[float, float, float, float], confidence: float, r
     }
 
 
+def _normalize_order(x1, y1, x2, y2):
+    """反向坐标视为写反并交换（与 `backend/scripts/locate_anything_eval.py:186
+    _box_from_match` 同口径）——否则 convert_1000_box 只会得零宽/零高框。"""
+    if x1 > x2:
+        x1, x2 = x2, x1
+    if y1 > y2:
+        y1, y2 = y2, y1
+    return x1, y1, x2, y2
+
+
+def _dedupe_preds(preds: list[dict]) -> list[dict]:
+    """完全相同框（同 kind + 取整后同坐标）只留一条：对齐服务端 `_dedupe_boxes`
+    语义。重复框在 GT 一经命中即占用的贪心匹配下只会变成 FP，不是无害冗余。"""
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for p in preds:
+        box = p["box"]
+        key = (p["kind"], box["x"], box["y"], box["w"], box["h"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
 def parse_la_raw_answer(raw_answer: str, page_w: int, page_h: int) -> list[dict]:
     """解析 LA raw_answer：按 [category] 分段，段内 0-1000 box → 像素。
 
-    段外的裸 <box> token 无通道归属，跳过（kind 不明不能进契约）。
+    - 反向坐标（x1>x2 / y1>y2）按写反交换（同现役 eval 解析器口径）；
+    - 退化框（宽或高为 0）丢弃（同现役服务端 `_accept_normalized_box` 口径）；
+    - 完全相同的框去重（同 `_dedupe_boxes` 语义）；
+    - 段外裸 <box> token 无通道归属，跳过（kind 不明不能进契约）。
+
+    注意：这是**旧版服务端回退路径**；现役服务端契约见 `parse_la_boxes`（优先）。
     """
     preds: list[dict] = []
     segments = list(_LA_SEGMENT.finditer(raw_answer))
@@ -173,12 +203,35 @@ def parse_la_raw_answer(raw_answer: str, page_w: int, page_h: int) -> list[dict]
         if kind is None:
             continue
         for m in _LA_REF_BOX.finditer(body):
-            px = convert_1000_box(
-                int(m.group("x1")), int(m.group("y1")), int(m.group("x2")), int(m.group("y2")),
-                page_w, page_h,
+            x1, y1, x2, y2 = _normalize_order(
+                int(m.group("x1")), int(m.group("y1")), int(m.group("x2")), int(m.group("y2"))
             )
+            px = convert_1000_box(x1, y1, x2, y2, page_w, page_h)
+            if px[2] <= 0 or px[3] <= 0:
+                continue  # 退化框（服务端同样不接受）
             preds.append(_pred(kind, px, 1.0, m.group(0)))
-    return preds
+    return _dedupe_preds(preds)
+
+
+def parse_la_boxes(boxes: list, page_w: int, page_h: int) -> list[dict]:
+    """结构化 `boxes`（服务端 `_box_to_normalized` 产出的 0-1 归一框）→ 页像素。
+
+    这是**现役管线消费的同一契约**（已去重、已过退化过滤），故 run_la 优先用它；
+    confidence 缺失/None 才填 1.0（`或 1.0` 会把合法的 0.0 抬成最高优先，是错的）。
+    """
+    preds: list[dict] = []
+    for b in boxes or []:
+        kind = LA_KIND_BY_CHANNEL.get(str(b.get("category") or ""))
+        if kind is None:
+            continue
+        px = convert_01_box(
+            float(b["x"]), float(b["y"]), float(b["width"]), float(b["height"]), page_w, page_h
+        )
+        if px[2] <= 0 or px[3] <= 0:
+            continue  # 对齐 _accept_normalized_box（w>0 且 h>0）
+        conf = b.get("confidence")
+        preds.append(_pred(kind, px, 1.0 if conf is None else float(conf), ""))
+    return _dedupe_preds(preds)
 
 
 # ---- 臂 1：LA --------------------------------------------------------------
@@ -202,17 +255,13 @@ def run_la(
         transport=transport,
     )
     payload = resp.json()
-    preds = parse_la_raw_answer(str(payload.get("raw_answer") or ""), page_w, page_h)
+    # 优先结构化 `boxes`：现役管线消费的就是它（已去重、已过退化过滤），
+    # 走 raw 解析会绕开这套过滤、把 LA 框测得与上线行为不一致（FP 上界随之变松）。
+    preds = parse_la_boxes(payload.get("boxes") or [], page_w, page_h)
     if preds:
         return preds
-    # 回退：raw_answer 没解析出（服务端格式变更）→ 用结构化 0-1 boxes
-    for b in payload.get("boxes") or []:
-        kind = LA_KIND_BY_CHANNEL.get(str(b.get("category") or ""))
-        if kind is None:
-            continue
-        px = convert_01_box(b["x"], b["y"], b["width"], b["height"], page_w, page_h)
-        preds.append(_pred(kind, px, float(b.get("confidence") or 1.0), ""))
-    return preds
+    # 回退：服务端未给结构化 boxes（旧版）→ 解析 raw_answer
+    return parse_la_raw_answer(str(payload.get("raw_answer") or ""), page_w, page_h)
 
 
 # ---- 臂 2：MinerU seal -----------------------------------------------------

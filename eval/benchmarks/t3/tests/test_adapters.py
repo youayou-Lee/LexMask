@@ -135,6 +135,60 @@ def test_la_falls_back_to_normalized_boxes(mock_server, page_image):
     assert preds[0]["box"] == {"x": 500.0, "y": 100.0, "w": 250.0, "h": 200.0}
 
 
+def test_la_prefers_structured_boxes_over_raw(mock_server, page_image):
+    """I5：结构化 `boxes` 是现役管线消费的同一契约（已去重/过退化过滤）→ 优先用它。
+
+    旧实现先解析 raw_answer，会绕开服务端过滤，使 LA 框与上线行为不一致、
+    误报上界随之变松。顺带钉住 confidence=0.0 不得被 `or 1.0` 抬成最高优先。
+    """
+    raw = "[official_seal] <ref>公章</ref><box><100><100><200><300></box>"
+    ReplayingHandler.routes["/detect"] = [
+        (
+            200,
+            {
+                "boxes": [
+                    {"x": 0.5, "y": 0.2, "width": 0.25, "height": 0.4,
+                     "category": "official_seal", "confidence": 0.0}
+                ],
+                "raw_answer": raw,
+            },
+            0,
+        )
+    ]
+    preds = adapters.run_la(page_image, base_url=mock_server)
+    assert len(preds) == 1
+    assert preds[0]["box"] == {"x": 500.0, "y": 100.0, "w": 250.0, "h": 200.0}
+    assert preds[0]["confidence"] == 0.0
+    assert preds[0]["raw"] == ""
+
+
+def test_la_raw_fallback_swaps_dedupes_and_drops_degenerate():
+    """I5：raw 回退路径对齐现役解析器（反向坐标交换、重复框去重、退化框丢弃）。"""
+    raw = (
+        "[signature] <ref>签</ref><box><700><100><500><50></box>\n"      # 反向 → 交换
+        "[signature] <ref>签</ref><box><500><50><700><100></box>\n"      # 与上同框 → 去重
+        "[official_seal] <ref>章</ref><box><100><100><100><300></box>"   # 零宽 → 丢弃
+    )
+    preds = adapters.parse_la_raw_answer(raw, 1000, 500)
+    assert len(preds) == 1
+    assert preds[0]["kind"] == "signature"
+    assert preds[0]["box"] == {"x": 500.0, "y": 25.0, "w": 200.0, "h": 25.0}
+
+
+def test_la_boxes_missing_confidence_defaults_only_when_none():
+    """I5：结构化框仅在 confidence 缺失时填 1.0；既有合法 0.0 原样保留。"""
+    boxes = [
+        {"x": 0.1, "y": 0.1, "width": 0.1, "height": 0.1, "category": "signature"},
+        {"x": 0.3, "y": 0.3, "width": 0.1, "height": 0.1, "category": "signature",
+         "confidence": 0.0},
+        {"x": 0.5, "y": 0.5, "width": 0.1, "height": 0.1, "category": "official_seal",
+         "confidence": 0.4},
+    ]
+    preds = adapters.parse_la_boxes(boxes, 1000, 500)
+    assert [p["confidence"] for p in preds] == [1.0, 0.0, 0.4]
+    assert [p["kind"] for p in preds] == ["signature", "signature", "seal"]
+
+
 def test_la_5xx_retries_once_then_raises(mock_server, page_image):
     ReplayingHandler.routes["/detect"] = [
         (500, {"detail": "boom"}, 0),

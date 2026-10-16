@@ -10,11 +10,14 @@ T0 agent 的探测原始输出（perf-work/issue92-t0/）兼容两种输入形�
 2. 通用逐页探测 JSON：{"page_id"/"volume"/"page", "la_boxes",
    "mineru_seal_blocks", ...}（字段缺省视为 0）。
 
-桶标签（provisional，最终人工定档在 T1）：默认规则——
+桶标签（provisional）：默认规则——
   has_seal 且 has_signature  → ["seal_hard", "sig_hard"]（压字页先归难桶）
   仅 has_seal                → ["seal_clean"]
   仅 has_signature           → ["sig_hard"]（签名默认进难桶，宁可多收）
-可用 --bucket-seal-hard / --bucket-sig-hard 覆盖打标集合（页号逗号列表）。
+
+最终人工定档在 T1：直接修订 manifest 里各页的 `buckets` 字段，改完用本工具
+`--validate` 复核 schema。本工具**不提供桶覆盖开关**（早期 docstring 里的
+--bucket-seal-hard / --bucket-sig-hard 从未实现，勿再引用）。
 
 不负责跑全量（T0 agent 并行产出数据）；提供 --validate 只校验现有 manifest。
 

@@ -102,14 +102,18 @@ def run_benchmark(
                     }
                 )
             if not preds:
+                # 零出框页也是 ok 页，必须带上本页墙钟（否则该页被排除在
+                # avg_page_elapsed_s 之外，单页耗时口径失真）
                 record["status"] = "ok"
+                record["elapsed_ms"] = elapsed_ms
                 details.append(record)
 
     metrics: dict[str, dict] = {}
     for arm in arms:
         rows = [d for d in details if d["arm"] == arm]
         ok_rows = [d for d in rows if d["status"] == "ok"]
-        # 页粒度耗时 = 该页首条 ok 记录的 elapsed_ms
+        # 页粒度耗时 = 该页首条 ok 记录的 elapsed_ms（每 ok 页一条含耗时记录，
+        # 含零出框页）；`> 0` 仅作缺省防线。
         page_times = [d["elapsed_ms"] for d in ok_rows if d["elapsed_ms"] > 0]
         pages_seen = {d["page_id"] for d in rows}
         failed_pages = {d["page_id"] for d in rows if d["status"] == "failed"}

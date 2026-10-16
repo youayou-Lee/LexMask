@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,29 @@ class TestRunBenchmark:
         monkeypatch.setattr(benchmark_t3, "run_arm", lambda a, p: [])
         metrics, details = benchmark_t3.run_benchmark(make_manifest(Path("/x")), pages_dir, ["la"])
         assert metrics["la"]["ok_pages"] == 2 and metrics["la"]["boxes"] == 0
+
+    def test_empty_page_carries_elapsed_and_counts_in_average(self, pages_dir, monkeypatch):
+        """I3：零框 ok 页也必须带本页墙钟，且进入 avg_page_elapsed_s。
+
+        旧实现只给「出框页」写 elapsed_ms（空框页记 0）→ 空框页被 `> 0` 过滤
+        排除在均值外，而报告/README 标称「ok 页平均」，单页成本判据随之偏。
+        """
+        def fake_run(arm, image_path):
+            time.sleep(0.003)  # 真墙钟 > 计时分辨率，避免 round(…,1) 得 0.0
+            if "#p2" in image_path:
+                return []  # 零框 ok 页
+            return [{"kind": "seal", "box": {"x": 1, "y": 1, "w": 10, "h": 10},
+                     "confidence": 0.9, "raw": ""}]
+
+        monkeypatch.setattr(benchmark_t3, "run_arm", fake_run)
+        metrics, details = benchmark_t3.run_benchmark(make_manifest(Path("/x")), pages_dir, ["la"])
+        empty = [d for d in details if d["status"] == "ok" and not d["kind"]]
+        assert len(empty) == 1 and empty[0]["elapsed_ms"] > 0
+        # 两页都进均值 → total（= avg × 2 页）必 ≥ avg
+        timed_pages = {d["page_id"] for d in details if d["status"] == "ok" and d["elapsed_ms"] > 0}
+        assert timed_pages == {"vol0#p1", "vol1#p2"}
+        assert metrics["la"]["avg_page_elapsed_s"] is not None
+        assert metrics["la"]["total_elapsed_s"] >= metrics["la"]["avg_page_elapsed_s"]
 
 
 class TestFindPageImage:
