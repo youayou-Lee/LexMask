@@ -409,3 +409,39 @@ class TestThirdRoundFollowups:
         err = capsys.readouterr().err
         assert rc == 0, err
         assert "文件系统编码" in err, err
+
+
+def test_tracked_public_tree_has_no_credential_findings():
+    """Issue#140 / #141 AC2 的回归钉：**已入库**文件里不得再出现任何 `credential_*` 命中。
+
+    只扫 `git ls-files`（= 真正的「公开树」，确定性、不受本地未跟踪产物影响），跳过口径与 CLI
+    一致（后缀表 / 超上限 / 非 UTF-8），并复用 `scan_source` 以尊重 `ignore-line` 放过标记
+    （扫描器自身的阳性对照夹具靠它豁免）。诚实地雷：本文件是被扫对象之一，故新增任何含凭据
+    形态字面量的行都必须带标记。
+    """
+    root = _REPO_ROOT
+    listed = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
+    ).stdout
+    offenders: list[str] = []
+    for rel in [item for item in listed.split("\0") if item]:
+        path = root / rel
+        if path.suffix.lower() in ptree.SKIP_SUFFIXES or not path.is_file():
+            continue
+        if path.stat().st_size > ptree.MAX_BYTES:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        offenders.extend(
+            line
+            for line in ptree.scan_source(rel, text, denylist=[], allow_prefixes=[])
+            if "[credential" in line
+        )
+    assert offenders == [], "公开树出现凭据痕迹（Issue#140/#141 回归）：\n" + "\n".join(offenders)

@@ -3,7 +3,7 @@
 用法：
   python benchmark_throughput.py --backend http://127.0.0.1:8000 \
       --corpus-dir /path/to/corpus --label baseline --out bench_results \
-      --username bench_user --password 'Passw0rd!'
+      --username bench_user --password "$BENCH_PASSWORD"   # 口令从环境变量注入，勿写进仓（Issue#140）
 
 依赖后端既有能力，零埋点：
   - 每 item 性能来自 GET /jobs/{id}（_enrich_job_detail_with_performance）

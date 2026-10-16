@@ -397,7 +397,7 @@ class TestReviewGaps:
     def test_decrypt_422_never_echoes_password_value(self):
         # Issue #32（P2-4）：password 非字符串时 422 回显不得带 input 原值
         file_id, _ = _register("pw422.pdf", user_pw="userpw")
-        secret = "超机密密码9o0i"
+        secret = "placeholder-secret-not-echoed-9o0i"
         resp = client.post(
             f"/api/v1/files/{file_id}/decrypt", json={"password": {"evil": secret}}
         )

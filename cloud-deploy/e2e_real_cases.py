@@ -2,10 +2,12 @@
 """真实案卷批量 E2E —— 上传→vision全链路→执行脱敏→下载→残留PII正则审计。
 在实例上用 ~/.venvs/app/bin/python 运行（需 fitz/httpx）。
 用法: python3 e2e_real_cases.py [cases目录] [最大页数]
+凭据: 先 export LEXMASK_EVAL_PASSWORD=<测试账号口令>（口令只从环境变量注入，见 Issue#140/#141）
 """
 import glob
 import io
 import json
+import os
 import re
 import sys
 import time
@@ -28,10 +30,15 @@ def pii_stats(text):
             "bank_card": len(RE_BK.findall(text))}
 
 
-# 认证
+# 认证（凭据只从环境变量注入：公开仓不留任何口令字面量，Issue#140/#141）
+EVAL_USER = os.environ.get("LEXMASK_EVAL_USER", "apitester")
+EVAL_PASSWORD = os.environ.get("LEXMASK_EVAL_PASSWORD")
+if not EVAL_PASSWORD:
+    sys.exit("缺少环境变量 LEXMASK_EVAL_PASSWORD：测试账号口令不入公开仓（见 cloud-deploy/README_CLOUD.md）")
+
 token = None
-for path, body in [("/auth/setup", {"username": "apitester", "password": "ApiTest#2026"}),
-                   ("/auth/login", {"username": "apitester", "password": "ApiTest#2026"})]:
+for path, body in [("/auth/setup", {"username": EVAL_USER, "password": EVAL_PASSWORD}),
+                   ("/auth/login", {"username": EVAL_USER, "password": EVAL_PASSWORD})]:
     r = c.post(f"{BASE}{path}", json=body)
     if r.status_code == 200:
         token = (r.json() or {}).get("access_token") or (r.json() or {}).get("token")

@@ -22,7 +22,7 @@ REVIEWERS_DN = "CN=redaction-reviewers,DC=example,DC=com"
 GROUP_ROLE_MAP = f'{{"{ADMINS_DN}": "admin", "{REVIEWERS_DN}": "reviewer"}}'
 
 BOB = {
-    "password": "S3cret!pw",
+    "password": "placeholder-pw-bob",
     "dn": "cn=bob,ou=staff,dc=example,dc=com",
     "groups": [REVIEWERS_DN],
 }
@@ -151,7 +151,7 @@ def test_ldap_bind_ok_mapped_group_role(monkeypatch):
 
 def test_ldap_unmapped_groups_fall_back_to_default_role(monkeypatch):
     _enable_ldap(monkeypatch, LDAP_DEFAULT_ROLE="viewer")
-    carol = {"password": "C4rol!pw", "dn": "cn=carol,dc=example,dc=com", "groups": ["CN=random,DC=example,DC=com"]}
+    carol = {"password": "placeholder-pw-carol", "dn": "cn=carol,dc=example,dc=com", "groups": ["CN=random,DC=example,DC=com"]}
     _install_fake(monkeypatch, users={"carol": carol})
     resp = _login("carol", carol["password"])
     assert resp.status_code == 200
@@ -195,7 +195,7 @@ def test_ldap_unreachable_503_and_not_counted_toward_lockout(monkeypatch):
 def test_ldap_provision_refuses_to_hijack_local_user(monkeypatch):
     _enable_ldap(monkeypatch)
     auth.create_user("dave", "Loc4l!pass", role="user")
-    dave_dir = {"password": "DirPass1!", "dn": "cn=dave,dc=example,dc=com", "groups": [REVIEWERS_DN]}
+    dave_dir = {"password": "placeholder-pw-dave-dir", "dn": "cn=dave,dc=example,dc=com", "groups": [REVIEWERS_DN]}
     _install_fake(monkeypatch, users={"dave": dave_dir})
     resp = _login("dave", dave_dir["password"])
     assert resp.status_code == 409
@@ -294,7 +294,7 @@ def test_direct_bind_mode_uses_template_without_groups(monkeypatch):
         LDAP_SEARCH_BASE="",
         LDAP_BIND_DN_TEMPLATE="uid={username},ou=people,dc=example,dc=com",
     )
-    erin = {"password": "Er1n!pass", "dn": "uid=erin,ou=people,dc=example,dc=com", "groups": [ADMINS_DN]}
+    erin = {"password": "placeholder-pw-erin", "dn": "uid=erin,ou=people,dc=example,dc=com", "groups": [ADMINS_DN]}
     directory = FakeDirectory(users={"erin": erin})
     authenticator = ldap_auth.LdapAuthenticator(connector_factory=lambda: FakeConnector(directory))
     identity = authenticator.authenticate("erin", erin["password"])

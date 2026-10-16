@@ -40,7 +40,7 @@ def test_real_ct_and_mr_round_trip_with_manual_pixel_review(tmp_path: Path) -> N
         str(tmp_path / "real-output"),
         profile="longitudinal_research",
         options={
-            "mapping_secret": "real-corpus-validation-secret-32-bytes",
+            "mapping_secret": "placeholder-mapping-secret-32-bytes",
             "mapping_namespace": "real-corpus-test",
             "pixel_review_decisions": decisions,
         },
@@ -83,7 +83,7 @@ def test_audited_real_modalities_encodings_and_overlays_round_trip(
         pytest.skip("audited DICOM compatibility corpus has not been fetched")
     source = pydicom.dcmread(source_path, force=force)
     options = {
-        "mapping_secret": "audited-real-corpus-secret-32-bytes",
+        "mapping_secret": "placeholder-audited-secret-32-bytes",
         "mapping_namespace": relative_path,
         "force_dicom_read": force,
         "pixel_review_decisions": {str(source.SOPInstanceUID): "verified_clear"},
