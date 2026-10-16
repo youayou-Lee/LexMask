@@ -387,6 +387,7 @@ def test_render_md_snapshot():
     assert "upload HTTP 413" in md
     assert "命中解析兜底文案" in md  # 失败明细保留证据
     # Issue#59：引用旧仓 #46 时不得拼成本仓 #46 的错链
+    assert "# 归档仓 #46：格式 × 处理方式实测矩阵报告" in md  # 标题行本身也是契约
     assert "归档仓 #46" in md
     assert "LexMask/issues/46" not in md
 
