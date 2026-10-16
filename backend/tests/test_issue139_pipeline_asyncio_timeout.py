@@ -20,7 +20,7 @@
 `asyncio.TimeoutError` 换成与内建 `TimeoutError`（及 `OSError`）**无继承关系**的假类，
 再让被调用方抛它——只有显式元组捕获才捕得到（= 3.10 语义）。T4/T9 钉住第 2 条（分支顺序），
 T5/T6/T10a/T10b 是反向护栏（防「放宽成 `except Exception:`」与「I/O 错误被吃成 timeout」），
-T11 是环境前置门。是否 3.10 上真执行由门④的 skipped 计数与 T11 判定（见验收方案 AC3）。
+T7/T12 钉多页批量的页账隔离与首错取消语义，T8 钉页数归一化，T11 是环境前置门。是否 3.10 上真执行由门④的 skipped 计数与 T11 判定（见验收方案 AC3）。
 
 本机（3.12）无 pytest-asyncio，按仓内既有约定（同 `test_issue137_task_queue_worker.py`）
 用同步用例 + 内层 `async def scenario()` + `asyncio.run(scenario())`。
@@ -32,7 +32,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 import pytest
 
@@ -447,3 +448,45 @@ def test_t8_page_count_normalisation(
     _run(scenario)
     assert seen == [1], seen
     assert store.page_entry(1).get("status") == "completed", store.performance
+
+
+# ---------------------------------------------------------------------------
+# T12：首错取消语义——`as_completed` 消费循环里首错触发 `page_task.cancel()` 后，
+#      仍在飞的兄弟页**绝不能**被记成 failed（`CancelledError` 是 `BaseException`，
+#      `run_page` 的 `except Exception:` 捕不到 ⇒ 兄弟页不会写 failed 页账）
+# ---------------------------------------------------------------------------
+def test_t12_first_error_cancels_siblings_without_recording_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import settings
+
+    _patch_asyncio_timeout(monkeypatch)
+    monkeypatch.setattr(settings, "BATCH_RECOGNITION_PAGE_CONCURRENCY", 3, raising=False)
+    store = _FakeStore()
+    queue = _queue(store)
+    started: list[int] = []
+
+    async def _detect(file_id: str, page: int, **kwargs: Any) -> dict[str, Any]:
+        started.append(page)
+        if page == 1:
+            # 给事件循环足够时间把 2/3 号页一并启动（保证它们是「在飞」兄弟页），再抛超时。
+            await asyncio.sleep(0.1)
+            raise _Fake310AsyncTimeoutError()
+        await asyncio.sleep(1.0)
+        return {"boxes": []}
+
+    _vision_stubs(monkeypatch, pages=3, detect=_detect)
+
+    async def scenario() -> None:
+        with pytest.raises(TimeoutError):
+            await queue._run_vision(_item(), dict(_VISION_CFG))
+
+    _run(scenario)
+
+    statuses = store.page_statuses()
+    assert sorted(started) == [1, 2, 3], started
+    assert statuses.get("1") == "timeout", statuses
+    # 承重断言：被取消的在飞兄弟页不得被记成 failed（也不会被记成 completed，因为从未返回）。
+    assert "failed" not in statuses.values(), statuses
+    for page in ("2", "3"):
+        assert statuses.get(page) in (None, "completed"), statuses
