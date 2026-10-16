@@ -279,3 +279,112 @@ def _filter_blocks_for_has_text(
         for block in ocr_blocks
         if _compact_text(block.text) and not str(block.text or "").lstrip().startswith("<table")
     ]
+
+
+# ---------------------------------------------------------------------------
+# Issue#104 C3：按 token 预算把一页文本行分组为若干次 HaS 主查
+# ---------------------------------------------------------------------------
+
+# 组装填上限在「实发预算」之外再留的安全边（token）：生效上下文 − reserve − 本值。
+# 与 D7 数值判据同源；min 链自身留 reserve(160)，规划器再留 64。
+_GROUP_FILL_MARGIN_TOKENS = 64
+
+_ALNUM_BOUNDARY_RE = re.compile(r"[0-9A-Za-z]")
+
+
+def _hard_split_block(
+    block: str,
+    *,
+    fits,
+) -> list[str]:
+    """把单块超预算的文本硬切成若干能装下的片段（保底路径）。
+
+    切点优先落在非字母数字边界（编号/真值不被拦腰切断——D1⑦）；整段都是
+    字母数字时退化为中点对半。递归终止：片段短到仍装不下 ⇒ 显式 ValueError
+    （D1⑩ 极小 context：有限终止或报错，绝不死循环、绝不静默丢页）。
+    """
+
+    def _cut(text: str) -> tuple[str, str]:
+        # 在前半段里找最后一个「两侧不都是字母数字」的位置（保留分隔符在前段尾）。
+        window = text[: max(1, len(text) // 2 + 1)]
+        cut = 0
+        for i in range(len(window) - 1, 0, -1):
+            if not (_ALNUM_BOUNDARY_RE.match(text[i]) and _ALNUM_BOUNDARY_RE.match(text[i - 1])):
+                cut = i
+                break
+        if cut <= 0:
+            cut = max(1, len(text) // 2)
+        return text[:cut], text[cut:]
+
+    def _split(text: str) -> list[str]:
+        if fits(text):
+            return [text]
+        if len(text) <= 1:
+            raise ValueError(
+                "plan_has_text_groups: single character cannot fit the context budget "
+                "(context too small for one HaS call)"
+            )
+        head, tail = _cut(text)
+        return _split(head) + _split(tail)
+
+    return _split(block)
+
+
+def plan_has_text_groups(
+    blocks: list[str],
+    *,
+    context_tokens: int,
+    reserve_tokens: int,
+    estimate_for,
+    max_tokens_for,
+) -> list[list[str]]:
+    """按 token 预算把一页的文本行贪心分组（Issue#104 C3，纯函数）。
+
+    每组满足**装填上限**（与 D7 同源）::
+
+        estimate_for(组文本) + max_tokens_for(组文本)
+            <= context_tokens − reserve_tokens − 64
+
+    - ``estimate_for`` / ``max_tokens_for``：与 has_client 实发**同一算术**的
+      两个函数（prompt 估算 / 完成预算），分组规划器不得另写一份；
+    - 单块自身超预算 ⇒ 块内硬切（保底，切点避字母数字边界）并继续；
+    - 输入为空/纯空白 ⇒ ``[]``；
+    - 单组时输出与输入逐字等价（C6：``"\\n".join(groups[0]) == "\\n".join(blocks)``）；
+    - partition 性质（D1⑨）：各组摊平按序覆盖全部输入、不重不漏；
+    - 极小 context（连单字符都装不下）⇒ ValueError，绝不静默丢内容。
+    """
+    fill = int(context_tokens) - int(reserve_tokens) - _GROUP_FILL_MARGIN_TOKENS
+    if fill <= 0:
+        raise ValueError(
+            f"context budget too small: context={context_tokens} reserve={reserve_tokens}"
+        )
+
+    def fits(joined: str) -> bool:
+        return estimate_for(joined) + max_tokens_for(joined) <= fill
+
+    clean = [str(block) for block in blocks if str(block).strip()]
+    if not clean:
+        return []
+
+    groups: list[list[str]] = []
+    current: list[str] = []
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            groups.append(current)
+            current = []
+
+    for block in clean:
+        if current and fits("\n".join([*current, block])):
+            current.append(block)
+            continue
+        flush()
+        if fits(block):
+            current.append(block)
+            continue
+        # 单块自身超预算：硬切成独立片段组（每片段一组，保序）。
+        for piece in _hard_split_block(block, fits=fits):
+            groups.append([piece])
+    flush()
+    return groups

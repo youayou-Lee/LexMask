@@ -42,7 +42,9 @@ NER_ENTITY_COUNT = Histogram(
 NER_ERRORS = Counter(
     "redaction_ner_errors_total",
     "NER errors",
-    ["error_type"],  # timeout / network / model
+    # error_type 取值见 has_client._classify_ner_error：
+    # http_400 / http_422 / http_5xx / http_<status> / timeout / network / other
+    ["error_type"],
 )
 
 # ──────────────────────────────────────────────
