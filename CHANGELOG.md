@@ -2,6 +2,10 @@
 
 ## 2026-10-16
 
+- fix(docs): 归档仓编号引用约定 + 修复 `eval/scripts/format_report.py` 旧仓 #46 错链（Issue#59）
+  - `render_md` 不再拼 `github.com/youayou-Lee/LexMask/issues/46`（本仓 #46 语义完全不同），改标「归档仓 #46（DataInfra-RedactionEverything）」
+  - `docs/协同开发规范-gh使用与仓库纪律.md` 新增 §5：外链必须指向本仓真实 Issue、指旧仓写「归档仓 #NN」、历史叙事不批量清理
+  - `backend/tests/test_eval46_format_matrix.py::test_render_md_snapshot` 钉住「不再拼本仓 #46 错链」
 - feat(eval): 新增 **T3 框级视觉检测对比框架**（`eval/benchmarks/t3/`：预注册判读 spec / 四臂适配器 / 跑批 / 报告 / GT 复核 + **85 单测**）与成绩单 `eval/reports/2026-10-11-t3-visual-bench-issue92.md`（#92，PR #95）——回答 v2.0「印章 / 手写签名四条视觉臂能否替代现役 LocateAnything（LA）」，**选型工具不做闸门、现役管线零改动**。
   - **预注册判读跑批前锁死在 `spec.py`**（候选臂召回 ≥ LA 同 kind；难例桶不塌方=较 LA 同桶下降 >15pp 即判塌方；误报上界=FP/页 ≤2×LA；单页成本不高于 LA；失败页 >10% 判臂无效），事后不改阈值；样本 64 页真实案卷扫描页、GT 174 框（seal 69 / signature 105），GT 方法=四臂并集预标 → 轮 A 四人确认 → 轮 B 两人独立盲标 → 差集裁决（83 候选收 18）→ 轮 C 独立抽查 64 框 + 27 疑点，通过率 **95.31% ≥95% 门**。
   - **印章职责具备切换条件**：MinerU seal 召回 **58.0%** ≥ LA **43.5%**（clean 71.4 / hard 64.7，难例桶无塌方），FP 0.05/页 ≤2×LA 0.08，单页 **3.40s**（< LA 4.48s，且可 CPU，GPU 可让渡语义层）；后续接遮盖管线另立工程专项（#96）。
