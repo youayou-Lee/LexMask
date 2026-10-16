@@ -35,7 +35,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-IP_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")
+# 前面不得是数字或点：DICOM/OID 这类点分数字长串（`1.2.840.10008.5.1.4.1.1.2`）里的四个八位组
+# 曾被当成公网 IP（⑨冷评审期间的实测假阳性），所以把「点/数字紧跟在前」的候选整类排除。
+IP_RE = re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")
 ABS_PATH_RE = re.compile(
     r"(?<![\w.\-/])(/(?:root|home|mnt|data|opt|srv|var|Users|tmp|workspace|media)/[^\s\"'`,)]*)"
 )
@@ -97,16 +99,20 @@ CREDENTIAL_ASSIGN_RE = re.compile(
 )
 # 引号键（JSON / YAML / dict 字面量）：键名被引号包起、后跟冒号或等号与一个口令字面量。
 # 普通赋值的 name 组不含引号，键被引号包起时针冒号/等号之前先撞上 `"` ⇒ 整类漏网（⑧期预前加固实测）。
+# 键名允许 `-`（HTTP 头/配置文件惯用：`"api-key"`、`"x-api-key"`、`"auth-token"`，⑨冷评审 R9-1）。
 QUOTED_KEY_ASSIGN_RE = re.compile(
-    r"(?P<q>[\"'])(?P<name>[A-Za-z_][A-Za-z0-9_]{0,40})(?P=q)\s*[:=]\s*" + _VALUE_GROUP
+    r"(?P<q>[\"'])(?P<name>[A-Za-z_][A-Za-z0-9_\-]{0,40})(?P=q)\s*[:=]\s*" + _VALUE_GROUP
 )
 CREDENTIAL_FLAG_RE = re.compile(r"(?P<name>--[A-Za-z][A-Za-z0-9_-]{1,40})")
+# 命令行 flag 后的**裸值**（无引号）：`--api-pass Ab12Cd34`（⑨冷评审 R9-3）。
+_BARE_FLAG_VALUE_RE = re.compile(r"\s*(?P<val>[^\s,;)\"']{8,60})")
 # 带类型注解的赋值：`NAME: <注解> = "<真口令>"`（Python 惯用写法）。
 # `CREDENTIAL_ASSIGN_RE` 的 `[:=]` 会把注解的冒号吃掉、把 `str` 当值，`finditer` 随即越过真值 ⇒ 整类漏网；
-# 注解段必须锚到标识符开头、不含 `=` 与换行（防跨语句/跨赋值误配），但要覆盖 PEP 604 联合 `str | None`、
-# 泛型 `Final[str | None]` / `Literal["a"]` / `Optional["Cfg"]` 等引号与括号形态（⑧冷评审 R8-1）。
+# 注解段必须锚到标识符开头（允许先出现引号：顶层前向引用 `"Cfg"` / `"pkg.Cfg"`，⑨冷评审 R9-2）、
+# 不含 `=` 与换行（防跨语句/跨赋值误配），但要覆盖 PEP 604 联合 `str | None`、泛型 `Final[str | None]` /
+# `Literal["a"]` / `Optional["Cfg"]` 等引号与括号形态（⑧冷评审 R8-1）。
 ANNOTATED_ASSIGN_RE = re.compile(
-    r'(?P<name>[A-Za-z_][A-Za-z0-9_]{0,40})\s*:\s*(?P<ann>[A-Za-z_][\w\.\[\], |"\'()]{0,80}?)\s*=\s*' + _VALUE_GROUP
+    r'(?P<name>[A-Za-z_][A-Za-z0-9_]{0,40})\s*:\s*(?P<ann>["\']?[A-Za-z_][\w\.\[\], |"\'()]{0,80}?)\s*=\s*' + _VALUE_GROUP
 )
 # 引号字面量用**零宽前瞻**配对（`finditer` 会吃掉共享引号：`"--flag", default="VALUE"` 里
 # 第 2、3 个引号分属两段，普通匹配会把 `", default="` 整段吞掉导致真值漏网）
@@ -292,13 +298,28 @@ def credential_findings(text: str) -> list[tuple[str, str]]:
         window = text[flag.end(): flag.end() + 120]
         if ENV_LOOKUP_RE.search(window):
             continue
-        for flag_val in _window_quoted_values(window):
+        same_line = window.split("\n", 1)[0]
+        matched = False
+        for flag_val in _window_quoted_values(same_line):
             if _is_placeholder_value(flag_val) or TEMPLATE_VALUE_RE.search(flag_val):
                 continue
             if not _is_secret_shaped(flag_val):
                 continue
             findings.append(("credential_flag", flag.group(0) + " " + flag_val))
+            matched = True
             break
+        if matched:
+            continue
+        # 空格分隔的裸值形态（`--api-pass Ab12Cd34`，⑨冷评审 R9-3）：仅看同一行，且与其它分支同形状判据。
+        bare = _BARE_FLAG_VALUE_RE.match(same_line)
+        if bare is None:
+            continue
+        bare_val = bare.group("val")
+        if _is_placeholder_value(bare_val) or TEMPLATE_VALUE_RE.search(bare_val):
+            continue
+        if not _is_secret_shaped(bare_val):
+            continue
+        findings.append(("credential_flag", flag.group(0) + " " + bare_val))
     return findings
 
 

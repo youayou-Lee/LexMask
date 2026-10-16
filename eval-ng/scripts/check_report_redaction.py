@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover - 只在文件被拆散时触发
         "check_report_redaction: 缺同目录 check_public_tree.py（口令面规则单一真源）"
     ) from None
 
-IP_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")
+IP_RE = re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")
 ABS_PATH_RE = re.compile(
     r"(?<![\w.\-/])(/(?:root|home|mnt|data|opt|srv|var|Users|tmp|workspace|media)/[^\s\"'`,)]*)"
 )

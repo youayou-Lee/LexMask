@@ -1600,6 +1600,17 @@ class TestPublicTreeScanner:
             '"client_secret": "Ab12Cd34"',  # public-tree-scan: ignore-line
             "{'db_password': 'Qq11Ww22'}",  # public-tree-scan: ignore-line
             '"access_token": "ghp_abcdefghijklmnopqrstuvwxyz0123456"',  # public-tree-scan: ignore-line
+            # R9-1：引号键含连字符（HTTP 头/配置文件惯用）曾整类漏网
+            '{"api-key": "Qq11Ww22Zz11"}',  # public-tree-scan: ignore-line
+            '"x-api-key": "Qq11Ww22Zz11"',  # public-tree-scan: ignore-line
+            '"auth-token": "Qq11Ww22Zz11"',  # public-tree-scan: ignore-line
+            "'client-secret': 'Qq11Ww22Zz11'",  # public-tree-scan: ignore-line
+            # R9-2：注解段以引号开头（顶层前向引用）曾整类漏网
+            'api_key: "Cfg" = "Ab12Cd34"',  # public-tree-scan: ignore-line
+            'api_key: "pkg.mod.Cfg" = "Ab12Cd34"',  # public-tree-scan: ignore-line
+            'api_key: "Cfg" | None = "Ab12Cd34"',  # public-tree-scan: ignore-line
+            # R9-3：flag 后空格分隔的**裸值**曾整类漏网
+            "--api-pass Ab12Cd34",  # public-tree-scan: ignore-line
             # 与键名无关的令牌形态（⑧期预前加固）：URL 内联凭据 / HTTP Basic
             "postgresql://eval_user:Synthetic-Pass!123@127.0.0.1:5432/app",  # public-tree-scan: ignore-line
             "auth Basic U3ludGhldGljLVBhc3MhMTIz",  # public-tree-scan: ignore-line
@@ -1628,11 +1639,21 @@ class TestPublicTreeScanner:
             'api_key: str | None = os.environ["K"]',
             'token: str | None = get_csrf_token()',
             'credentials: str | None = "same-origin"',
+            # 点分长串（DICOM OID）里的八位组不是 IP（⑨期实测假阳性，已用前沿否定断言钉死）
+            '"sop_class_uid": "1.2.840.10008.5.1.4.1.1.2"',
         ):
             assert not self._rules(probe), probe
 
     def test_self_test_covers_all_required_rules(self):
         assert ptree.self_test([]) == 0
+
+    def test_credential_thresholds_are_pinned(self):
+        """M8/M10 钉子（⑨冷评审）：值下限与 Bearer 下限被放宽 ⇒ 这里必须红（多报方向的反向缺口）。"""
+        assert self._rules('password = "Ab1Cd2"') == set()  # 6 字：低于下限 ⇒ 不误报
+        assert "credential_literal" in self._rules('password = "Ab1Cd2Ef"')  # public-tree-scan: ignore-line（下限正例）
+        assert self._rules("Authorization: Bearer abcdefgh") == set()  # 8 字：低于 Bearer 下限
+        assert "bearer" in self._rules("Authorization: Bearer abcdefghijklmnopqrstuvwx")  # public-tree-scan: ignore-line（Bearer 下限正例）
+        assert self._rules("--token Ab12") == set()  # 裸 flag 值 4 字：低于下限
 
 
 class TestRedactionScanner:
