@@ -77,7 +77,7 @@ class _FakeClient:
 
 def test_extract_maps_pages_by_outer_index_and_normalizes_bbox():
     content = [[_seal_block()], [{"type": "paragraph"}], [_seal_block(0, 0, 1000, 1000)]]
-    boxes_by_page, status, warnings = extract_seal_boxes(content)
+    boxes_by_page, status, warnings = _extract3(content)
 
     assert status == STATUS_OK
     assert warnings == []
@@ -88,7 +88,7 @@ def test_extract_maps_pages_by_outer_index_and_normalizes_bbox():
 
 def test_extract_accepts_type_seal_variant():
     content = [[{"type": "seal", "bbox": [500, 500, 600, 600]}]]
-    boxes_by_page, status, _ = extract_seal_boxes(content)
+    boxes_by_page, status, _ = _extract3(content)
 
     assert status == STATUS_OK
     assert boxes_by_page[0][0] == pytest.approx((0.5, 0.5, 0.1, 0.1))
@@ -102,7 +102,7 @@ def test_extract_skips_malformed_candidates_with_warning():
             _seal_block(10, 20, 30, 40),
         ]
     ]
-    boxes_by_page, status, warnings = extract_seal_boxes(content)
+    boxes_by_page, status, warnings = _extract3(content)
 
     assert status == STATUS_OK
     assert boxes_by_page[0][0] == pytest.approx((0.01, 0.02, 0.02, 0.02))
@@ -110,14 +110,14 @@ def test_extract_skips_malformed_candidates_with_warning():
 
 
 def test_extract_reports_missing_v2_and_shape_drift():
-    assert extract_seal_boxes(None) == ({}, STATUS_MISSING_V2, ["content_list_v2 is None"])
-    assert extract_seal_boxes([]) == ({}, STATUS_OK, [])
-    boxes_by_page, status, warnings = extract_seal_boxes(["not-a-list", _seal_block()])
+    assert _extract3(None) == ({}, STATUS_MISSING_V2, ["content_list_v2 is None"])
+    assert _extract3([]) == ({}, STATUS_OK, [])
+    boxes_by_page, status, warnings = _extract3(["not-a-list", _seal_block()])
     assert boxes_by_page == {}
     assert status == STATUS_SHAPE_DRIFT
     assert warnings
 
-    boxes_by_page, status, warnings = extract_seal_boxes(["not-a-list", [_seal_block()]])
+    boxes_by_page, status, warnings = _extract3(["not-a-list", [_seal_block()]])
     assert boxes_by_page[1][0] == pytest.approx((0.699, 0.009, 0.196, 0.15))
     assert status == STATUS_OK
     assert warnings  # 外层下标 0 不是页列表
@@ -125,11 +125,18 @@ def test_extract_reports_missing_v2_and_shape_drift():
 
 def test_extract_rejects_degenerate_bbox():
     content = [[{"type": "image", "sub_type": "seal", "bbox": [100, 100, 100, 200]}]]
-    boxes_by_page, status, warnings = extract_seal_boxes(content)
+    boxes_by_page, status, warnings, drifted = extract_seal_boxes(content)
 
     assert status == STATUS_OK
     assert boxes_by_page == {}
-    assert len(warnings) == 1
+    assert drifted == frozenset({0})
+    assert len(warnings) == 2  # 畸形候选块 + 该页无一可用（态⑤）
+
+
+def _extract3(content):
+    """r6 C-4 后 ``extract_seal_boxes`` 返回 4 元组；旧断言的兼容投影。"""
+    boxes, status, warnings, _drifted = extract_seal_boxes(content)
+    return boxes, status, warnings
 
 
 # --------------------------------------------------------------------------
@@ -138,7 +145,8 @@ def test_extract_rejects_degenerate_bbox():
 
 
 def test_page_seals_runs_one_sidecar_task_per_file():
-    client = _FakeClient([[{"type": "paragraph"}], [_seal_block()]])
+    """生产页号 1 基 → 外层下标 0 基：第 1 页取 ``content_list_v2[0]``（r6 C-1）。"""
+    client = _FakeClient([[_seal_block()], [{"type": "paragraph"}]])
     source = MineruSealSource(client_factory=lambda: client)
 
     async def scenario():
@@ -154,6 +162,45 @@ def test_page_seals_runs_one_sidecar_task_per_file():
     assert boxes_page2 == []
     assert source.stats["files"] == 1
     assert source.stats["ok"] == 1
+
+
+def test_page_seals_maps_production_page_number_to_outer_index():
+    """判别性探针（r6 P1）：两页各一章，1 基页号不得错位到下一页。
+
+    变异「去掉 page - 1」必须让本用例转红；否则页号口径又会被静默写错。
+    """
+    client = _FakeClient([[_seal_block(699, 9, 895, 159)], [_seal_block(100, 100, 300, 300)]])
+    source = MineruSealSource(client_factory=lambda: client)
+
+    async def scenario():
+        first = await source.page_seals("k", lambda: _abytes(b"pdf"), 1)
+        second = await source.page_seals("k", lambda: _abytes(b"pdf"), 2)
+        return first, second
+
+    (boxes1, status1), (boxes2, status2) = asyncio.run(scenario())
+
+    assert status1 == status2 == STATUS_OK
+    assert boxes1 == [pytest.approx((0.699, 0.009, 0.196, 0.15))]
+    assert boxes2 == [pytest.approx((0.1, 0.1, 0.2, 0.2))]
+
+
+def test_page_seals_reports_shape_drift_for_a_drifted_page():
+    """该页有章候选块却无一可用 ⇒ 该页按块形漂移处置（态⑤），其余页不受影响。"""
+    bad = {"type": "image", "sub_type": "seal", "bbox": ["a", "b", "c", "d"], "page_idx": None}
+    client = _FakeClient([[bad], [_seal_block()]])
+    source = MineruSealSource(client_factory=lambda: client)
+
+    async def scenario():
+        return (
+            await source.page_seals("k", lambda: _abytes(b"pdf"), 1),
+            await source.page_seals("k", lambda: _abytes(b"pdf"), 2),
+        )
+
+    (boxes1, status1), (boxes2, status2) = asyncio.run(scenario())
+
+    assert (boxes1, status1) == ([], STATUS_SHAPE_DRIFT)
+    assert boxes2 and status2 == STATUS_OK
+    assert source.stats["drifted_pages"] == 1
 
 
 def test_page_seals_returns_failed_and_caches_failure():
@@ -340,3 +387,32 @@ def test_visual_seal_source_validator_rejects_unknown_and_clamps_timeout():
     assert Settings(VISUAL_SEAL_SOURCE="MINERU").VISUAL_SEAL_SOURCE == "mineru"
     assert Settings(VISUAL_SEAL_MINERU_TIMEOUT=-5).VISUAL_SEAL_MINERU_TIMEOUT == 1.0
     assert Settings(VISUAL_SEAL_MINERU_TIMEOUT=10**6).VISUAL_SEAL_MINERU_TIMEOUT == 600.0
+
+
+# --------------------------------------------------------------------------
+# 4. 门①.5 r6 处置新增：单位漂移与块形判定范围
+# --------------------------------------------------------------------------
+
+
+def test_extract_reports_unit_drift_without_silent_clamp():
+    """越界 bbox 不得被静默夹到页内：判 unit 漂移并交由调用方回落（r6 C-5）。"""
+    out_of_range = {"type": "image", "sub_type": "seal", "bbox": [100, 100, 1200, 200]}
+    boxes_by_page, status, warnings, drifted = extract_seal_boxes([[out_of_range]])
+
+    assert status == STATUS_OK
+    assert boxes_by_page == {}
+    assert drifted == frozenset({0})
+    assert any("unit drift" in w for w in warnings)
+
+
+def test_non_candidate_blocks_do_not_trigger_shape_drift():
+    """普通块（title/paragraph/page_footer/...）成群出现不得被判块形漂移（r4 R4-2）。"""
+    page = [
+        {"type": "title", "text": "x"},
+        {"type": "paragraph", "text": "y"},
+        {"type": "page_footer", "text": "1"},
+        {"type": "index", "text": "z"},
+    ]
+    boxes_by_page, status, warnings, drifted = extract_seal_boxes([page])
+
+    assert (boxes_by_page, status, warnings, drifted) == ({}, STATUS_OK, [], frozenset())

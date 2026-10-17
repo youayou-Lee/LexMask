@@ -238,8 +238,10 @@ class Settings(BaseSettings):
     LOCATE_ANYTHING_CONSENSUS_SAMPLES: int = 1
     LOCATE_ANYTHING_CONSENSUS_MIN_VOTES: int = 0
     LOCATE_ANYTHING_CONSENSUS_IOU: float = 0.5
-    # Issue#96: 公章通道来源。mineru = 公章框改由 MinerU sidecar 的 seal 块提供
-    # （LA 请求不再要 official_seal）；la = 维持现役 LA 通道（逐位等价改前行为）。
+    # Issue#96: 公章框来源。mineru = 公章框改由 MinerU sidecar 的 seal 块提供，
+    # **框级替换**：LA 请求类别一字不改（official_seal 仍在下传列表，VL 印章通道
+    # 因此照旧活跃），只在框合并前把 LA 产出的 `locate_anything:*` 章框整批换成
+    # MinerU 章框；la = 维持现役 LA 通道（逐位等价改前行为）。
     VISUAL_SEAL_SOURCE: str = "mineru"
     # MinerU 单文件解析的等待上限（秒）；超时/异常按「MinerU 失败态」处理。
     VISUAL_SEAL_MINERU_TIMEOUT: float = 60.0

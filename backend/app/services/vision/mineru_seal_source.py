@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 SEAL_SUBTYPE = "seal"
 #: MinerU bbox 的页归一化分母
 BBOX_SCALE = 1000.0
+_RAW_RANGE_EPS = 1.0  # 0-1000 口径下的容差（r6 C-5）
 
 STATUS_OK = "ok"
 STATUS_MISSING_V2 = "missing_v2"
@@ -40,23 +41,31 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _normalize_bbox(raw: Any) -> SealBox | None:
-    """把 MinerU 的 0-1000 bbox 转成 0-1 的 (x, y, width, height)；非法返回 None。"""
+def _normalize_bbox(raw: Any) -> tuple[SealBox | None, str]:
+    """把 MinerU 的 0-1000 bbox 转成 0-1 的 ``(x, y, width, height)``。
+
+    返回 ``(box | None, reason)``，``reason`` 取值 ``""`` / ``"malformed"`` / ``"unit"``。
+
+    与早期实现的关键差别（门①.5 r6 C-5）：**不做静默 clamp**。任一分量越出
+    ``[0 - eps, 1000 + eps]`` 一律判 ``unit``（口径漂移），由调用方计入
+    指标并告警；否则「越界被悄悄夹到页内」会让单位漂移永久不可观测，
+    也让方案里 ``x + width > 1`` 一类的负例样本无法构造。
+    """
     if not isinstance(raw, (list, tuple)) or len(raw) != 4:
-        return None
+        return None, "malformed"
     if not all(_is_number(v) for v in raw):
-        return None
+        return None, "malformed"
+    if any(
+        float(v) < -_RAW_RANGE_EPS or float(v) > BBOX_SCALE + _RAW_RANGE_EPS for v in raw
+    ):
+        return None, "unit"
     x0, y0, x1, y1 = (float(v) / BBOX_SCALE for v in raw)
     left, right = min(x0, x1), max(x0, x1)
     top, bottom = min(y0, y1), max(y0, y1)
-    left = min(max(left, 0.0), 1.0)
-    top = min(max(top, 0.0), 1.0)
-    right = min(max(right, 0.0), 1.0)
-    bottom = min(max(bottom, 0.0), 1.0)
     width, height = right - left, bottom - top
     if width <= 0.0 or height <= 0.0:
-        return None
-    return (left, top, width, height)
+        return None, "malformed"
+    return (left, top, width, height), ""
 
 
 def _is_seal_candidate(block: Any) -> bool:
@@ -67,47 +76,73 @@ def _is_seal_candidate(block: Any) -> bool:
 
 def extract_seal_boxes(
     content_list_v2: Any,
-) -> tuple[dict[int, list[SealBox]], str, list[str]]:
+) -> tuple[dict[int, list[SealBox]], str, list[str], frozenset[int]]:
     """从 ``content_list_v2`` 抽出 ``{页下标: [章框, ...]}``。
 
-    返回 ``(boxes_by_page, status, warnings)``。``status`` 只可能是
-    ``ok`` / ``missing_v2`` / ``shape_drift`` 三种；``failed`` 由调用方判定。
+    返回 ``(boxes_by_page, status, warnings, drifted_pages)``。
+
+    - ``boxes_by_page`` 的键是 **``content_list_v2`` 外层下标（0 基）**，不是生产页号；
+      本环境 MinerU 的 ``page_idx`` 恒为 null，页归属只能靠外层下标。
+      生产页号是 1 基（``task_queue_pipelines.py`` 的 ``range(1, ...)``），
+      换算只允许发生在 :meth:`MineruSealSource.page_seals`（门①.5 r6 C-1）。
+    - ``status`` ∈ ``ok`` / ``missing_v2`` / ``shape_drift``；``failed`` 由调用方判定。
+    - ``drifted_pages`` 是「该页出现了章候选块、但一个都没能形成可用框」的页下标集合；
+      这一类页必须按块形漂移处置（态⑤），不能静默当成「本页无章」（r6 C-4）。
     """
     warnings: list[str] = []
     if content_list_v2 is None:
-        return {}, STATUS_MISSING_V2, ["content_list_v2 is None"]
+        return {}, STATUS_MISSING_V2, ["content_list_v2 is None"], frozenset()
     if not isinstance(content_list_v2, list):
         return {}, STATUS_SHAPE_DRIFT, [
             f"content_list_v2 is {type(content_list_v2).__name__}, expected list"
-        ]
+        ], frozenset()
     if not content_list_v2:
         # 空列表：解析成功但整份文件没有可归属的页内容
-        return {}, STATUS_OK, []
+        return {}, STATUS_OK, [], frozenset()
     page_lists = [entry for entry in content_list_v2 if isinstance(entry, list)]
     if not page_lists:
         return {}, STATUS_SHAPE_DRIFT, [
             "content_list_v2 has no per-page list (expected list-of-lists)"
-        ]
+        ], frozenset()
     if len(page_lists) != len(content_list_v2):
         warnings.append(
             f"{len(content_list_v2) - len(page_lists)} outer entrie(s) are not page lists"
         )
     boxes_by_page: dict[int, list[SealBox]] = {}
+    drifted_pages: set[int] = set()
     for page_index, entry in enumerate(content_list_v2):
         if not isinstance(entry, list):
             continue
+        candidates = 0
+        usable = 0
         for block in entry:
             if not _is_seal_candidate(block):
+                # 非候选块（title / paragraph / page_footer / index ...）不参与块形判定，
+                # 否则单页 80+ 个普通块会把每一页都误判成漂移（门①.5 r4 R4-2）。
                 continue
-            box = _normalize_bbox(block.get("bbox"))
+            candidates += 1
+            box, reason = _normalize_bbox(block.get("bbox"))
             if box is None:
-                warnings.append(
-                    f"page {page_index}: seal candidate without usable bbox "
-                    f"({block.get('bbox')!r})"
-                )
+                if reason == "unit":
+                    warnings.append(
+                        f"page index {page_index}: seal bbox out of 0-{BBOX_SCALE:g} range "
+                        f"(unit drift) ({block.get('bbox')!r})"
+                    )
+                else:
+                    warnings.append(
+                        f"page index {page_index}: seal candidate without usable bbox "
+                        f"({block.get('bbox')!r})"
+                    )
                 continue
+            usable += 1
             boxes_by_page.setdefault(page_index, []).append(box)
-    return boxes_by_page, STATUS_OK, warnings
+        if candidates and not usable:
+            drifted_pages.add(page_index)
+            warnings.append(
+                f"page index {page_index}: {candidates} seal candidate(s) but none usable "
+                "(shape drift)"
+            )
+    return boxes_by_page, STATUS_OK, warnings, frozenset(drifted_pages)
 
 
 class MineruSealSource:
@@ -121,7 +156,7 @@ class MineruSealSource:
     ) -> None:
         self._client_factory = client_factory or self._default_client_factory
         self._timeout = float(timeout)
-        self._cache: dict[str, tuple[dict[int, list[SealBox]], str]] = {}
+        self._cache: dict[str, tuple[dict[int, list[SealBox]], str, frozenset[int]]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self.stats: dict[str, int] = {
             "files": 0,
@@ -130,6 +165,8 @@ class MineruSealSource:
             "shape_drift": 0,
             "failed": 0,
             "pages_with_seals": 0,
+            "unit_error": 0,
+            "drifted_pages": 0,
         }
 
     @staticmethod
@@ -138,7 +175,9 @@ class MineruSealSource:
 
         return MineruParseClient()
 
-    def cached(self, cache_key: str) -> tuple[dict[int, list[SealBox]], str] | None:
+    def cached(
+        self, cache_key: str
+    ) -> tuple[dict[int, list[SealBox]], str, frozenset[int]] | None:
         return self._cache.get(cache_key)
 
     def invalidate(self, cache_key: str | None = None) -> None:
@@ -155,7 +194,13 @@ class MineruSealSource:
         *,
         filename: str | None = None,
     ) -> tuple[list[SealBox], str]:
-        """返回 ``(该页章框, 状态)``；状态见模块级常量。"""
+        """返回 ``(该页章框, 状态)``；状态见模块级常量。
+
+        **页号口径**：``page`` 是生产口径的 **1 基**页号（``task_queue_pipelines.py`` 用
+        ``range(1, page_count + 1)``），而 ``content_list_v2`` 的外层下标是 **0 基**。
+        换算只在这里发生，且只发生一次（门①.5 r6 C-1 临界缺陷：此前直接以 1 基页号
+        查 0 基表，导致整卷章框错位、末页必丢）。
+        """
         entry = self._cache.get(cache_key)
         if entry is None:
             lock = self._locks.setdefault(cache_key, asyncio.Lock())
@@ -164,15 +209,19 @@ class MineruSealSource:
                 if entry is None:
                     entry = await self._fetch(cache_key, load_bytes, filename)
                     self._cache[cache_key] = entry
-        boxes_by_page, status = entry
-        return list(boxes_by_page.get(int(page), [])), status
+        boxes_by_page, status, drifted_pages = entry
+        page_index = max(0, int(page) - 1)
+        if status == STATUS_OK and page_index in drifted_pages:
+            # 该页有章候选块但全部不可用 ⇒ 按态⑤ 判定块形漂移，交由调用方回落
+            return [], STATUS_SHAPE_DRIFT
+        return list(boxes_by_page.get(page_index, [])), status
 
     async def _fetch(
         self,
         cache_key: str,
         load_bytes: Callable[[], Awaitable[bytes]],
         filename: str | None,
-    ) -> tuple[dict[int, list[SealBox]], str]:
+    ) -> tuple[dict[int, list[SealBox]], str, frozenset[int]]:
         started = time.perf_counter()
         try:
             payload = await load_bytes()
@@ -181,7 +230,7 @@ class MineruSealSource:
                 "MinerU seal source: cannot read file bytes for %s", cache_key, exc_info=True
             )
             self.stats["failed"] += 1
-            return {}, STATUS_FAILED
+            return {}, STATUS_FAILED, frozenset()
         try:
             client = self._client_factory()
             task_id = await asyncio.wait_for(
@@ -194,8 +243,8 @@ class MineruSealSource:
                 "MinerU seal source: task failed for %s; treated as failure", cache_key, exc_info=True
             )
             self.stats["failed"] += 1
-            return {}, STATUS_FAILED
-        boxes_by_page, status, warnings = extract_seal_boxes(content_list_v2)
+            return {}, STATUS_FAILED, frozenset()
+        boxes_by_page, status, warnings, drifted_pages = extract_seal_boxes(content_list_v2)
         for warning in warnings:
             logger.warning("MinerU seal source: %s", warning)
         if status == STATUS_OK and not boxes_by_page:
@@ -215,7 +264,11 @@ class MineruSealSource:
         self.stats["files"] += 1
         self.stats[status] = self.stats.get(status, 0) + 1
         self.stats["pages_with_seals"] += len(boxes_by_page)
-        return boxes_by_page, status
+        self.stats["unit_error"] += sum(
+            1 for warning in warnings if "unit drift" in warning
+        )
+        self.stats["drifted_pages"] += len(drifted_pages)
+        return boxes_by_page, status, drifted_pages
 
 
 _source: MineruSealSource | None = None
