@@ -269,6 +269,7 @@ export function usePlayground() {
         recognition.selectedVisualFeatureTypes,
         fileCtx.setIsLoading,
         fileCtx.setLoadingMessage,
+        fileCtx.setVisionStream,
       );
     } else {
       await handleRerunNerText(
@@ -284,6 +285,7 @@ export function usePlayground() {
     fileCtx.isImageMode,
     fileCtx.setIsLoading,
     fileCtx.setLoadingMessage,
+    fileCtx.setVisionStream,
     getRecognitionBlocker,
     handleRerunNerImage,
     handleRerunNerText,
@@ -689,6 +691,7 @@ export function usePlayground() {
         entityMap,
         redactedCount,
         currentPage: imageCtx.currentPage,
+        visionStream: fileCtx.visionStream,
       });
       const json = serializeDraft(snapshot);
       if (json === null) return; // 超限：放弃持久化，内存会话不受影响
@@ -698,6 +701,7 @@ export function usePlayground() {
   }, [
     fileCtx.fileInfo,
     fileCtx.stage,
+    fileCtx.visionStream,
     fileCtx.content,
     entityCtx.entities,
     imageCtx.boundingBoxes,
@@ -889,6 +893,7 @@ export function usePlayground() {
     visibleBoxes: imageCtx.visibleBoxes,
     isLoading: fileCtx.isLoading,
     loadingMessage: fileCtx.loadingMessage,
+    visionStream: fileCtx.visionStream,
     uploadIssue: fileCtx.uploadIssue,
     recognitionIssue: fileCtx.recognitionIssue,
     entityMap,

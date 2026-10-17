@@ -480,6 +480,9 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
       visualFeatureTypes: string[],
       setIsLoading: (v: boolean) => void,
       setLoadingMessage: (v: string) => void,
+      // Issue#123（①.5 冷审 C2 修正）：重跑路径的画布已挂载，必须同样登记流式进度，
+      // 否则 progressiveRecognition 恒 false、passive 遮罩永不生效。
+      setVisionStream?: (v: { completed: number; total: number } | null) => void,
     ) => {
       if (visionAbortRef.current) return;
       const controller = new AbortController();
@@ -488,6 +491,8 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
 
       setIsLoading(true);
       setLoadingMessage(t('playground.loading.vision'));
+      // Issue#123：重跑识别同样登记流式进度（仅多页时表现层才降级为 passive）。
+      setVisionStream?.(Math.max(1, totalPages) > 1 ? { completed: 0, total: totalPages } : null);
       try {
         const pages = Math.max(1, totalPages);
         const { boxes: nextBoxes, totalBoxes } = await runVisionDetectionPages({
@@ -499,7 +504,9 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
           force: true,
           label: t('playground.loading.vision'),
           setLoadingMessage,
-          onPageComplete: ({ page, pageBoxes }) => {
+          onPageComplete: ({ page, pageBoxes, completedPages, totalPages }) => {
+            // Issue#123：登记流式进度，使全屏遮罩在多页重跑期间降级为 passive。
+            setVisionStream?.({ completed: completedPages, total: totalPages });
             startTransition(() => {
               setBoundingBoxes((prev) => [
                 ...prev.filter((box) => Number(box.page || 1) !== page),
@@ -525,6 +532,8 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
         setBoundingBoxes(previousBoxes);
         showToast(localizeErrorMessage(err, 'playground.recognizeFailed'), 'error');
       } finally {
+        // Issue#123：识别结束（含取消）即清空流式进度，遮罩回到既有语义。
+        setVisionStream?.(null);
         if (visionAbortRef.current === controller) {
           visionAbortRef.current = null;
         }

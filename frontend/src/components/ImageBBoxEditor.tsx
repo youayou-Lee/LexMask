@@ -159,6 +159,7 @@ function BBoxOverlayBoxInner({
     <div
       className={`absolute transition-[box-shadow,border-color] duration-150 ${isSelected ? 'z-10' : 'z-0'}`}
       style={boxStyle}
+      data-lexmask-bbox="1"
       onMouseDown={handleMouseDown}
       onTouchStart={handleTouchStart}
       onClick={stopClickPropagation}

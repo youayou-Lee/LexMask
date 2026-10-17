@@ -76,6 +76,23 @@ describe('buildDraftSnapshot + serializeDraft + parseDraft', () => {
   });
 });
 
+  // Issue#123（门①.5 r3 N4）：D1 之后识别期 stage 已是 'preview'，中途落盘的草稿
+  // 会被当成完整 preview 恢复 ⇒ 半识别卷看似已完成且不重跑。用流式进度挡掉。
+  it('识别未完成的草稿（completed < total）被拒绝 → 走重跑', () => {
+    const snapshot = buildDraftSnapshot({ ...baseInput, visionStream: { completed: 3, total: 10 } });
+    expect(parseDraft(serializeDraft(snapshot))).toBeNull();
+  });
+
+  it('识别已完成的草稿（completed === total）正常恢复', () => {
+    const snapshot = buildDraftSnapshot({ ...baseInput, visionStream: { completed: 10, total: 10 } });
+    expect(parseDraft(serializeDraft(snapshot))).toEqual(snapshot);
+  });
+
+  it('无流式字段（文本件/单页/旧草稿）不受影响', () => {
+    const snapshot = buildDraftSnapshot(baseInput);
+    expect(parseDraft(serializeDraft(snapshot))).toEqual(snapshot);
+  });
+
 describe('planResume', () => {
   it('草稿命中：file_id 一致 → draft', () => {
     const snapshot = buildDraftSnapshot(baseInput);
