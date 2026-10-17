@@ -55,6 +55,12 @@ def _normalize_bbox(raw: Any) -> tuple[SealBox | None, str]:
         return None, "malformed"
     if not all(_is_number(v) for v in raw):
         return None, "malformed"
+    # NaN 必须在这里拦下（r10 I-1）：NaN 的所有比较都是 False，会绕过下面的范围判据，
+    # 于是 NaN 会被当成合法框一路带进 BoundingBox（pydantic 不拦、序列化成 null）。
+    # 注意只判 NaN（`v != v`），**不要**用 isfinite：那会把 inf 从 "unit" 误判成 "malformed"，
+    # 让「单位口径漂移」这一观测面失真。
+    if any(float(v) != float(v) for v in raw):
+        return None, "malformed"
     if any(
         float(v) < -_RAW_RANGE_EPS or float(v) > BBOX_SCALE + _RAW_RANGE_EPS for v in raw
     ):

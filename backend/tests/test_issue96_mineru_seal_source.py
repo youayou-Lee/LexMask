@@ -404,6 +404,76 @@ def test_apply_logs_effective_seal_source_when_switched_off(monkeypatch, tmp_pat
     assert any("visual_seal_source=la" in m for m in messages)
 
 
+def test_extract_rejects_nan_components() -> None:
+    """NaN 必须按 malformed 拦下（r10 I-1）：NaN 的比较恒为 False，会绕过范围判据。"""
+    for raw in (
+        [float("nan"), 0.01, float("nan"), 0.89],
+        [0.1, float("nan"), 0.5, 0.6],
+        [0.1, 0.2, float("nan"), 0.6],
+        [0.1, 0.2, 0.5, float("nan")],
+    ):
+        boxes, status, warnings, drifted = extract_seal_boxes(
+            [[{"type": "image", "sub_type": "seal", "bbox": raw}]]
+        )
+        assert boxes == {}, raw
+        assert status == STATUS_OK, raw
+        assert warnings and "without usable bbox" in warnings[0], (raw, warnings)
+        assert drifted == {0}, raw
+
+
+def test_default_la_path_never_touches_mineru_or_disk(monkeypatch, tmp_path) -> None:
+    """默认关哨兵（r10 I-4）：source=la 时不得构造/调用 MinerU 通道、不得读源文件。
+
+    门⑥ r10 自造变异 M-6a/M-6b（把 MinerU 构造与源文件读挪到早退之前）曾在
+    仓内 24 例下全部 SURVIVED；本用例是它们的机器判据。
+    """
+    import builtins
+
+    constructed: list[str] = []
+
+    class _Forbidden:
+        def __init__(self) -> None:
+            constructed.append("constructed")
+
+    monkeypatch.setattr(mss, "get_mineru_seal_source", _Forbidden)
+    monkeypatch.setattr(settings, "VISUAL_SEAL_SOURCE", "la", raising=False)
+
+    target = str(tmp_path / "page.pdf")
+    opened: list[str] = []
+    real_open = builtins.open
+
+    def _spy_open(file, *args, **kwargs):  # type: ignore[no-untyped-def]
+        opened.append(str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _spy_open)
+
+    svc = _service()
+    boxes = [
+        BoundingBox(
+            id="la1",
+            x=0.1,
+            y=0.1,
+            width=0.2,
+            height=0.2,
+            type="official_seal",
+            page=1,
+            source="visual_features",
+            source_detail="locate_anything:detect",
+        )
+    ]
+    out = asyncio.run(
+        svc._apply_mineru_seal_source(boxes, file_path=target, file_type=FileType.PDF, page=1)
+    )
+
+    assert constructed == [], "默认 la 下不得构造 MinerU 通道"
+    assert [p for p in opened if target in p] == [], "默认 la 下不得读源文件"
+    assert out is boxes, "默认路径必须原样返回同一个 list 对象"
+    # 生效来源会被记成 "la"（AC5 的日志级判据），状态仍为空——两者语义不同
+    assert svc.last_seal_source_effective == "la"
+    assert getattr(svc, "last_seal_source_status", "") == ""
+
+
 def test_visual_seal_source_default_is_la() -> None:
     """默认必须是 la：门④ AC2 判定为 FAIL（生产链召回不劣化未达成）。
 
