@@ -201,6 +201,8 @@ class VisionService:
         self.last_warnings: list[str] = []
         # Issue#96: 最近一页的公章换源状态（ok/missing_v2/shape_drift/failed/unsupported）。
         self.last_seal_source_status: str = ""
+        self.last_seal_source_effective: str = ""
+        self._seal_source_logged: set[tuple[str, str]] = set()
 
 
     async def detect_with_dual_pipeline(
@@ -591,6 +593,37 @@ class VisionService:
 
         return await asyncio.to_thread(_read)
 
+    def _log_seal_source_once(
+        self,
+        source: str,
+        *,
+        status: str = "",
+        page: int = 0,
+        mineru_boxes: int = 0,
+    ) -> None:
+        """Issue#96 AC5：把「生效的印章来源」打进日志（按 (源, 态) 组合去重）。
+
+        门①.5 r7 指出 `last_seal_source_status` 只写不读、AC5 的日志级判据无读者；
+        这里补上真实读者：`visual_seal_source=<源> status=<态>` 每页首见打一行，
+        状态变化时再打一行（生产默认 mineru 时噪声可控）。
+        """
+        self.last_seal_source_effective = source
+        logged = getattr(self, "_seal_source_logged", None)
+        if logged is None:
+            # 允许 `VisionService.__new__` 这类不经 __init__ 的构造路径（测试替身用）。
+            logged = self._seal_source_logged = set()
+        key = (source, status)
+        if key in logged:
+            return
+        logged.add(key)
+        logger.info(
+            "visual_seal_source=%s status=%s page=%s mineru_boxes=%d",
+            source,
+            status or "-",
+            page,
+            mineru_boxes,
+        )
+
     async def _apply_mineru_seal_source(
         self,
         boxes: list[BoundingBox],
@@ -606,6 +639,7 @@ class VisionService:
           决定保留 LA 章框（默认，保召回）还是一并清空（严格换源）。
         """
         if str(getattr(settings, "VISUAL_SEAL_SOURCE", "la") or "la").strip().lower() != "mineru":
+            self._log_seal_source_once("la")
             return boxes
 
         from app.services.vision.mineru_seal_source import (
@@ -616,6 +650,7 @@ class VisionService:
         if file_type not in (FileType.PDF, FileType.PDF_SCANNED):
             # MinerU 只接 PDF；图片页无从换源，保持 LA 通道。
             self.last_seal_source_status = "unsupported"
+            self._log_seal_source_once("mineru", status="unsupported", page=page)
             return boxes
 
         source = get_mineru_seal_source()
@@ -630,6 +665,9 @@ class VisionService:
             logger.warning("MinerU seal source failed; keeping LA seals", exc_info=True)
             page_boxes, status = [], "failed"
         self.last_seal_source_status = status
+        self._log_seal_source_once(
+            "mineru", status=status, page=page, mineru_boxes=len(page_boxes)
+        )
 
         if status == STATUS_OK:
             return self._drop_la_seal_boxes(boxes) + self._mineru_boxes_to_bounding_boxes(

@@ -38,6 +38,8 @@ def _service() -> VisionService:
     """不走 __init__（避免构造真实下游服务），只借方法。"""
     svc = VisionService.__new__(VisionService)
     svc.last_seal_source_status = ""  # type: ignore[attr-defined]
+    svc.last_seal_source_effective = ""  # type: ignore[attr-defined]
+    svc._seal_source_logged = set()  # type: ignore[attr-defined]
     return svc
 
 
@@ -376,6 +378,32 @@ def test_apply_skips_unsupported_file_types(monkeypatch, tmp_path):
     assert any(box.id == "la_seal_1" for box in boxes)
 
 
+def test_apply_logs_effective_seal_source_for_mineru(monkeypatch, tmp_path, caplog):
+    """AC5 日志级判据（r7 的「只写不读」）：生效来源 + 状态必须能从日志读出。"""
+    import logging
+
+    source = _FakeSource({1: [(0.5, 0.5, 0.2, 0.2)]}, STATUS_OK)
+    with caplog.at_level(logging.INFO, logger="app.services.vision_service"):
+        svc, _boxes, _status = _apply(monkeypatch, tmp_path, source)
+
+    assert svc.last_seal_source_effective == "mineru"
+    messages = [rec.getMessage() for rec in caplog.records]
+    assert any("visual_seal_source=mineru" in m and "status=ok" in m for m in messages)
+
+
+def test_apply_logs_effective_seal_source_when_switched_off(monkeypatch, tmp_path, caplog):
+    """回退到 la 时也必须能从日志看出「当前生效来源=la」（生产排查用）。"""
+    import logging
+
+    source = _FakeSource({}, STATUS_OK)
+    with caplog.at_level(logging.INFO, logger="app.services.vision_service"):
+        svc, _boxes, _status = _apply(monkeypatch, tmp_path, source, source_name="la")
+
+    assert svc.last_seal_source_effective == "la"
+    messages = [rec.getMessage() for rec in caplog.records]
+    assert any("visual_seal_source=la" in m for m in messages)
+
+
 def test_visual_seal_source_validator_rejects_unknown_and_clamps_timeout():
     from pydantic import ValidationError
 
@@ -398,6 +426,21 @@ def test_extract_reports_unit_drift_without_silent_clamp():
     """越界 bbox 不得被静默夹到页内：判 unit 漂移并交由调用方回落（r6 C-5）。"""
     out_of_range = {"type": "image", "sub_type": "seal", "bbox": [100, 100, 1200, 200]}
     boxes_by_page, status, warnings, drifted = extract_seal_boxes([[out_of_range]])
+
+    assert status == STATUS_OK
+    assert boxes_by_page == {}
+    assert drifted == frozenset({0})
+    assert any("unit drift" in w for w in warnings)
+
+
+def test_extract_rejects_box_whose_derived_extent_exceeds_one():
+    """第二条定向单位样本：派生 y+height>1（原始 y1=1100 越出 0-1000 口径）⇒ 判单位漂移。
+
+    与上一例（x1=1200）互为角点对照：r6 C-5 要求的两个方向（x 溢出 / y 溢出）都在
+    无静默 clamp 的前提下被抓住。
+    """
+    beyond = {"type": "image", "sub_type": "seal", "bbox": [100, 900, 300, 1100]}
+    boxes_by_page, status, warnings, drifted = extract_seal_boxes([[beyond]])
 
     assert status == STATUS_OK
     assert boxes_by_page == {}
