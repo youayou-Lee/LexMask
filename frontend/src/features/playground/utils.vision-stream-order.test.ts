@@ -54,6 +54,11 @@ async function runStream(totalPages: number, order: number[]) {
     visualFeatureTypes: [],
     totalPages,
     concurrency: totalPages,
+    // Issue#175 起默认启用「第 1 页独占首发」（卷页数 > 2 时），会把首发窗口收成 1 条 ——
+    // 本组用例测的是**回调契约**（完成顺序 ⇒ 渲染顺序、计数器、载荷追加语义），与调度策略无关，
+    // 因此显式关闭该开关以保留「任意完成顺序」这一被测面；调度面判据在
+    // utils.vision-page-concurrency.test.ts（#175 的独占窗口 + #106 的峰值契约）。
+    firstPagePriority: false,
     label: '测试',
     onPageComplete: (payload) => payloads.push(payload),
   });

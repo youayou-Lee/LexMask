@@ -180,13 +180,43 @@ describe('Issue#175 首屏优先：第 1 页独占首发', () => {
     expect(inFlight.peak).toBe(PLAYGROUND_VISION_PAGE_CONCURRENCY);
   });
 
-  it('卷页数 ≤ 并发槽位时不启用独占（保持 #106 的峰值契约）', async () => {
+  it('卷页数 ≤ 2 时不启用独占（2 页卷保住 #106 的 peak=2 契约）', async () => {
     const peak = await measurePeak({
+      totalPages: 2,
+      visualFeatureTypes: ['official_seal'],
+      concurrency: 2,
+    });
+    expect(peak).toBe(2);
+  });
+
+  it('卷页数 == 并发槽位（N=k，碰撞最坏区）也启用独占：首发窗口只有第 1 页', async () => {
+    // 门①.5 反例：旧守卫「页数 > 槽位」在 N=k 时不触发 —— 10 页/k=10 首发窗口 10 条同飞。
+    const { runner } = await startRunner({
+      totalPages: 10,
+      visualFeatureTypes: ['official_seal'],
+      concurrency: 10,
+    });
+    for (let i = 0; i < 5; i += 1) await flush();
+    expect(calls.map(pageOf)).toEqual([1]);
+    expect(inFlight.current).toBe(1);
+    await drain();
+    await runner;
+    // 第 1 页独占后，剩余 9 页按 k=10 并发（peak 上限受剩余页数限制）
+    expect(inFlight.peak).toBe(9);
+  });
+
+  it('卷页数 == 并发槽位为 8 时，第 1 页独占为首发窗口，随后 7 页并发（峰值 honest 记录）', async () => {
+    const { runner } = await startRunner({
       totalPages: 8,
       visualFeatureTypes: ['official_seal'],
       concurrency: 8,
     });
-    expect(peak).toBe(8);
+    for (let i = 0; i < 5; i += 1) await flush();
+    expect(calls.map(pageOf)).toEqual([1]);
+    await drain();
+    await runner;
+    // 剩余 7 页 ≤ k=8 ⇒ 第二窗口 peak=7（比不独占少 1，属独占的代价，已记入方案边界）
+    expect(inFlight.peak).toBe(7);
   });
 
   it('显式关闭 firstPagePriority 退回纯 k 并发（开关本身有判据）', async () => {

@@ -374,12 +374,14 @@ export async function runVisionDetectionPages({
     });
   };
 
-  // Issue#175 首屏优先：k>1 且多页时，第 1 页先**独占**跑完再放其余页。
+  // Issue#175 首屏优先：k>1 且卷页数 > 2 时，第 1 页先**独占**跑完再放其余页。
   // 实测（门④ 浏览器臂，同一 10 页 canary）：k=1 首屏 7.62s / k=3 14.6s / k=8 中位 23.81s ——
   // k 条请求同抢单卡会把最先发出的第 1 页挤后；独占首发把首屏拉回单页量级，整卷墙钟只多一个独跑窗口。
   const queue = pages.slice();
-  // 只在**会排队**时启用：卷页数 ≤ 并发槽位 ⇒ 第 1 页本来就能立即发出，独占反而牺牲 #106 的并发峰值契约。
-  const firstPage = firstPagePriority && maxWorkers > 1 && pages.length > maxWorkers ? queue.shift() : undefined;
+  // 触发面＝**卷页数 > 2**（不是「页数 > 并发槽位」）：碰撞最坏区恰是 N ≤ k（N=k 时 N 条全同飞，
+  // 门①.5 实测 10 页/k=10 首发窗口 10 条同飞），只按 N > k 会整类漏掉；而 N ≤ 2 时第 1 页本来就在
+  // 首发窗口里，独占没有收益、只会牺牲 #106 的并发峰值契约（2 页卷 peak 必须仍是 2）。
+  const firstPage = firstPagePriority && maxWorkers > 1 && pages.length > 2 ? queue.shift() : undefined;
   if (firstPage !== undefined) {
     try {
       await runPage(firstPage);
