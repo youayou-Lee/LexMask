@@ -84,7 +84,7 @@ def _finditer_many_in_process(
                 for name in group_order
                 if m.start(name) != -1
             ]
-            rows.append((m.group(), m.start(), m.end(), named, list(group_order)))
+            rows.append((m.group(), m.start(), m.end(), named))
         per_text.append(rows)
     return per_text
 
@@ -328,7 +328,7 @@ def safe_finditer(
             f"pattern may cause catastrophic backtracking (ReDoS)"
         )
     return [
-        _MatchProxy(t, s, e, named, declared) for t, s, e, named, declared in raw
+        _MatchProxy(t, s, e, named) for t, s, e, named in raw
     ]
 
 
@@ -360,7 +360,7 @@ def safe_finditer_many(
             f"pattern may cause catastrophic backtracking (ReDoS)"
         )
     return [
-        [_MatchProxy(t, s, e, named, declared) for t, s, e, named, declared in rows]
+        [_MatchProxy(t, s, e, named) for t, s, e, named in rows]
         for rows in raw
     ]
 
