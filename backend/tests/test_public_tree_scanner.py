@@ -474,6 +474,25 @@ def test_self_test_wires_end_to_end_scope_check(monkeypatch):
     assert ptree.self_test([]) == 1, "self_test 未把 _end_to_end_scope_check 的结论算进 rc"
 
 
+def test_self_test_wires_ignore_line_scope_check(monkeypatch):
+    """门①.5 r1 M-1：`_ignore_line_scope_check()` 的调用被删掉时 self_test 必须仍判红。
+
+    删掉调用后本测试的 monkeypatch 无处生效（返回值不再被并入 problems）⇒ rc=0 ⇒ 本用例失败。
+    """
+    monkeypatch.setattr(ptree, "_ignore_line_scope_check", lambda: ["forced-problem"])
+    assert ptree.self_test([]) == 1, "self_test 未把 _ignore_line_scope_check 的结论算进 rc"
+
+
+def test_empty_parentheses_marker_suppresses_nothing():
+    """门①.5 r1 M-2：`ignore-line()`（空括号）的规则集为空 ⇒ 什么都不放过（不是整行豁免）。"""
+    line = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + ptree.IGNORE_MARKER + "()"  # public-tree-scan: ignore-line(public_ip, credential_literal)
+    rules = sorted(ptree.scan_source("empty-parens", line, denylist=[], allow_prefixes=[]))
+    assert rules, "空括号标记不得整行豁免"
+    joined = "\n".join(rules)
+    assert "credential_literal" in joined and "public_ip" in joined, joined
+    assert ptree._ignore_line_scope_check() == []
+
+
 def test_max_bytes_is_pinned_at_the_use_site(monkeypatch):
     """契约钉常量（`MAX_BYTES >= 地板`），使用点 `size > MAX_BYTES` 也要钉。"""
     monkeypatch.setattr(ptree, "MAX_BYTES", ptree._OVERSIZED_FIXTURE_BYTES - 1)

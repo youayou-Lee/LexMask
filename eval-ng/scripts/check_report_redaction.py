@@ -47,7 +47,7 @@ LOOPBACK_PREFIXES = ("127.", "0.0.0.0", "::1")
 SELF_TEST_BAD = (
     "instance 10.11.12.13 path /srv/evidence/d3-after-1.json win C:\\Users\\dev\\secret.txt "  # public-tree-scan: ignore-line(abs_path, win_path)
     'auth Bearer abcdefghijklmnopqrstuvwxyz012345 password="Passw0rd!2026" '  # public-tree-scan: ignore-line(bearer, credential_literal)
-    "case 苏A-某某公司-2021"  # public-tree-scan: ignore-line()
+    "case 苏A-某某公司-2021"  # public-tree-scan: ignore-line(denylist)
 )
 SELF_TEST_CLEAN = "instance local path testdata/canary-issue106-scan-10p.pdf ip 127.0.0.1 ok"
 

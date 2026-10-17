@@ -357,6 +357,8 @@ SELF_TEST_CLEAN_CN = (
     # Issue#160 AC2 反例：凭据**键名**下的纯中文文案不得当口令（缺混排证据）；
     # 长到 CJK 长度底线（6 字）也不能只靠长度成立。
     "secret = \"中文标题\" password = \"甲乙丙丁戊己\" "  # public-tree-scan: ignore-line(credential_bare)
+    # 门①.5 r1 M-3：中文标点正文 / 中文日期形态也必须零命中（此前只有仓内 pytest 覆盖）
+    "总结 = \"本次共3人，已逐一核对。\" 归档日 = \"2023年6月15日\" "
 )
 
 
@@ -728,6 +730,14 @@ def _ignore_line_scope_check() -> list[str]:
     }
     if "credential_literal" not in bare_rules or "public_ip" not in bare_rules:
         problems.append(f"裸放过标记不应放过任何规则（实得 {sorted(bare_rules)}）")
+    # 门①.5 r1 M-2：空括号 `ignore-line()` 的规则集为空 ⇒ **什么都不放过**（不是「放过整行」）。
+    empty = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + IGNORE_MARKER + "()"  # public-tree-scan: ignore-line(public_ip)
+    empty_rules = {
+        line.split("[", 1)[1].split("]", 1)[0]
+        for line in scan_source("self-test-ignore-empty", empty, denylist=[], allow_prefixes=[])
+    }
+    if "credential_literal" not in empty_rules or "public_ip" not in empty_rules:
+        problems.append(f"空括号放过标记不应放过任何规则（实得 {sorted(empty_rules)}）")
     return problems
 
 

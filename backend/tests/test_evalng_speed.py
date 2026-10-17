@@ -1563,7 +1563,7 @@ class TestPublicTreeScanner:
         for probe in (
             '--api-pass "syntheticApiPass2026"',  # public-tree-scan: ignore-line(credential_flag)
             '--api-pass "REALLONGAPIPASS9"',  # public-tree-scan: ignore-line(credential_flag)
-            "password=Hunter2Hunter2",  # public-tree-scan: ignore-line()
+            "password=Hunter2Hunter2",  # public-tree-scan: ignore-line(credential_literal)
             'password="Passw0rd!2026"',  # public-tree-scan: ignore-line(credential_literal)
         ):
             assert self._rules(probe) & {"credential_literal", "credential_flag", "credential_bare"}, probe
@@ -1585,7 +1585,7 @@ class TestPublicTreeScanner:
             "bearer", "api_key", "url_credential", "basic_auth",
         }
         for probe in (
-            "api_secret=Zz9Kk2Lm",  # public-tree-scan: ignore-line()
+            "api_secret=Zz9Kk2Lm",  # public-tree-scan: ignore-line(credential_literal)
             'db_password="Hunter2Hunter2"',  # public-tree-scan: ignore-line(credential_literal)
             'API_SECRET = "Zz9Kk2Lm"',  # public-tree-scan: ignore-line(credential_literal)
             'clientSecret: "Ab3xY9Qq2"',  # public-tree-scan: ignore-line(credential_literal)
