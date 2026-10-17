@@ -915,7 +915,7 @@ class TestArms:
         monkeypatch.setattr(arms, "git_porcelain", lambda *a, **k: [" M eval-ng/cli.py"])
         patch_arm = arms.load_arm(str(_write_json(
             tmp_path, {"name": "k1", "kind": "patch", "patches": [
-                {"file": "frontend/src/constants/timing.ts", "from": "= 3;", "to": "= 1;"}]})))
+                {"file": "frontend/src/constants/timing.ts", "from": "= 8;", "to": "= 1;"}]})))
         blocked = arms.arm_checks(patch_arm, phase="pre")
         assert any(c["status"] == "BLOCKED" for c in blocked)
 
@@ -924,19 +924,19 @@ def test_patch_effect_checks_require_marks_on_disk(tmp_path):
     """D8：臂声明「已生效」必须真在文件里——静默未生效是 FAIL，不是放过。
 
     判别性说明：`patches[].to` 的语义是「打完补丁后文件里应有这段」，所以文档里
-    用**现树真含的标记**（`timing.ts:57` 的 `= 3;`）构造 PASS 例，用幻影标记构造 FAIL 例。
+    用**现树真含的标记**（`timing.ts:57` 的 `= 8;`，Issue#172 起页并发默认 8）构造 PASS 例，用幻影标记构造 FAIL 例。
     """
     env_arm = arms.load_arm(str(_write_json(tmp_path, {"name": "env", "kind": "env"})))
     assert [c["status"] for c in arms.patch_effect_checks(env_arm)] == ["UNVERIFIED"]
     timing = "frontend/src/constants/timing.ts"
     present = arms.load_arm(str(_write_json(tmp_path, {
         "name": "k3", "kind": "patch",
-        "patches": [{"file": timing, "from": "= 1;", "to": "PLAYGROUND_VISION_PAGE_CONCURRENCY = 3;"}],
-        "expect": [{"file": timing, "contains": "= 3;"}]})))
+        "patches": [{"file": timing, "from": "= 1;", "to": "PLAYGROUND_VISION_PAGE_CONCURRENCY = 8;"}],
+        "expect": [{"file": timing, "contains": "= 8;"}]})))
     assert [c["status"] for c in arms.patch_effect_checks(present)] == ["PASS", "PASS"]
     absent = arms.load_arm(str(_write_json(tmp_path, {
         "name": "k1", "kind": "patch",
-        "patches": [{"file": timing, "from": "= 3;", "to": "PLAYGROUND_VISION_PAGE_CONCURRENCY = 1;"}],
+        "patches": [{"file": timing, "from": "= 8;", "to": "PLAYGROUND_VISION_PAGE_CONCURRENCY = 1;"}],
         # 幻影标记必须写全：`= 1;` 这种短串会撞上同文件的其它常量（本轮实测撞过，改用全名）
         "expect": [{"file": timing, "contains": "PLAYGROUND_VISION_PAGE_CONCURRENCY = 1;"}]})))
     checks = arms.patch_effect_checks(absent)
