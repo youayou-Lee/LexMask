@@ -134,6 +134,9 @@ class HealthResponse(BaseModel):
     version: str
     timestamp: datetime = Field(default_factory=datetime.now)
     license: dict | None = None  # {state, expires_at, days_left}，见 app/core/license.py
+    #: 正则超时计数 {safe_compile/safe_finditer/safe_finditer_many: 累计次数}
+    #: （Issue#156）。此前超时只进日志，运维侧无法读出发生过几次、在哪条链。
+    regex_timeouts: dict[str, int] | None = None
 
 
 class ToggleResponse(BaseModel):
