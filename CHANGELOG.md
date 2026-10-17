@@ -2,6 +2,16 @@
 
 ## 2026-10-18
 
+### 工具链（Issue#157）前端测试文件纳入 `tsc`
+
+- **根因**：`frontend/tsconfig.json` 的 `exclude` 排除 `src/**/*.test.ts(x)` 与 `src/**/__tests__/**`，而 CI 里 `npm test` 照跑 ⇒ **测试文件从不经过类型检查**，测试里的类型错误永远发现不了。
+- **改法**：新增 `frontend/tsconfig.test.json`（extends 基础配置 + `noEmit` + `types: ["vitest/globals"]` + `include: ["src"]`），CI 前端 job 在 Build 之前新增一步 `npx tsc -p tsconfig.test.json`。
+- **关键取舍：不引入 `@types/node`**——它会把三处 `let timer: ReturnType<typeof window.setTimeout>`（`use-batch-files.ts` / `use-history-data.ts` / `use-jobs.ts`）解析成 `NodeJS.Timeout`，**改到产品类型面**；因此把原本依赖 `node:fs`/`node:url` 的接线契约用例改成 Vite `?raw` glob 读源码，并修掉 `utils.visual-preview.test.ts` 里一处 `(b: never)` 标注。
+- **有效性证明（AC2）**：旧门（`tsc` 程序）**0 个测试文件**、新门命中含测试的 38 个 playground 路径；注入 `const __i157_probe: number = "boom";` ⇒ 新门 rc=2（`TS2322` + `TS6133`）、旧门 rc=0；未修树一次性对照：`utils.visual-preview.test.ts(97,23) TS2345` + 接线用例两处 `TS2307`。
+- **耗时（AC3）**：新门 6.08 / 6.60 / 6.81 s vs 旧 `tsc` 6.31 / 6.77 / 7.19 s（本机）；CI 侧耗时在 PR 首次运行后回填。
+- **零回归**：`npx vitest run` 24 文件 / 166 例全绿；`npm run build` 绿（4.31 s）且 `dist` 无测试产物。
+- **同族盲区（登记 follow-up，不在本 PR）**：`frontend/vite.config.ts` 在 `tsconfig.node.json` 的 include 里，但仓内**没有任何程序跑 `tsc -b` / `--build`** ⇒ 它也不在任何被执行的程序内。
+
 ### 视觉（Issue#96）公章来源可切 MinerU —— 门④ AC2 判 **FAIL**，以「默认关」形态合入
 
 - **背景**：#92 四臂单源对比显示 `mineru_seal`（58.0%）优于 `la`（43.5%），据此立项把公章框来源切到 MinerU。实现完成：框级替换（`official_seal` 照旧下传 LA，VL 印章通道不受影响）、失败回落 LA、新增三个配置键与 26 例单测、页号/单位/漂移三类口径缺陷修毕。
