@@ -2,6 +2,15 @@
 
 ## 2026-10-18
 
+### 工具链（Issue#157）前端测试文件纳入 `tsc`
+
+- **根因**：`frontend/tsconfig.json` 的 `exclude` 排除 `src/**/*.test.ts(x)` 与 `src/**/__tests__/**`，而 CI 里 `npm test` 照跑 ⇒ **测试文件从不经过类型检查**，测试里的类型错误永远发现不了。
+- **改法**：新增 `frontend/tsconfig.test.json`（extends 基础配置 + `noEmit` + `types: ["vitest/globals"]` + `include: ["src"]` + `exclude: []`），CI 前端 job 在 Build 之前新增一步 `Type-check tests (Issue#157)`：先 `npx tsc -p tsconfig.test.json`，再用 `--listFiles` 计数与 `find src -name '*.test.ts*'` 的盘上实数比对（漏一个即 `::error::` 退出 1，只 `grep -q` 的「≥1 地板」挡不住「只漏一类」）。
+- **关键取舍：不引入 `@types/node`**——引入后全局 `setTimeout` 的重载来自 `@types/node`，三处 `let timer: ReturnType<typeof window.setTimeout> | null` 的**声明侧**会被解析成 `NodeJS.Timeout`，而 `window.setTimeout(...)` 返回的实参仍是 `number` ⇒ 三处赋值处报 `TS2322`（`use-batch-files.ts` / `use-history-data.ts` / `use-jobs.ts`），**等于让类型门改产品类型面**；因此把原本依赖 `node:fs`/`node:url` 的接线契约用例改成 Vite `?raw` glob 读源码，并修掉 `utils.visual-preview.test.ts` 里一处 `(b: never)` 标注。
+- **有效性证明（AC2）**：判据命令 `npx tsc -p <config> --listFiles | grep -c '\.test\.'`：旧门 `tsconfig.json` = **0**、新门 `tsconfig.test.json` = **24**（22 个 `.test.ts` + 2 个 `.test.tsx`，与盘上实数一致）；注入 `const __i157_probe: number = "boom";` ⇒ 新门 rc=2（`TS2322` + `TS6133`）、旧门 rc=0；冷审另用 `.test.tsx` 注入复现同一判别（新门 rc=2 / 旧门 rc=0）；未修树一次性对照：`utils.visual-preview.test.ts(97,23) TS2345` + 接线用例两处 `TS2307`。
+- **耗时（AC3，数字带 head 归属）**：本机新门 6.08 / 6.60 / 6.81 s vs 旧 `tsc` 6.31 / 6.77 / 7.19 s；**CI 侧 5.0 s** 量的是加断言**前**的 head `1c5eaa5`（run `39060724050`，前端 job `117477946925`，该版只跑一条 tsc）；本分支加了计数断言后该步跑两次 tsc，本机整步 **12.73 s**（CI 预计 9–10 s），以合入 head 的 CI 实测为准。
+- **零回归**：`npx vitest run` 24 文件 / 166 例全绿；`npm run build` 绿（4.31 s）且 `dist` 无测试产物。
+- **同族盲区（登记 follow-up，不在本 PR）**：`frontend/vite.config.ts` 在 `tsconfig.node.json` 的 include 里，但仓内**没有任何程序跑 `tsc -b` / `--build`** ⇒ 它也不在任何被执行的程序内。
 ### 修复（Issue#142）公开树扫描器 bearer 规则大小写对齐 + 文档精度
 
 - `eval-ng/scripts/check_public_tree.py`：bearer 规则补 `(?i)`（与 `eval-ng/engine/speedkit/report.py` 的 `_BEARER_RE` 对齐，消除同族规则大小写口径漂移）；自检夹具补小写/混合大小写正例与 `&lt;24` 字符反例；`_COVERAGE_NOTE` 措辞精确化（尺寸写不敏感、声明与报告侧 **12 vs 24 的阈值差异是有意保留**、声明 base64 形态属安全侧多报），并修正一处**非法正则引文**（`(?i)\bbearer\s+{24,}` → 完整正则）。

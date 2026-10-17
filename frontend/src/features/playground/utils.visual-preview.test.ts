@@ -94,7 +94,7 @@ describe('mergeNerBoxes', () => {
     const oldNer = { id: 'n1', source: 'ner', text: '旧实体' } as never;
     const newNer = [{ id: 'n2', source: 'ner', text: '新实体' } as never];
     const merged = mergeNerBoxes([manual, oldNer], newNer);
-    expect(merged.map((b: never) => (b as { id: string }).id)).toEqual(['m1', 'n2']);
+    expect(merged.map((b) => (b as { id: string }).id)).toEqual(['m1', 'n2']);
   });
 });
 
