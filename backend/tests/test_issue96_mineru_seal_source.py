@@ -404,6 +404,17 @@ def test_apply_logs_effective_seal_source_when_switched_off(monkeypatch, tmp_pat
     assert any("visual_seal_source=la" in m for m in messages)
 
 
+def test_visual_seal_source_default_is_la() -> None:
+    """默认必须是 la：门④ AC2 判定为 FAIL（生产链召回不劣化未达成）。
+
+    本用例是「不许悄悄把默认值翻回 mineru」的机器判据——若有人改了默认，
+    这里必须红，并逼其在方案/Issue 里给出新的验收依据。
+    """
+    from app.core.config import Settings
+
+    assert Settings().VISUAL_SEAL_SOURCE == "la"
+
+
 def test_visual_seal_source_validator_rejects_unknown_and_clamps_timeout():
     from pydantic import ValidationError
 

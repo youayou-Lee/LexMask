@@ -242,7 +242,10 @@ class Settings(BaseSettings):
     # **框级替换**：LA 请求类别一字不改（official_seal 仍在下传列表，VL 印章通道
     # 因此照旧活跃），只在框合并前把 LA 产出的 `locate_anything:*` 章框整批换成
     # MinerU 章框；la = 维持现役 LA 通道（逐位等价改前行为）。
-    VISUAL_SEAL_SOURCE: str = "mineru"
+    # Issue#96 门④ AC2 判定：生产链下 MinerU 章框的章级召回 0.5652 < 现役 LA 0.5942 − 0.02
+    # （噪声地板 0.00 pp，差异真实）⇒ 不满足「默认换源」验收线，故**默认保持 la（零行为变化）**；
+    # 想用 MinerU 章框（精确率 +5.6 pp、误报/页减半、LA 不可用时仍出章）需显式设 mineru。
+    VISUAL_SEAL_SOURCE: str = "la"
     # MinerU 单文件解析的等待上限（秒）；超时/异常按「MinerU 失败态」处理。
     VISUAL_SEAL_MINERU_TIMEOUT: float = 60.0
     # MinerU 失败/形态漂移时是否回落 LA 公章通道。
