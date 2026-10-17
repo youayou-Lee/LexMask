@@ -2,6 +2,14 @@
 
 ## 2026-10-18
 
+### 正交（Issue#135）`safe_finditer` 超时零计时协议用例
+
+- **背景**：`safe_compile` 的超时协议在 #109 已有零计时用例，但同族的 `safe_finditer` / `safe_finditer_many` 的超时分支（`future.cancel()` → `_kill_and_replace_pool()` → 抛 `RegexTimeoutError`）**没有任何协议用例**；漏掉任一步都只会静默退化。
+- **改动**：新增 `backend/tests/test_safe_regex_finditer_protocol.py`（16 例）：换池恰好一次、`cancel()` 被调用、异常类型与 message、命名组透传、批量顺序/空输入早退/单条失败隔离、非超时异常不得换池、真实池集成 2 例（受限环境按惯例显式 skip）。
+- **零回归**：修 2268 passed / 6 failed / 47 skipped vs 基线 `26d11eb` 2252 / 6 / 47，`comm -3` FAILED 集合 0 行（差 +16 = 新增用例）。
+- **变异**：V4（`except FuturesTimeoutError` 放宽为 `except Exception`）、V10（`if not future.cancel(): return []`）均 KILLED，逐字节还原校验 sha256。
+- **不做**：不改 `safe_regex` 行为（纯测试）。
+
 ### 视觉（Issue#96）公章来源可切 MinerU —— 门④ AC2 判 **FAIL**，以「默认关」形态合入
 
 - **背景**：#92 四臂单源对比显示 `mineru_seal`（58.0%）优于 `la`（43.5%），据此立项把公章框来源切到 MinerU。实现完成：框级替换（`official_seal` 照旧下传 LA，VL 印章通道不受影响）、失败回落 LA、新增三个配置键与 26 例单测、页号/单位/漂移三类口径缺陷修毕。
