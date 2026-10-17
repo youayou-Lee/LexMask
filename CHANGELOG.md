@@ -2,6 +2,14 @@
 
 ## 2026-10-18
 
+### 修复（Issue#142）公开树扫描器 bearer 规则大小写对齐 + 文档精度
+
+- `eval-ng/scripts/check_public_tree.py`：bearer 规则补 `(?i)`（与 `eval-ng/engine/speedkit/report.py` 的 `_BEARER_RE` 对齐，消除同族规则大小写口径漂移）；自检夹具补小写/混合大小写正例与 `&lt;24` 字符反例；`_COVERAGE_NOTE` 措辞精确化（尺寸写不敏感、声明与报告侧 **12 vs 24 的阈值差异是有意保留**、声明 base64 形态属安全侧多报），并修正一处**非法正则引文**（`(?i)\bbearer\s+{24,}` → 完整正则）。
+- `eval-ng/scripts/check_report_redaction.py`：符号引用 `check_public_tree.SECRET_RES`（该符号不存在）→ `check_public_tree.credential_findings`。
+- `backend/tests/test_public_tree_scanner.py`：新增「夹具存在性 + 真落网」判据（删夹具即判红，堵住 r1 冷审自造的 M3/M3b 存活）。
+- `eval-ng/engine/speedkit/report.py` 的口径注释改动**撤回**：该文件含 11 处既有 `abs_path` 命中，任何改动都会被 G4 文件级判定误红 ⇒ 设计修法另立 **#187**（改为只扫新增行）。
+- 验证：`--self-test` rc=0（21 例 / 11 类 / 27 夹具）；`backend/tests/test_public_tree_scanner.py` **33 passed**；改动面 `--base origin/preview` **零命中**；整树新旧扫描器命中行 `diff` **0**；零回归同刻两树均 **2300 passed / 47 skipped / 0 failed**（`comm -3` 0 行）；变异 **6/6 KILLED**。
+
 ### 正交（Issue#135）`safe_finditer` 超时零计时协议用例
 
 - **背景**：`safe_compile` 的超时协议在 #109 已有零计时用例，但同族的 `safe_finditer` / `safe_finditer_many` 的超时分支（`future.cancel()` → `_kill_and_replace_pool()` → 抛 `RegexTimeoutError`）**没有任何协议用例**；漏掉任一步都只会静默退化。

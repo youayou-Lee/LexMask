@@ -504,3 +504,14 @@ def test_finding_line_rule_discriminates():
     """钉汇总行形状的正则本身（r3 变异把它改成 `r""` 会让一切形状断言空转）。"""
     assert ptree._FINDING_LINE_RE.match("docs/x.md:12: [credential_literal] value")
     assert not ptree._FINDING_LINE_RE.match("docs/x.md:12: 没有规则标记的一行")
+
+def test_bearer_fixtures_exist_and_are_caught():
+    """门①.5 r1 F2：新增的 bearer 大小写夹具必须存在**且真落网**（删夹具即判红）。
+
+    样本文本从 `SELF_TEST_BAD_CASES` 读出，避免在本文件复述令牌字面量导致自伤。
+    """
+    cases = dict(ptree.SELF_TEST_BAD_CASES)
+    for label in ("bearer-lowercase", "bearer-mixedcase"):
+        assert label in cases, f"夹具缺失：{label}"
+        hits = ptree.scan(cases[label], denylist=[], allow_prefixes=[])
+        assert any(rule == "bearer" for rule, _value in hits), (label, hits)
