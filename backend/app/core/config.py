@@ -238,6 +238,19 @@ class Settings(BaseSettings):
     LOCATE_ANYTHING_CONSENSUS_SAMPLES: int = 1
     LOCATE_ANYTHING_CONSENSUS_MIN_VOTES: int = 0
     LOCATE_ANYTHING_CONSENSUS_IOU: float = 0.5
+    # Issue#96: 公章框来源。mineru = 公章框改由 MinerU sidecar 的 seal 块提供，
+    # **框级替换**：LA 请求类别一字不改（official_seal 仍在下传列表，VL 印章通道
+    # 因此照旧活跃），只在框合并前把 LA 产出的 `locate_anything:*` 章框整批换成
+    # MinerU 章框；la = 维持现役 LA 通道（逐位等价改前行为）。
+    # Issue#96 门④ AC2 判定：生产链下 MinerU 章框的章级召回 0.5652 < 现役 LA 0.5942 − 0.02
+    # （噪声地板 0.00 pp，差异真实）⇒ 不满足「默认换源」验收线，故**默认保持 la（零行为变化）**；
+    # 想用 MinerU 章框（精确率 +5.6 pp、误报/页减半、LA 不可用时仍出章）需显式设 mineru。
+    VISUAL_SEAL_SOURCE: str = "la"
+    # MinerU 单文件解析的等待上限（秒）；超时/异常按「MinerU 失败态」处理。
+    VISUAL_SEAL_MINERU_TIMEOUT: float = 60.0
+    # MinerU 失败/形态漂移时是否回落 LA 公章通道。
+    # True（默认）=保召回：LA 章框照旧参与链路；False=严格换源：宁缺毋滥。
+    VISUAL_SEAL_MINERU_FALLBACK_TO_LA: bool = True
     # HaS-Image YOLO supplement service (empty = disabled). Runs every page
     # alongside the grounding model: native-resolution small-object recall
     # (stacked seal halves, watermark QR codes) at ~100ms.
@@ -939,6 +952,23 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_pdf_page_text_block_cache_pages(cls, v: int) -> int:
         return max(0, min(512, v))
+
+    @field_validator("VISUAL_SEAL_SOURCE", mode="before")
+    @classmethod
+    def _validate_visual_seal_source(cls, v: object) -> str:
+        normalized = str(v or "").strip().lower()
+        if normalized not in {"mineru", "la"}:
+            raise ValueError("VISUAL_SEAL_SOURCE must be 'mineru' or 'la'")
+        return normalized
+
+    @field_validator("VISUAL_SEAL_MINERU_TIMEOUT", mode="before")
+    @classmethod
+    def _validate_visual_seal_mineru_timeout(cls, v: object) -> float:
+        try:
+            number = float(v)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("VISUAL_SEAL_MINERU_TIMEOUT must be a number") from exc
+        return max(1.0, min(600.0, number))
 
     # 病毒扫描：True 时对上传文件跑 ClamAV（daemon 不在线则优雅降级放行）；False 显式跳过。
     VIRUS_SCAN_ENABLED: bool = True
