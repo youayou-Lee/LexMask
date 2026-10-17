@@ -1,5 +1,7 @@
 # CHANGELOG
 
+## 2026-10-17
+
 - perf(frontend): **单文件页并发 3→8——吃满 HaS 批处理余量（k=32=1842 tok/s 未到顶）**（Issue#172）
   - 依据（2026-10-17 云门④实测）：LA k=8 p50 4.89s/零错误（藏在 OCR 4.2s/页 串行地板之下，#111 的 k=4×2.04 劣化在 k=8 全卷预算内可接受）；HaS vLLM 批处理 k=32=1842 tok/s（单流 14.9×）仍未到顶；整卡四资源占用仅 5-44%
   - `frontend/src/constants/timing.ts`：`PLAYGROUND_VISION_PAGE_CONCURRENCY` 3→8（注释附实测依据与低显存回退说明）
