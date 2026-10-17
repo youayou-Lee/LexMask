@@ -125,6 +125,7 @@ def test_successful_call_does_not_bump_counters(monkeypatch) -> None:
     # 真正走一遍三条链的成功路径
     assert safe_regex.safe_finditer(re.compile("x"), "abc", timeout=5.0) == []
     safe_regex.safe_finditer_many(re.compile("x"), ["abc", "def"], timeout=5.0)
+    safe_regex.safe_compile("x", timeout=5.0)  # 第三条链的成功路径（门⑥ r6b N-r6b-1）
     assert safe_regex.regex_timeout_stats() == {}
 
 

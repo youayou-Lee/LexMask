@@ -133,6 +133,7 @@ def test_payload_type_hints_declare_four_tuple() -> None:
     assert get_type_hints(safe_regex._finditer_in_process)["return"] == list[four]
     assert get_type_hints(safe_regex._finditer_many_in_process)["return"] == list[list[four]]
 
+
 def test_subprocess_payload_keeps_declaration_order():
     """端到端钉住**真子进程 payload** 的命名组取序（r1 自造变异 ① 的补丁）。
 
