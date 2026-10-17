@@ -209,7 +209,7 @@ def test_single_ingest_hierarchy_metadata_preview_and_tenant_isolation(dicom_api
 
 def test_ingest_idempotency_is_tenant_and_payload_scoped(dicom_api_client):
     client, _app, _service, core = dicom_api_client
-    headers = {"X-Idempotency-Key": "dicom-import-1"}  # public-tree-scan: ignore-line（幂等键头，非凭据）
+    headers = {"X-Idempotency-Key": "dicom-import-1"}  # public-tree-scan: ignore-line(credential_literal)（幂等键头，非凭据）
     first = _ingest(client, headers=headers)
     second = _ingest(client, headers=headers)
     assert first.status_code == second.status_code == 201
