@@ -1040,6 +1040,8 @@ def _speed_corpus_premise_checks(corpus: list[dict], rounds: list[dict]) -> list
         backend_scanned = None if meta is None else bool(meta.get("is_scanned"))
         local_scanned = None if chars is None else (chars == 0)
         view = str(entry.get("carrier_view") or "")
+        source = str(entry.get("carrier_source") or "declared")
+        how = "声明" if source == "declared" else "推定"
 
         if view:
             authoritative = local_scanned if view == "local" else backend_scanned
@@ -1051,7 +1053,7 @@ def _speed_corpus_premise_checks(corpus: list[dict], rounds: list[dict]) -> list
                 unknown.append(f"{item_id}：声明 carrier_view={view}，但该视图取不到"
                                f"（{'无 pdftotext 计数' if view == 'local' else '无后端 /parse 旁证'}）")
             elif authoritative != want_scanned:
-                mismatch.append(f"{item_id}：声明 {declared}，但权威视图 {view} 测得"
+                mismatch.append(f"{item_id}：{how} {declared}，但权威视图 {view} 测得"
                                 f"{'是扫描件' if authoritative else '是文本层'}")
             else:
                 confirmed.append(item_id)
@@ -1059,10 +1061,16 @@ def _speed_corpus_premise_checks(corpus: list[dict], rounds: list[dict]) -> list
                     observations.append(f"{item_id}：{other_value}（view={view} 口径下的观测项，不判红）")
             continue
 
-        if str(entry.get("carrier_source") or "declared") == "inferred_local":
+        if source == "inferred_local":
             # 没人显式声明形态（carrier 由本地文本层推定）⇒ 后端不一致只报 UNVERIFIED，不判「声明错」。
             if backend_scanned is None:
                 unknown.append(f"{item_id}：形态由本地推定（{declared}）且无后端 /parse 旁证")
+            elif local_scanned is None:
+                # 门⑥ B-1：推定本身就是"没测本地计数"的兜底形态；此时后端恰好与推定一致
+                # **不能**报 PASS——那等于声称验过一个不存在的本地计数（把「本机未测」写成「已验」）。
+                unknown.append(f"{item_id}：形态由本地推定（{declared}），后端 "
+                               f"parse.is_scanned={backend_scanned} 与推定一致，"
+                               "但本地无 pdftotext 非空白计数（推定证据缺失）")
             elif backend_scanned == want_scanned:
                 confirmed.append(item_id)
             else:
@@ -1119,8 +1127,9 @@ def _speed_corpus_premise_checks(corpus: list[dict], rounds: list[dict]) -> list
         return [{"id": "D1.corpus_premise", "status": "UNVERIFIED",
                  "detail": "清单没有声明 scanned_pdf/text_pdf 的条目，形态前提无从机检", "value": 0}]
     return [{"id": "D1.corpus_premise", "status": "PASS",
-             "detail": f"{len(confirmed)} 件的声明形态与机检视图一致"
-                       "（本地 pdftotext 非空白计数 + 后端 parse.is_scanned）"
+             "detail": f"{len(confirmed)} 件的形态与机检视图一致"
+                       "（逐条按权威视图核过：后端 parse.is_scanned / 本地 pdftotext 非空白计数，"
+                       "两者皆缺的条目不会计入本项）"
                        + ("；观测项：" + "；".join(observations) if observations else ""),
              "value": len(confirmed)}]
 

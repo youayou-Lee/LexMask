@@ -1204,7 +1204,8 @@ class _StubApi:
 def _run_cli_with_stub(monkeypatch, tmp_path, *, driver_name: str, with_batch: bool = False,
                        records: list[dict] | None = None, rounds: int = 2, warmup_rounds: int = 1,
                        premise_parse: dict | None = None, arm_env: dict | None = None,
-                       evidence_env: dict | None = None, premise_infer_pdf: dict | None = None):
+                       evidence_env: dict | None = None, premise_infer_pdf: dict | None = None,
+                       premise_infer_local_count: int | None = 1000):
     """跑一遍 CLI 装配链。`records` 非空时按轮次依次吐出（用于造非法轮/离散度场景）。
 
     `premise_parse` 非空时把清单条目改成声明 `scanned_pdf`（id 对齐 `f1`）并替换后端
@@ -1241,7 +1242,10 @@ def _run_cli_with_stub(monkeypatch, tmp_path, *, driver_name: str, with_batch: b
         doc["corpus"][0]["path"] = str(pdf)
         doc["corpus"][0].pop("carrier", None)
         exam.write_text(json.dumps(doc), encoding="utf-8")
-        monkeypatch.setattr(driver, "pdftotext_nonblank_chars", lambda _p: 1000)
+        monkeypatch.setattr(
+            driver, "pdftotext_nonblank_chars",
+            lambda _p: premise_infer_local_count,
+        )
         canned["items"][0]["parse"] = dict(premise_infer_pdf)
     queue = [dict(r) for r in records] if records else []
     target = "measure_single_round" if driver_name == "single" else "measure_batch_round"
@@ -1298,6 +1302,31 @@ class TestCliReportCompleteness:
         assert code2 != 2
         assert self._status(doc2, "D1.corpus_premise") != "FAIL", doc2["checks"]
 
+    def test_carrier_view_backend_without_parse_evidence_is_unverified(self):
+        """门⑥ r6 I-2：显式 `carrier_view` 而**该视图取不到** ⇒ UNVERIFIED（规格行必须有判据）。
+
+        判别性：删掉 `if authoritative is None:` 那条守卫（评审自造 M-r6-C）后，
+        `None != want_scanned` 会翻成 FAIL ⇒ 本条判红。
+        """
+        checks = cli._speed_corpus_premise_checks(
+            [{"id": "c-b1", "carrier": "scanned_pdf", "carrier_view": "backend", "text_chars": 0}],
+            [{"items": []}],
+        )
+        assert checks[0]["status"] == "UNVERIFIED", checks[0]
+        assert "取不到" in checks[0]["detail"] and "后端 /parse 旁证" in checks[0]["detail"], checks[0]
+
+    def test_carrier_view_local_without_text_layer_count_is_unverified(self):
+        """门⑥ r6 I-2 同族：`carrier_view: local` 但没跑过 pdftotext ⇒ UNVERIFIED（不是 FAIL）。
+
+        判别性：删掉 `if authoritative is None:` 守卫 ⇒ 本条转 FAIL（实测）。
+        """
+        checks = cli._speed_corpus_premise_checks(
+            [{"id": "c-b2", "carrier": "text_pdf", "carrier_view": "local"}],
+            [{"items": [{"id": "c-b2", "parse": {"is_scanned": False}}]}],
+        )
+        assert checks[0]["status"] == "UNVERIFIED", checks[0]
+        assert "无 pdftotext 计数" in checks[0]["detail"], checks[0]
+
     def test_inferred_carrier_from_real_loader_is_unverified_not_fail(self, monkeypatch, tmp_path):
         """门①.5 r1 B1：推定豁免的唯一开关 `carrier_source="inferred_local"` 必须有判据。
 
@@ -1317,6 +1346,24 @@ class TestCliReportCompleteness:
         detail = check.get("detail") or ""
         assert "推定" in detail and "pdftotext 非空白=1000 字" in detail, detail
         assert "is_scanned=True" in detail, detail
+
+    def test_inferred_carrier_without_local_count_is_unverified_not_pass(self, monkeypatch, tmp_path):
+        """门⑥ r6 B-1（阻断）：推定分支在**没有本地计数**时不得报 PASS。
+
+        反例（评审实测）：PDF + 清单不写 `carrier` + `pdftotext_nonblank_chars` 取不到（None）
+        + 后端 `parse.is_scanned=True` ⇒ 旧码报 **PASS** 且 detail 声称「本地 pdftotext 非空白计数
+        + 后端 parse.is_scanned」——把一个不存在的本地测量写成了已验证据。断言 **UNVERIFIED**
+        且 detail 点名「推定证据缺失」。
+        """
+        code, doc = _run_cli_with_stub(
+            monkeypatch, tmp_path, driver_name="single",
+            premise_infer_pdf={"file_type": "pdf", "is_scanned": True, "total_pages": 2},
+            premise_infer_local_count=None,
+        )
+        assert code != 2
+        check = next(c for c in doc["checks"] if c["id"] == "D1.corpus_premise")
+        assert check["status"] == "UNVERIFIED", check
+        assert "推定证据缺失" in (check.get("detail") or ""), check
 
     def test_invalid_carrier_view_is_a_usage_error(self, tmp_path):
         """门①.5 r1 B2：`carrier_view` 非法取值的规格（`_Usage`）必须有判据。
