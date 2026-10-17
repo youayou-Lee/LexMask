@@ -58,6 +58,11 @@ export const PLAYGROUND_LONG_RUNNING_HINT_MS = 60_000;
  *  低显存部署置 1 恢复串行（见 playground/utils.ts）。 */
 export const PLAYGROUND_VISION_PAGE_CONCURRENCY = 8;
 
+/** Issue#175 首屏优先：整卷识别时让第 1 页**独占首发**（其余页随后按 PAGE_CONCURRENCY 并发）。
+ *  关闭后恢复「纯 k 并发」。门④ 实测（同一 10 页 canary）：k=1 首屏 7.62s、k=3 14.6s、k=8 中位 23.81s
+ *  —— k 条请求同抢单卡会把最先发出的第 1 页挤后；先单跑第 1 页可把首屏拉回单页量级，整卷墙钟几乎不变。 */
+export const PLAYGROUND_VISION_FIRST_PAGE_PRIORITY = true;
+
 // React Query defaults
 
 /** Default staleTime for queries (30 s). */

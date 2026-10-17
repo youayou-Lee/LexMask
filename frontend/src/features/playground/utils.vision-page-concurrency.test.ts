@@ -143,3 +143,61 @@ describe('Issue#106 D2：勾选视觉特征后页间不再被强制串行', () =
     }
   });
 });
+
+describe('Issue#175 首屏优先：第 1 页独占首发', () => {
+  const pageOf = (call: { url: string }) =>
+    Number(new URL(call.url, 'http://localhost').searchParams.get('page'));
+
+  async function startRunner(over: { totalPages: number } & Record<string, unknown>) {
+    inFlight.current = 0;
+    inFlight.peak = 0;
+    waiters = [];
+    calls = [];
+    const { runVisionDetectionPages } = await import('./utils');
+    // 注意：必须包在对象里返回 —— async 函数会 await 直接返回的 promise，
+    // 那样调用方在放行请求前就永远拿不到控制权（曾因此把两条用例跑成 5s 超时）。
+    return {
+      runner: runVisionDetectionPages({
+        fileId: 'canary-issue175',
+        ocrHasTypes: [],
+        label: '测试',
+        ...over,
+      }),
+    };
+  }
+
+  it('卷页数 > 并发槽位时，首发窗口里只有第 1 页一条在飞（判别点）', async () => {
+    const { runner } = await startRunner({ totalPages: 10, visualFeatureTypes: ['official_seal'] });
+    // 首发窗口：不给任何请求放行，只让 microtask/宏任务推进几轮
+    for (let i = 0; i < 5; i += 1) await flush();
+    expect(calls.map(pageOf)).toEqual([1]);
+    expect(inFlight.current).toBe(1);
+
+    await drain();
+    await runner;
+    // 第 1 页之后其余页仍按 k 并发吃满
+    expect(calls.map(pageOf).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(inFlight.peak).toBe(PLAYGROUND_VISION_PAGE_CONCURRENCY);
+  });
+
+  it('卷页数 ≤ 并发槽位时不启用独占（保持 #106 的峰值契约）', async () => {
+    const peak = await measurePeak({
+      totalPages: 8,
+      visualFeatureTypes: ['official_seal'],
+      concurrency: 8,
+    });
+    expect(peak).toBe(8);
+  });
+
+  it('显式关闭 firstPagePriority 退回纯 k 并发（开关本身有判据）', async () => {
+    const { runner } = await startRunner({
+      totalPages: 10,
+      visualFeatureTypes: ['official_seal'],
+      firstPagePriority: false,
+    });
+    for (let i = 0; i < 5; i += 1) await flush();
+    expect(calls.length).toBe(PLAYGROUND_VISION_PAGE_CONCURRENCY); // 无独占窗口，直接吃满
+    await drain();
+    await runner;
+  });
+});
