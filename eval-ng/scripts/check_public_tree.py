@@ -9,7 +9,7 @@
 2. **绝对路径**：POSIX 根用户/家目录/挂载点等前缀、Windows 盘符路径（`--allow-prefix` 放行指定前缀）；
 3. **凭据形态**（`--self-test` 逐类断言的 10 类）：键名含凭据词的普通赋值 / 带类型注解赋值（含
    PEP 604 联合、泛型、前向引用）/ 引号键（JSON·YAML·dict，键名允许 `-`）/ `--flag` 后的引号
-   字面量或空格裸值 / 无引号字母数字混合值 / `Bearer <≥24 字符>` / 厂商前缀密钥（`sk-`·`ghp_`·
+   字面量或空格裸值 / 无引号字母数字混合值 / `Bearer <≥24 字符>`（**大小写不敏感**，Issue#142）/ 厂商前缀密钥（`sk-`·`ghp_`·
    `AKIA…`）/ URL 内联凭据 / HTTP Basic。带键名的分支要求值 ≥8 字符且**像真口令**（含数字或非
    字母数字符号，且非占位词/模板/类型名/ID 形态/JSON 片段/CJK 文案）；`os.environ[…]`、
    `self._password` 这类引用与代码取值不算。**覆盖与不覆盖的完整边界**见文件内 `_COVERAGE_NOTE`；
@@ -94,7 +94,7 @@ CODE_VALUE_PREFIXES = (
 )
 # 值本身就是令牌形态（与键名无关）：`Bearer <长串>`、厂商前缀密钥、URL 内联凭据、HTTP Basic
 TOKEN_RES = (
-    ("bearer", re.compile(r"\bBearer\s+[A-Za-z0-9\-._~+/]{24,}")),
+    ("bearer", re.compile(r"(?i)\bBearer\s+[A-Za-z0-9\-._~+/]{24,}")),
     # 必须带厂商分隔符，否则 `skeletonButtonSize` / `skippedNoCandidates` 这类标识符会误报。
     # 分隔符两种都要认：GitHub 系真实形态用**下划线**（`ghp_…`/`gho_…`/`ghs_…`/`github_pat_…`，
     # ⑩冷评审 R10-1 实测：硬写 `-` 时这些在无凭据键名的语境整类静默通过）。
@@ -223,6 +223,9 @@ MAX_BYTES = 2 * 1024 * 1024
 SELF_TEST_BAD = (
     "instance 8.8.8.8 path /srv/evidence/arm.json win C:\\Users\\dev\\secret.txt "  # public-tree-scan: ignore-line
     "auth Bearer abcdefghijklmnopqrstuvwxyz012345 password=\"Passw0rd!2026\" deny SCNET-INSTANCE-1 "  # public-tree-scan: ignore-line
+    # Issue#142：Bearer 大小写不敏感——小写与混写必须同样落网（值均为合成串）
+    "auth bearer abcdefghijklmnopqrstuvwxyz012345 "  # public-tree-scan: ignore-line
+    "auth BeArEr ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 "  # public-tree-scan: ignore-line
     # R1 形态：flag 与 add_argument(default=) 两种写法都必须落网（值用合成串，不是真实口令）
     "cli --api-pass \"Synthetic-Pass!123\" "  # public-tree-scan: ignore-line
     "parser.add_argument(\"--api-pass\", default=\"Synthetic-Pass!123\")"  # public-tree-scan: ignore-line
@@ -250,6 +253,8 @@ SELF_TEST_CLEAN = (
     "password=body.password secret = json.load token = getCsrfToken monkey = \"abc12345\" "
     # R10-1 假阳性守卫：厂商前缀正则的字母标识符邻居（`skeleton…`/`skippedNoCandidates`）不得命中
     "skeletonButtonSize skippedNoCandidates "
+    # Issue#142 反例：低于 24 字符的 bearer 值不得命中（阈值差异是有意的）
+    "auth bearer ShortToken12345 "
     "--api-pass\", default=os.environ.get(\"EVAL_API_PASS\")"
 )
 
@@ -263,9 +268,9 @@ def _is_public_ip(ip: str) -> bool:
 _COVERAGE_NOTE = """凭据面覆盖边界（⑦⑧⑨冷评审反复追问的口径，明写以免「静默盲区」）。
 覆盖：普通赋值 `n = "v"`；带类型注解赋值 `n: Ann = "v"`（含 PEP 604 `|`、泛型、顶层前向引用）；
 引号键（JSON/YAML/dict，键名可含 `-`）；`--flag` 后的引号字面量**与空格裸值**；无引号字母数字
-混合值；Bearer / 厂商前缀密钥 / URL 内联凭据 / HTTP Basic。
-不覆盖（设计边界，非静默盲区）：① 编码/拼接/运行时构造的口令（base64 常量、`"a"+"b"`、f-string
-插值——后者按模板豁免）；② 跨行材料（PEM 私钥正文逐行 `-`，形状判定视为分隔符）；③ 仅在密钥库/
+混合值；Bearer（**大小写不敏感**：`(?i)\bbearer\s+{24,}`；报告侧 `eval-ng/engine/speedkit/report.py` 的同族规则也带 `(?i)`，但阈值 12 —— 差异为**有意**：公开树门取防误报、报告脱敏取防漏报，两侧大小写口径一致）/ 厂商前缀密钥 / URL 内联凭据 / HTTP Basic。
+不覆盖（设计边界，非静默盲区）：① 编码/拼接/运行时构造的口令（**纯字母** base64 常量、`"a"+"b"`、f-string
+插值——后者按模板豁免）。**已知安全侧多报**：含数字且无 `=` 填充的 base64 常量（如 `"QWxhZGRpbjpvcGVuIHNlc2FtZQ"` 的反例形态）会被判命中——这是**多报不是漏报**，处置方式是就地说明或用 `ignore-line`；② 跨行材料（PEM 私钥正文逐行 `-`，形状判定视为分隔符）；③ 仅在密钥库/
 环境/凭据文件中出现、代码内无字面量的凭据；④ 长度 <8 或纯占位词的值。
 值形状判定要求「含数字或非字母数字符号」且非分隔符/JSON 片段/CJK 文案/类型名/ID 形态。"""
 def load_denylist(path: str | None) -> list[str]:

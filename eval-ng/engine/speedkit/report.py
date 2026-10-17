@@ -148,6 +148,8 @@ _ABS_PATH_START_RE = re.compile(r"^(?:/|~[\\/]?|\\\\|[A-Za-z]:[\\/])")
 _PATH_SEP_RE = re.compile(r"[\\/]")
 # 口令面（D5④ 机检）：Bearer 令牌、`password=…` 形态、以及键名命中凭据词的环境变量
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/\-]{12,}")
+# Issue#142：与公开树扫描器同族规则口径一致（**均大小写不敏感**）；阈值 12 vs 24 的差异是
+# 有意的——报告脱敏取**防漏报**（宁可多替），公开树门取**防误报**（宁可少报，靠 ignore-line 兜底）。
 _CRED_LITERAL_RE = re.compile(r"(?i)\b(pass(?:word|wd)?|secret|token|api[_-]?key)\b\s*[:=]\s*[\"']?([^\s\"',;]{6,})")
 _SECRET_KEY_RE = re.compile(r"(?i)(pass(?:word|wd)?|secret|token|api[_-]?key|credential|auth)")
 _SECRET_FLAG_RE = re.compile(

@@ -7,7 +7,7 @@
 2. **绝对路径**（POSIX 根用户/家目录/挂载点等前缀、Windows 盘符路径；`--allow-prefix` 可放行指定前缀）；
 3. **口令面**（`Bearer <token>` / `sk-`·`rk-`·`ghp_`·`gho_`·`ghs_`·`github_pat_`·`AKIA` 厂商密钥 /
    `password=…` 字面量；规则从同族公开树扫描器
-   `check_public_tree.SECRET_RES` **同一真源**导入，避免两处口径漂移——②冷评审 I13 指其原本无机检）；
+   `check_public_tree.credential_findings` **同一真源**导入，避免两处口径漂移——②冷评审 I13 指其原本无机检）；
 4. **`--denylist` 词表**（一行一词；`re:<正则>` 前缀走正则）。
 
 自带阳性对照：`--self-test` 会用含 IP/绝对路径/denylist 词的样本断言「必须命中」，再用干净样本断言
