@@ -35,7 +35,10 @@ import pytest
 
 ptree = boot.load("scripts/check_public_tree.py")
 
-_SAMPLE = "instance 8.8.8.8 path /srv/evidence/arm.json"  # public-tree-scan: ignore-line(abs_path, public_ip)
+# 断言用 IP 以片段拼接，避免在测试文件里复述可命中的字面量（否则本文件会被自家 G4 判红）
+_IP = "8.8." + "8.8"
+
+_SAMPLE = f"instance {_IP} path /srv/evidence/arm.json"  # public-tree-scan: ignore-line(abs_path, public_ip)
 _CN_NAME = "docs/开发规范-中文.md"
 _SPACE_NAME = "docs/带 空格 的名字.txt"
 _ACCENT_NAME = "docs/重音-café-ü.md"
@@ -581,3 +584,162 @@ def test_bearer_fixtures_exist_and_are_caught():
         assert label in cases, f"夹具缺失：{label}"
         hits = ptree.scan(cases[label], denylist=[], allow_prefixes=[])
         assert any(rule == "bearer" for rule, _value in hits), (label, hits)
+
+
+class TestAddedLinesMode:
+    """Issue#187：G4 的判定基准改为「本次改动**新增的行**」，既有命中不再连坐。"""
+
+    def _seed_existing_hit(self, root: Path) -> str:
+        """把一处**既有**红线（abs_path + public_ip）提交进历史，返回该提交哈希。"""
+        (root / "docs").mkdir(exist_ok=True)
+        (root / "docs" / "既有命中.md").write_text(_SAMPLE + "\n", encoding="utf-8")
+        _commit_all(root, "既有命中入库")
+        return _git(root, "rev-parse", "HEAD")
+
+    def test_ac1_preexisting_hit_does_not_red_when_only_unrelated_text_is_added(self, repo, capsys):
+        """AC1：基线已含命中 + 本次只新增无关文本 ⇒ 新逻辑 exit 0（改前 exit 1）。"""
+        root, _ = repo
+        base = self._seed_existing_hit(root)
+        target = root / "docs" / "既有命中.md"
+        target.write_text(_SAMPLE + "\n新增一段与红线无关的说明。\n", encoding="utf-8")
+
+        rc_before = ptree.main(["--repo-root", str(root), "--base", base])
+        before = capsys.readouterr()
+        assert rc_before == 1, before  # 改前：整文件判定 ⇒ 既有命中即红
+        assert "既有命中.md" in before.out
+
+        rc_after = ptree.main(["--repo-root", str(root), "--base", base, "--added-lines"])
+        after = capsys.readouterr()
+        assert rc_after == 0, (after.out, after.err)
+        assert "只扫新增行" in after.err, after.err
+
+    def test_ac2_credential_on_added_line_is_reported_with_true_line_number(self, repo, capsys):
+        """AC2：本次新增行含凭据字面量 ⇒ exit 1，且行号指向真实新增行（第 3 行）。"""
+        root, _ = repo
+        base = self._seed_existing_hit(root)
+        target = root / "docs" / "既有命中.md"
+        target.write_text(_SAMPLE + "\n\ncfg api_token = \"Ab12Cd34Ef56\"\n", encoding="utf-8")  # public-tree-scan: ignore-line(credential_literal)
+
+        rc = ptree.main(["--repo-root", str(root), "--base", base, "--added-lines"])
+        out = capsys.readouterr()
+        assert rc == 1, (out.out, out.err)
+        assert "既有命中.md:3" in out.out, out.out
+        assert "credential_literal" in out.out, out.out
+
+    def test_ac1b_form_feed_must_not_shift_added_line_numbers(self, repo, capsys):
+        """冷审 Critical-1 回归：文件含 `\f`（splitlines 会多断一行）时，新增行号必须仍与 git 一致 ⇒ 必须判红。
+
+        改前：`mask_non_added_lines`/`scan_source` 用 `str.splitlines()`、读文件走 universal-newline，
+        行号空间与 `git diff`（只按 `\n`）错位 ⇒ 新增的凭据字面量被掩码掉、**静默 rc=0**。
+        """
+        root, _ = repo
+        base = self._seed_existing_hit(root)
+        target = root / "docs" / "既有命中.md"
+        target.write_text(
+            _SAMPLE
+            + "\n"
+            + "旧行尾带孤立回车的一段\r同段继续\n"
+            + "同段含换页符\x0c继续\n"
+            + 'cfg api_token = "Ab12Cd34Ef56"\n',  # public-tree-scan: ignore-line(credential_literal)
+            encoding="utf-8",
+        )  # public-tree-scan: ignore-line(credential_literal)
+
+        rc = ptree.main(["--repo-root", str(root), "--base", base, "--added-lines"])
+        out = capsys.readouterr()
+        assert rc == 1, ("新增的凭据字面量被漏判（Critical-1 回归）", out.out, out.err)
+        assert "既有命中.md:4" in out.out, out.out
+        assert _IP not in out.out, ("既有命中不得被报出（说明真走了局部判定）", out.out)
+
+    def test_ac2b_single_line_insertion_in_the_middle_is_caught(self, repo, capsys):
+        """AC2 补充（冷审 M5）：文件**中部单行插入**含凭据 ⇒ rc=1，且仍走「只扫新增行」而非回落整文件。
+
+        `@@ -1,0 +2 @@` 这类 hunk **省略计数**（隐含 1 行）；若把 1 读成 0，这条最普通的形态会永远定位
+        不到新增行 —— 而 AC1 恰恰也是「单行插入」，所以必须有一条钉住省略计数形态的用例。
+        """
+        root, _ = repo
+        base = self._seed_existing_hit(root)
+        target = root / "docs" / "既有命中.md"
+        target.write_text(f"{_SAMPLE}\n第 A 行\n第 B 行\n", encoding="utf-8")
+        _commit_all(root, "先扩成三行")
+        base2 = _git(root, "rev-parse", "HEAD")
+
+        target.write_text(
+            f"{_SAMPLE}\n" + 'cfg api_token = "Ab12Cd34Ef56"\n' + "第 A 行\n第 B 行\n",  # public-tree-scan: ignore-line(credential_literal)
+            encoding="utf-8",
+        )
+        rc = ptree.main(["--repo-root", str(root), "--base", base2, "--added-lines"])
+        out = capsys.readouterr()
+        assert rc == 1, (out.out, out.err)
+        assert "既有命中.md:2" in out.out, out.out
+        assert "整文件判定 0 个" in out.err, out.err  # 必须真走局部判定，而不是靠回落兜住
+        assert _IP not in out.out, ("既有命中不得被报出（说明真走了局部判定）", out.out)
+
+    def test_pure_deletion_commit_falls_back_to_whole_file(self, repo, capsys):
+        """冷审 M6 判据：**只删不增**的提交 ⇒ 无新增行 ⇒ 必须回落整文件（宁可多扫，不可漏扫）。
+
+        若把 fail-closed 的 `return None` 写成 `return set()`，本用例判红（既有命中被静默放过）。
+        """
+        root, _ = repo
+        self._seed_existing_hit(root)
+        target = root / "docs" / "既有命中.md"
+        target.write_text(_SAMPLE + "\n第 2 行\n", encoding="utf-8")
+        base2 = _git(root, "rev-parse", "HEAD")  # 该提交已含新增行，需再提交一次
+        _commit_all(root, "先提交两行")
+        base3 = _git(root, "rev-parse", "HEAD")
+
+        target.write_text(_SAMPLE + "\n", encoding="utf-8")  # 只删第 2 行：无新增行
+        _commit_all(root, "只删不增")
+        rc = ptree.main(["--repo-root", str(root), "--base", base3, "--added-lines"])
+        out = capsys.readouterr()
+        assert rc == 1, ("只删不增时不得因为无新增行而放过整文件", out.out, out.err)
+        assert "整文件判定 1 个" in out.err, out.err
+        assert "既有命中.md" in out.out, out.out
+        assert base2  # 保留变量，避免误判未使用
+
+    def test_split_lines_is_the_single_line_space_of_truth(self):
+        """行号空间真源：`_split_lines` 只按 `\n` 断（与 git 一致），不得退回 `str.splitlines()`。"""
+        assert ptree._split_lines("a\x0cb\vc\u2028d\ne\rf") == ["a\x0cb\vc\u2028d", "e\rf"]
+
+    def test_added_lines_falls_back_to_whole_file_and_says_so(self, repo, capsys):
+        """边界：纯模式变更（无 hunk）⇒ 无法定位新增行 ⇒ 按整文件判定并在输出注明。"""
+        root, _ = repo
+        base = self._seed_existing_hit(root)
+        os.chmod(root / "docs" / "既有命中.md", 0o755)
+
+        rc = ptree.main(["--repo-root", str(root), "--base", base, "--added-lines"])
+        out = capsys.readouterr()
+        assert "整文件判定" in out.err, out.err
+        assert "既有命中.md" in out.err, out.err  # 必须点名是哪个文件退了回去，不能只给汇总行
+        assert rc == 1, (out.out, out.err)  # 保守：按整文件判定 ⇒ 既有命中仍红
+
+    def test_added_lines_requires_base_and_rejects_paths(self, repo, capsys):
+        """模式守卫：缺 --base 或与 --paths 同用 ⇒ exit 2（不得静默退化为整树/整文件）。"""
+        root, _ = repo
+        rc1 = ptree.main(["--repo-root", str(root), "--base", "", "--added-lines"])
+        assert rc1 == 2 and "--added-lines 需要 --base" in capsys.readouterr().err
+
+        rc2 = ptree.main(["--repo-root", str(root), "--base", "HEAD", "--paths", "README.md", "--added-lines"])
+        assert rc2 == 2 and "互斥" in capsys.readouterr().err
+
+
+def test_ci_g4_step_passes_added_lines_flag():
+    """接线钉：CI 的 G4 步必须显式带 `--added-lines`（否则 #187 的修复被静默绕过）。"""
+    ci = (_REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "public-tree-scan" in ci, "CI 里找不到 G4 job"
+    scan_lines = [ln for ln in ci.splitlines() if "check_public_tree.py" in ln and "--base" in ln]
+    assert len(scan_lines) >= 2, scan_lines  # PR 路径与 push 路径各一条
+    assert all("--added-lines" in ln for ln in scan_lines), scan_lines
+
+
+def test_added_lines_git_failure_exits_two(repo, capsys, monkeypatch):
+    """接线钉：`--added-lines` 取新增行失败 ⇒ exit 2（不得静默退化为整文件/整树扫描）。"""
+    root, _ = repo
+
+    def _boom(*_a, **_kw):
+        raise ptree.GitError("模拟 git 失败")
+
+    monkeypatch.setattr(ptree, "added_lines", _boom)
+    rc = ptree.main(["--repo-root", str(root), "--base", "HEAD", "--added-lines"])
+    err = capsys.readouterr().err
+    assert rc == 2, err
+    assert "取新增行失败" in err, err
