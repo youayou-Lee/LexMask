@@ -17,6 +17,7 @@ export interface PlaygroundDataContextValue {
   visibleBoxes: PlaygroundContextValue['visibleBoxes'];
   isLoading: PlaygroundContextValue['isLoading'];
   loadingMessage: PlaygroundContextValue['loadingMessage'];
+  visionStream: PlaygroundContextValue['visionStream'];
   uploadIssue: PlaygroundContextValue['uploadIssue'];
   recognitionIssue: PlaygroundContextValue['recognitionIssue'];
   entityMap: PlaygroundContextValue['entityMap'];
@@ -110,6 +111,7 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       visibleBoxes: ctx.visibleBoxes,
       isLoading: ctx.isLoading,
       loadingMessage: ctx.loadingMessage,
+      visionStream: ctx.visionStream,
       uploadIssue: ctx.uploadIssue,
       recognitionIssue: ctx.recognitionIssue,
       entityMap: ctx.entityMap,
@@ -151,6 +153,7 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       ctx.visibleBoxes,
       ctx.isLoading,
       ctx.loadingMessage,
+      ctx.visionStream,
       ctx.uploadIssue,
       ctx.recognitionIssue,
       ctx.entityMap,

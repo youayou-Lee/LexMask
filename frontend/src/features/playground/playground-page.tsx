@@ -21,6 +21,7 @@ import {
   usePlaygroundUIContext,
 } from './playground-context';
 import { needsSwitchConfirm, splitVirtualPages } from './lib/playground-draft';
+import { overlayModeFor, shouldUsePassiveOverlay } from './lib/progressive-render';
 import {
   boxesForReplacePreview,
   isMaskAllowedForFile,
@@ -50,6 +51,7 @@ const PlaygroundInner: FC = () => {
     visibleBoxes,
     isLoading,
     loadingMessage,
+    visionStream,
     recognitionIssue,
     entityMap,
     redactedCount,
@@ -170,6 +172,13 @@ const PlaygroundInner: FC = () => {
   const replacePageView =
     textPdfPagePreview && processingMode === 'replace' && replacePreviewView === 'page';
   const showPageCanvas = maskPageView || replacePageView;
+  /**
+   * Issue#123：多页扫描件逐页流式识别期间，把全屏遮罩降级为 passive（透明、不遮挡、
+   * 不锁交互），使已回流页的框在识别期间可见；同时画布置只读（lockDraw，仍可缩放滚动），
+   * 避免识别中途改框。仅当 total > 1 才降级——单页扫描件 / 文本 NER / 图片模式的
+   * 遮罩与交互行为与改前逐字节一致。
+   */
+  const progressiveRecognition = shouldUsePassiveOverlay(isLoading, visionStream);
 
   const pagesArr = fileInfo?.pages;
   // 虚拟分页（Issue #33 验收反馈）：MinerU 转出的 markdown 单页可达数十万字符、
@@ -403,7 +412,7 @@ const PlaygroundInner: FC = () => {
                       <ImageBBoxEditor
                         imageSrc={isImageMode ? imageUrl : staticPageUrl}
                         boxes={replacePageView ? replacePreviewBoxes : visibleBoxes}
-                        lockDraw={replacePageView}
+                        lockDraw={replacePageView || progressiveRecognition}
                         onBoxesChange={
                           replacePageView
                             ? () => {}
@@ -563,6 +572,7 @@ const PlaygroundInner: FC = () => {
           loadingMessage={loadingMessage}
           isImageMode={isImageMode}
           onCancel={cancelProcessing}
+          overlay={overlayModeFor(progressiveRecognition)}
         />
       )}
 

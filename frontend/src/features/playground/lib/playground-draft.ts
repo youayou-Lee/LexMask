@@ -24,6 +24,10 @@ export type DraftSnapshotInput = {
   entityMap: Record<string, string>;
   redactedCount: number;
   currentPage: number;
+  // Issue#123（门①.5 r3 N4）：D1 之后识别期 stage 已为 'preview'，中途落盘的草稿
+  // 会被 parseDraft 当成完整 preview 恢复（半识别卷被呈现为已完成且不重跑）；
+  // 记录流式进度，未完成（completed < total）的草稿一律拒绝 → 走重跑。
+  visionStream?: { completed: number; total: number } | null;
 };
 
 export type PlaygroundDraftSnapshot = DraftSnapshotInput & {
@@ -57,6 +61,8 @@ export function parseDraft(raw: string | null | undefined): PlaygroundDraftSnaps
   if (!value.fileInfo || typeof value.fileInfo.file_id !== 'string') return null;
   if (!Array.isArray(value.entities) || !Array.isArray(value.boundingBoxes)) return null;
   if (typeof value.content !== 'string') return null;
+  // Issue#123：识别未完成的半成品不进草稿（宁可重跑，也不给用户一份'看起来完整'的残卷）
+  if (value.visionStream && value.visionStream.completed < value.visionStream.total) return null;
   if (value.stage !== 'preview' && value.stage !== 'result') return null;
   // 文本型 preview 却没有正文 → 草稿不完整，宁可重跑也不要白屏
   const isImageMode = value.fileInfo.file_type === 'image' || Boolean(value.fileInfo.is_scanned);
