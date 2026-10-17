@@ -9,6 +9,7 @@ import { localizeErrorMessage } from '@/utils/localizeError';
 import { ACCEPTED_UPLOAD_FILE_TYPES } from '@/utils/fileUploadAccept';
 import { safeJson, runVisionDetectionPages } from '../utils';
 import { planServerCachedResume } from '../lib/playground-draft';
+import { shouldEnterPreviewDuringRecognition } from '../lib/progressive-render';
 import type {
   FileInfo,
   Entity,
@@ -97,6 +98,15 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
   const [content, setContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
+  /**
+   * Issue#123：识别期间已完成的页数与总页数（仅多页流式识别时非空）。
+   * 供表现层判断是否把全屏遮罩降级为 passive（透明、不遮挡），让逐页回流的框在识别期间可见。
+   * 多页扫描件之外（文本 NER / 图片单页 / 非流式路径）一律保持 null
+   * ⇒ 遮罩行为与改前逐字节一致。
+   */
+  const [visionStream, setVisionStream] = useState<{ completed: number; total: number } | null>(
+    null,
+  );
   const [uploadIssue, setUploadIssue] = useState<string | null>(null);
   const [recognitionIssue, setRecognitionIssue] = useState<string | null>(null);
   // Issue #30：解析返回 PDF_ENCRYPTED_NEEDS_PASSWORD 时挂起流程，弹密码框
@@ -180,6 +190,21 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         pageCount,
         content: parsedContent,
       });
+
+      // Issue#123（①.5 冷审 C1 修正）：多页扫描件/图片在 parse 完成后**立即**进入 preview。
+      // 改前 stage 直到识别成功才切 preview（本文件 doRecognition 末尾），整卷识别期间
+      // 画布根本不在渲染树里 ⇒ 逐页回流的框无处可显，「首屏=全卷」。识别期间 preview
+      // 已挂载、动作按钮由 isLoading 禁用（playground-page.tsx:479/:514），
+      // 框按页 append（onPageComplete），遮罩由 passive 降级为不遮挡。
+      if (
+        shouldEnterPreviewDuringRecognition({
+          pageCount,
+          isScanned,
+          fileType: parsedFileType,
+        })
+      ) {
+        setStage('preview');
+      }
     },
     [],
   );
@@ -373,6 +398,8 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     const doRecognition = async () => {
       try {
         setRecognitionIssue(null);
+        // Issue#123：新一轮识别开始即清空流式进度，避免上一轮的页计数残留。
+        setVisionStream(null);
         const isImage = fileType === 'image' || isScanned;
         if (isImage) {
           const ocrTypes = opts.latestOcrHasTypesRef.current;
@@ -404,11 +431,14 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
             signal,
             label: vLabel,
             setLoadingMessage,
-            onPageComplete: ({ pageBoxes }) => {
+            onPageComplete: ({ pageBoxes, completedPages, totalPages }) => {
               // Issue#106：页并发 1→3 之后，切文件/取消时在飞页最多 3 个，
               // 已返回的页可能在 abort 之后才回调；与下方 :416 的 `if (signal.aborted) return;`
               // 同源守卫，避免旧会话的框被 append 进新会话。
               if (signal.aborted) return;
+              // Issue#123：登记流式进度，供表现层把全屏遮罩降级为 passive，
+              // 让已回流的页框在识别期间可见（不改变框本身的数据流向）。
+              setVisionStream({ completed: completedPages, total: totalPages });
               startTransition(() => {
                 opts.setBoundingBoxes((prev) => [...prev, ...pageBoxes]);
               });
@@ -462,6 +492,8 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       setStage('preview');
       showToast(message, 'error');
     } finally {
+      // Issue#123：识别结束（含取消）即清空流式进度，遮罩回到 blocking 语义。
+      setVisionStream(null);
       if (!signal.aborted) {
         setIsLoading(false);
         setLoadingMessage('');
@@ -534,6 +566,8 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     setIsLoading,
     loadingMessage,
     setLoadingMessage,
+    visionStream,
+    setVisionStream,
     cancelProcessing,
     loadExistingFile,
     uploadIssue,

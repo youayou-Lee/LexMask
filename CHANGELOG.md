@@ -1,6 +1,19 @@
 # CHANGELOG
 
 ## 2026-10-17
+- feat(playground): **识别期间渐进渲染——首屏从「整卷跑完」提前到第 1 页回流**（Issue#123）
+  - **根因（门①.5 r1 抓出；v1 只诊断了第二层）**：`stage` 初值 `upload`，直到识别成功才切 `preview`（`frontend/src/features/playground/hooks/use-playground-file.ts` 的识别收尾）⇒ 整卷识别期间**结果画布根本不在渲染树里**，逐页回流的框无处可显（10 页 canary 总墙钟 86.74 s，而第 1 页在第 8.7 s 就已完成）；只把全屏遮罩降级为 transparent（v1 方案）**收益为 0**
+  - 新增 `frontend/src/features/playground/lib/progressive-render.ts`（纯函数，供表现层与单测共用）：`shouldEnterPreviewDuringRecognition`（多页扫描件/图片 ⇒ parse 完成即进 `preview`，单页件与文本件保持既有行为）、`shouldUsePassiveOverlay`（仅「加载中 + 多页流式」才降级遮罩）、`overlayModeFor`（页面实传档位——单独抽成纯函数，使接线层取值可被单测判别）
+  - `components/playground-loading.tsx`：新增 `overlay` 档位。默认 `blocking`＝改前行为逐字节一致；`passive`＝容器透明 + `pointer-events-none` 不遮挡，面板自身 `pointer-events-auto` 仍可交互（进度与取消入口保留）；`data-overlay` 属性供判据定位
+  - **两条路径都接线**：上传路径（`use-playground-file.ts` 记录流式进度 + 提前切段）与**重跑路径**（`use-playground-image.ts` 的 `handleRerunNerImage`——r1 指出它是「唯一已有画布挂载」的路径，v1 漏接）；`use-playground.ts`/`playground-context.tsx` 透传 `visionStream`
+  - 交互粒度沿用既有 `lockDraw` 语义：passive 期间可缩放/滚动查看、不可改框（不与 #106 的 in-flight 页并发交错写入）
+  - 新增 `frontend/src/features/playground/progressive-render.test.tsx`（**14 例**）：两个谓词的边界（多页/单页/文本/页数为 0/加载态）、`overlayModeFor` 接线档位、`PlaygroundLoading` 的 blocking/passive 契约（类名、pointer-events、面板可交互、进度与取消入口保留）
+  - **红先对照**：基线树 `fcac61a` + 同一用例文件 = **2 failed / 10 passed**（`expected null to be 'blocking'` / `'passive'`）；修复树 = **14 passed**
+  - **零回归（本机 3.12）**：修复树全量 **151 passed（22 文件）** vs 基线树 **137 passed**（差 +14 = 新用例文件），两侧 0 failed；`npm run build` 绿；`npm run lint` 与基线同为 **6 problems（2 errors / 4 warnings，均为既有）**
+  - **变异自证 7 条：6 KILLED / 1 SURVIVED**（M1 谓词恒 false→KILLED；M2 `pageCount > 1`→`>= 1`→KILLED；M3 `stream.total > 1`→`>= 1`→KILLED；M4 容器忽略 passive→KILLED；M5 去掉 `pointer-events-none`→KILLED；M7 `overlayModeFor` 恒 `blocking`→KILLED；**M6 页面接线硬编码 `blocking`→SURVIVED**）
+  - **诚实边界**：①**M6 SURVIVED 如实登记**——本机无页面级渲染用例，「页面确实把 `overlayModeFor(...)` 的结果传下去」这一接线事实在本机无判别面，覆盖来源＝门④ 浏览器臂 AC1(a) 对**真实 DOM** 的断言（页面若硬编码 blocking，真机识别期遮罩即为 blocking）+ 门⑥ 读 diff；②**jsdom 无布局** ⇒ 可见性/命中测试（`document.elementFromPoint`）**全部归浏览器臂**，本机只判模块契约与元素存在性；③AC1(a) 的**承重断言**是「画布已挂载 + 第 1 页框节点在 document 内」而非「新属性存在」（否则红先失败退化为属性缺失）；④AC1(b) 阈值口径＝**同运行内**第 1 页实测耗时 × 1.2（不引用跨运行人口 p50——r2 实测 `8.674×1.2 = 10.41 s` 与实验臂预期 ≈10.4 s 零余量）；⑤**AC3 硬红线＝Issue 原文「整卷墙钟不劣化 ≥0.98」**，方案自加的「≥10% 改善」降为**观测项**；⑥AC4（失败页不阻塞已完成页）按既有 `recognitionIssue` 语义已覆盖，**降为观测项**，并把 D1 带来的 `stage === 'preview'` 六处副作用（首屏空画布闪烁 / 进度分母 / 重跑入口 / 动作按钮时序 / `onBackToEdit` / 会话切换弹窗）在门④ 逐条观测落表；⑦**「不改闸门」的范围＝不改后端识别闸门**（并发闸位、`MAX_HAS_CHUNKS`、env 开关一律不动），D1 改的是前端 `stage` UI 状态（术语已在方案 §4 拆分）
+  - **不做**：不改识别算法与任何并发度、不改后端；「首屏优先调度」与「剩余时间预估」（Issue 候选方向 2/3）另立 Issue；批量向导不在范围
+
 - fix(vision): **病态密页「残值自证」风暴：新增每页上限 `HAS_NER_VERIFY_MAX_JOBS_PER_PAGE`（默认 200）**（Issue#136）
   - `backend/app/core/config.py`：新增 `HAS_NER_VERIFY_MAX_JOBS_PER_PAGE: int = 200`（validator `max(0, min(4096, v))`；`0` = 不限）
   - `backend/app/services/vision/has_text_analysis.py`：残余自证作业在派发前按**输入决定序**排序（值在**本页原文**中首次出现的位置升序；在原文中找不到的拟合值排最后——这类值不自证即不采纳，风险最低）后**确定性截断**；被截断的值不进入结果（与「自证未确认」同语义，保守不增 FP）。新增指标 `has_text_verify_jobs_before` / `has_text_verify_jobs_after` / `has_text_verify_jobs_by_type` / `has_text_verify_skipped` / `has_text_verify_ms`；触顶时 WARNING 带截断计数与**页内类型分布**

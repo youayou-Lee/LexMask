@@ -1,4 +1,4 @@
-﻿// Copyright 2026 LexMask Contributors
+// Copyright 2026 LexMask Contributors
 
 import { type FC, memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -13,10 +13,17 @@ export interface PlaygroundLoadingProps {
   loadingMessage: string;
   isImageMode: boolean;
   onCancel?: () => void;
+  /**
+   * Issue#123：遮罩形态。
+   * - `blocking`（默认）：既有行为不变——全屏半透明 + backdrop-blur + 交互锁，整页遮挡。
+   * - `passive`：透明、不模糊、右下角小面板、不锁交互——让逐页回流的框在识别期间可见
+   *   （画布此时由 `ImageBBoxEditor` 的 `lockDraw` 置只读，见 playground-page.tsx）。
+   */
+  overlay?: 'blocking' | 'passive';
 }
 
 export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
-  ({ loadingMessage, isImageMode, onCancel }) => {
+  ({ loadingMessage, isImageMode, onCancel, overlay = 'blocking' }) => {
     const t = useT();
     const panelRef = useRef<HTMLDivElement>(null);
     const [elapsedMs, setElapsedMs] = useState(0);
@@ -24,7 +31,9 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
     const safeElapsedSec = Math.max(0, elapsedSec);
     const progressValue = Math.min(92, Math.round(12 + 80 * (1 - Math.exp(-safeElapsedSec / 90))));
     const showLongRunningHint = elapsedMs >= PLAYGROUND_LONG_RUNNING_HINT_MS;
-    useInteractionLock(true, panelRef);
+    // Issue#123：passive 不锁交互——遮罩透明且 pointer-events:none，用户可滚动/缩放画布
+    // （画布编辑由 lockDraw 单独置只读，避免识别中途改框）。
+    useInteractionLock(overlay === 'blocking', panelRef);
 
     useEffect(() => {
       const startedAt = Date.now();
@@ -36,17 +45,26 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
 
     return createPortal(
       <div
-        className="fixed inset-0 z-50 flex cursor-wait items-center justify-center bg-background/70 px-4 backdrop-blur-[2px]"
-        style={{ pointerEvents: 'auto' }}
+        className={
+          overlay === 'passive'
+            ? 'pointer-events-none fixed inset-0 z-50 flex items-end justify-end p-3'
+            : 'fixed inset-0 z-50 flex cursor-wait items-center justify-center bg-background/70 px-4 backdrop-blur-[2px]'
+        }
+        style={{ pointerEvents: overlay === 'passive' ? 'none' : 'auto' }}
         role="status"
         aria-busy="true"
         aria-label={loadingMessage || t('playground.processing')}
         data-testid="playground-loading"
+        data-overlay={overlay}
       >
         <div
           ref={panelRef}
           tabIndex={-1}
-          className="w-full max-w-md animate-scale-in cursor-default rounded-[20px] border border-border/70 bg-[var(--surface-overlay)] px-4 py-3.5 text-left shadow-[var(--shadow-floating)] outline-none"
+          className={
+            overlay === 'passive'
+              ? 'pointer-events-auto w-full max-w-xs animate-scale-in cursor-default rounded-[20px] border border-border/70 bg-[var(--surface-overlay)] px-4 py-3.5 text-left shadow-[var(--shadow-floating)] outline-none'
+              : 'w-full max-w-md animate-scale-in cursor-default rounded-[20px] border border-border/70 bg-[var(--surface-overlay)] px-4 py-3.5 text-left shadow-[var(--shadow-floating)] outline-none'
+          }
         >
           <div className="mb-3 flex items-start gap-3">
             <div className="mt-0.5 size-5 shrink-0 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />

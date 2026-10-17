@@ -269,6 +269,7 @@ export function usePlayground() {
         recognition.selectedVisualFeatureTypes,
         fileCtx.setIsLoading,
         fileCtx.setLoadingMessage,
+        fileCtx.setVisionStream,
       );
     } else {
       await handleRerunNerText(
@@ -284,6 +285,7 @@ export function usePlayground() {
     fileCtx.isImageMode,
     fileCtx.setIsLoading,
     fileCtx.setLoadingMessage,
+    fileCtx.setVisionStream,
     getRecognitionBlocker,
     handleRerunNerImage,
     handleRerunNerText,
@@ -889,6 +891,7 @@ export function usePlayground() {
     visibleBoxes: imageCtx.visibleBoxes,
     isLoading: fileCtx.isLoading,
     loadingMessage: fileCtx.loadingMessage,
+    visionStream: fileCtx.visionStream,
     uploadIssue: fileCtx.uploadIssue,
     recognitionIssue: fileCtx.recognitionIssue,
     entityMap,
