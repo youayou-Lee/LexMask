@@ -397,17 +397,25 @@ def _load_speed_corpus(args) -> tuple[list[dict], dict]:
             raise _Usage(f"考卷条目 {raw.get('id')!r} 的 md5 {md5} ≠ 声明 expect_md5 {expect_md5}"
                          "（卷内容已漂移，锚点不可比）")
         carrier = str(raw.get("carrier") or "")
+        carrier_view = str(raw.get("carrier_view") or "")
+        if carrier_view not in ("", "backend", "local"):
+            raise _Usage(f"考卷条目 {raw.get('id')!r} 的 carrier_view 只能是 backend/local 或留空，"
+                         f"收到 {carrier_view!r}（该字段决定 D1.corpus_premise 拿哪个机检视图对账）")
         text_chars = None
+        carrier_source = "declared" if carrier else ""
         if Path(file_path).suffix.lower() == ".pdf":
             text_chars = sk_driver.pdftotext_nonblank_chars(file_path)
             if not carrier:
                 carrier = "scanned_pdf" if not text_chars else "text_pdf"
+                carrier_source = "inferred_local"
         items.append({
             "id": str(raw.get("id") or Path(file_path).stem),
             "path": str(file_path),
             "pages": pages,
             "md5": md5,
             "carrier": carrier or "unknown",
+            "carrier_view": carrier_view,
+            "carrier_source": carrier_source,
             "text_chars": text_chars,
             "expect_reject": bool(raw.get("expect_reject")),
             "no_gt": True,
@@ -988,11 +996,27 @@ def _speed_self_sufficiency_checks(*, mode: dict, arm: dict, summary: dict,
 
 
 def _speed_corpus_premise_checks(corpus: list[dict], rounds: list[dict]) -> list[dict]:
-    """D1④（AC2）：卷的「声明形态」必须被两侧机检证实，而不是靠文件名或口头说明。
+    """D1④（AC2）：卷的「声明形态」必须被机检视图证实，而不是靠文件名或口头说明。
 
-    声明 `scanned_pdf` ⇒ 本地 `pdftotext` 非空白字符 = 0 **且** 后端 `/parse` 报 `is_scanned=True`；
-    声明 `text_pdf` 反之。任一侧与声明不符即 FAIL（测的不是它声明的形态，速率数字无意义）；
-    两侧里有一侧取不到（容器无 `pdftotext` / 装置不可得无 `/parse` 旁证）⇒ UNVERIFIED，不猜 PASS。
+    三个机检视图/来源：本地 `pdftotext` 非空白字符数（`text_chars`）、后端 `/parse` 的 `is_scanned`，
+    以及条目上可选的 `carrier_view`（`backend` / `local`：显式指定「哪个视图是对账权威」）。
+
+    判定（逐条，只对声明了 `scanned_pdf`/`text_pdf` 的条目）：
+
+    1. `carrier` 是**操作者显式声明**的（`carrier_source == "declared"`），且没给 `carrier_view`：
+       默认拿**后端路由视图**对账（它才是决定走扫描链还是文本链的权威）——不符 ⇒ FAIL；相符 ⇒ PASS，
+       本地文本层计数降级为 detail 里的观测项（不再一票否决）。
+    2. 显式给了 `carrier_view`：只拿该视图对账——不符 ⇒ FAIL；相符 ⇒ PASS（另一视图记为观测项）；
+       该视图取不到（无 `pdftotext` / 无 `/parse` 旁证）⇒ UNVERIFIED，不猜 PASS。
+    3. `carrier` 是**本地推定**的（`carrier_source == "inferred_local"`，清单没写 `carrier`）：
+       没人声明过形态，故后端不一致**不判 FAIL**——判 **UNVERIFIED** 并点名两视图 + 给出已知形态提示
+       （「扫描件 + 内嵌文本层」：本地文本层有内容、后端按整页底图判扫描；#115 全库重判显示真实案卷
+       229/256 属此形态，两侧视图都没错）。要按后端路由判定，请在清单里显式写 `carrier` 与
+       （可选）`carrier_view: "backend"`。
+    4. 后端旁证取不到且是显式声明：退回本地视图对账（不符 ⇒ FAIL）；两视图都取不到 ⇒ UNVERIFIED。
+
+    即：口径分歧不再被当成「声明错」判 FAIL（Issue#153：本地文本层有内容 ≠ 后端不该按底图路由），
+    但真正的声明错误（显式声明与权威视图矛盾）仍然判红。
     """
     parse_view: dict[str, dict] = {}
     for rnd in rounds:
@@ -1002,6 +1026,8 @@ def _speed_corpus_premise_checks(corpus: list[dict], rounds: list[dict]) -> list
 
     mismatch: list[str] = []
     unknown: list[str] = []
+    mixed: list[str] = []
+    observations: list[str] = []
     confirmed: list[str] = []
     for entry in corpus:
         declared = str(entry.get("carrier") or "unknown")
@@ -1010,31 +1036,91 @@ def _speed_corpus_premise_checks(corpus: list[dict], rounds: list[dict]) -> list
         want_scanned = declared == "scanned_pdf"
         item_id = str(entry.get("id"))
         chars = entry.get("text_chars")
-        if chars is None:
-            unknown.append(f"{item_id}：本地无 pdftotext 非空白计数")
-        elif (chars == 0) != want_scanned:
-            mismatch.append(f"{item_id}：本地 pdftotext 非空白 {chars} 字，声明 {declared}")
         meta = parse_view.get(entry.get("id"))
-        if meta is None:
-            unknown.append(f"{item_id}：无后端 /parse 旁证")
-        elif bool(meta.get("is_scanned")) != want_scanned:
-            mismatch.append(f"{item_id}：后端 parse.is_scanned={meta.get('is_scanned')}，声明 {declared}")
-        if chars is not None and meta is not None:
-            confirmed.append(item_id)
+        backend_scanned = None if meta is None else bool(meta.get("is_scanned"))
+        local_scanned = None if chars is None else (chars == 0)
+        view = str(entry.get("carrier_view") or "")
+
+        if view:
+            authoritative = local_scanned if view == "local" else backend_scanned
+            other_value = (
+                f"is_scanned={backend_scanned}" if view == "local"
+                else f"pdftotext_nonblank_chars={chars}"
+            ) if (backend_scanned if view == "local" else local_scanned) is not None else None
+            if authoritative is None:
+                unknown.append(f"{item_id}：声明 carrier_view={view}，但该视图取不到"
+                               f"（{'无 pdftotext 计数' if view == 'local' else '无后端 /parse 旁证'}）")
+            elif authoritative != want_scanned:
+                mismatch.append(f"{item_id}：声明 {declared}，但权威视图 {view} 测得"
+                                f"{'是扫描件' if authoritative else '是文本层'}")
+            else:
+                confirmed.append(item_id)
+                if other_value is not None:
+                    observations.append(f"{item_id}：{other_value}（view={view} 口径下的观测项，不判红）")
+            continue
+
+        if str(entry.get("carrier_source") or "declared") == "inferred_local":
+            # 没人显式声明形态（carrier 由本地文本层推定）⇒ 后端不一致只报 UNVERIFIED，不判「声明错」。
+            if backend_scanned is None:
+                unknown.append(f"{item_id}：形态由本地推定（{declared}）且无后端 /parse 旁证")
+            elif backend_scanned == want_scanned:
+                confirmed.append(item_id)
+            else:
+                mixed.append(f"{item_id}：carrier 由本地文本层推定（{declared}），但后端 parse.is_scanned="
+                             f"{backend_scanned}（判{'扫描' if backend_scanned else '文本'}）；"
+                             "属「扫描件 + 内嵌文本层」已知形态（#115：真实案卷 229/256），"
+                             "无人声明过形态故不判 FAIL——如要按后端路由判定，"
+                             "请在清单里显式写 carrier 与（可选）carrier_view")
+            continue
+
+        # 显式声明：后端路由视图是权威，本地文本层计数降级为观测项。
+        if backend_scanned is None:
+            if local_scanned is None:
+                unknown.append(f"{item_id}：本地无 pdftotext 非空白计数；无后端 /parse 旁证")
+            elif local_scanned != want_scanned:
+                mismatch.append(f"{item_id}：声明 {declared}，但本地测得"
+                                f"{'是扫描件' if local_scanned else '是文本层'}"
+                                f"（非空白 {chars} 字；后端旁证缺失）")
+            else:
+                unknown.append(f"{item_id}：本地确认 {declared}，但无后端 /parse 旁证")
+            continue
+
+        if backend_scanned != want_scanned:
+            mismatch.append(f"{item_id}：声明 {declared}，但后端 parse.is_scanned={backend_scanned}"
+                            f"（路由判{'扫描' if backend_scanned else '文本'}）"
+                            + (f"，本地 pdftotext 非空白 {chars} 字"
+                               if local_scanned is not None else ""))
+            continue
+
+        if local_scanned is None:
+            unknown.append(f"{item_id}：后端确认 {declared}，但本地无 pdftotext 非空白计数")
+            continue
+
+        confirmed.append(item_id)
+        if local_scanned != want_scanned:
+            observations.append(f"{item_id}：pdftotext_nonblank_chars={chars}"
+                                "（与后端路由不一致，按「扫描件 + 内嵌文本层」已知形态记为观测项，不判红）")
+
     if mismatch:
         return [{"id": "D1.corpus_premise", "status": "FAIL",
                  "detail": "声明形态与机检不符（测得不是它声明的形态）：" + "；".join(mismatch),
                  "value": len(mismatch)}]
     if unknown:
         return [{"id": "D1.corpus_premise", "status": "UNVERIFIED",
-                 "detail": "前提未被两侧机检全部证实：" + "；".join(unknown),
+                 "detail": "前提未被机检全部证实：" + "；".join(unknown),
                  "value": len(unknown)}]
+    if mixed:
+        return [{"id": "D1.corpus_premise", "status": "UNVERIFIED",
+                 "detail": "形态前提含已知「扫描件 + 内嵌文本层」形态，两视图不一致故不判 PASS/FAIL："
+                           + "；".join(mixed),
+                 "value": len(mixed)}]
     if not confirmed:
         return [{"id": "D1.corpus_premise", "status": "UNVERIFIED",
                  "detail": "清单没有声明 scanned_pdf/text_pdf 的条目，形态前提无从机检", "value": 0}]
     return [{"id": "D1.corpus_premise", "status": "PASS",
-             "detail": f"{len(confirmed)} 件的声明形态两侧机检一致"
-                       "（本地 pdftotext 非空白计数 + 后端 parse.is_scanned）",
+             "detail": f"{len(confirmed)} 件的声明形态与机检视图一致"
+                       "（本地 pdftotext 非空白计数 + 后端 parse.is_scanned）"
+                       + ("；观测项：" + "；".join(observations) if observations else ""),
              "value": len(confirmed)}]
 
 

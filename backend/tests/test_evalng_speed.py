@@ -950,7 +950,11 @@ def test_patch_effect_checks_require_marks_on_disk(tmp_path):
 
 # ── D1④（AC2）：卷的声明形态两侧机检 ─────────────────────────────────────
 class TestCorpusPremise:
-    """D1④：声明 `scanned_pdf`/`text_pdf` 必须两侧机检一致，否则测得不是它声明的形态。"""
+    """D1④：显式声明的形态由**权威视图**机检（默认后端路由），本地文本层计数是观测项。
+
+    口径分歧（本地文本层有内容 + 后端按整页底图路由为扫描）不再判 FAIL——Issue#153：
+    #115 全库重判显示真实案卷 229/256 属此形态，两侧视图都没错。真正的声明错误仍判红。
+    """
 
     @staticmethod
     def _corpus(**over):
@@ -972,13 +976,40 @@ class TestCorpusPremise:
             self._corpus(carrier="text_pdf", text_chars=120), self._rounds(False))
         assert [c["status"] for c in checks] == ["PASS"], checks
 
-    def test_declared_scanned_but_text_layer_present_fails(self):
-        checks = cli._speed_corpus_premise_checks(self._corpus(text_chars=5), self._rounds(True))
-        assert checks[0]["status"] == "FAIL" and "声明" in checks[0]["detail"], checks
+    def test_declared_carrier_follows_backend_routing_when_local_disagrees(self):
+        """Issue#153 主例：显式声明 scanned_pdf、后端路由也是扫描 ⇒ PASS，本地文本层记观测项。"""
+        checks = cli._speed_corpus_premise_checks(self._corpus(text_chars=10873), self._rounds(True))
+        assert [c["status"] for c in checks] == ["PASS"], checks
+        assert "观测项" in checks[0]["detail"], checks
+        assert "pdftotext_nonblank_chars=10873" in checks[0]["detail"], checks
 
     def test_declared_scanned_but_backend_reports_text_pdf_fails(self):
         checks = cli._speed_corpus_premise_checks(self._corpus(), self._rounds(False))
         assert checks[0]["status"] == "FAIL" and "parse.is_scanned" in checks[0]["detail"], checks
+
+    def test_inferred_carrier_with_mixed_views_is_unverified(self):
+        """Issue#153 报的真实走法：清单没写 carrier，形态由本地文本层推定 ⇒ 不判 FAIL，报 UNVERIFIED。"""
+        corpus = self._corpus(carrier="text_pdf", text_chars=10873, carrier_source="inferred_local")
+        checks = cli._speed_corpus_premise_checks(corpus, self._rounds(True))
+        assert [c["status"] for c in checks] == ["UNVERIFIED"], checks
+        detail = checks[0]["detail"]
+        assert "推定" in detail and "parse.is_scanned=True" in detail and "carrier_view" in detail
+
+    def test_inferred_carrier_confirmed_by_backend_routing_passes(self):
+        corpus = self._corpus(carrier="scanned_pdf", text_chars=0, carrier_source="inferred_local")
+        checks = cli._speed_corpus_premise_checks(corpus, self._rounds(True))
+        assert [c["status"] for c in checks] == ["PASS"], checks
+
+    def test_explicit_carrier_view_local_is_authoritative(self):
+        corpus = self._corpus(carrier="text_pdf", text_chars=120, carrier_view="local")
+        checks = cli._speed_corpus_premise_checks(corpus, self._rounds(True))
+        assert [c["status"] for c in checks] == ["PASS"], checks
+        assert "is_scanned=True" in checks[0]["detail"]  # 另一视图降级为观测项
+
+    def test_explicit_carrier_view_backend_mismatch_fails(self):
+        corpus = self._corpus(carrier="text_pdf", text_chars=120, carrier_view="backend")
+        checks = cli._speed_corpus_premise_checks(corpus, self._rounds(True))
+        assert checks[0]["status"] == "FAIL" and "权威视图 backend" in checks[0]["detail"], checks
 
     def test_missing_local_count_is_unverified_not_pass(self):
         checks = cli._speed_corpus_premise_checks(self._corpus(text_chars=None), self._rounds(True))
@@ -987,6 +1018,10 @@ class TestCorpusPremise:
     def test_missing_parse_evidence_is_unverified(self):
         checks = cli._speed_corpus_premise_checks(self._corpus(), [])
         assert checks[0]["status"] == "UNVERIFIED" and "/parse" in checks[0]["detail"], checks
+
+    def test_declared_without_parse_evidence_but_local_contradicts_fails(self):
+        checks = cli._speed_corpus_premise_checks(self._corpus(text_chars=999), [])
+        assert checks[0]["status"] == "FAIL" and "后端旁证缺失" in checks[0]["detail"], checks
 
     def test_no_declarable_entry_is_unverified_not_pass(self):
         checks = cli._speed_corpus_premise_checks(self._corpus(carrier="unknown", text_chars=None), [])
