@@ -423,6 +423,9 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
           opts.setBoundingBoxes([]);
           opts.resetImageHistory();
           const totalPages = Math.max(1, pageCount);
+          // Issue#123（门①.5 r3 N3）：多页件在进入逐页检测前先登记 total，
+          // 让遮罩进度从 0/N 起算；单页件不进入流式档（保持既有 blocking 行为）。
+          setVisionStream(totalPages > 1 ? { completed: 0, total: totalPages } : null);
           const { totalBoxes } = await runVisionDetectionPages({
             fileId,
             ocrHasTypes: ocrTypes,

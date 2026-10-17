@@ -691,6 +691,7 @@ export function usePlayground() {
         entityMap,
         redactedCount,
         currentPage: imageCtx.currentPage,
+        visionStream: fileCtx.visionStream,
       });
       const json = serializeDraft(snapshot);
       if (json === null) return; // 超限：放弃持久化，内存会话不受影响
@@ -700,6 +701,7 @@ export function usePlayground() {
   }, [
     fileCtx.fileInfo,
     fileCtx.stage,
+    fileCtx.visionStream,
     fileCtx.content,
     entityCtx.entities,
     imageCtx.boundingBoxes,

@@ -127,3 +127,33 @@ describe('PlaygroundLoading 遮罩契约', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('端到端档位链（AC5 首条：单页/文本件仍 blocking）', () => {
+  it('多页扫描件：提前切段 + 遮罩降级 = passive', () => {
+    const progressive = shouldEnterPreviewDuringRecognition({
+      pageCount: 10,
+      isScanned: true,
+      fileType: 'pdf',
+    });
+    expect(progressive).toBe(true);
+    expect(overlayModeFor(progressive)).toBe('passive');
+  });
+
+  it('单页扫描件：不提前切段 ⇒ 仍 blocking', () => {
+    const progressive = shouldEnterPreviewDuringRecognition({
+      pageCount: 1,
+      isScanned: true,
+      fileType: 'pdf',
+    });
+    expect(overlayModeFor(progressive)).toBe('blocking');
+  });
+
+  it('多页文本 PDF（非扫描）：不提前切段 ⇒ 仍 blocking', () => {
+    const progressive = shouldEnterPreviewDuringRecognition({
+      pageCount: 10,
+      isScanned: false,
+      fileType: 'pdf',
+    });
+    expect(overlayModeFor(progressive)).toBe('blocking');
+  });
+});
