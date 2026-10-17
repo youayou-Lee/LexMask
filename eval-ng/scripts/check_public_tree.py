@@ -516,7 +516,12 @@ def _end_to_end_scope_check() -> list[str]:
         (Path(tmp) / "keep.txt").write_text("clean\n", encoding="utf-8")
         git("add", "-A")
         git("commit", "-q", "-m", "base")
-        (Path(tmp) / "leak_probe.py").write_text('api_pass = "Synthetic-Pass!123"\n', encoding="utf-8")
+        # 夹具文本按片段拼接：本文件自身也在扫描范围内（本 PR 改了它），
+        # 写成连续字面量 `api_pass = "<值>"` 会被自己的规则判红（实测 CI G4 FAILURE）。
+        probe_text = "".join(
+            ["api", "_pass", ' = "', "Synth", "etic-", "Pass!", "1", "2", "3", '"', "\n"]
+        )
+        (Path(tmp) / "leak_probe.py").write_text(probe_text, encoding="utf-8")
         git("add", "-A")
         git("commit", "-q", "-m", "probe")
         (Path(tmp) / "keep.txt").write_text("clean but changed\n", encoding="utf-8")
