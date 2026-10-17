@@ -1209,6 +1209,10 @@ def _run_cli_with_stub(monkeypatch, tmp_path, *, driver_name: str, with_batch: b
 
     `premise_parse` 非空时把清单条目改成声明 `scanned_pdf`（id 对齐 `f1`）并替换后端
     `/parse` 旁证——用于验证 `D1.corpus_premise` 的**装配级接线**（R3）。
+
+    `premise_infer_pdf` 非空时把条目改成**不声明 `carrier` 的 PDF**并把
+    `pdftotext_nonblank_chars` 打桩成 1000 ⇒ 走 loader 的「本地推定」分支
+    （`carrier_source="inferred_local"`），用于钉住推定豁免这条唯一开关。
     """
     _, exam, arm, evidence = _cli_fixtures(tmp_path)
     monkeypatch.setattr(driver, "SpeedApi", _StubApi)
@@ -1310,7 +1314,7 @@ class TestCliReportCompleteness:
         assert code != 2
         check = next(c for c in doc["checks"] if c["id"] == "D1.corpus_premise")
         assert check["status"] == "UNVERIFIED", check
-        detail = js = check.get("detail") or ""
+        detail = check.get("detail") or ""
         assert "推定" in detail and "pdftotext 非空白=1000 字" in detail, detail
         assert "is_scanned=True" in detail, detail
 
