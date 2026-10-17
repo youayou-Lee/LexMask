@@ -416,3 +416,50 @@ def test_non_candidate_blocks_do_not_trigger_shape_drift():
     boxes_by_page, status, warnings, drifted = extract_seal_boxes([page])
 
     assert (boxes_by_page, status, warnings, drifted) == ({}, STATUS_OK, [], frozenset())
+
+
+def test_mineru_confidence_none_survives_merge_and_presentation():
+    """r6 C-8 / r7 §19.1：**链上**双断言——合并后与呈现后 `confidence` 仍为 `None`。
+
+    不得只断言出口（`_apply_mineru_seal_source` 的返回值）：r6 问的是这条 `None`
+    能不能穿过 `_merge_seal_shards`（按面积折叠 + `_higher_confidence`）与
+    `_present_seals_as_visual`（改写 `source_detail`/`evidence_source`）而不被
+    任何一环补成常数。
+    """
+    svc = _service()
+    vl = BoundingBox(
+        id="ocr_seal_1_abcd1234", page=1, type="official_seal", text="公章",
+        x=0.15, y=0.15, width=0.1, height=0.1, confidence=0.9,
+        source="visual_features", source_detail="paddleocr_vl:seal",
+        evidence_source="visual_feature_model",
+    )
+    mineru = BoundingBox(
+        id="mineru_seal_1_0_deadbeef", page=1, type="official_seal", text="公章",
+        x=0.10, y=0.10, width=0.30, height=0.30, confidence=None,
+        source="visual_features", source_detail="mineru_seal",
+        evidence_source="visual_feature_model",
+    )
+
+    # 路径一：MinerU 框**单独存在**（无 VL 同伴）⇒ None 必须一路穿到底
+    solo = svc._merge_seal_shards([mineru])
+    assert [b.confidence for b in solo] == [None]
+    solo_presented = VisionService._present_seals_as_visual(solo)
+    assert [b.confidence for b in solo_presented] == [None]
+    assert solo_presented[0].source_detail == "visual_feature_model"
+
+    # 路径二：与 VL 框**折叠成 hull**（r7 关注的那条链）——实测行为：
+    # hull 保留较大的 MinerU 框身份与几何，但 confidence 由 `_higher_confidence`
+    # 取到 VL 的**已测分值 0.9**（`None` 不覆盖它）。这不是「补常数」，
+    # 而是折叠继承同伴的实测分；AC6 因此**不得**表述为「任何情况下都保持 None」，
+    # 必须写成「单独存在时保持 None；hull 折叠时继承同伴的实测分值」。
+    merged = svc._merge_seal_shards([mineru, vl])
+    seals = [b for b in merged if b.type == "official_seal"]
+    assert len(seals) == 1, [b.source_detail for b in seals]
+    assert seals[0].source_detail == "mineru_seal"
+    assert seals[0].confidence == pytest.approx(0.9)
+
+    presented = VisionService._present_seals_as_visual(merged)
+    after = [b for b in presented if b.type == "official_seal"]
+    assert len(after) == 1
+    assert after[0].source_detail == "visual_feature_model"
+    assert after[0].confidence == pytest.approx(0.9)
