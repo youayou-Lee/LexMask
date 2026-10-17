@@ -94,7 +94,10 @@ CPU 兜底：纯 CPU wheel `paddlepaddle==3.2.2`（pip 普通源）全镜像可�
 |---|---|---|
 | **vLLM 0.9.2 (8081)** | **0.49–0.54s** | paged KV + cudagraph；backend 切换只需改 `HAS_BASE_URL` |
 | transformers 自包 (8080) | 1.4–4.3s | 全卡可用（gfx906 唯一选项） |
-| llama-server（GGUF） | 待实测 | 仓库已有 DTK 脚本（Issue #23 轴B） |
+| **llama-server（GGUF, llama.cpp b6100 HIP）** | **2.15s**（256 token 输出，**≈118.8 t/s**）<br>⚠️ **仅速度口径，输出不可用** | **Q8_0**（604 MiB）；空载 `tg128` **140.45 t/s**、`pp512` **4785 t/s**、`-np 4` 聚合 **223.2 t/s**；❌ **输出质量未过**（同题同参数对照：vLLM bf16 出可解析 JSON，Q8_0 出 512 个 `G`；T2 hardcase F1=**0.0**）；⚠️ 短 prompt 触发 `KERNEL VMFault`（见 Issue#162） |
+
+> **llama-server 行口径（2026-10-17 实测）**：环境 = 云 SCNet 单卡 DCU（K500SM_AI / `gfx928`）+ DTK 25.04.2 + llama.cpp **b6100** HIP 构建（`--offload-arch=gfx928`）；模型 = `has_text_model.Q8_0.gguf`（604.15 MiB / 596.05 M 参数，**Q8_0 非 bf16**）；`-ngl 999 -c 8192 -np 1`，生产 prompt（399 token 入 / 256 token 出，服务端自报 prefill 4033.6 t/s、decode 118.83 t/s）。同机同期对照生产 vLLM（bf16）：decode 28.3–31.4 t/s、prefill ≈138 t/s ⇒ **decode ≈3.7×、prefill ≈29×**——**混精度对照，不可当同精度结论**。**质量已对照且未过（2026-10-17 04:33 实测）**：同一生产 prompt（`prompt_tokens` 与 vLLM 逐 token 相同：233 / 252）、同参数（`temp 0.0`、`top_p 0.6`）下，vLLM bf16 正常返回可解析 JSON（`finish_reason=stop`），而 **Q8_0 无论默认模板还是 `--jinja` 都吐 512 个 `G`（`finish_reason=length`）**；T2 hardcase 桶 64 条实跑 **F1=0.0**（`tp=0 / fp=0 / fn=981`），同期 vLLM bf16 同集合 **F1=0.66999**（全 65 条锚 **0.66962**）⇒ **该 GGUF 当前不可用**。GGUF 元数据自身正常（`qwen3` / 28 层 / 596M / 含 `chat_template`），故原因在量化-转换或 `gfx928` 内核计算，尚未判定。
+> **已知阻断**：prompt/ubatch 尺寸相关，**只报实测点、不外推为连续区间**——已实测崩：9、11–16、29、30、32、64、115、128；已实测正常：8、129、160、192、224、255、300、512（逐值 1–130 扫描进行中）。`Invalid address access … Error code: 1` + `KERNEL VMFault`，**一个 11 字请求即可打死 llama-server**；故当前不可用于生产。初步 workaround（待复核）：`-ub 8` 启动的 server 在 1/3/11/40/120 字短 prompt 下存活，默认 ub 的 server 11 字即 abort。原始日志、复现步骤见 [Issue #162](https://github.com/youayou-Lee/LexMask/issues/162)。构建脚本 `cloud-deploy/llama_ner_dtk.sh`（**归档仓 #23** 轴 B，非本仓 #23）。
 
 NER 切 vLLM 后单页管道预估 10–12s（LA 仍是大头）——性能优化主战场在 LA 与整卷并行。
 
