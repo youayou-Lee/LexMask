@@ -2,6 +2,14 @@
 
 ## 2026-10-18
 
+### 修复（Issue#142）公开树扫描器 bearer 规则大小写对齐 + 文档精度
+
+- `eval-ng/scripts/check_public_tree.py`：bearer 规则补 `(?i)`（与 `eval-ng/engine/speedkit/report.py` 的 `_BEARER_RE` 对齐，消除同族规则大小写口径漂移）；自检夹具补小写/混合大小写正例与 `&lt;24` 字符反例；`_COVERAGE_NOTE` 措辞精确化（尺寸写不敏感、声明与报告侧 **12 vs 24 的阈值差异是有意保留**、声明 base64 形态属安全侧多报），并修正一处**非法正则引文**（`(?i)\bbearer\s+{24,}` → 完整正则）。
+- `eval-ng/scripts/check_report_redaction.py`：符号引用 `check_public_tree.SECRET_RES`（该符号不存在）→ `check_public_tree.credential_findings`。
+- `backend/tests/test_public_tree_scanner.py`：新增「夹具存在性 + 真落网」判据（删夹具即判红，堵住 r1 冷审自造的 M3/M3b 存活）。
+- `eval-ng/engine/speedkit/report.py` 的口径注释改动**撤回**：该文件含 11 处既有 `abs_path` 命中，任何改动都会被 G4 文件级判定误红 ⇒ 设计修法另立 **#187**（改为只扫新增行）。
+- 验证：`--self-test` rc=0（21 例 / 11 类 / 27 夹具）；`backend/tests/test_public_tree_scanner.py` **33 passed**；改动面 `--base origin/preview` **零命中**；整树新旧扫描器命中行 `diff` **0**；零回归同刻两树均 **2300 passed / 47 skipped / 0 failed**（`comm -3` 0 行）；变异 **6/6 KILLED**。
+
 ### 工具链（Issue#160）公开树扫描器：中文取值口令不再漏判 + `ignore-line` 改为按规则点名
 
 - **漏判修复**：`_is_secret_shaped()` 原先对含汉字的值整类返回 `False` ⇒ 形如「中文取值口令」的字面量在公开树上**永不报出**（具体字面量见 Issue#160 与 `backend/tests/test_pdf_encryption.py`）（#140 的验收标准当时其实被静默绕过）。现改为：含汉字的值长度下限降到 **6**，但必须满足**混排证据**（含数字/ASCII 字母/符号），并排除含中文标点的正文与 `2023年6月15日` 形日期 ⇒ 中文口令命中、中文正文不误报。
@@ -9,7 +17,6 @@
 - **口径声明**：含汉字的值在 Issue#160 之前整类不参与判定 ⇒ 该 Issue 前后的命中数**不可跨版本对账**（同版本内 A/B 才可比），已写入 `_COVERAGE_NOTE`。
 - **验证**：`--self-test` 21 例阳性对照逐例命中 / 11 类全覆盖 / 干净样本零命中 / 四项自检契约通过；`backend/tests/test_public_tree_scanner.py` **37 passed**（新增五例：中文口令命中且中文正文不误报、`ignore-line` 规则级语义、`scope_check` 调用接线钉、空括号标记不放过、`scope_check` 函数体可判别性）；变异 **9/9 KILLED**（绑定本修订源码 sha256，见 `LexMask-workspace/github-issues/_i160/mutation.txt`；含「删 `scope_check` 调用」「掏空 `scope_check` 函数体」「空括号＝整行豁免」「去中文标点/日期排除」「去转义引号归一」）；同树旧/新扫描器输出 **逐条相同**（1007 文件 / **326 处**：`abs_path` 286 / `public_ip` 24 / `win_path` 16，`credential_*` 0，命中行 `diff` 为 0）。
 - **不做**：不放宽任何规则；不动 CI 接线（`public-tree-scan` job 由 #159 建好）；纯汉字长口令（如 `"一二三四五六七八"`）仍在边界外（方案 §6.1）。
-
 ### 正交（Issue#135）`safe_finditer` 超时零计时协议用例
 
 - **背景**：`safe_compile` 的超时协议在 #109 已有零计时用例，但同族的 `safe_finditer` / `safe_finditer_many` 的超时分支（`future.cancel()` → `_kill_and_replace_pool()` → 抛 `RegexTimeoutError`）**没有任何协议用例**；漏掉任一步都只会静默退化。
