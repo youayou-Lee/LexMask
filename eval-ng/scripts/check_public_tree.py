@@ -224,17 +224,24 @@ MAX_BYTES = 2 * 1024 * 1024
 #: 门①.5 r2 I-3：旧契约只钉「`MAX_BYTES` 不得缩到 64 KiB 以下」，缩到恰在 64 KiB 仍全绿，
 #: 而真树实测会丢 6 处真实命中（1006→997 文件 / 332→326 处）。改为**超限夹具**驱动：
 #: `_extension_coverage_check()` 会造一个超过此下限的文件并要求它被扫到。
+#: 硬化（作者自查）：夹具体积用**与下限无关的固定字面量** `_OVERSIZED_FIXTURE_BYTES`，
+#: 且下限本身另有字面量地板 `MIN_MAX_BYTES_FLOOR`；否则「把下限调小」会让夹具跟着变小，
+#: 检查与夹具同源 ⇒ 自指空转。
 MIN_MAX_BYTES = 96 * 1024
+MIN_MAX_BYTES_FLOOR = 96 * 1024
+_OVERSIZED_FIXTURE_BYTES = 128 * 1024
 
 #: 门①.5 r2 I-2：必须被扫描的**文本/源码后缀**（反向白名单）。
 #: 旧契约只断言「21 个已知源码后缀不得进 `SKIP_SUFFIXES`」——白名单式 ⇒ 加一个名单外的
 #: 文本后缀（`.ps1` / `.example` / `.jsonl`）三层全绿，真树却丢 4–5 处命中。
 #: 这里改成**真文件驱动**：每个后缀造一个含凭据的文件走 `main()` 全链，少扫一个就判红。
+#: 另有数量地板 `MIN_REQUIRED_TEXT_SUFFIXES`：删条目同样会让检查与夹具一起变弱。
 REQUIRED_TEXT_SUFFIXES = (
     ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".json", ".jsonl", ".yml", ".yaml",
     ".md", ".sh", ".toml", ".cfg", ".ini", ".env", ".txt", ".sql", ".go", ".java", ".rb",
     ".ps1", ".html", ".css", ".example",
 )
+MIN_REQUIRED_TEXT_SUFFIXES = 26
 
 #: 门①.5 r2 I-5：全部**已登记**的规则 id。它让 AC2 的汇总断言真正可失败——
 #: 规则改名/新规则涌现而未登记时判红，而不是恒真的「逐规则计数之和 == 命中总数」。
@@ -517,6 +524,17 @@ def _scan_scope_contract() -> list[str]:
         problems.append(f"忽略标记被改宽：{IGNORE_MARKER!r}")
     if MAX_BYTES < MIN_MAX_BYTES:
         problems.append(f"单文件大小上限被缩小到 {MAX_BYTES}（下限 {MIN_MAX_BYTES}）")
+    # 自查硬化：下限与后缀清单本身也要有地板，否则「把下限/清单调小」会让检查与其夹具同源变弱。
+    if MIN_MAX_BYTES < MIN_MAX_BYTES_FLOOR:
+        problems.append(f"大小下限被调小：{MIN_MAX_BYTES} < 地板 {MIN_MAX_BYTES_FLOOR}")
+    if len(REQUIRED_TEXT_SUFFIXES) < MIN_REQUIRED_TEXT_SUFFIXES:
+        problems.append(
+            f"必扫后缀清单被削短：{len(REQUIRED_TEXT_SUFFIXES)} < 地板 {MIN_REQUIRED_TEXT_SUFFIXES}"
+        )
+    if _OVERSIZED_FIXTURE_BYTES <= MIN_MAX_BYTES:
+        problems.append(
+            f"超限夹具({_OVERSIZED_FIXTURE_BYTES}) 不大于大小下限({MIN_MAX_BYTES})：检查会失去判别力"
+        )
     return problems
 
 
@@ -607,9 +625,10 @@ def _extension_coverage_check() -> list[str]:
             name = f"probe{suffix}"
             (Path(tmp) / name).write_text(payload, encoding="utf-8")
             expected.append(name)
-        # 超限夹具：体积必须**大于** `MIN_MAX_BYTES`，凭据落在文件末尾（截断/跳过都会漏掉它）。
+        # 超限夹具：体积来自**与下限无关的固定字面量**（大于 `MIN_MAX_BYTES`），凭据落在文件末尾
+        # （截断/跳过都会漏掉它）。夹具不随下限缩放 ⇒「把下限调小」不会同时把检查变弱。
         oversized = "oversized_probe.txt"
-        padding = "# padding line\n" * (MIN_MAX_BYTES // 14 + 64)
+        padding = "# padding line\n" * (_OVERSIZED_FIXTURE_BYTES // 14 + 64)
         (Path(tmp) / oversized).write_text(padding + payload, encoding="utf-8")
         expected.append(oversized)
         git("add", "-A")
