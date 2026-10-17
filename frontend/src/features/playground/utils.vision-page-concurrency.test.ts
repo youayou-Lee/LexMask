@@ -2,6 +2,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PLAYGROUND_VISION_PAGE_CONCURRENCY } from '@/constants/timing';
+
 // Issue#106 验收 D2（请求级白盒）：页间「同时在飞的 vision POST」峰值。
 //
 // 本条的判别链条必须经过被改动的 `frontend/src/features/playground/utils.ts`
@@ -94,15 +96,15 @@ afterEach(() => {
 });
 
 describe('Issue#106 D2：勾选视觉特征后页间不再被强制串行', () => {
-  it('勾选印章+签名、不传 concurrency 时，在飞 vision POST 峰值为 3', async () => {
+  it('勾选印章+签名、不传 concurrency 时，在飞 vision POST 峰值 = 默认页并发（Issue#172 起为 8）', async () => {
     const peak = await measurePeak({
-      totalPages: 5,
+      totalPages: 10,
       visualFeatureTypes: ['official_seal', 'signature'],
     });
-    expect(peak).toBe(3);
+    expect(peak).toBe(PLAYGROUND_VISION_PAGE_CONCURRENCY);
   });
 
-  it('显式传 concurrency: 2 生效（不把常量 3 写死）', async () => {
+  it('显式传 concurrency: 2 生效（不把默认并发写死）', async () => {
     const peak = await measurePeak({
       totalPages: 5,
       visualFeatureTypes: ['official_seal', 'signature'],
@@ -111,9 +113,9 @@ describe('Issue#106 D2：勾选视觉特征后页间不再被强制串行', () =
     expect(peak).toBe(2);
   });
 
-  it('未勾视觉特征时为 3（防回归，非判别证据）', async () => {
-    const peak = await measurePeak({ totalPages: 5, visualFeatureTypes: [] });
-    expect(peak).toBe(3);
+  it('未勾视觉特征时同样吃到默认页并发（防回归，非判别证据）', async () => {
+    const peak = await measurePeak({ totalPages: 10, visualFeatureTypes: [] });
+    expect(peak).toBe(PLAYGROUND_VISION_PAGE_CONCURRENCY);
   });
 
   it('页数退化：1 页 → 1，2 页 → 2', async () => {
