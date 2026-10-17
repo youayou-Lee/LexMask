@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -14,7 +15,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-from app.core.circuit_breaker import ocr_breaker
+from app.core.circuit_breaker import CircuitBreaker
 from app.core.config import settings
 from app.core.health_checks import _tcp_port_open
 from app.core.retry import RETRYABLE_HTTPX, retry_sync
@@ -41,7 +42,10 @@ class OCRItem:
 
 
 class OCRService:
-    """OCR 服务客户端 - 通过 HTTP 调用独立微服务（带连接池复用）"""
+    """OCR 服务客户端 - 通过 HTTP 调用独立微服务（连接池复用 + 多端点轮询/故障回落，Issue#169）"""
+
+    # failover 后故障端点的冷却期（秒）：期间轮询跳过它，到期自动回到轮换
+    _FAILOVER_COOLDOWN_S = 15.0
 
     def __init__(self) -> None:
         self._read_timeout = float(settings.OCR_TIMEOUT)
@@ -54,6 +58,13 @@ class OCRService:
         self._health_checked_at = 0.0
         self._health_ready = False
         self._health_base_url = ""
+        # 多端点池（Issue#169）：轮询计数 + 故障端点冷却表 + 每端点独立熔断器
+        # （门①.5 C1：共享熔断器会让 A 端故障把健康 B 端一并拦掉，故 per-endpoint）
+        self._endpoint_lock = threading.Lock()
+        self._rr = 0
+        self._down_until: dict[str, float] = {}
+        self._breakers: dict[str, CircuitBreaker] = {}
+        self._health_cache: dict[str, tuple[float, bool]] = {}
 
     @staticmethod
     def _is_live_health_payload(data: dict) -> bool:
@@ -68,31 +79,118 @@ class OCRService:
     def base_url(self) -> str:
         return model_config_service.get_paddle_ocr_base_url()
 
+    def _extra_endpoints(self) -> list[str]:
+        """`OCR_ENDPOINTS` 附加端点（去空、去重、排除主端点）；空配置 ⇒ []（单实例旧行为）"""
+        extras: list[str] = []
+        for raw in (settings.OCR_ENDPOINTS or "").split(","):
+            url = raw.strip().rstrip("/")
+            if url and url != self.base_url and url not in extras:
+                extras.append(url)
+        return extras
+
+    def _candidate_endpoints(self) -> list[str]:
+        """全部端点按轮询次序返回，冷却中的过滤；全部冷却中 ⇒ 清冷却、返回全部（对齐旧单实例行为）。"""
+        endpoints = [self.base_url] + self._extra_endpoints()
+        if len(endpoints) == 1:
+            return endpoints
+        with self._endpoint_lock:
+            self._rr += 1
+            cut = self._rr % len(endpoints)
+            ordered = endpoints[cut:] + endpoints[:cut]
+        now = time.monotonic()
+        live = [u for u in ordered if self._down_until.get(u, 0.0) <= now]
+        if live:
+            return live
+        with self._endpoint_lock:
+            self._down_until.clear()
+        return ordered
+
+    def _mark_endpoint(self, url: str, ok: bool) -> None:
+        with self._endpoint_lock:
+            if ok:
+                self._down_until.pop(url, None)
+            else:
+                self._down_until[url] = time.monotonic() + self._FAILOVER_COOLDOWN_S
+
+    def _breaker_for(self, url: str) -> CircuitBreaker:
+        with self._endpoint_lock:
+            breaker = self._breakers.get(url)
+            if breaker is None:
+                breaker = CircuitBreaker(name=f"ocr[{url}]", threshold=5, reset_timeout=30.0)
+                self._breakers[url] = breaker
+            return breaker
+
+    def _post_with_failover(self, path: str, json_payload: dict) -> httpx.Response:
+        """POST 到轮询选出的 OCR 端点；连接失败/超时/5xx/熔断 OPEN 依次回落下一端点
+        （失败端点进冷却）；4xx 原样返回（上层状态语义有效，如 /structure 404 = 在线但缺路由）。"""
+        last_exc: Exception | None = None
+        last_resp: httpx.Response | None = None
+        for url in self._candidate_endpoints():
+            try:
+                resp = self._breaker_for(url).call_sync(
+                    lambda u=url: self._ocr_client.post(f"{u}{path}", json=json_payload)
+                )
+            except RuntimeError as e:
+                # 熔断器对该端点 OPEN ⇒ 视同该端点故障，回落下一端点（各端点熔断器独立）
+                logger.warning("OCR endpoint %s%s breaker open (%s); failing over", url, path, e)
+                last_exc = e
+                self._mark_endpoint(url, ok=False)
+                continue
+            except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException) as e:
+                logger.warning("OCR endpoint %s%s unreachable (%s); failing over", url, path, e)
+                last_exc = e
+                self._mark_endpoint(url, ok=False)
+                continue
+            if resp.status_code >= 500:
+                logger.warning(
+                    "OCR endpoint %s%s returned HTTP %d; failing over", url, path, resp.status_code
+                )
+                last_resp = resp
+                self._mark_endpoint(url, ok=False)
+                continue
+            self._mark_endpoint(url, ok=True)
+            return resp
+        if last_resp is not None:
+            return last_resp
+        assert last_exc is not None
+        raise last_exc
+
     def is_available(self) -> bool:
-        """检查 OCR 微服务是否在线且模型已就绪"""
+        """检查 OCR 微服务是否在线且模型已就绪（多实例时任一实例就绪即可用）"""
         now = time.monotonic()
         base_url = self.base_url
-        if self._health_base_url == base_url and now - self._health_checked_at < 5.0:
-            return self._health_ready
-        try:
-            resp = self._health_client.get(f"{base_url}/health")
-            if resp.status_code == 200:
-                data = resp.json()
-                self._health_ready = self._is_live_health_payload(data)
-                self._health_checked_at = now
-                self._health_base_url = base_url
+        if not self._extra_endpoints():
+            # 单实例：原行为不变（5s TTL，主端点）
+            if self._health_base_url == base_url and now - self._health_checked_at < 5.0:
                 return self._health_ready
+            ready = self._probe_ready(base_url)
+            self._health_ready = ready
+            self._health_checked_at = now
+            self._health_base_url = base_url
+            return ready
+        # 多实例：任一端点就绪即可用（逐端点 5s TTL）
+        for url in [base_url] + self._extra_endpoints():
+            cached = self._health_cache.get(url)
+            if cached and now - cached[0] < 5.0:
+                if cached[1]:
+                    return True
+                continue
+            ready = self._probe_ready(url)
+            self._health_cache[url] = (now, ready)
+            if ready:
+                return True
+        return False
+
+    def _probe_ready(self, url: str) -> bool:
+        try:
+            resp = self._health_client.get(f"{url}/health")
+            if resp.status_code == 200:
+                return self._is_live_health_payload(resp.json())
         except httpx.TimeoutException:
-            if _tcp_port_open(f"{base_url}/health"):
-                self._health_ready = True
-                self._health_checked_at = now
-                self._health_base_url = base_url
+            if _tcp_port_open(f"{url}/health"):
                 return True
         except Exception as e:
-            logger.debug("OCR health check failed: %s", e)
-        self._health_ready = False
-        self._health_checked_at = now
-        self._health_base_url = base_url
+            logger.debug("OCR health check failed (%s): %s", url, e)
         return False
 
     def get_model_name(self) -> str:
@@ -106,22 +204,15 @@ class OCRService:
         return "PaddleOCR-VL"
 
     def _do_ocr_request(self, image_b64: str) -> httpx.Response:
-        """Execute a single OCR HTTP request (retryable, uses pooled client)."""
-        def _request():
-            return self._ocr_client.post(
-                f"{self.base_url}/ocr",
-                json={"image": image_b64, "max_new_tokens": settings.OCR_MAX_NEW_TOKENS},
-            )
-        return ocr_breaker.call_sync(_request)
+        """Execute a single OCR HTTP request (retryable, pooled client, endpoint failover)."""
+        return self._post_with_failover(
+            "/ocr",
+            {"image": image_b64, "max_new_tokens": settings.OCR_MAX_NEW_TOKENS},
+        )
 
     def _do_structure_request(self, image_b64: str) -> httpx.Response:
-        """Execute a PP-StructureV3 request through the OCR microservice."""
-        def _request():
-            return self._ocr_client.post(
-                f"{self.base_url}/structure",
-                json={"image": image_b64},
-            )
-        return ocr_breaker.call_sync(_request)
+        """Execute a PP-StructureV3 request through the OCR microservice (endpoint failover)."""
+        return self._post_with_failover("/structure", {"image": image_b64})
 
     def _raise_for_bad_status(self, label: str, resp: httpx.Response) -> None:
         status = int(resp.status_code)
@@ -175,7 +266,7 @@ class OCRService:
         except httpx.TimeoutException as e:
             msg = (
                 f"OCR 微服务超时（read≈{self._read_timeout:.0f}s）。"
-                "若 8082 仍在推理属正常，请增大 OCR_TIMEOUT；若长期无响应请查看 ocr_server 控制台。"
+                "若 OCR 微服务仍在推理属正常，请增大 OCR_TIMEOUT；若长期无响应请查看 ocr_server 控制台。"
             )
             logger.warning(msg)
             raise OCRServiceError(msg, transient=True) from e

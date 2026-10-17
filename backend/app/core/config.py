@@ -294,6 +294,8 @@ class Settings(BaseSettings):
 
     # PaddleOCR-VL 微服务配置（独立进程，端口8082）
     OCR_BASE_URL: str = "http://127.0.0.1:8082"
+    # OCR 多实例池（Issue#169）：逗号分隔的全部端点（含主端点）；空 = 单实例（仅 OCR_BASE_URL）
+    OCR_ENDPOINTS: str = ""
     # MinerU sidecar（喂Agent模式，独立 venv 常驻 16581，Issue#75）
     MINERU_API_BASE_URL: str = "http://127.0.0.1:16581"
     # MinerU 异步解析任务轮询间隔（秒）

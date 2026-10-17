@@ -1,6 +1,15 @@
 # CHANGELOG
 
-## 2026-10-17
+- perf(ocr): **OCR 多端点池——backend 轮询分发 + 故障回落，解锁 4.2s/页 串行地板第一刀**（Issue#169）
+  - `app/core/config.py`：新增 `OCR_ENDPOINTS`（逗号分隔端点表；空 = 单实例旧行为不变）
+  - `app/services/ocr_service.py`：端点池轮询 + 连接失败/超时/5xx 依次回落（失败端点冷却 15s、到期自动回归）+ **每端点独立熔断器**（门①.5 C1：共享熔断器会让 A 端故障把健康 B 端一并拦掉 30s）；`is_available()` 多实例时任一就绪即可用；4xx 原样返回不回落（/structure 404 = 在线但缺路由的既有语义）
+  - `cloud-deploy/respawn_ocr_gpu_dcu.sh`：参数化 `OCR_PORT`（第二实例 `OCR_PORT=18092` → 窗口 ocr2），就绪判定加 `ready:true` 门（门①.5 I8：未就绪实例不得进轮询池）；**B 模式不设 `OCR_PEER_URL`**（门①.5 C2：peer char 委托与 backend 分发是两套并行机制，叠加互抢锁且 kill 场景静默退化）
+  - 实测前置（2026-10-17）：第二实例加载 138s、显存 +4.9GiB（64GB 卡空闲 40.4GB）；跨实例两并发 3.25s ≈ 单发基线 3.05s（真并行零劣化）vs 同端口两并发 5.13s（完全串行）
+  - 事故归因订正：历史显存事故 = 多 vLLM 互挤（#100），非 OCR 并发；`_infer_lock` 真因 = 共享 predictor 非线程安全（代码注释实锤）
+  - 新增 `backend/tests/test_ocr_service_dispatch.py`（10 例：单端点回归锚/轮询/回落/冷却/全灭/4xx 不回落/熔断 OPEN 回落/is_available 多实例+单实例）
+  - 门①.5 冷评审 REVISE → 全处置（3C：per-endpoint breaker、废 peer 委托、AC3 口径钉死；5I：AC1 量化/AC4 双层判据/AC5 数值线/配置落点/启动就绪门；2M：负载中 kill/恢复回归机制=冷却期）
+  - 环境：单卡 gfx928 / DTK 25.04.2 / paddle-dcu 3.2.1
+
 
 - fix(queue): **Python 3.10 上页级/管线级超时被记成 `failed`、并被 I/O 分支抢吞**（Issue#139）
   - `backend/app/services/task_queue_pipelines.py`：三处 `except TimeoutError` 改为 `except (TimeoutError, asyncio.TimeoutError)  # noqa: UP041`（`:120` `_run_recognition` 终段、`:356` `_run_vision` 的 `run_page`、`:530` `_run_vision` 外层）。3.10 实测 `asyncio.TimeoutError is TimeoutError` 为 `False`、`issubclass(asyncio.TimeoutError, TimeoutError)` 为 `False`（3.11+ 才合并为内建类），只捕内建类时 `asyncio.wait_for` 抛出的超时会落到通用分支记成 `recognition failed (unexpected)`；`# noqa: UP041` 必须保留（`backend/pyproject.toml` `target-version = "py311"` 会把它误自动改写掉）
