@@ -234,13 +234,17 @@ def _literal_hit(val: str) -> bool:
     if any(ch in raw for ch in "(.["):
         return False  # 调用/属性/下标：值是代码引用，不是字面量
     body = raw.rstrip(",")
-    if TEMPLATE_VALUE_RE.search(body) or _is_placeholder_value(body):
+    # 源码形态的字面量常带转义引号（`\"2023年6月15日\"`）⇒ **排除判定**用剥掉转义/引号噪声的视图，
+    # 否则中文日期/标点排除会被前导反斜杠绕过（自检夹具正落在这个形态上）；
+    # 形状判定仍用原值（转义引号会命中 _DELIMITER_RE，语义不放宽）。
+    probe = body.strip("\\\"'")
+    if TEMPLATE_VALUE_RE.search(probe) or _is_placeholder_value(probe):
         return False
-    if _CJK_RE.search(body):
-        # 中文裸值（`password=测试口令123`）：长度按 CJK 底线，形状按混排证据。  #
-        if _CJK_PUNCT_RE.search(body) or _CJK_DATE_RE.match(body):
+    if _CJK_RE.search(probe):
+        # 中文裸值（`password=测试口令123`）：长度按 CJK 底线，形状按混排证据。
+        if _CJK_PUNCT_RE.search(probe) or _CJK_DATE_RE.match(probe):
             return False
-        return len(body) >= _MIN_LITERAL_LEN_CJK and _cjk_mixed_evidence(body)
+        return len(probe) >= _MIN_LITERAL_LEN_CJK and _cjk_mixed_evidence(probe)
     if len(body) < _MIN_LITERAL_LEN:
         return False
     if not (bool(re.search(r"[A-Za-z]", body)) and bool(re.search(r"\d", body))):
@@ -357,8 +361,9 @@ SELF_TEST_CLEAN_CN = (
     # Issue#160 AC2 反例：凭据**键名**下的纯中文文案不得当口令（缺混排证据）；
     # 长到 CJK 长度底线（6 字）也不能只靠长度成立。
     "secret = \"中文标题\" password = \"甲乙丙丁戊己\" "  # public-tree-scan: ignore-line(credential_bare)
-    # 门①.5 r1 M-3：中文标点正文 / 中文日期形态也必须零命中（此前只有仓内 pytest 覆盖）
-    "总结 = \"本次共3人，已逐一核对。\" 归档日 = \"2023年6月15日\" "
+    # 门①.5 r1 M-3 / r2 R2-1：中文标点正文 / 中文日期形态也必须零命中——
+    # **键名必须是凭据名**，否则会被键名门提前挡掉、压根测不到中文标点/日期排除。
+    "secret = \"本次共3人，已逐一核对。\" pwd = \"2023年6月15日\" "
 )
 
 

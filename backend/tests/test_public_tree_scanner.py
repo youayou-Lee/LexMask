@@ -483,6 +483,17 @@ def test_self_test_wires_ignore_line_scope_check(monkeypatch):
     assert ptree.self_test([]) == 1, "self_test 未把 _ignore_line_scope_check 的结论算进 rc"
 
 
+def test_ignore_line_scope_check_detects_a_silenced_scanner(monkeypatch):
+    """门①.5 r2 R2-2：把 `scan_source` 静默成空 ⇒ 该契约必须报出问题。
+
+    否则函数体被掏空（`return []`）时调用点接线钉仍绿——与 #159 r3 同类空转。
+    """
+    monkeypatch.setattr(ptree, "scan_source", lambda *args, **kwargs: [])
+    problems = ptree._ignore_line_scope_check()
+    assert problems, "扫描器被静默时放过标记契约仍报「无问题」"
+    assert any("放过标记过宽" in item for item in problems), problems
+
+
 def test_empty_parentheses_marker_suppresses_nothing():
     """门①.5 r1 M-2：`ignore-line()`（空括号）的规则集为空 ⇒ 什么都不放过（不是整行豁免）。"""
     line = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + ptree.IGNORE_MARKER + "()"  # public-tree-scan: ignore-line(public_ip, credential_literal)

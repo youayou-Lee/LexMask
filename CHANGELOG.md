@@ -5,9 +5,9 @@
 ### 工具链（Issue#160）公开树扫描器：中文取值口令不再漏判 + `ignore-line` 改为按规则点名
 
 - **漏判修复**：`_is_secret_shaped()` 原先对含汉字的值整类返回 `False` ⇒ 形如「中文取值口令」的字面量在公开树上**永不报出**（具体字面量见 Issue#160 与 `backend/tests/test_pdf_encryption.py`）（#140 的验收标准当时其实被静默绕过）。现改为：含汉字的值长度下限降到 **6**，但必须满足**混排证据**（含数字/ASCII 字母/符号），并排除含中文标点的正文与 `2023年6月15日` 形日期 ⇒ 中文口令命中、中文正文不误报。
-- **放过面收紧**：`ignore-line` 从「整行跳过」改为**按规则点名** `ignore-line(<规则名>, …)`；**裸标记不再放过任何规则**；新增自检契约 `_ignore_line_scope_check()` 实证「点名的放过、未点名的照报、裸标记不放过」。仓内 **80 行**既有标记按规则重算迁移（74 非自检 + 6 自检），并订正 3 处空括号标记与 1 处描述性提及；迁移后整树命中与旧版**逐条相同**。
+- **放过面收紧**：`ignore-line` 从「整行跳过」改为**按规则点名** `ignore-line(<规则名>, …)`；**裸标记不再放过任何规则**；新增自检契约 `_ignore_line_scope_check()` 实证「点名的放过、未点名的照报、裸标记不放过」。仓内既有标记按规则重算迁移（`git grep -c "public-tree-scan: ignore-line"` 合计 preview 76 行 → 本修订 82 行；含 `ignore-line(` 者 83 行），并订正 3 处**真**空括号标记；迁移后整树命中与旧版**逐条相同**。
 - **口径声明**：含汉字的值在 Issue#160 之前整类不参与判定 ⇒ 该 Issue 前后的命中数**不可跨版本对账**（同版本内 A/B 才可比），已写入 `_COVERAGE_NOTE`。
-- **验证**：`--self-test` 21 例阳性对照逐例命中 / 11 类全覆盖 / 干净样本零命中 / 四项自检契约通过；`backend/tests/test_public_tree_scanner.py` **36 passed**（新增四例：中文口令命中且中文正文不误报、`ignore-line` 规则级语义、`scope_check` 调用接线钉、空括号标记不放过）；变异 **M1–M11 11/11 KILLED**（含门①.5 r1 自造的「删 scope_check 调用」「空括号=整行豁免」两条）；同树旧/新扫描器输出 **逐条相同**（1007 文件 / **326 处**：`abs_path` 286 / `public_ip` 24 / `win_path` 16，`credential_*` 0，命中行 `diff` 为 0）。
+- **验证**：`--self-test` 21 例阳性对照逐例命中 / 11 类全覆盖 / 干净样本零命中 / 四项自检契约通过；`backend/tests/test_public_tree_scanner.py` **37 passed**（新增五例：中文口令命中且中文正文不误报、`ignore-line` 规则级语义、`scope_check` 调用接线钉、空括号标记不放过、`scope_check` 函数体可判别性）；变异 **9/9 KILLED**（绑定本修订源码 sha256，见 `LexMask-workspace/github-issues/_i160/mutation.txt`；含「删 `scope_check` 调用」「掏空 `scope_check` 函数体」「空括号＝整行豁免」「去中文标点/日期排除」「去转义引号归一」）；同树旧/新扫描器输出 **逐条相同**（1007 文件 / **326 处**：`abs_path` 286 / `public_ip` 24 / `win_path` 16，`credential_*` 0，命中行 `diff` 为 0）。
 - **不做**：不放宽任何规则；不动 CI 接线（`public-tree-scan` job 由 #159 建好）；纯汉字长口令（如 `"一二三四五六七八"`）仍在边界外（方案 §6.1）。
 
 ### 正交（Issue#135）`safe_finditer` 超时零计时协议用例
