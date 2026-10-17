@@ -1,8 +1,5 @@
 // Copyright 2026 LexMask Contributors
 
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-
 import { describe, expect, it } from 'vitest';
 
 // Issue#123 门⑥ I-1 / I-2：收益链的**接线层**此前单测零覆盖。
@@ -15,8 +12,24 @@ import { describe, expect, it } from 'vitest';
 // 诚实边界：表达式改名/重构会让本用例变红（这是设计意图：静默丢接线必须被拦住），
 // 因此改接线时必须同步改本文件。
 
-const read = (relative: string) =>
-  readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf-8');
+// Issue#157：源码读取改走 Vite 的 `?raw` 导入（vitest 原生支持），不再用 `node:fs`/`node:url`。
+// 原因：引入 `@types/node` 后全局 `setTimeout` 的重载来自它，三处
+// `ReturnType<typeof window.setTimeout>` 的**声明侧**会被 tsc 解析成 `NodeJS.Timeout`，
+// 而 `window.setTimeout(...)` 的实参返回仍是 `number` ⇒ 三个产品文件报 TS2322
+// （类型门不该改产品类型面）。
+// 注意：`eager: true` 是本用例的前提——空集时下面的 `read()` 守卫必须能报到，勿删。
+const sources = import.meta.glob(
+  './{hooks/use-playground-file.ts,hooks/use-playground-image.ts,hooks/use-playground.ts,playground-page.tsx,playground-context.tsx}',
+  { query: '?raw', import: 'default', eager: true },
+) as Record<string, string>;
+
+const read = (relative: string): string => {
+  const content = sources[`./${relative.replace(/^\.\//, '')}`];
+  if (typeof content !== 'string') {
+    throw new Error(`wiring-contract: 读不到源码 ${relative}（可用键：${Object.keys(sources).join(', ')}）`);
+  }
+  return content;
+};
 
 const fileHook = read('./hooks/use-playground-file.ts');
 const imageHook = read('./hooks/use-playground-image.ts');
