@@ -4,7 +4,7 @@
   "patches": [
     {
       "file": "frontend/src/constants/timing.ts",
-      "from": "export const PLAYGROUND_VISION_PAGE_CONCURRENCY = 3;",
+      "from": "export const PLAYGROUND_VISION_PAGE_CONCURRENCY = 8;",
       "to": "export const PLAYGROUND_VISION_PAGE_CONCURRENCY = 1;"
     }
   ],
@@ -15,5 +15,5 @@
     }
   ],
   "probe": "vitest",
-  "notes": "示例臂：把前端页并发 3 改成 1（#106 后唯一合法切点是 frontend/src/constants/timing.ts:57；旧代码里的运行时切臂点已被删除）。patch 臂跑前要求工作树干净、跑完必须复原，静默未生效即 FAIL。"
+  "notes": "示例臂：把前端页并发 8 改成 1（#106 后唯一合法切点是 frontend/src/constants/timing.ts:57；旧代码里的运行时切臂点已被删除）。patch 臂跑前要求工作树干净、跑完必须复原，静默未生效即 FAIL。"
 }

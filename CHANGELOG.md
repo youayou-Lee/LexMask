@@ -22,6 +22,13 @@
   - **诚实边界**：①**M6 SURVIVED 如实登记**——本机无页面级渲染用例，「页面确实把 `overlayModeFor(...)` 的结果传下去」这一接线事实在本机无判别面，覆盖来源＝门④ 浏览器臂 AC1(a) 对**真实 DOM** 的断言（页面若硬编码 blocking，真机识别期遮罩即为 blocking）+ 门⑥ 读 diff；②**jsdom 无布局** ⇒ 可见性/命中测试（`document.elementFromPoint`）**全部归浏览器臂**，本机只判模块契约与元素存在性；③AC1(a) 的**承重断言**是「画布已挂载 + 第 1 页框节点在 document 内」而非「新属性存在」（否则红先失败退化为属性缺失）；④AC1(b) 阈值口径＝**同运行内**第 1 页实测耗时 × 1.2（不引用跨运行人口 p50——r2 实测 `8.674×1.2 = 10.41 s` 与实验臂预期 ≈10.4 s 零余量）；⑤**AC3 硬红线＝Issue 原文「整卷墙钟不劣化 ≥0.98」**，方案自加的「≥10% 改善」降为**观测项**；⑥AC4（失败页不阻塞已完成页）按既有 `recognitionIssue` 语义已覆盖，**降为观测项**，并把 D1 带来的 `stage === 'preview'` 六处副作用（首屏空画布闪烁 / 进度分母 / 重跑入口 / 动作按钮时序 / `onBackToEdit` / 会话切换弹窗）在门④ 逐条观测落表；⑦**「不改闸门」的范围＝不改后端识别闸门**（并发闸位、`MAX_HAS_CHUNKS`、env 开关一律不动），D1 改的是前端 `stage` UI 状态（术语已在方案 §4 拆分）
   - **不做**：不改识别算法与任何并发度、不改后端；「首屏优先调度」与「剩余时间预估」（Issue 候选方向 2/3）另立 Issue；批量向导不在范围
 
+- perf(frontend): **单文件页并发 3→8——吃满 HaS 批处理余量（k=32=1842 tok/s 未到顶）**（Issue#172）
+  - 依据（2026-10-17 云门④实测）：LA k=8 p50 4.89s/零错误（藏在 OCR 4.2s/页 串行地板之下，#111 的 k=4×2.04 劣化在 k=8 全卷预算内可接受）；HaS vLLM 批处理 k=32=1842 tok/s（单流 14.9×）仍未到顶；整卡四资源占用仅 5-44%
+  - `frontend/src/constants/timing.ts`：`PLAYGROUND_VISION_PAGE_CONCURRENCY` 3→8（注释附实测依据与低显存回退说明）
+  - 低显存部署回退：置 1 恢复串行（playground/utils.ts 既有说明）；#111 显存刹车（`_effective_vision_page_concurrency`）为后续并联项
+  - 验证：LA 直连 k=1/4/8 = 1.40/2.70/4.89s p50 零错误；10 页卷 16 vision 请求全 200；门①.5 REVISE 全处置（AC1 降级画像项/AC2 分段口径/B1 真值 2048/A1A2 拆分/回落档 k=6）
+  - 环境：单卡 gfx928 / DTK 25.04.2 / vLLM 0.9.2-DAS（V0、bf16、gmu 0.18、无 eager）
+
 - fix(vision): **病态密页「残值自证」风暴：新增每页上限 `HAS_NER_VERIFY_MAX_JOBS_PER_PAGE`（默认 200）**（Issue#136）
   - `backend/app/core/config.py`：新增 `HAS_NER_VERIFY_MAX_JOBS_PER_PAGE: int = 200`（validator `max(0, min(4096, v))`；`0` = 不限）
   - `backend/app/services/vision/has_text_analysis.py`：残余自证作业在派发前按**输入决定序**排序（值在**本页原文**中首次出现的位置升序；在原文中找不到的拟合值排最后——这类值不自证即不采纳，风险最低）后**确定性截断**；被截断的值不进入结果（与「自证未确认」同语义，保守不增 FP）。新增指标 `has_text_verify_jobs_before` / `has_text_verify_jobs_after` / `has_text_verify_jobs_by_type` / `has_text_verify_skipped` / `has_text_verify_ms`；触顶时 WARNING 带截断计数与**页内类型分布**

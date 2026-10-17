@@ -7,10 +7,10 @@
   "name": "base",
   "kind": "env",
   "env": {"HAS_NER_GLOBAL_MAX_INFLIGHT": "8"},
-  "patches": [{"file": "frontend/src/constants/timing.ts", "from": "= 3;", "to": "= 1;"}],
+  "patches": [{"file": "frontend/src/constants/timing.ts", "from": "= 8;", "to": "= 1;"}],
   "expect": [{"file": "frontend/src/constants/timing.ts", "contains": "= 1;"}],
   "probe": "python",
-  "notes": "页并发 3"
+  "notes": "页并发 8（Issue#172 起默认；示例补丁把 8 改 1 即串行对照）"
 }
 ```
 

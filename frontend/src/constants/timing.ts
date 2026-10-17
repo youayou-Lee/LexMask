@@ -53,8 +53,10 @@ export const PLAYGROUND_LOADING_TICK_MS = 1_000;
 /** Delay before single-file processing shows a long-running hint. */
 export const PLAYGROUND_LONG_RUNNING_HINT_MS = 60_000;
 
-/** Page-level concurrency for scanned PDF/image vision recognition in single-file mode. */
-export const PLAYGROUND_VISION_PAGE_CONCURRENCY = 3;
+/** Page-level concurrency for scanned PDF/image vision recognition in single-file mode.
+ *  8 = Issue#172 云门④ 实测档（LA k=8 p50 4.89s 零错误、HaS 批处理 k=32=1842 tok/s 未到顶）；
+ *  低显存部署置 1 恢复串行（见 playground/utils.ts）。 */
+export const PLAYGROUND_VISION_PAGE_CONCURRENCY = 8;
 
 // React Query defaults
 
