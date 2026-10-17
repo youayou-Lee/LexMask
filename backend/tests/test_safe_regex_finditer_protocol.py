@@ -126,15 +126,17 @@ def test_finditer_timeout_cancels_replaces_and_raises(monkeypatch, _patched):
     assert future.cancel_called, "撞破预算后必须取消在飞 future"
     assert _patched.replaced == [True], "撞破预算后必须换掉被卡死的池"
     assert _patched.events == ["cancel", "replace"], (
-        "门⑥ r6 M2：必须先取消在飞 future，再换掉池（顺序反了会先毁池再取消，"
-        "在真实池下等于丢结果或死锁）"
+        "门⑥ r6 M2：必须先取消在飞 future，再换掉池（顺序反了会先毁池再取消，在真实池下等于丢结果或死锁）"
     )
     assert future.timeouts == [0.01], "预算必须真的送到 future.result"
-    assert pool.submitted == [
-        (compiled.pattern, compiled.flags, "a" * 25 + "!")
-    ], "必须真的把 finditer 任务（pattern, flags, text）提交出去"
+    assert pool.submitted == [(compiled.pattern, compiled.flags, "a" * 25 + "!")], (
+        "必须真的把 finditer 任务（pattern, flags, text）提交出去"
+    )
     assert "finditer timed out" in str(exc.value), "错误文案必须可判定为 finditer 超时"
     assert "0.01" in str(exc.value), "错误文案必须带上撞破的预算值"
+
+
+# ---- ② 反向对照（预算内不得取消、不得换池）----
 
 
 def test_finditer_within_budget_does_not_cancel_or_replace(monkeypatch, _patched):
@@ -151,6 +153,9 @@ def test_finditer_within_budget_does_not_cancel_or_replace(monkeypatch, _patched
     assert future.cancel_called is False, "预算内不得取消在飞 future"
     assert _patched.replaced == [], "预算内不得换池"
     assert future.timeouts == [3.0], "预算必须真的送到 future.result"
+
+
+# ---- ③ 默认预算必须真的送到 future.result ----
 
 
 def test_finditer_default_budget_is_forwarded(monkeypatch, _patched):
@@ -177,9 +182,7 @@ def test_finditer_wraps_rows_into_match_proxies(monkeypatch, _patched):
         ("c", 3, 4, []),
         ("", 5, 5, []),
     ]
-    monkeypatch.setattr(
-        safe_regex, "_get_pool", lambda: _FakePool(_OkFuture(rows))
-    )
+    monkeypatch.setattr(safe_regex, "_get_pool", lambda: _FakePool(_OkFuture(rows)))
 
     matches = safe_finditer(re.compile(r"."), "abcd")
 
@@ -199,9 +202,7 @@ def test_finditer_many_empty_texts_does_not_touch_the_pool(monkeypatch):
     import re
 
     touched = []
-    monkeypatch.setattr(
-        safe_regex, "_get_pool", lambda: touched.append(True) or _FakePool(_OkFuture([]))
-    )
+    monkeypatch.setattr(safe_regex, "_get_pool", lambda: touched.append(True) or _FakePool(_OkFuture([])))
 
     assert safe_finditer_many(re.compile(r"x"), []) == []
     assert touched == [], "空 texts 不得触碰进程池"
@@ -223,9 +224,9 @@ def test_finditer_many_timeout_cancels_replaces_and_raises(monkeypatch, _patched
     assert _patched.replaced == [True], "撞破预算后必须换掉被卡死的池"
     assert _patched.events == ["cancel", "replace"], "门⑥ r6 M2：批量路径同样先取消再换池"
     assert future.timeouts == [0.02], "预算必须真的送到 future.result"
-    assert pool.submitted == [
-        (compiled.pattern, compiled.flags, ["a", "b", "c"])
-    ], "必须把整批（pattern, flags, texts）一次提交出去"
+    assert pool.submitted == [(compiled.pattern, compiled.flags, ["a", "b", "c"])], (
+        "必须把整批（pattern, flags, texts）一次提交出去"
+    )
     assert "over 3 texts" in str(exc.value), "错误文案必须带上批量规模"
     assert "0.02" in str(exc.value), "门⑥ r6 M1：批量文案必须带上撞破的预算值（与单条路径对齐）"
 
@@ -239,9 +240,7 @@ def test_finditer_many_returns_one_list_per_text_in_order(monkeypatch, _patched)
         [],
         [("b", 2, 3, [("g", 2, 3, "b")]), ("c", 4, 5, [])],
     ]
-    monkeypatch.setattr(
-        safe_regex, "_get_pool", lambda: _FakePool(_OkFuture(payload))
-    )
+    monkeypatch.setattr(safe_regex, "_get_pool", lambda: _FakePool(_OkFuture(payload)))
 
     result = safe_finditer_many(re.compile(r"."), ["a", "", "bc"])
 
@@ -284,9 +283,7 @@ def test_after_finditer_timeout_pool_is_rebuilt_not_reused(monkeypatch):
     safe_regex._kill_and_replace_pool()
 
     assert safe_regex._pool is None, "换池后必须置空"
-    assert stale.shutdowns == [(False, True)], (
-        "换池必须对旧池 shutdown(wait=False, cancel_futures=True)"
-    )
+    assert stale.shutdowns == [(False, True)], "换池必须对旧池 shutdown(wait=False, cancel_futures=True)"
 
     rebuilt = safe_regex._get_pool()
 
@@ -317,6 +314,7 @@ def test_real_finditer_many_batches_in_one_call():
     result = safe_finditer_many(re.compile(r"\d+"), ["a1", "", "b22c33"], timeout=5.0)
 
     assert [[m.group() for m in rows] for rows in result] == [["1"], [], ["22", "33"]]
+
 
 # ---- ⑦ 分支盲区（门①.5 r1 B3）：非超时异常与 cancel 失败 ----
 
@@ -416,9 +414,7 @@ def test_after_timeout_the_next_call_lands_on_a_new_pool_object(monkeypatch):
     made = []
 
     def _factory(*_args, **_kwargs):
-        pool = _FakePool(
-            _TimedOutFuture() if not made else _OkFuture([("aaa", 0, 3, [])])
-        )
+        pool = _FakePool(_TimedOutFuture() if not made else _OkFuture([("aaa", 0, 3, [])]))
         made.append(pool)
         return pool
 

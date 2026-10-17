@@ -6,8 +6,10 @@
 
 - **背景**：`safe_compile` 的超时协议在 #109 已有零计时用例，但同族的 `safe_finditer` / `safe_finditer_many` 的超时分支（`future.cancel()` → `_kill_and_replace_pool()` → 抛 `RegexTimeoutError`）**没有任何协议用例**；漏掉任一步都只会静默退化。
 - **改动**：新增 `backend/tests/test_safe_regex_finditer_protocol.py`（16 例）：换池恰好一次、`cancel()` 被调用、异常类型与 message、命名组透传、批量顺序/空输入早退/单条失败隔离、非超时异常不得换池、真实池集成 2 例（受限环境按惯例显式 skip）。
-- **零回归**：修 2268 passed / 6 failed / 47 skipped vs 基线 `26d11eb` 2252 / 6 / 47，`comm -3` FAILED 集合 0 行（差 +16 = 新增用例）。
+- **零回归**（同刻两棵干净 worktree）：fix `05a505e` **2300 passed / 47 skipped** vs 基线 `a29b22a` **2284 passed / 47 skipped**，`comm -3` FAILED 集合 0 行（差 +16 = 新增用例；两棵在本机各有 6 条 json_repair 家族既有失败，两树逐条相同）。
+- **AC4 的 CI 侧直接证据**：分支 backend job `2294 passed / 53 skipped` vs 基线 `2278 passed / 53 skipped` ⇒ passed +16、skipped 不变 ⇒ 16 例（含两条真池集成）在真 CI 上真执行。
 - **变异**：V4（`except FuturesTimeoutError` 放宽为 `except Exception`）、V10（`if not future.cancel(): return []`）均 KILLED，逐字节还原校验 sha256。
+- **遗留（已立案）**：`_MatchProxy` 的 `or []` 兜底分支不可达（冷审 Minor M3）⇒ 另立 #186。
 - **不做**：不改 `safe_regex` 行为（纯测试）。
 ### 正则（Issue#156）超时可观测 + 真 `re.Match` 命名组语义（**生产行为不变**）
 
