@@ -96,3 +96,16 @@ def test_docline_stats_dict_has_no_failed_chunks_key():
                 keys_written.append(target.slice.value)
     assert keys_written, "必须在 text_layer_docline_service 里找到 `stats` 的初始化"
     assert "failed_chunks" not in keys_written, f"stats 不得再写 failed_chunks 死计数器：{keys_written}"
+
+
+def test_orchestrator_wires_the_status_function_into_pipeline_status():
+    """门⑥ r6（自造变异 M-c 存活）：把 `detect_vision` 里的生产接线换回旧内联 dict 时，
+    全套件仍然全绿（该函数需要文件仓库与整个视觉栈，本机驱不动）⇒ 这里退一步钉
+    **表达式级契约**：接线必须调用状态构造函数、参数顺序固定、且结果写进
+    `pipeline_status["text_layer_doc"]`。破坏任一条即判红。
+    """
+    from app.services import redaction_orchestrator as orch
+
+    src = inspect.getsource(orch.detect_vision)
+    wired = 'pipeline_status["text_layer_doc"] = _text_layer_doc_status(doc_boxes, doc_memo, page)'
+    assert wired in src, "生产接线必须调用 _text_layer_doc_status 并写进 text_layer_doc（位置参数顺序固定）"

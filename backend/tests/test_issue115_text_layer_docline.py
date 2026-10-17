@@ -303,6 +303,7 @@ def test_build_budget_gate_skips_oversized_volume(monkeypatch, tmp_path):
 
     assert boxes is None, "超预算 ⇒ 整卷不接管，调用方回落旧路径"
     assert memo and memo.get("reason_code") == "build_budget", "回落必须带机读原因（Issue#165）"
+    assert memo.get("retry_at") == float("inf"), "超预算属永久性不可用 ⇒ retry_at=inf"
     assert calls == [], "预算闸必须在建流之前短路"
 
 
@@ -941,6 +942,9 @@ def test_scanned_volume_without_text_layer_reports_no_text_layer(monkeypatch, tm
     )
     assert boxes is None
     assert memo and memo.get("reason_code") == "no_text_layer", "扫描件无文本层必须带机读原因"
+    # 门⑥ r6（自造变异 M-e 存活）：`permanent=True` 必须落成「永不重试」，否则将来退化成
+    # 120s TTL 重试（整卷重建）也不会判红。
+    assert memo.get("retry_at") == float("inf"), "永久性不可用必须 retry_at=inf（不得退化成 TTL 重试）"
 
 
 def test_map_values_keeps_both_word_and_embedded_hits() -> None:

@@ -6,10 +6,10 @@
 
 - **根因**：`boxes_for_page()` 在「本该接管但判定失败」时返回 `(None, None)`，原因只落进进程内负缓存 `_MEMO`；`detect_vision` 只在 `doc_memo is not None` 时写 `pipeline_status["text_layer_doc"]` ⇒ 失败卷上该块**整块缺失**（而 `0 框` 那条路径反而有块），现场分不清「没有文本层 / 超预算 / 质量不可用 / 块失败 / 回映失败率 / 块错 / 截断比 / 覆盖率」。
 - **改法**：①`_TransientIneligible` 携带机读 `code`/`detail`/`permanent`，卷级门逐条传码（`no_text_layer|build_budget|verdict_unusable|failed_chunks|map_failure_ratio|block_errors|truncated_chunks|coverage`）；②失败卷返回值由 `(None, None)` 改为 `(None, marker)`（含 `reason`/`reason_code`/`reason_detail`），**负缓存命中同样带原因**；③兜底 `except Exception` 带 `reason_code="unexpected"`（该分支正为「入口参数不可信」而存在，日志格式串一并由 `%d` 改 `%s`，否则日志自身抛错会把请求打成 5xx）；④块构造抽成纯函数 `redaction_orchestrator._text_layer_doc_status()` 并在失败卷上写出，新增 `fallback_reason`/`fallback_reason_code`/`fallback_failed_chunks`/`fallback_chunks`/`fallback_page`（旧字段逐字段保留）；⑤删除全仓无读者的 `stats["failed_chunks"]` 死计数器，失败块计数唯一真源 = `len(failed_set)`。
-- **显式边界**：**显式不适用**（开关关 / 明确不跑 HaS / 无标签 / 非扫描件）与**页面级回落**（混合卷本页无层、0 框）仍返回 `(None, None)`——不得凭空造 `failed=True` 的假回落；页面级信号继续由既有 `text_layer_doc:fallback_page=N` warning 承载。
+- **显式边界（门⑥ r6 订正）**：**显式不适用**（开关关 / 明确不跑 HaS / 无标签 / 非扫描件）仍返回 `(None, None)`、仍静默；**页面级回落分两种，均与改前一致**：①「混合卷本页无文本层」⇒ `(None, None)`、状态面**无**信号，只有一行 INFO（**不是** warning）；②「覆盖页 0 框」⇒ `(None, memo)` ⇒ **有**块（`failed=True`）且带既有 `text_layer_doc:fallback_page=N` warning（base 固有行为，本 PR 未改）。另：**扫描件但整卷无文本层**（`no_text_layer`）判「真回落」并产信号——理由与裁决见 Issue#165 评论（该形态是本仓库最常见真实形态，改前只有一行 INFO）。
 - **契约变更（唯一一处）**：`boxes_for_page()` 第二个返回值在**判定失败**时由 `None` 改为 marker；仓内唯一生产调用方已同步，8 例既有用例按新契约更新（`boxes is None` + `reason_code` 等值）。
-- **有效性证明**：改前树（`c1a8fd9` + 本 PR 测试文件）`tests/test_issue115_text_layer_docline.py` **9 failed / 36 passed**，块用例文件 **ImportError**（`_text_layer_doc_status` 不存在）；本树三文件 **65 passed**；变异矩阵 **4/4 KILLED**（失败卷退回 `(None,None)` ⇒ 7 failed；块去掉 `fallback_reason_code` ⇒ 1；复活死计数器 ⇒ 1；不适用也产信号 ⇒ 2），每次按字节还原。
-- **零回归**：同刻两树全量 `pytest tests/` —— FIX **2314 passed / 47 skipped / 0 failed** vs BASE **2306 / 47 / 0**，`FAILED` 集合 `comm -3` **0 行**，差 +8 = 新增 8 例。
+- **有效性证明**：改前树（`c1a8fd9` + 本 PR 测试文件）`tests/test_issue115_text_layer_docline.py` **9 failed / 36 passed**，块用例文件 **ImportError**（`_text_layer_doc_status` 不存在）；本树三文件 **68 passed**（base 三文件 57 ⇒ **+11**）；变异矩阵 **7/7 KILLED**（含门⑥ r6 的自造项：接线换回旧内联 dict、`no_text_layer` 改 `permanent=False`、`fallback_page` 写常量）（失败卷退回 `(None,None)` ⇒ 7 failed；块去掉 `fallback_reason_code` ⇒ 1；复活死计数器 ⇒ 1；不适用也产信号 ⇒ 2），每次按字节还原。
+- **零回归**：同刻两树全量 `pytest tests/` —— FIX **2317 passed / 47 skipped / 0 failed** vs BASE（`c1a8fd9`）**2306 / 47 / 0**，`FAILED` 集合 `comm -3` **0 行**，差 **+11** = 本 PR 新增/加固用例数。
 - **未上云**：失败卷真机观测面（`pipeline_status` 经任务状态返回）需实例 + 真卷，与 #148 对该观测面的处置同源 ⇒ 门④ 待跑。
 
 ### 工具链（Issue#157）前端测试文件纳入 `tsc`
