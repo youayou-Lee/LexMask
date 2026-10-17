@@ -124,6 +124,15 @@ def test_indexed_multiple_groups_keep_declaration_index():
     assert match_items_indexed(match) == [(0, "a", 0, 1), (1, "b", 1, 2)]
 
 
+def test_payload_type_hints_declare_four_tuple() -> None:
+    """注解即契约：子进程载荷必须是 **4 元组**（门⑥ r6 R6-A：注解回退到 5 元组
+    时仓内无任何判据 —— Issue#156 的收窄正是撤销该扩展，注解必须同步钉死）。"""
+    from typing import get_type_hints
+
+    four = tuple[str, int, int, list[tuple[str, int, int, str]]]
+    assert get_type_hints(safe_regex._finditer_in_process)["return"] == list[four]
+    assert get_type_hints(safe_regex._finditer_many_in_process)["return"] == list[list[four]]
+
 def test_subprocess_payload_keeps_declaration_order():
     """端到端钉住**真子进程 payload** 的命名组取序（r1 自造变异 ① 的补丁）。
 

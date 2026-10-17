@@ -30,6 +30,12 @@ def test_narrowing_a_value_narrows_the_hits_never_expands() -> None:
     assert wide and narrow
     for start, end in wide + narrow:
         assert docline._fold(stream[start:end]) in {"1-17", "17"}
+    # 「值变窄 ⇒ 命中不扩张」的两条硬判据（门⑥ r6 F-r6-4：原先只断言成员资格）
+    assert len(narrow) <= len(wide), (wide, narrow)
+    for n_start, n_end in narrow:
+        assert any(
+            w_start <= n_start and n_end <= w_end for w_start, w_end in wide
+        ), (narrow, wide)
 
 
 def test_narrowed_value_inside_a_longer_word_is_rejected_by_boundary_check() -> None:

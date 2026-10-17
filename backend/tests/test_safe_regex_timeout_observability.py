@@ -39,6 +39,26 @@ class _FakePool:
         return None
 
 
+class _OkFuture:
+    """替身 future：`result()` 立刻返回**合法载荷**（零计时成功路径）。"""
+
+    def result(self, timeout=None):  # noqa: ANN001
+        return []
+
+    def cancel(self) -> bool:
+        return False
+
+
+class _OkPool:
+    """替身池：任何提交都**成功**返回（用于正面对照）。"""
+
+    def submit(self, fn, *args, **kwargs):  # noqa: ANN001
+        return _OkFuture()
+
+    def shutdown(self, **kwargs) -> None:  # noqa: ANN003
+        return None
+
+
 @pytest.fixture(autouse=True)
 def _clean_stats():
     safe_regex.reset_regex_timeout_stats()
@@ -93,10 +113,18 @@ def test_reset_clears_counters(monkeypatch) -> None:
 
 
 def test_successful_call_does_not_bump_counters(monkeypatch) -> None:
-    """反向对照：没超时就必须是 0（防止「恒 +1」式假可观测）。"""
-    pool = _FakePool()
+    """反向对照：**真跑一次成功路径**后计数必须仍是 0（防「恒 +1」式假可观测）。
+
+    注意：本用例必须调用被测代码——只断言「初始为空」是恒真断言，挡不住
+    「成功路径也 +1」的实现（门⑥ r6 的 R6-1 变异曾 SURVIVED，即因此）。
+    """
+    pool = _OkPool()
     monkeypatch.setattr(safe_regex, "_get_pool", lambda: pool)
     monkeypatch.setattr(safe_regex, "_pool", pool)
+    assert safe_regex.regex_timeout_stats() == {}
+    # 真正走一遍三条链的成功路径
+    assert safe_regex.safe_finditer(re.compile("x"), "abc", timeout=5.0) == []
+    safe_regex.safe_finditer_many(re.compile("x"), ["abc", "def"], timeout=5.0)
     assert safe_regex.regex_timeout_stats() == {}
 
 

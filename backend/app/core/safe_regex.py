@@ -213,8 +213,10 @@ def scaled_timeout(text: str, base: float = TIMEOUT_BASE_SECONDS) -> float:
 def _declared_named_groups(match: "re.Match[str] | _MatchProxy") -> list[str]:
     """该 match 的 pattern **声明**的命名组名（声明顺序）。
 
-    ``_MatchProxy``（子进程结果）直接带声明表；真 ``re.Match`` 从
-    ``match.re.groupindex`` 取（``{name: group_number}``，按组号升序 = 声明顺序）。
+    真 ``re.Match`` 从 ``match.re.groupindex`` 取（``{name: group_number}``，按组号
+    升序 = 声明顺序）。``_MatchProxy``（子进程结果）**不带声明表**——跨进程边界刻意
+    不传（理由见 :func:`_finditer_many_in_process`），其 ``declared_named_groups()``
+    只回**参与**组名，因此本函数对代理返回的即「按参与组编号」的既有契约。
     """
     declared = getattr(match, "declared_named_groups", None)
     if callable(declared):
