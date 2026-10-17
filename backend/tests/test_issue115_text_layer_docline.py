@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -300,7 +301,9 @@ def test_build_budget_gate_skips_oversized_volume(monkeypatch, tmp_path):
         )
     )
 
-    assert boxes is None and memo is None, "超预算 ⇒ 整卷不接管，调用方回落旧路径"
+    assert boxes is None, "超预算 ⇒ 整卷不接管，调用方回落旧路径"
+    assert memo and memo.get("reason_code") == "build_budget", "回落必须带机读原因（Issue#165）"
+    assert memo.get("retry_at") == float("inf"), "超预算属永久性不可用 ⇒ retry_at=inf"
     assert calls == [], "预算闸必须在建流之前短路"
 
 
@@ -380,7 +383,8 @@ def test_boxes_for_page_swallows_errors_and_falls_back(monkeypatch, tmp_path):
 
     monkeypatch.setattr(source.docline, "extract_text_layer_pages", boom)
     boxes, memo = asyncio.run(source.boxes_for_page(file_id="b" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=None))
-    assert boxes is None and memo is None, "异常必须退回旧路径而不是抛出"
+    assert boxes is None, "异常必须退回旧路径而不是抛出"
+    assert memo and memo.get("reason_code") == "error", "回落必须带机读原因（Issue#165；本链任何故障 ⇒ code=error）"
 
 
 def test_boxes_for_page_marks_unusable_layer(monkeypatch, tmp_path):
@@ -391,7 +395,8 @@ def test_boxes_for_page_marks_unusable_layer(monkeypatch, tmp_path):
     monkeypatch.setattr(source.docline, "extract_text_layer_pages", lambda *a, **k: [_page(1, ["\ufffd\u0001"])])
     monkeypatch.setattr(source.docline, "sample_ink_alignment", lambda *a, **k: 0.0)
     boxes, memo = asyncio.run(source.boxes_for_page(file_id="c" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=None))
-    assert boxes is None and memo is None, "不可用层必须回落"
+    assert boxes is None, "不可用层必须回落"
+    assert memo and memo.get("reason_code") == "verdict_unusable", "回落必须带机读原因（Issue#165）"
 
 # ------------------------------------------------ Issue#115 门⑥ 评审回归（C/I 类）
 
@@ -694,7 +699,8 @@ def test_block_errors_over_limit_fall_back_and_are_negative_cached(monkeypatch, 
         boxes, memo = asyncio.run(
             source.boxes_for_page(file_id="e" * 8, snapshot=_snapshot(str(path)), page=page, ocr_has_types=None)
         )
-        assert boxes is None and memo is None, "块失败超阈必须整卷回落"
+        assert boxes is None, "块失败超阈必须整卷回落"
+        assert memo and memo.get("reason_code") == "block_errors", "回落必须带机读原因（Issue#165）"
     assert len(builds) == 1, "临时故障要负缓存，不能每页重算整卷"
 
 
@@ -875,7 +881,8 @@ def test_volume_level_gates_are_fail_able(monkeypatch, tmp_path):
             file_id="g" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=[_person_type()]
         )
     )
-    assert boxes is None and memo is None, "失败块必须让整卷回落旧路径"
+    assert boxes is None, "失败块必须让整卷回落旧路径"
+    assert memo and memo.get("reason_code") == "failed_chunks", "回落必须带机读原因（Issue#165）"
 
     async def _low_coverage(*_a, **_k):
         return docline.DocLineResult(
@@ -892,7 +899,52 @@ def test_volume_level_gates_are_fail_able(monkeypatch, tmp_path):
             file_id="h" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=[_person_type()]
         )
     )
-    assert boxes is None and memo is None, "覆盖率 0.40 < 0.90 必须回落旧路径"
+    assert boxes is None, "覆盖率 0.40 < 0.90 必须回落旧路径"
+    assert memo and memo.get("reason_code") == "coverage", "回落必须带机读原因（Issue#165）"
+    assert memo.get("reason_detail", {}).get("min") == 0.9, "回落必须带上判据阈值（r1 冷审：§2.1 声称带 min）"
+
+    async def _bad_map(*_a, **_k):
+        return docline.DocLineResult(
+            pages=1, chunks=2, chunk_chars=2_000, stream_chars=100, layer_chars=100,
+            covered_chars=180, entities=[], ner_calls=2, residual_calls=0,
+            truncated_chunks=0, http_errors=0, seconds=0.1, failed_chunks=0,
+            map_failures=[{"reason": "x"}],
+        )
+
+    # r1 冷审（AC1① 列了 `map_failure_ratio` 却无用例 ⇒ 把该码传错也能存活）：补上等值判据。
+    monkeypatch.setattr(settings, "TEXT_LAYER_MAX_MAP_FAILURE_RATIO", 0.1)
+    monkeypatch.setattr(source.docline, "run_document_ner", _bad_map)
+    source.reset_memo()
+    boxes, memo = asyncio.run(
+        source.boxes_for_page(
+            file_id="m" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=[_person_type()]
+        )
+    )
+    assert boxes is None, "回映失败率越界必须回落旧路径"
+    assert memo and memo.get("reason_code") == "map_failure_ratio", "回落必须带机读原因（Issue#165）"
+
+
+def test_scanned_volume_without_text_layer_reports_no_text_layer(monkeypatch, tmp_path):
+    """r1 冷审 C6 的裁决记录 + AC1 码位判据：**扫描件但整卷没有文本层**这条最常见真实形态，
+    改前只留一行 INFO（调用方拿到 `(None, None)`，看不出原因）；改后必须回落且带
+    `no_text_layer` —— 它属「真回落」而不是「凭空多出失败信号」（显式不适用仍是静默的，
+    见 `test_boxes_for_page_skips_non_scanned_file`）。
+    """
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+    monkeypatch.setattr(source.docline, "extract_text_layer_pages", lambda *_a, **_k: [])
+    path = tmp_path / "scanned.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+    source.reset_memo()
+    boxes, memo = asyncio.run(
+        source.boxes_for_page(
+            file_id="n" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=[_person_type()]
+        )
+    )
+    assert boxes is None
+    assert memo and memo.get("reason_code") == "no_text_layer", "扫描件无文本层必须带机读原因"
+    # 门⑥ r6（自造变异 M-e 存活）：`permanent=True` 必须落成「永不重试」，否则将来退化成
+    # 120s TTL 重试（整卷重建）也不会判红。
+    assert memo.get("retry_at") == float("inf"), "永久性不可用必须 retry_at=inf（不得退化成 TTL 重试）"
 
 
 def test_map_values_keeps_both_word_and_embedded_hits() -> None:
@@ -1032,7 +1084,8 @@ def test_truncated_ratio_gate_falls_back(monkeypatch, tmp_path):
             ocr_has_types=[_person_type()],
         )
     )
-    assert boxes is None and memo is None, "6/10 截断超过 0.50 必须回落旧路径"
+    assert boxes is None, "6/10 截断超过 0.50 必须回落旧路径"
+    assert memo and memo.get("reason_code") == "truncated_chunks", "回落必须带机读原因（Issue#165）"
 
     # 阈值放宽到 0.90 ⇒ 同一输入必须能接管（证明门真的读配置而不是硬编码）
     monkeypatch.setattr(settings, "TEXT_LAYER_MAX_TRUNCATED_RATIO", 0.90)
@@ -1044,3 +1097,124 @@ def test_truncated_ratio_gate_falls_back(monkeypatch, tmp_path):
         )
     )
     assert memo2 is not None and memo2.get("truncated_chunks") == 6, "放宽阈值后应接管并记录截断数"
+
+
+# ---------------------------------------------------------------- Issue#165 回落信号
+# Issue 核心抱怨：失败卷上 `pipeline_status["text_layer_doc"]` 整块缺失，分不清
+# 「没有文本层 / 超预算 / 质量不可用 / 块失败 / 覆盖率过低 / 构建异常」。修法是让
+# 卷级门把**机读原因**随负缓存 marker 交回上层（第二个返回值不再恒为 None）。
+# 本组用例在未修的树上是 `(None, None)` ⇒ **不改动即失败**，不是恒真条。
+
+
+def _stub_result(**over):
+    """造一个只有卷级门读得到的字段的 `DocLineResult` 替身。"""
+    base = dict(
+        pages=1, chunks=2, failed_chunks=0, http_errors=0, map_failure_ratio=0.0,
+        truncated_chunks=0, coverage_ratio=1.0, entities=[], failed_ranges=[],
+    )
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+def _prime_volume(monkeypatch, tmp_path, result):
+    """把 `_build` 的依赖都钉住，只留 `run_document_ner` 的返回值可控。"""
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(b"%PDF-1.4 stub")
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+    monkeypatch.setattr(source.docline, "extract_text_layer_pages", lambda _p: [_page(1, ["北京大学", "2023年"])])
+    monkeypatch.setattr(source.docline, "sample_ink_alignment", lambda _p, _pages: 0.9)
+    # 质量闸在本组用例里不是被测对象：判 USABLE 以便走到卷级门（否则先被 verdict 挡下）
+    monkeypatch.setattr(
+        source.quality, "classify",
+        lambda _metrics: SimpleNamespace(usable=True, severity="USABLE", reasons=[]),
+    )
+    calls = {"n": 0}
+
+    async def _fake_run(*_a, **_k):
+        calls["n"] += 1
+        return result
+
+    monkeypatch.setattr(source.docline, "run_document_ner", _fake_run)
+    source.reset_memo()
+    return path, calls
+
+
+def test_failed_volume_returns_reason_marker_with_counts(monkeypatch, tmp_path):
+    """块失败 ⇒ `(None, marker)`，且 marker 带机读原因码与门自己知道的块计数。"""
+    path, _calls = _prime_volume(monkeypatch, tmp_path, _stub_result(failed_chunks=1, chunks=2))
+    boxes, memo = asyncio.run(
+        source.boxes_for_page(file_id="p" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=None)
+    )
+    assert boxes is None, "失败卷不得接管（不得产出文本层框）"
+    assert memo and memo.get("unusable") is True
+    assert memo.get("reason_code") == "failed_chunks", memo
+    assert memo.get("reason_detail") == {"failed_chunks": 1, "chunks": 2}, memo
+    assert str(memo.get("reason") or "").startswith("failed_chunks:"), memo
+
+
+def test_second_call_reads_reason_from_negative_cache(monkeypatch, tmp_path):
+    """负缓存命中也要带原因（否则第 2 页起又变成「无信号回落」）。"""
+    path, calls = _prime_volume(monkeypatch, tmp_path, _stub_result(failed_chunks=1, chunks=2))
+    snap = _snapshot(str(path))
+    first = asyncio.run(source.boxes_for_page(file_id="q" * 8, snapshot=snap, page=1, ocr_has_types=None))
+    second = asyncio.run(source.boxes_for_page(file_id="q" * 8, snapshot=snap, page=1, ocr_has_types=None))
+    assert calls["n"] == 1, "TTL 内不得重算整卷"
+    assert first[0] is None and second[0] is None
+    assert second[1] and second[1].get("reason_code") == "failed_chunks", second
+
+
+def test_not_applicable_keeps_silent(monkeypatch, tmp_path):
+    """**显式不适用**（开关关 / 明确不跑 HaS / 非扫描件）不产回落信号。
+
+    与「本该接管但判失败」区分开：后者必须有 `reason_code`，前者不得凭空造出
+    一块假失败（否则每个文本型 PDF 的每一页都会多出一块 `failed=True`）。
+    """
+    path = tmp_path / "a.pdf"
+    path.write_bytes(b"%PDF-1.4 stub")
+    source.reset_memo()
+
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", False)
+    assert asyncio.run(
+        source.boxes_for_page(file_id="r" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=None)
+    ) == (None, None), "开关关闭 ⇒ 无信号"
+
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+    assert asyncio.run(
+        source.boxes_for_page(file_id="r" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=[])
+    ) == (None, None), "明确不跑 HaS ⇒ 无信号"
+
+    plain = {"file_path": str(path), "file_type": "pdf", "is_scanned": False}
+    assert asyncio.run(
+        source.boxes_for_page(file_id="r" * 8, snapshot=plain, page=1, ocr_has_types=None)
+    ) == (None, None), "非扫描件 ⇒ 无信号"
+
+
+def test_unexpected_failure_returns_unexpected_marker(monkeypatch, tmp_path):
+    """**意外故障**（本链自身抛错）也必须带机读原因，不能退化回无信号。
+
+    构造法：直接把 `_build` 换成返回健康 memo 的替身（先正常接管一次落正缓存），
+    再用非整数页号触发 `int(page)` 抛错 —— 该错发生在内层 try **之外**，只能被
+    函数末尾那个兜底 `except Exception` 接住。修前那里返回 `(None, None)`。
+    """
+    path = tmp_path / "s.pdf"
+    path.write_bytes(b"%PDF-1.4 stub")
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+
+    async def _healthy(*_a, **_k):
+        return {
+            "pages": 1, "entities": 1, "chunks": 1, "coverage": 1.0, "verdict": "usable",
+            "seconds": 0.1, "covered_pages": {1}, "boxes_by_page": {1: [object()]},
+            "http_errors": 0, "truncated_chunks": 0, "ner_calls": 1, "residual_calls": 0,
+        }
+
+    monkeypatch.setattr(source, "_build", _healthy)
+    source.reset_memo()
+    snap = _snapshot(str(path))
+    first = asyncio.run(source.boxes_for_page(file_id="s" * 8, snapshot=snap, page=1, ocr_has_types=None))
+    assert first[0], "前置条件：健康卷先正常接管（否则本条测不到兜底分支）"
+    boxes, memo = asyncio.run(
+        source.boxes_for_page(file_id="s" * 8, snapshot=snap, page="x", ocr_has_types=None)
+    )
+    assert boxes is None
+    assert memo and memo.get("reason_code") == "unexpected", memo
+    assert str(memo.get("reason") or "").startswith("unexpected:"), memo

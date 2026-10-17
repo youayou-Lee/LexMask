@@ -404,6 +404,41 @@ def get_versions(file_id: str) -> dict[str, Any]:
 # Vision detection
 # ---------------------------------------------------------------------------
 
+def _text_layer_doc_status(doc_boxes, doc_memo: dict, page: int) -> dict:
+    """构造 `pipeline_status["text_layer_doc"]`（Issue#165）。
+
+    失败卷（`unusable` marker）**也要**写出本块，并带上机读原因码与门自己知道的块计数；
+    否则上层只能看到「这页没有文档级框」，分不清「没有文本层 / 块失败过多 / 覆盖率过低 /
+    构建异常」。抽成独立函数是为了让这段判定能被单测直接钉住：`detect_vision` 需要
+    文件仓库与整个视觉栈，本机不可驱动（既有 Issue#148 用例也把该观测面留给云门④）。
+    """
+    doc_took_over = doc_boxes is not None
+    doc_unusable = bool(doc_memo.get("unusable"))
+    doc_detail = doc_memo.get("reason_detail") or {}
+    return {
+        "ran": doc_took_over,
+        "failed": (
+            doc_unusable
+            or bool(doc_memo.get("http_errors"))
+            or bool(doc_memo.get("truncated_chunks"))
+            or not doc_took_over
+        ),
+        "pages": doc_memo.get("pages"),
+        "entities": doc_memo.get("entities"),
+        "chunks": doc_memo.get("chunks"),
+        "coverage": doc_memo.get("coverage"),
+        "verdict": doc_memo.get("verdict"),
+        "seconds": doc_memo.get("seconds"),
+        "http_errors": doc_memo.get("http_errors", 0),
+        "truncated_chunks": doc_memo.get("truncated_chunks", 0),
+        "fallback_reason": doc_memo.get("reason"),
+        "fallback_reason_code": doc_memo.get("reason_code"),
+        "fallback_failed_chunks": doc_detail.get("failed_chunks"),
+        "fallback_chunks": doc_detail.get("chunks"),
+        "fallback_page": page,
+    }
+
+
 async def detect_vision(
     file_id: str,
     page: int = 1,
@@ -585,26 +620,8 @@ async def detect_vision(
     pipeline_status = dict(getattr(vision_service, "last_pipeline_status", {}) or {})
     duration_ms = dict(getattr(vision_service, "last_duration_ms", {}) or {})
     if doc_memo is not None:
-        # 评审 I-5：`ran/failed` 不再硬编码——由**本页实际是否被文档级链接管**推导，
-        # 并把块失败数与截断块数暴露给上层（否则「部分块失败」会显示成「成功」）。
-        doc_took_over = doc_boxes is not None
-        pipeline_status["text_layer_doc"] = {
-            "ran": doc_took_over,
-            "failed": (
-                bool(doc_memo.get("http_errors"))
-                or bool(doc_memo.get("truncated_chunks"))
-                or not doc_took_over
-            ),
-            "pages": doc_memo["pages"],
-            "entities": doc_memo["entities"],
-            "chunks": doc_memo["chunks"],
-            "coverage": doc_memo["coverage"],
-            "verdict": doc_memo["verdict"],
-            "seconds": doc_memo["seconds"],
-            "http_errors": doc_memo.get("http_errors", 0),
-            "truncated_chunks": doc_memo.get("truncated_chunks", 0),
-        }
-        if not doc_took_over:
+        pipeline_status["text_layer_doc"] = _text_layer_doc_status(doc_boxes, doc_memo, page)
+        if doc_boxes is None:
             warnings = [*warnings, f"text_layer_doc:fallback_page={page}"]
     if merge_existing:
         existing_boxes = _boxes_from_page(_page_value(snapshot.get("bounding_boxes"), page), page)
