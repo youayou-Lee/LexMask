@@ -201,3 +201,30 @@ def test_safe_finditer_many_empty_texts_short_circuits(monkeypatch):
 
     monkeypatch.setattr(safe_regex, "_get_pool", _boom)
     assert safe_finditer_many(re.compile("x"), []) == []
+
+
+def test_match_proxy_requires_named_groups_contract():
+    """Issue#186：``named_groups`` 为必填 list（子进程载荷保证），不再接受 ``None``。
+
+    这是「删除 ``or []`` 兜底」的判别点：改动前 ``_MatchProxy(..., None)`` 被静默兜成空列表
+    （不抛）；改动后必须抛 ``TypeError``。另附空列表与元组两条正常契约。
+    """
+    import inspect
+
+    import pytest
+
+    with pytest.raises(TypeError):
+        _MatchProxy("abc", 0, 3, None)  # type: ignore[arg-type]
+
+    # AC1 的判别点：参数必须**无默认值**（恢复 `| None = None` 即判红）
+    assert inspect.signature(_MatchProxy.__init__).parameters["named_groups"].default is inspect.Parameter.empty
+
+    assert _MatchProxy("abc", 0, 3, []).named_groups() == []
+    # 兼容点缀：tuple 入参经 list() 归一（named_groups() 自身也归一，故不作为判别点）
+    assert _MatchProxy("abc", 0, 3, (("a", 0, 1, "a"),)).named_groups() == [("a", 0, 1, "a")]
+
+    # 判别点③：构造期浅拷贝——改动后改源列表不得影响代理（`list(named_groups)` → `named_groups` 即判红）
+    source = [("a", 0, 1, "a")]
+    proxy = _MatchProxy("abc", 0, 3, source)
+    source.append(("b", 1, 2, "b"))
+    assert proxy.named_groups() == [("a", 0, 1, "a")]
