@@ -99,11 +99,17 @@ jobs:
       # Issue#157：测试文件此前不在任何 tsc 程序内（tsconfig.json 显式 exclude 了
       # `src/**/*.test.ts(x)`），而 `npm test` 已在 CI 里跑 ⇒ 测试文件的类型错误
       # 在 CI 与本地都是盲区。这里用专用配置把测试一并纳入类型检查、fail-fast。
-      # 不改主 tsconfig：加 `@types/node` 会把 `window.setTimeout` 的返回类型从
-      # `number` 判成 `NodeJS.Timeout`，反而让三个产品文件报 TS2322。
+      # 不改主 tsconfig：引入 `@types/node` 后全局 `setTimeout` 的重载来自它，三处
+      # `ReturnType<typeof window.setTimeout>` 声明会被解析成 `NodeJS.Timeout`
+      # 而实参仍是 `number` ⇒ 反而让三个产品文件报 TS2322（类型门不该改产品类型面）。
+      # 第二行断言「测试文件确实进了程序」——把 tsconfig.test.json 的 exclude 改回
+      # 主配置那套排除（覆盖门静默失效）时，grep 命中 0 即判红（冷审自造变异 M-A）。
       - name: Type-check tests (Issue#157)
         working-directory: frontend
-        run: npx tsc -p tsconfig.test.json
+        run: |
+          npx tsc -p tsconfig.test.json
+          npx tsc -p tsconfig.test.json --listFiles | grep -q 'src/.*\.test\.' \
+            || { echo "::error::测试文件未进入 tsconfig.test.json 的程序（Issue#157 覆盖门失效）"; exit 1; }
 
       # Issue#149：Issue#106 的页并发回归判据（`utils.vision-page-concurrency.test.ts`
       # 断言「勾选印章+签名、不传 concurrency 时在飞 vision POST 峰值 = 3」）此前只在本地跑：

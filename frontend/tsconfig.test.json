@@ -1,3 +1,12 @@
+// Issue#157：前端测试文件的类型检查程序（旧 `tsconfig.json` 把测试文件 exclude 掉了）。
+// - `types: ["vitest/globals"]` 的真实作用是**关闭 `@types` 自动纳入**（只显式引入 vitest 全局），
+//   从而不把 `@types/node` 带进来——带进来会让三处 `ReturnType<typeof window.setTimeout>`
+//   的声明解析成 `NodeJS.Timeout`，与 `number` 实参冲突、在三个产品文件里报 TS2322。
+//   注意：把 `types` 收成 `[]` 同样能通过（判据不靠这一项），故 CI 另加了
+//   「测试文件必须进程序」的 `--listFiles | grep -q` 断言来钉住覆盖率本身。
+// - `exclude: []` 清掉继承来的排除项；只 `include: ["src"]` 即可，`node_modules` 不在其中，
+//   故取消 tsconfig 默认的 node_modules/outDir 排除不会把依赖树扫进来。
+// - `eager: true`（`wiring-contract.test.ts` 的 `?raw` glob）是「源码为空集即守卫」的前提，勿删。
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
