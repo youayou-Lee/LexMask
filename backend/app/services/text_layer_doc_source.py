@@ -273,7 +273,8 @@ async def _build(
         raise _TransientIneligible(
             f"coverage:{coverage:.3f}",
             code="coverage",
-            detail={"coverage": round(coverage, 4)},
+            detail={"coverage": round(coverage, 4),
+                    "min": round(float(settings.TEXT_LAYER_MIN_COVERAGE), 4)},
         )
     label_to_id = build_label_to_type_id(ocr_has_types)
     # **只有真正带词的页才算被覆盖**：`extract_text_layer_pages` 会把无文本层的页

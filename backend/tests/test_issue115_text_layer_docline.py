@@ -900,6 +900,47 @@ def test_volume_level_gates_are_fail_able(monkeypatch, tmp_path):
     )
     assert boxes is None, "覆盖率 0.40 < 0.90 必须回落旧路径"
     assert memo and memo.get("reason_code") == "coverage", "回落必须带机读原因（Issue#165）"
+    assert memo.get("reason_detail", {}).get("min") == 0.9, "回落必须带上判据阈值（r1 冷审：§2.1 声称带 min）"
+
+    async def _bad_map(*_a, **_k):
+        return docline.DocLineResult(
+            pages=1, chunks=2, chunk_chars=2_000, stream_chars=100, layer_chars=100,
+            covered_chars=180, entities=[], ner_calls=2, residual_calls=0,
+            truncated_chunks=0, http_errors=0, seconds=0.1, failed_chunks=0,
+            map_failures=[{"reason": "x"}],
+        )
+
+    # r1 冷审（AC1① 列了 `map_failure_ratio` 却无用例 ⇒ 把该码传错也能存活）：补上等值判据。
+    monkeypatch.setattr(settings, "TEXT_LAYER_MAX_MAP_FAILURE_RATIO", 0.1)
+    monkeypatch.setattr(source.docline, "run_document_ner", _bad_map)
+    source.reset_memo()
+    boxes, memo = asyncio.run(
+        source.boxes_for_page(
+            file_id="m" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=[_person_type()]
+        )
+    )
+    assert boxes is None, "回映失败率越界必须回落旧路径"
+    assert memo and memo.get("reason_code") == "map_failure_ratio", "回落必须带机读原因（Issue#165）"
+
+
+def test_scanned_volume_without_text_layer_reports_no_text_layer(monkeypatch, tmp_path):
+    """r1 冷审 C6 的裁决记录 + AC1 码位判据：**扫描件但整卷没有文本层**这条最常见真实形态，
+    改前只留一行 INFO（调用方拿到 `(None, None)`，看不出原因）；改后必须回落且带
+    `no_text_layer` —— 它属「真回落」而不是「凭空多出失败信号」（显式不适用仍是静默的，
+    见 `test_boxes_for_page_skips_non_scanned_file`）。
+    """
+    monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_ENABLED", True)
+    monkeypatch.setattr(source.docline, "extract_text_layer_pages", lambda *_a, **_k: [])
+    path = tmp_path / "scanned.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+    source.reset_memo()
+    boxes, memo = asyncio.run(
+        source.boxes_for_page(
+            file_id="n" * 8, snapshot=_snapshot(str(path)), page=1, ocr_has_types=[_person_type()]
+        )
+    )
+    assert boxes is None
+    assert memo and memo.get("reason_code") == "no_text_layer", "扫描件无文本层必须带机读原因"
 
 
 def test_map_values_keeps_both_word_and_embedded_hits() -> None:
