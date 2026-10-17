@@ -33,6 +33,7 @@ exit：0=干净；1=命中（或阳性对照失败）；2=用法错误。
 
 from __future__ import annotations
 
+from collections import Counter
 import argparse
 import re
 import subprocess
@@ -220,27 +221,30 @@ SKIP_SUFFIXES = frozenset({
 })
 MAX_BYTES = 2 * 1024 * 1024
 
-SELF_TEST_BAD = (
-    "instance 8.8.8.8 path /srv/evidence/arm.json win C:\\Users\\dev\\secret.txt "  # public-tree-scan: ignore-line
-    "auth Bearer abcdefghijklmnopqrstuvwxyz012345 password=\"Passw0rd!2026\" deny SCNET-INSTANCE-1 "  # public-tree-scan: ignore-line
-    # R1 形态：flag 与 add_argument(default=) 两种写法都必须落网（值用合成串，不是真实口令）
-    "cli --api-pass \"Synthetic-Pass!123\" "  # public-tree-scan: ignore-line
-    "parser.add_argument(\"--api-pass\", default=\"Synthetic-Pass!123\")"  # public-tree-scan: ignore-line
-    "cfg password=Hunter2Hunter2 "  # public-tree-scan: ignore-line
-    # R6 形态：凭据词作**后缀**的复合键与 camelCase 键（旧 `\b` 正则整类漏网）
-    "cfg api_secret=Zz9Kk2Lm "  # public-tree-scan: ignore-line
-    "cfg db_password=\"Hunter2Hunter2\" "  # public-tree-scan: ignore-line
-    "cfg API_SECRET = \"Zz9Kk2Lm\" "  # public-tree-scan: ignore-line
-    "cfg clientSecret: \"Ab3xY9Qq2\" "  # public-tree-scan: ignore-line
-    "cfg access_token = \"ghp_abcdefghijklmnopqrstuvwxyz0123456\" "  # public-tree-scan: ignore-line
-    # R7-1 形态：带类型注解的赋值（注解冒号会吃掉值位置，`str` 被当值 ⇒ 整类漏网）
-    "cfg client_secret: str = \"Ab12Cd34\" "  # public-tree-scan: ignore-line
-    'api_key: str | None = "Ab12Cd34"'  # public-tree-scan: ignore-line,
-    # 与键名无关的令牌形态：URL 内联凭据与 HTTP Basic（值均为合成串）
-    "db postgresql://eval_user:Synthetic-Pass!123@127.0.0.1:5432/app "  # public-tree-scan: ignore-line
-    "auth Basic U3ludGhldGljLVBhc3MhMTIz"  # public-tree-scan: ignore-line
-
+#: 阳性对照**逐例**清单（例名, 代码片段）。Issue#159 AC3：逐例命中是硬要求——
+#: 只查「10 个类别是否都出现」会放过**整类放松**：往 `META_TAIL_WORDS` 里加 `token`
+#: 只让个别片段逃逸，其余片段仍覆盖同一类别，类别级断言照旧通过。
+#: 每行末尾的 `public-tree-scan: ignore-line` 是自指豁免：本文件自身也会被扫描。
+SELF_TEST_BAD_CASES = (
+    ("url-and-path", "instance 8.8.8.8 path /srv/evidence/arm.json win C:\\Users\\dev\\secret.txt"),  # public-tree-scan: ignore-line
+    ("bearer-and-literal", "auth Bearer abcdefghijklmnopqrstuvwxyz012345 password=\"Passw0rd!2026\" deny SCNET-INSTANCE-1"),  # public-tree-scan: ignore-line
+    ("flag-cli", "cli --api-pass \"Synthetic-Pass!123\""),  # public-tree-scan: ignore-line
+    ("flag-argparse", "parser.add_argument(\"--api-pass\", default=\"Synthetic-Pass!123\")"),  # public-tree-scan: ignore-line
+    ("bare-assignment", "cfg password=Hunter2Hunter2"),  # public-tree-scan: ignore-line
+    ("suffix-secret", "cfg api_secret=Zz9Kk2Lm"),  # public-tree-scan: ignore-line
+    ("snake-db-password", "cfg db_password=\"Hunter2Hunter2\""),  # public-tree-scan: ignore-line
+    ("upper-secret", "cfg API_SECRET = \"Zz9Kk2Lm\""),  # public-tree-scan: ignore-line
+    ("camel-secret", "cfg clientSecret: \"Ab3xY9Qq2\""),  # public-tree-scan: ignore-line
+    ("long-token", "cfg access_token = \"ghp_abcdefghijklmnopqrstuvwxyz0123456\""),  # public-tree-scan: ignore-line
+    ("annotated-secret", "cfg client_secret: str = \"Ab12Cd34\""),  # public-tree-scan: ignore-line
+    ("annotated-key-optional", 'api_key: str | None = "Ab12Cd34"'),  # public-tree-scan: ignore-line
+    ("url-inline", "db postgresql://eval_user:Synthetic-Pass!123@127.0.0.1:5432/app"),  # public-tree-scan: ignore-line
+    ("basic-auth", "auth Basic U3ludGhldGljLVBhc3MhMTIz"),  # public-tree-scan: ignore-line
+    # 只靠**键名**才成立的凭据例（值不带厂商前缀）：元数据尾巴词放松时它必须逃逸 ⇒ 自检判红
+    ("token-name-only", 'cfg access_token = "Ab12Cd34"'),  # public-tree-scan: ignore-line
+    ("key-name-only", 'cfg api_key = "Ab12Cd34"'),  # public-tree-scan: ignore-line
 )
+SELF_TEST_BAD = " ".join(snippet for _label, snippet in SELF_TEST_BAD_CASES)
 SELF_TEST_CLEAN = (
     "api_base http://127.0.0.1:8000 fixture 203.0.113.9 host 10.1.2.3 "
     "password=<你的密码> api_key=os.environ['X'] path testdata/canary-issue106-scan-10p.pdf "
@@ -451,27 +455,42 @@ def _iter_targets(repo_root: Path, paths: list[str], base: str | None) -> list[P
 
 
 def self_test(denylist: list[str] | None = None) -> int:
-    """阳性对照：坏样本必须**逐类**全中（类别清单见 `required`），干净样本必须零命中。"""
+    """阳性对照：**逐例**必须命中（类别清单见 `required`），干净样本必须零命中。
+
+    Issue#159 AC3：原先只断言「10 个类别是否都出现」。整类放松（例如往
+    `META_TAIL_WORDS` 里加 `token`）只让个别片段逃逸，其余片段仍覆盖同一类别，
+    类别级断言照旧通过 ⇒ 放松判据**测不出来**。逐例断言后，任何让某一例逃逸的
+    规则改动都会让自检判红（本文件的变异证据见 Issue#159 方案 §5）。
+    """
     words = list(denylist or [])
-    bad = scan_source("self-test-bad", SELF_TEST_BAD, denylist=words + ["SCNET-INSTANCE-1"],
-                      allow_prefixes=[])
-    rules = {line.split("[", 1)[1].split("]", 1)[0] for line in bad}
+    bad_denylist = words + ["SCNET-INSTANCE-1"]
     required = {
         "public_ip", "abs_path", "win_path", "bearer", "url_credential", "basic_auth",
         "credential_literal", "credential_flag", "credential_bare", "denylist",
     }
-    missing = required - rules
-    clean = scan_source("self-test-clean", SELF_TEST_CLEAN, denylist=words, allow_prefixes=[])
     problems: list[str] = []
+    rules: set[str] = set()
+    per_case: list[str] = []
+    for label, snippet in SELF_TEST_BAD_CASES:
+        hits = scan_source(f"self-test-bad:{label}", snippet, denylist=bad_denylist, allow_prefixes=[])
+        if not hits:
+            problems.append(f"阳性对照未命中：{label}")
+        rules |= {line.split("[", 1)[1].split("]", 1)[0] for line in hits}
+        per_case.append(f"{label}={len(hits)}")
+    missing = required - rules
     if missing:
-        problems.append(f"阳性对照未命中：{sorted(missing)}")
+        problems.append(f"阳性对照类别未覆盖：{sorted(missing)}")
+    clean = scan_source("self-test-clean", SELF_TEST_CLEAN, denylist=words, allow_prefixes=[])
     if clean:
         problems.append(f"干净样本被误报：{clean}")
     if problems:
         for line in problems:
             print(f"[self-test] {line}", file=sys.stderr)
         return 1
-    print(f"[self-test] 阳性对照 {len(required)} 类全中，干净样本零命中")
+    print(
+        f"[self-test] 阳性对照 {len(SELF_TEST_BAD_CASES)} 例逐例命中、"
+        f"{len(required)} 类全覆盖（{'、'.join(per_case)}），干净样本零命中"
+    )
     return 0
 
 
@@ -660,13 +679,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    counts = Counter(line.split("[", 1)[1].split("]", 1)[0] for line in findings)
+    dist = "、".join(f"{rule}={n}" for rule, n in sorted(counts.items())) or "无"
     if findings:
         for line in findings:
             print(line)
-        print(f"[public-tree] {scanned} 文件，命中 {len(findings)} 处（exit 1）", file=sys.stderr)
+        print(
+            f"[public-tree] {scanned} 文件，命中 {len(findings)} 处（按规则：{dist}）（exit 1）",
+            file=sys.stderr,
+        )
         return 1
     tail = f"，跳过 {sum(len(v) for v in skipped.values())} 个（有意）" if any(skipped.values()) else ""
-    print(f"[public-tree] {scanned} 文件，零命中{tail}")
+    print(f"[public-tree] {scanned} 文件，零命中（按规则：{dist}）{tail}")
     return 0
 
 
