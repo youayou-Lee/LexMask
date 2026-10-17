@@ -1,6 +1,14 @@
 # CHANGELOG
 
 ## 2026-10-17
+- fix(vision): **病态密页「残值自证」风暴：新增每页上限 `HAS_NER_VERIFY_MAX_JOBS_PER_PAGE`（默认 200）**（Issue#136）
+  - `backend/app/core/config.py`：新增 `HAS_NER_VERIFY_MAX_JOBS_PER_PAGE: int = 200`（validator `max(0, min(4096, v))`；`0` = 不限）
+  - `backend/app/services/vision/has_text_analysis.py`：残余自证作业在派发前按**输入决定序**排序（值在**本页原文**中首次出现的位置升序；在原文中找不到的拟合值排最后——这类值不自证即不采纳，风险最低）后**确定性截断**；被截断的值不进入结果（与「自证未确认」同语义，保守不增 FP）。新增指标 `has_text_verify_jobs_before` / `has_text_verify_jobs_after` / `has_text_verify_jobs_by_type` / `has_text_verify_skipped` / `has_text_verify_ms`；触顶时 WARNING 带截断计数与**页内类型分布**
+  - 新增 `backend/tests/test_issue136_verify_cap.py`（**16 例**）：上限生效/不触发/边界（N=0、1、=jobs、>jobs）、批量路径先截断再分批且批内确认集不误扩、有界派发保序、单值异常隔离、**截断序为输入序而非模型输出序**、**幻觉值不得挤掉原文真实值**、指标恒等、默认值与 validator 上下界
+  - **云门④（DCU 单卡 + vLLM 8080 + 4 个样本页，27 格）**：① 病态页基线 519 次自证调用 / 自证模型墙钟 37.6–42.5 s；N=200 → **200 次调用（−61.5%）**、319 跳过、13.1 s，N=100 → 100 次（−80.7%）；恒等式 `jobs_before = jobs_after + skipped` 与 `calls == jobs_after` 全格成立。② GT 页基线 5 跑值集完全一致（66 值，R_GT 0.643）⇒ 可作判别性对照；所有触顶档 **R_GT ≥ 基线下界**（N=1/N=4 档 0.690）⇒ 召回红线 PASS。③ 真实案卷页与 ④ 良性页 `jobs_before=0`（上限未介入，与基线同路径）
+  - **默认值定档（AC3）**：候选须在 ① 真触顶且降幅 ≥50%、且在 ② 不造成召回损失；**取满足条件的最大 N**（上限只砍尾部，越松越接近基线行为 ⇒ 未知召回风险越小）⇒ **N*=200**，与预注册默认一致
+  - **诚实边界**：只有 ② 有 GT，① 的丢值无法判召回、③ 无 GT 且上限未介入 ⇒「真实案卷召回不降」本次只有合成 GT 页代证；未覆盖中等残值量页（`jobs_before` 介于 15 与 500 之间）；② 上出现**非单调集合变动（7 进 7 出）**，机制未查明 ⇒ 只以 GT 召回为判据、不以值集包含关系为判据；批量档（`HAS_NER_VERIFY_BATCH_SIZE>0`）仅单测覆盖、默认维持 0；本上限定位是**病态页上界护栏**而非吞吐优化（① 端到端 256.3→217.7 s，收益被 OCR 抖动掩盖）
+  - **有意未处置**：主查截断重查（该页模型耗时的 48%）属另一杠杆，见 Issue#128 的负结论；`HAS_NER_VERIFY_BATCH_SIZE` 默认化与有界池/跨类型合并各作 follow-up
 
 - fix(queue): **Python 3.10 上页级/管线级超时被记成 `failed`、并被 I/O 分支抢吞**（Issue#139）
   - `backend/app/services/task_queue_pipelines.py`：三处 `except TimeoutError` 改为 `except (TimeoutError, asyncio.TimeoutError)  # noqa: UP041`（`:120` `_run_recognition` 终段、`:356` `_run_vision` 的 `run_page`、`:530` `_run_vision` 外层）。3.10 实测 `asyncio.TimeoutError is TimeoutError` 为 `False`、`issubclass(asyncio.TimeoutError, TimeoutError)` 为 `False`（3.11+ 才合并为内建类），只捕内建类时 `asyncio.wait_for` 抛出的超时会落到通用分支记成 `recognition failed (unexpected)`；`# noqa: UP041` 必须保留（`backend/pyproject.toml` `target-version = "py311"` 会把它误自动改写掉）

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import Counter
 from collections.abc import Callable
 from typing import Any
 
@@ -844,6 +845,52 @@ async def run_has_text_analysis(
                         for entity_type, fresh in residual_new.items()
                         for clean_text in fresh
                     ]
+                    # Issue#136：页内自证任务条数硬上限（0 = 不限）。病态密页
+                    # 主查收编数百数字串后逐值自证会把单页模型调用推到 500+
+                    # （云实测 519 次 / 211.5s）。
+                    #
+                    # 截断顺序必须**只由输入决定**：residual_new 的类型序来自
+                    # 模型返回的 JSON key 顺序（换模型/模板即变），若按它取前 N
+                    # 条，「哪些值被丢掉」会随模型版本漂移、档位校准静默失效。
+                    # 故按「值在原文中首次出现的位置」升序取前 N；原文里找不到的
+                    # 值排最后（这类值本就是模型在缩减文本上的拟合产物，不送自证
+                    # 等于不采纳，与「自证未确认」同语义，风险最低）。
+                    page_compact = _compact_text(text_content or "")
+
+                    def _verify_order(job: tuple[str, str]) -> tuple[int, int, str, str]:
+                        entity_type, clean_text = job
+                        position = page_compact.find(clean_text)
+                        return (
+                            0 if position >= 0 else 1,
+                            position if position >= 0 else 0,
+                            entity_type,
+                            clean_text,
+                        )
+
+                    verify_jobs.sort(key=_verify_order)
+                    # 被截断的值不进入结果——与「自证未确认」同一语义（保守、
+                    # 不新增假阳性），代价是可能少召回，故默认值须由真实案卷
+                    # A/B 证据定档（issue136-verify-cap-plan §3 AC3）。
+                    verify_jobs_before = len(verify_jobs)
+                    verify_skipped = 0
+                    max_jobs = max(0, int(verify_settings.HAS_NER_VERIFY_MAX_JOBS_PER_PAGE))
+                    if max_jobs and len(verify_jobs) > max_jobs:
+                        verify_skipped = len(verify_jobs) - max_jobs
+                        _skipped_types = Counter(t for t, _ in verify_jobs[max_jobs:])
+                        logger.warning(
+                            "[has_text] residual verify capped: %d job(s) -> %d "
+                            "(skipped %d, by type: %s); 截断按「值在原文首次出现的位置」序，"
+                            "被截断值不再自证（与「自证未确认」同语义）",
+                            verify_jobs_before,
+                            max_jobs,
+                            verify_skipped,
+                            dict(sorted(_skipped_types.items())),
+                        )
+                        verify_jobs = verify_jobs[:max_jobs]
+                    # 待自证**值条数**（截断后）。与 verify_state["calls"] 区分：
+                    # 批量自证启用时一次调用覆盖多个值 ⇒ calls < jobs。
+                    verify_jobs_planned = len(verify_jobs)
+                    verify_jobs_by_type = dict(sorted(Counter(t for t, _ in verify_jobs).items()))
                     # 独立于闸门的硬界：闸门旁路（SERIALIZE_SHARED_GPU_MODELS=False
                     # 时 slot 变空操作）下防止 N 个值同时砸向模型服务。
                     window = max(
@@ -855,7 +902,13 @@ async def run_has_text_analysis(
                         ),
                     )
                     verify_sem = asyncio.Semaphore(window)
-                    verify_state = {"calls": 0, "current": 0, "peak": 0, "errors": 0}
+                    verify_state = {
+                        "calls": 0,
+                        "current": 0,
+                        "peak": 0,
+                        "errors": 0,
+                        "model_ms": 0,
+                    }
 
                     async def _verify_one(job: tuple[str, str]) -> tuple[str, str, bool]:
                         entity_type, clean_text = job
@@ -915,8 +968,12 @@ async def run_has_text_analysis(
                             }
                             return [(entity_type, v, v in confirmed_batch) for v in values]
 
+                        _verify_t0 = time.perf_counter()
                         outcomes = await asyncio.gather(
-                            *(_verify_batch(t, vs) for t, vs in batch_jobs)
+                            *(_verify_batch(job[0], job[1]) for job in batch_jobs)
+                        )
+                        verify_state["model_ms"] = round(
+                            (time.perf_counter() - _verify_t0) * 1000
                         )
                         for batch_outcomes in outcomes:
                             for entity_type, clean_text, confirmed_ok in batch_outcomes:
@@ -926,7 +983,11 @@ async def run_has_text_analysis(
                                 if clean_text not in merged_ner_result[entity_type]:
                                     merged_ner_result[entity_type].append(clean_text)
                     else:
+                        _verify_t0 = time.perf_counter()
                         outcomes = await asyncio.gather(*(_verify_one(job) for job in verify_jobs))
+                        verify_state["model_ms"] = round(
+                            (time.perf_counter() - _verify_t0) * 1000
+                        )
                         for entity_type, clean_text, confirmed_ok in outcomes:
                             if not confirmed_ok:
                                 continue
@@ -935,8 +996,23 @@ async def run_has_text_analysis(
                                 merged_ner_result[entity_type].append(clean_text)
 
                     _record_has_text_metric(stage_status, "has_text_verify_calls", verify_state["calls"])
+                    _record_has_text_metric(stage_status, "has_text_verify_skipped", verify_skipped)
+                    # 三个口径显式分开，证据包可复算：
+                    #   before == after + skipped（恒等式）
+                    #   after ≤ N（上限生效）
+                    #   calls == after（B=0 逐值） / calls == Σ_t ceil(n_t/B)（B>0 按类型批）
+                    _record_has_text_metric(stage_status, "has_text_verify_jobs_before", verify_jobs_before)
+                    _record_has_text_metric(stage_status, "has_text_verify_jobs_after", verify_jobs_planned)
+                    _record_has_text_metric(
+                        stage_status, "has_text_verify_jobs_by_type", verify_jobs_by_type
+                    )
                     _record_has_text_metric(stage_status, "has_text_verify_peak_concurrency", verify_state["peak"])
                     _record_has_text_metric(stage_status, "has_text_verify_errors", verify_state["errors"])
+                    # 自证阶段**模型墙钟**（同路径、不受 OCR 抖动影响）：
+                    # Issue#136 的「墙钟下降」半轴由此量测，而非端到端总墙钟。
+                    _record_has_text_metric(
+                        stage_status, "has_text_verify_ms", verify_state["model_ms"]
+                    )
 
         for entity_type, entity_list in merged_ner_result.items():
             if not entity_list:
