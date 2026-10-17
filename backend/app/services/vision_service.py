@@ -9,6 +9,7 @@ import hashlib
 import inspect
 import io
 import logging
+import os
 import re
 import time
 import uuid
@@ -198,6 +199,8 @@ class VisionService:
         self.visual_grounding = LocateAnythingGroundingService()
         self.last_visual_feature_stage_duration_ms: dict[str, int] = {}
         self.last_warnings: list[str] = []
+        # Issue#96: 最近一页的公章换源状态（ok/missing_v2/shape_drift/failed/unsupported）。
+        self.last_seal_source_status: str = ""
 
 
     async def detect_with_dual_pipeline(
@@ -481,6 +484,9 @@ class VisionService:
             except Exception:
                 logger.warning("fingerprint detector stage skipped; kept LA fingerprints", exc_info=True)
 
+        all_boxes = await self._apply_mineru_seal_source(
+            all_boxes, file_path=file_path, file_type=file_type, page=page
+        )
         all_boxes = self._drop_full_page_seals(all_boxes)
         all_boxes = self._prefer_vl_seals(all_boxes)
         all_boxes = self._prefer_yolo_machine_codes(all_boxes)
@@ -536,6 +542,102 @@ class VisionService:
         self.last_duration_ms = duration_ms
         logger.info("Dual pipeline total: %d regions, %.2fs", len(all_boxes), duration_ms["total"] / 1000)
         return all_boxes, result_image_base64
+
+    # ------------------------------------------------------------------
+    # Issue#96: 公章通道换源（VISUAL_SEAL_SOURCE=mineru|la）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _is_la_seal_box(box: BoundingBox) -> bool:
+        """LA 通道产出的公章框（换源时需整体替换，签名通道不受影响）。"""
+        return (
+            str(getattr(box, "type", "") or "") == "official_seal"
+            and str(getattr(box, "source_detail", "") or "").startswith("locate_anything:")
+        )
+
+    def _drop_la_seal_boxes(self, boxes: list[BoundingBox]) -> list[BoundingBox]:
+        return [box for box in boxes if not self._is_la_seal_box(box)]
+
+    @staticmethod
+    def _mineru_boxes_to_bounding_boxes(
+        page_boxes: list[tuple[float, float, float, float]],
+        *,
+        page: int,
+    ) -> list[BoundingBox]:
+        """MinerU 章框 → BoundingBox（坐标已是 0-1，coverage 无 score ⇒ confidence=None）。"""
+        result: list[BoundingBox] = []
+        for index, (x, y, width, height) in enumerate(page_boxes):
+            result.append(
+                BoundingBox(
+                    id=f"mineru_seal_{page}_{index}_{uuid.uuid4().hex[:8]}",
+                    x=x,
+                    y=y,
+                    width=width,
+                    height=height,
+                    type="official_seal",
+                    text=SLUG_TO_NAME_ZH.get("official_seal", "official_seal"),
+                    page=page,
+                    confidence=None,
+                    source="visual_features",
+                    source_detail="mineru_seal",
+                )
+            )
+        return result
+
+    @staticmethod
+    async def _read_source_bytes(file_path: str) -> bytes:
+        def _read() -> bytes:
+            with open(file_path, "rb") as handle:
+                return handle.read()
+
+        return await asyncio.to_thread(_read)
+
+    async def _apply_mineru_seal_source(
+        self,
+        boxes: list[BoundingBox],
+        *,
+        file_path: str,
+        file_type: FileType,
+        page: int,
+    ) -> list[BoundingBox]:
+        """Issue#96：公章来源切 MinerU。
+
+        - `ok`（含「本页确实没有章」）⇒ LA 章框整体替换为 MinerU 章框（签名通道不动）；
+        - 失败态（failed/missing_v2/shape_drift）⇒ 按 VISUAL_SEAL_MINERU_FALLBACK_TO_LA
+          决定保留 LA 章框（默认，保召回）还是一并清空（严格换源）。
+        """
+        if str(getattr(settings, "VISUAL_SEAL_SOURCE", "la") or "la").strip().lower() != "mineru":
+            return boxes
+
+        from app.services.vision.mineru_seal_source import (
+            STATUS_OK,
+            get_mineru_seal_source,
+        )
+
+        if file_type not in (FileType.PDF, FileType.PDF_SCANNED):
+            # MinerU 只接 PDF；图片页无从换源，保持 LA 通道。
+            self.last_seal_source_status = "unsupported"
+            return boxes
+
+        source = get_mineru_seal_source()
+        try:
+            page_boxes, status = await source.page_seals(
+                cache_key=file_path,
+                load_bytes=lambda: self._read_source_bytes(file_path),
+                page=page,
+                filename=os.path.basename(file_path),
+            )
+        except Exception:
+            logger.warning("MinerU seal source failed; keeping LA seals", exc_info=True)
+            page_boxes, status = [], "failed"
+        self.last_seal_source_status = status
+
+        if status == STATUS_OK:
+            return self._drop_la_seal_boxes(boxes) + self._mineru_boxes_to_bounding_boxes(
+                page_boxes, page=page
+            )
+        if bool(getattr(settings, "VISUAL_SEAL_MINERU_FALLBACK_TO_LA", True)):
+            return boxes
+        return self._drop_la_seal_boxes(boxes)
 
     @staticmethod
     def _expand_signature_boxes(

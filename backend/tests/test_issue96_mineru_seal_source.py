@@ -1,0 +1,342 @@
+"""Issue#96：公章来源切 MinerU —— 取数、换源与回落。
+
+覆盖三层：
+1. `extract_seal_boxes`：content_list_v2 → 页级 0-1 章框（含 `page_idx` 为 null 的
+   本环境实测形态、两种块形、畸形块与空/漂移响应）；
+2. `MineruSealSource`：按文件一次 sidecar 任务 + 进程级缓存 + 失败态不重试；
+3. `VisionService._apply_mineru_seal_source`：换源语义（LA 章框整体替换、签名与
+   VL 通道不动、`confidence=None`、失败态按开关回落）。
+"""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from app.core.config import settings
+from app.models.schemas import BoundingBox, FileType
+from app.services.vision import mineru_seal_source as mss
+from app.services.vision.mineru_seal_source import (
+    STATUS_FAILED,
+    STATUS_MISSING_V2,
+    STATUS_OK,
+    STATUS_SHAPE_DRIFT,
+    MineruSealSource,
+    extract_seal_boxes,
+)
+from app.services.vision_service import VisionService
+
+
+def _seal_block(x0: int = 699, y0: int = 9, x1: int = 895, y1: int = 159) -> dict:
+    """MinerU 实测形态：bbox 是 0-1000 的角点 [x0,y0,x1,y1]，page_idx 为 null。"""
+    return {"type": "image", "sub_type": "seal", "bbox": [x0, y0, x1, y1], "page_idx": None}
+
+
+def _service() -> VisionService:
+    """不走 __init__（避免构造真实下游服务），只借方法。"""
+    svc = VisionService.__new__(VisionService)
+    svc.last_seal_source_status = ""  # type: ignore[attr-defined]
+    return svc
+
+
+class _FakeSource:
+    def __init__(self, boxes_by_page: dict[int, list[tuple[float, float, float, float]]], status: str):
+        self.boxes_by_page = boxes_by_page
+        self.status = status
+        self.calls: list[tuple[str, int]] = []
+
+    async def page_seals(self, cache_key, load_bytes, page, *, filename=None):
+        self.calls.append((cache_key, page))
+        return list(self.boxes_by_page.get(int(page), [])), self.status
+
+
+class _FakeClient:
+    def __init__(self, content_list_v2, *, fail: bool = False):
+        self.submit_calls = 0
+        self._content_list_v2 = content_list_v2
+        self._fail = fail
+
+    async def submit(self, payload: bytes, filename: str) -> str:
+        self.submit_calls += 1
+        if self._fail:
+            raise RuntimeError("sidecar down")
+        return "task-1"
+
+    async def wait_result(self, task_id: str):
+        if self._fail:
+            raise RuntimeError("sidecar down")
+        return SimpleNamespace(content_list_v2=self._content_list_v2)
+
+
+# --------------------------------------------------------------------------
+# 1. extract_seal_boxes
+# --------------------------------------------------------------------------
+
+
+def test_extract_maps_pages_by_outer_index_and_normalizes_bbox():
+    content = [[_seal_block()], [{"type": "paragraph"}], [_seal_block(0, 0, 1000, 1000)]]
+    boxes_by_page, status, warnings = extract_seal_boxes(content)
+
+    assert status == STATUS_OK
+    assert warnings == []
+    assert sorted(boxes_by_page) == [0, 2]
+    assert boxes_by_page[0][0] == pytest.approx((0.699, 0.009, 0.196, 0.15))
+    assert boxes_by_page[2][0] == pytest.approx((0.0, 0.0, 1.0, 1.0))
+
+
+def test_extract_accepts_type_seal_variant():
+    content = [[{"type": "seal", "bbox": [500, 500, 600, 600]}]]
+    boxes_by_page, status, _ = extract_seal_boxes(content)
+
+    assert status == STATUS_OK
+    assert boxes_by_page[0][0] == pytest.approx((0.5, 0.5, 0.1, 0.1))
+
+
+def test_extract_skips_malformed_candidates_with_warning():
+    content = [
+        [
+            {"type": "image", "sub_type": "seal", "bbox": [1, 2, 3]},
+            {"type": "image", "sub_type": "seal", "bbox": ["a", "b", "c", "d"]},
+            _seal_block(10, 20, 30, 40),
+        ]
+    ]
+    boxes_by_page, status, warnings = extract_seal_boxes(content)
+
+    assert status == STATUS_OK
+    assert boxes_by_page[0][0] == pytest.approx((0.01, 0.02, 0.02, 0.02))
+    assert len(warnings) == 2
+
+
+def test_extract_reports_missing_v2_and_shape_drift():
+    assert extract_seal_boxes(None) == ({}, STATUS_MISSING_V2, ["content_list_v2 is None"])
+    assert extract_seal_boxes([]) == ({}, STATUS_OK, [])
+    boxes_by_page, status, warnings = extract_seal_boxes(["not-a-list", _seal_block()])
+    assert boxes_by_page == {}
+    assert status == STATUS_SHAPE_DRIFT
+    assert warnings
+
+    boxes_by_page, status, warnings = extract_seal_boxes(["not-a-list", [_seal_block()]])
+    assert boxes_by_page[1][0] == pytest.approx((0.699, 0.009, 0.196, 0.15))
+    assert status == STATUS_OK
+    assert warnings  # 外层下标 0 不是页列表
+
+
+def test_extract_rejects_degenerate_bbox():
+    content = [[{"type": "image", "sub_type": "seal", "bbox": [100, 100, 100, 200]}]]
+    boxes_by_page, status, warnings = extract_seal_boxes(content)
+
+    assert status == STATUS_OK
+    assert boxes_by_page == {}
+    assert len(warnings) == 1
+
+
+# --------------------------------------------------------------------------
+# 2. MineruSealSource
+# --------------------------------------------------------------------------
+
+
+def test_page_seals_runs_one_sidecar_task_per_file():
+    client = _FakeClient([[{"type": "paragraph"}], [_seal_block()]])
+    source = MineruSealSource(client_factory=lambda: client)
+
+    async def scenario():
+        first = await source.page_seals("k", lambda: _abytes(b"pdf"), 1, filename="a.pdf")
+        second = await source.page_seals("k", lambda: _abytes(b"pdf"), 2, filename="a.pdf")
+        return first, second
+
+    (boxes_page1, status1), (boxes_page2, status2) = asyncio.run(scenario())
+
+    assert client.submit_calls == 1
+    assert status1 == status2 == STATUS_OK
+    assert boxes_page1[0] == pytest.approx((0.699, 0.009, 0.196, 0.15))
+    assert boxes_page2 == []
+    assert source.stats["files"] == 1
+    assert source.stats["ok"] == 1
+
+
+def test_page_seals_returns_failed_and_caches_failure():
+    client = _FakeClient([], fail=True)
+    source = MineruSealSource(client_factory=lambda: client)
+
+    async def scenario():
+        first = await source.page_seals("k", lambda: _abytes(b"pdf"), 1)
+        second = await source.page_seals("k", lambda: _abytes(b"pdf"), 1)
+        return first, second
+
+    (boxes_a, status_a), (boxes_b, status_b) = asyncio.run(scenario())
+
+    assert (boxes_a, status_a) == ([], STATUS_FAILED)
+    assert (boxes_b, status_b) == ([], STATUS_FAILED)
+    assert client.submit_calls == 1  # 失败态不重试
+    assert source.stats["failed"] == 1
+
+
+def test_page_seals_marks_failed_when_bytes_unreadable():
+    source = MineruSealSource(client_factory=lambda: _FakeClient([]))
+
+    async def boom() -> bytes:
+        raise OSError("gone")
+
+    boxes, status = asyncio.run(source.page_seals("k", boom, 1))
+
+    assert (boxes, status) == ([], STATUS_FAILED)
+    assert source.stats["failed"] == 1
+
+
+async def _abytes(data: bytes) -> bytes:
+    return data
+
+
+# --------------------------------------------------------------------------
+# 3. VisionService._apply_mineru_seal_source
+# --------------------------------------------------------------------------
+
+_VL_SEAL = BoundingBox(
+    id="ocr_seal_1",
+    x=0.70,
+    y=0.01,
+    width=0.19,
+    height=0.15,
+    type="official_seal",
+    text="公章",
+    page=1,
+    confidence=0.9,
+    source="visual_features",
+    source_detail="paddleocr_vl:seal",
+)
+_LA_SEAL = BoundingBox(
+    id="la_seal_1",
+    x=0.71,
+    y=0.02,
+    width=0.18,
+    height=0.14,
+    type="official_seal",
+    text="公章",
+    page=1,
+    confidence=0.77,
+    source="visual_features",
+    source_detail="locate_anything:detect",
+)
+_LA_SIGNATURE = BoundingBox(
+    id="la_sig_1",
+    x=0.1,
+    y=0.8,
+    width=0.2,
+    height=0.1,
+    type="signature",
+    text="签名",
+    page=1,
+    confidence=0.5,
+    source="visual_features",
+    source_detail="locate_anything:signature",
+)
+
+
+def _apply(monkeypatch, tmp_path, source, *, source_name="mineru", fallback=True, file_type=FileType.PDF):
+    monkeypatch.setattr(settings, "VISUAL_SEAL_SOURCE", source_name, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_SEAL_MINERU_FALLBACK_TO_LA", fallback, raising=False)
+    monkeypatch.setattr(mss, "_source", source)
+
+    path = tmp_path / "page.pdf"
+    path.write_bytes(b"%PDF-1.4 fake")
+    svc = _service()
+    boxes, applied = asyncio.run(
+        _run_apply(svc, [ _VL_SEAL, _LA_SEAL, _LA_SIGNATURE], str(path), file_type)
+    )
+    return svc, boxes, applied
+
+
+async def _run_apply(svc, boxes, path, file_type):
+    out = await svc._apply_mineru_seal_source(
+        list(boxes), file_path=path, file_type=file_type, page=1
+    )
+    return out, svc.last_seal_source_status
+
+
+def test_apply_replaces_la_seals_and_keeps_vl_and_signature(monkeypatch, tmp_path):
+    source = _FakeSource({1: [(0.5, 0.5, 0.2, 0.2)]}, STATUS_OK)
+
+    svc, boxes, status = _apply(monkeypatch, tmp_path, source)
+
+    assert status == STATUS_OK
+    assert source.calls and source.calls[0][1] == 1
+    ids = [box.id for box in boxes]
+    assert "la_seal_1" not in ids  # LA 章框被替换
+    assert "la_sig_1" in ids  # 签名通道不动
+    assert "ocr_seal_1" in ids  # VL 通道不动（未来 OCR_VL_ENABLED=1 时仍是权威）
+    mineru_boxes = [box for box in boxes if box.source_detail == "mineru_seal"]
+    assert len(mineru_boxes) == 1
+    mineru = mineru_boxes[0]
+    assert mineru.type == "official_seal"
+    assert mineru.page == 1
+    assert mineru.confidence is None  # 无 score ⇒ 不伪造常数
+    assert (mineru.x, mineru.y, mineru.width, mineru.height) == (0.5, 0.5, 0.2, 0.2)
+    assert svc.last_seal_source_status == STATUS_OK
+
+
+def test_apply_drops_la_seals_when_mineru_reports_none(monkeypatch, tmp_path):
+    source = _FakeSource({}, STATUS_OK)
+
+    _svc, boxes, status = _apply(monkeypatch, tmp_path, source)
+
+    assert status == STATUS_OK
+    ids = [box.id for box in boxes]
+    assert "la_seal_1" not in ids  # 权威「本页无章」⇒ 不回落
+    assert "ocr_seal_1" in ids
+
+
+def test_apply_keeps_la_seals_on_failure_when_fallback_enabled(monkeypatch, tmp_path):
+    source = _FakeSource({}, STATUS_FAILED)
+
+    _svc, boxes, status = _apply(monkeypatch, tmp_path, source, fallback=True)
+
+    assert status == STATUS_FAILED
+    ids = [box.id for box in boxes]
+    assert "la_seal_1" in ids  # 保召回
+    assert not [box for box in boxes if box.source_detail == "mineru_seal"]
+
+
+def test_apply_drops_la_seals_on_failure_when_fallback_disabled(monkeypatch, tmp_path):
+    source = _FakeSource({}, STATUS_SHAPE_DRIFT)
+
+    _svc, boxes, status = _apply(monkeypatch, tmp_path, source, fallback=False)
+
+    assert status == STATUS_SHAPE_DRIFT
+    ids = [box.id for box in boxes]
+    assert "la_seal_1" not in ids  # 严格换源
+    assert "la_sig_1" in ids
+
+
+def test_apply_is_noop_when_source_is_la(monkeypatch, tmp_path):
+    source = _FakeSource({1: [(0.5, 0.5, 0.2, 0.2)]}, STATUS_OK)
+
+    _svc, boxes, status = _apply(monkeypatch, tmp_path, source, source_name="la")
+
+    assert status == ""  # 未触碰换源逻辑
+    assert source.calls == []
+    assert [box.id for box in boxes] == ["ocr_seal_1", "la_seal_1", "la_sig_1"]
+
+
+def test_apply_skips_unsupported_file_types(monkeypatch, tmp_path):
+    source = _FakeSource({1: [(0.5, 0.5, 0.2, 0.2)]}, STATUS_OK)
+
+    _svc, boxes, status = _apply(monkeypatch, tmp_path, source, file_type=FileType.IMAGE)
+
+    assert status == "unsupported"
+    assert source.calls == []
+    assert any(box.id == "la_seal_1" for box in boxes)
+
+
+def test_visual_seal_source_validator_rejects_unknown_and_clamps_timeout():
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(VISUAL_SEAL_SOURCE="maybe")
+
+    assert Settings(VISUAL_SEAL_SOURCE="MINERU").VISUAL_SEAL_SOURCE == "mineru"
+    assert Settings(VISUAL_SEAL_MINERU_TIMEOUT=-5).VISUAL_SEAL_MINERU_TIMEOUT == 1.0
+    assert Settings(VISUAL_SEAL_MINERU_TIMEOUT=10**6).VISUAL_SEAL_MINERU_TIMEOUT == 600.0
