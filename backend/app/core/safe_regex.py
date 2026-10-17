@@ -145,7 +145,14 @@ def safe_compile(pattern: str, timeout: float = 2.0) -> re.Pattern:
 
 
 class _MatchProxy:
-    """Lightweight stand-in for ``re.Match`` returned from subprocess results."""
+    """Lightweight stand-in for ``re.Match`` returned from subprocess results.
+
+    ``named_groups`` 是**必填**参数：生产路径只由子进程载荷的第 4 项构造
+    （``safe_finditer`` / ``safe_finditer_many`` 解包 4 元组），该位置由
+    ``_finditer_in_process`` / ``_finditer_many_in_process`` 保证**永远是 list**
+    （可为空列表），因此这里不再接受 ``None``，也不做 ``or []`` 兜底
+    （Issue#186：该兜底不可达，属死代码）。
+    """
     __slots__ = ("_text", "_start", "_end", "_named_groups")
 
     def __init__(
@@ -153,12 +160,12 @@ class _MatchProxy:
         text: str,
         start: int,
         end: int,
-        named_groups: list[tuple[str, int, int, str]] | None = None,
+        named_groups: list[tuple[str, int, int, str]],
     ):
         self._text = text
         self._start = start
         self._end = end
-        self._named_groups = list(named_groups or [])
+        self._named_groups = list(named_groups)
 
     def group(self, *args: int) -> str:
         return self._text
