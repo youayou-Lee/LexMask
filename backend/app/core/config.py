@@ -439,6 +439,13 @@ class Settings(BaseSettings):
     # 长列表召回稀释正是 residual 机制诞生的原因（0712 实证），开启前必须
     # 在真实案卷页 A/B 实证。
     HAS_NER_VERIFY_BATCH_SIZE: int = 0
+    # 页内自证任务条数硬上限（Issue#136）。0 = 不限。病态密页主查收编数百
+    # 数字串后，残余逐值自证会把单页模型调用推到 500+（云实测 519 次 /
+    # 211.5s 模型耗时）。>0 时按「值在原文
+    # 首次出现的位置」升序取前 N 条（不随模型 JSON key 顺序漂移），被截断的值
+    # 不进入结果——与「自证未确认」同一语义（保守、不新增假阳性），代价是
+    # 可能少召回。默认值由真实案卷 A/B 定档（见 issue136-verify-cap-plan §3）。
+    HAS_NER_VERIFY_MAX_JOBS_PER_PAGE: int = 200
     # NER 完成帽（Issue#41 截断风暴治理）。对齐模型卡 generation_config.json
     # 写死的 max_new_tokens=2048：生产预算公式（类型数×72 + 文本字符/2）超帽
     # 的整页调用必然 finish=length → json_repair→整类型重查。>0 时帽参与
@@ -838,6 +845,11 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_has_ner_verify_batch_size(cls, v: int) -> int:
         return max(0, min(32, v))
+
+    @field_validator("HAS_NER_VERIFY_MAX_JOBS_PER_PAGE")
+    @classmethod
+    def _validate_has_ner_verify_max_jobs_per_page(cls, v: int) -> int:
+        return max(0, min(4096, v))
 
     @field_validator("HAS_NER_SELF_CONSIST_SAMPLES")
     @classmethod
