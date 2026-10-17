@@ -1066,7 +1066,8 @@ def _speed_corpus_premise_checks(corpus: list[dict], rounds: list[dict]) -> list
             elif backend_scanned == want_scanned:
                 confirmed.append(item_id)
             else:
-                mixed.append(f"{item_id}：carrier 由本地文本层推定（{declared}），但后端 parse.is_scanned="
+                mixed.append(f"{item_id}：carrier 由本地文本层推定（{declared}，pdftotext 非空白={chars} 字），"
+                             f"但后端 parse.is_scanned="
                              f"{backend_scanned}（判{'扫描' if backend_scanned else '文本'}）；"
                              "属「扫描件 + 内嵌文本层」已知形态（#115：真实案卷 229/256），"
                              "无人声明过形态故不判 FAIL——如要按后端路由判定，"

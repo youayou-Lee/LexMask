@@ -1204,7 +1204,7 @@ class _StubApi:
 def _run_cli_with_stub(monkeypatch, tmp_path, *, driver_name: str, with_batch: bool = False,
                        records: list[dict] | None = None, rounds: int = 2, warmup_rounds: int = 1,
                        premise_parse: dict | None = None, arm_env: dict | None = None,
-                       evidence_env: dict | None = None):
+                       evidence_env: dict | None = None, premise_infer_pdf: dict | None = None):
     """跑一遍 CLI 装配链。`records` 非空时按轮次依次吐出（用于造非法轮/离散度场景）。
 
     `premise_parse` 非空时把清单条目改成声明 `scanned_pdf`（id 对齐 `f1`）并替换后端
@@ -1227,6 +1227,18 @@ def _run_cli_with_stub(monkeypatch, tmp_path, *, driver_name: str, with_batch: b
         doc["corpus"][0]["carrier"] = "scanned_pdf"
         exam.write_text(json.dumps(doc), encoding="utf-8")
         canned["items"][0]["parse"] = dict(premise_parse)
+    if premise_infer_pdf is not None:
+        # 门①.5 r1 B1：让语料**不声明** carrier 且是 PDF ⇒ 走 loader 的「本地推定」分支
+        # （`carrier_source = "inferred_local"`，本 PR 推定豁免的唯一开关）。
+        pdf = tmp_path / "unit-infer.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n%unit-infer\n")
+        doc = json.loads(exam.read_text(encoding="utf-8"))
+        doc["corpus"][0]["id"] = "f1"
+        doc["corpus"][0]["path"] = str(pdf)
+        doc["corpus"][0].pop("carrier", None)
+        exam.write_text(json.dumps(doc), encoding="utf-8")
+        monkeypatch.setattr(driver, "pdftotext_nonblank_chars", lambda _p: 1000)
+        canned["items"][0]["parse"] = dict(premise_infer_pdf)
     queue = [dict(r) for r in records] if records else []
     target = "measure_single_round" if driver_name == "single" else "measure_batch_round"
 
@@ -1281,6 +1293,40 @@ class TestCliReportCompleteness:
         )
         assert code2 != 2
         assert self._status(doc2, "D1.corpus_premise") != "FAIL", doc2["checks"]
+
+    def test_inferred_carrier_from_real_loader_is_unverified_not_fail(self, monkeypatch, tmp_path):
+        """门①.5 r1 B1：推定豁免的唯一开关 `carrier_source="inferred_local"` 必须有判据。
+
+        判别性：语料**不写** `carrier`、路径是 PDF、`pdftotext_nonblank_chars` 返回 1000
+        ⇒ loader 推定 `text_pdf`；替身后端 `/parse` 报 `is_scanned=True`（路由判扫描）——
+        这正是 Issue#153 的形状（本地文本层有内容 ≠ 后端不该按底图路由）。断言
+        **状态 == UNVERIFIED**（等值，不用 `!= FAIL`）且 detail 点名「推定」与两个计数。
+        把 cli.py 的 `carrier_source = "inferred_local"` 改成 `"declared"` ⇒ 本条转 FAIL。
+        """
+        code, doc = _run_cli_with_stub(
+            monkeypatch, tmp_path, driver_name="single",
+            premise_infer_pdf={"file_type": "pdf", "is_scanned": True, "total_pages": 2},
+        )
+        assert code != 2
+        check = next(c for c in doc["checks"] if c["id"] == "D1.corpus_premise")
+        assert check["status"] == "UNVERIFIED", check
+        detail = js = check.get("detail") or ""
+        assert "推定" in detail and "pdftotext 非空白=1000 字" in detail, detail
+        assert "is_scanned=True" in detail, detail
+
+    def test_invalid_carrier_view_is_a_usage_error(self, tmp_path):
+        """门①.5 r1 B2：`carrier_view` 非法取值的规格（`_Usage`）必须有判据。
+
+        判别性：把 cli.py 的 `if carrier_view not in (...) : raise _Usage(...)` 改成 `if False:`
+        ⇒ 本条立刻失败，且非法值会被静默当 backend 写进报告 detail。
+        """
+        corpus, exam, _arm, _ev = _cli_fixtures(tmp_path)
+        doc = json.loads(exam.read_text(encoding="utf-8"))
+        doc["corpus"][0]["carrier_view"] = "bakcend"
+        exam.write_text(json.dumps(doc), encoding="utf-8")
+        args = types.SimpleNamespace(exam=str(exam), suite="synthetic")
+        with pytest.raises(cli._Usage, match="carrier_view"):
+            cli._load_speed_corpus(args)
 
     @staticmethod
     def _failed(doc: dict) -> set[str]:
