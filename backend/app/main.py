@@ -50,6 +50,7 @@ from app.core.gpu_memory import query_gpu_memory_all as _query_gpu_memory_all
 from app.core.health_checks import check_has_ner_health, check_ocr_health_sync, check_service_health_sync
 from app.core.license import get_license_state
 from app.core.logging_config import setup_logging
+from app.core.safe_regex import regex_timeout_stats
 from app.models.schemas import HealthResponse
 
 # 生产环境用 JSON 格式；DEBUG 模式用文本格式（人类可读）
@@ -555,6 +556,7 @@ async def health_check():
             "expires_at": _license.expires_at or None,
             "days_left": _license.days_left,
         },
+        regex_timeouts=regex_timeout_stats(),
     )
 
 

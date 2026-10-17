@@ -4,22 +4,25 @@
 但 `safe_finditer` / `safe_finditer_many` 的**同形超时分支**当时只在具名组传输用例里被间接
 摸到：撞破预算后「取消在飞 future + 换掉被卡死的池 + 抛 `RegexTimeoutError`」这条协议、
 以及 `_kill_and_replace_pool` 在 finditer 路径上的契约，都没有点名的可失败判据
-（Issue#135 正文：`backend/app/core/safe_regex.py:138-146` 与 `:69-93` 同形，前者缺测）。
+（Issue#135 正文所指的 finditer 超时分支与 `safe_compile` 的同形分支，前者缺测）。
 
 本文件把「协议」与「真实探针」拆开，协议部分完全不含计时（替身池）：
-① 撞破预算后的行为（取消在飞 future + 换池 + 抛错，且预算真的送到 `future.result`）；
-② 未撞破预算的反向对照（正常返回、不换池、不取消）；
-③ 默认预算（不传 timeout）必须真的送到 `future.result`；
+① 撞破预算后的行为（取消在飞 future + 换池 + 抛错，且预算真的送到 `future.result`，
+   并钉住「先 cancel 再换池」的顺序）；
+② 未撞破预算的反向对照（正常返回、不换池、不取消）；③ 默认预算必须真的送到 `future.result`；
 ④ 返回值必须被包装成 `_MatchProxy`（含未参与的命名组不出现）；
 ⑤ 批量版的三条同形协议 + 空输入不得触碰进程池；
-⑥ 真实池集成对照（良性模式；本环境建不出池时自动跳过）。
+⑥ 真实池集成对照（良性模式；本环境建不出池时自动跳过）；
+⑦ 分支盲区：非超时异常不得换池、`cancel()` 返回假值时不得继续换池。
 
 刻意**不**测「某个具体 pattern 是否撞破某预算」——那是 #109 已立的教训（计时会翻面）。
 """
 
+import re
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 import pytest
+from process_pool_guard import requires_process_pool
 
 from app.core import safe_regex
 from app.core.safe_regex import (
@@ -27,17 +30,15 @@ from app.core.safe_regex import (
     safe_finditer,
     safe_finditer_many,
 )
-import re
-
-from process_pool_guard import requires_process_pool
 
 
 class _TimedOutFuture:
     """替身 future：`result()` 立刻抛超时（不依赖任何真实耗时）。"""
 
-    def __init__(self):
+    def __init__(self, events=None):
         self.cancel_called = False
         self.timeouts = []
+        self.events = events  # 门⑥ r6 M2：记录 cancel 与换池的先后顺序
 
     def result(self, timeout=None):
         self.timeouts.append(timeout)
@@ -45,6 +46,8 @@ class _TimedOutFuture:
 
     def cancel(self):
         self.cancel_called = True
+        if self.events is not None:
+            self.events.append("cancel")
         return True
 
 
@@ -95,9 +98,13 @@ def _patched(monkeypatch):
 
     handle = _Handle()
     handle.replaced = []
-    monkeypatch.setattr(
-        safe_regex, "_kill_and_replace_pool", lambda: handle.replaced.append(True)
-    )
+    handle.events = []
+
+    def _replace():
+        handle.events.append("replace")
+        handle.replaced.append(True)
+
+    monkeypatch.setattr(safe_regex, "_kill_and_replace_pool", _replace)
     return handle
 
 
@@ -108,7 +115,7 @@ def test_finditer_timeout_cancels_replaces_and_raises(monkeypatch, _patched):
     """撞破预算：取消在飞 future、换池、抛 `RegexTimeoutError`（零计时）。"""
     import re
 
-    future = _TimedOutFuture()
+    future = _TimedOutFuture(events=_patched.events)
     pool = _FakePool(future)
     monkeypatch.setattr(safe_regex, "_get_pool", lambda: pool)
     compiled = re.compile(r"(a+)+$")
@@ -118,6 +125,10 @@ def test_finditer_timeout_cancels_replaces_and_raises(monkeypatch, _patched):
 
     assert future.cancel_called, "撞破预算后必须取消在飞 future"
     assert _patched.replaced == [True], "撞破预算后必须换掉被卡死的池"
+    assert _patched.events == ["cancel", "replace"], (
+        "门⑥ r6 M2：必须先取消在飞 future，再换掉池（顺序反了会先毁池再取消，"
+        "在真实池下等于丢结果或死锁）"
+    )
     assert future.timeouts == [0.01], "预算必须真的送到 future.result"
     assert pool.submitted == [
         (compiled.pattern, compiled.flags, "a" * 25 + "!")
@@ -200,7 +211,7 @@ def test_finditer_many_timeout_cancels_replaces_and_raises(monkeypatch, _patched
     """批量版撞破预算：同形协议 + 文案必须带上批量规模。"""
     import re
 
-    future = _TimedOutFuture()
+    future = _TimedOutFuture(events=_patched.events)
     pool = _FakePool(future)
     monkeypatch.setattr(safe_regex, "_get_pool", lambda: pool)
     compiled = re.compile(r"(a+)+$")
@@ -210,11 +221,13 @@ def test_finditer_many_timeout_cancels_replaces_and_raises(monkeypatch, _patched
 
     assert future.cancel_called, "撞破预算后必须取消在飞 future"
     assert _patched.replaced == [True], "撞破预算后必须换掉被卡死的池"
+    assert _patched.events == ["cancel", "replace"], "门⑥ r6 M2：批量路径同样先取消再换池"
     assert future.timeouts == [0.02], "预算必须真的送到 future.result"
     assert pool.submitted == [
         (compiled.pattern, compiled.flags, ["a", "b", "c"])
     ], "必须把整批（pattern, flags, texts）一次提交出去"
     assert "over 3 texts" in str(exc.value), "错误文案必须带上批量规模"
+    assert "0.02" in str(exc.value), "门⑥ r6 M1：批量文案必须带上撞破的预算值（与单条路径对齐）"
 
 
 def test_finditer_many_returns_one_list_per_text_in_order(monkeypatch, _patched):
@@ -253,7 +266,6 @@ def test_finditer_many_default_budget_is_forwarded(monkeypatch, _patched):
 
 def test_after_finditer_timeout_pool_is_rebuilt_not_reused(monkeypatch):
     """换池后 `_get_pool()` 必须**新建**池，而不是复用被卡死的那个（Issue#135）。"""
-    import re
 
     stale = _FakePool(_OkFuture([]))
     built = []
@@ -306,7 +318,7 @@ def test_real_finditer_many_batches_in_one_call():
 
     assert [[m.group() for m in rows] for rows in result] == [["1"], [], ["22", "33"]]
 
-# ---- ⑫ 分支盲区（门①.5 r1 B3）：非超时异常与 cancel 失败 ----
+# ---- ⑦ 分支盲区（门①.5 r1 B3）：非超时异常与 cancel 失败 ----
 
 
 class _NonTimeoutFuture:
