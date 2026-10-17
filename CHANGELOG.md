@@ -12,6 +12,10 @@
 - **变异**：9/9 KILLED（M1/M2 计数、M3' 代理退化、M4 真 match 声明、M5 判据退回、M6/M7 词边界、M8 `/health`、M9 子进程取序）。Issue 点名的 `groupdict()` 变异经复核实为**等价变异**（`re.Pattern` 无 `groupdict()`、6 种形态取序恒等）⇒ 已在 `mutation.txt` 写明理由并以替代变异覆盖。
 - **IPC 量化（AC5，本机，云未测 ⇒ 只作量级）**：vision 链每页每类型 2 次子进程往返（`safe_compile` + `safe_finditer_many`，无编译缓存）；冷启动首次 `safe_compile` 39.91 ms、热态 2 次约 0.56 ms、190 组约 0.11 s ⇒ 调用次数不变、成本可忽略。
 - **已知缺口（不影响本期四项交付，列二轮）**：A11 左边界与「同一命中重复登记」无判别用例；worker 内部超时形态无覆盖；超时计数为进程级累计（多 worker 需外部聚合）。
+- **对外契约变更（唯一一处，向后兼容）**：`GET /health` 响应新增字段 `regex_timeouts`（进程级累计计数；缺省 `null`）。此处「生产行为不变」的**限定范围**＝脱敏/NER 判定行为不变；该字段是新增只读观测面，多 worker 部署下只反映**被问到的那一个进程**。
+- **两条路径的分歧是**有意设计**，不是缺陷**：真 `re.Match` 路径「声明了命名组但全组未参与 ⇒ 不产出」；`_MatchProxy`（生产唯一来源）路径保持既有契约「无参与命名组 ⇒ 回退整 match」。统一二者需要改 preset（给 `DATE` 单日期分支补命名组），属另一 Issue 的范围。
+- **门①.5 r2 收尾处置（2026-10-18）**：清理收窄后残留的**误导性死管道**——两处返回注解改回 4 元组、删除零调用方的 `_MatchProxy.declared_groups` 形参与槽位、`declared_named_groups()` 与 `match_items` 的注释/docstring 重写（原 docstring 声称「两条路径都不回退」，与其自身用例矛盾；照它把声明表恢复传输会**重新引入漏打码**）。r2 独立复核结论：B1–B6 实质全闭合，自造 R2-1（恢复子进程声明表传输）⇒ 19 failed ⇒ 新闸真有判别力；变异 **12/12 KILLED**。
+
 - **证据**：`LexMask-workspace/github-issues/_i156/`（`mutation.txt`、`ipc-cost.md`、`regression-found.md`、`pitfalls.md`、`r1/` 四件交付）；方案 `issue156-regex-observability-plan.md` 含 §7 r1 逐项处置表。
 
 ### 视觉（Issue#96）公章来源可切 MinerU —— 门④ AC2 判 **FAIL**，以「默认关」形态合入
