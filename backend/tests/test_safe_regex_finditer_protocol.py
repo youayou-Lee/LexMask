@@ -27,6 +27,8 @@ from app.core.safe_regex import (
     safe_finditer,
     safe_finditer_many,
 )
+import re
+
 from process_pool_guard import requires_process_pool
 
 
@@ -68,9 +70,12 @@ class _FakePool:
         self.future = future
         self.submitted = []
         self.shutdowns = []
+        self.names = []
 
     def submit(self, fn, *args, **kwargs):
         self.submitted.append(args)
+        # 门①.5 r1 N1(b)：记录 callable 身份，让「谁被调用」也能在零计时用例里判红
+        self.names.append(getattr(fn, "__name__", repr(fn)))
         return self.future
 
     def shutdown(self, wait=True, cancel_futures=False):
@@ -300,3 +305,118 @@ def test_real_finditer_many_batches_in_one_call():
     result = safe_finditer_many(re.compile(r"\d+"), ["a1", "", "b22c33"], timeout=5.0)
 
     assert [[m.group() for m in rows] for rows in result] == [["1"], [], ["22", "33"]]
+
+# ---- ⑫ 分支盲区（门①.5 r1 B3）：非超时异常与 cancel 失败 ----
+
+
+class _NonTimeoutFuture:
+    """`result()` 抛**非超时**异常（worker 里真炸），`cancel()` 返回 True。"""
+
+    def __init__(self, exc):
+        self._exc = exc
+        self.cancel_called = False
+
+    def result(self, timeout=None):
+        raise self._exc
+
+    def cancel(self):
+        self.cancel_called = True
+        return True
+
+
+class _UncancellableTimedOutFuture:
+    """超时且 `cancel()` 返回 **False**（真实在飞任务几乎总是如此）。"""
+
+    def __init__(self):
+        self.cancel_called = False
+        self.timeouts = []
+
+    def result(self, timeout=None):
+        self.timeouts.append(timeout)
+        raise FuturesTimeoutError()
+
+    def cancel(self):
+        self.cancel_called = True
+        return False
+
+
+def test_finditer_non_timeout_exception_is_not_relabelled(monkeypatch, _patched):
+    """V4 型变异判红（`except FuturesTimeoutError` 放宽成 `except Exception`）。
+
+    worker 内的真异常必须**原样传播**、**不换池**、文案不含 `timed out`
+    ——否则任何 worker 崩溃都会被记成 ReDoS 超时并换掉进程池。
+    """
+    import re
+
+    boom = re.error("boom: bad pattern at runtime")
+    pool = _FakePool(_NonTimeoutFuture(boom))
+    monkeypatch.setattr(safe_regex, "_get_pool", lambda: pool)
+    with pytest.raises(re.error) as excinfo:
+        safe_finditer(re.compile("a+"), "aaa")
+    assert not isinstance(excinfo.value, RegexTimeoutError)
+    assert "timed out" not in str(excinfo.value)
+    assert _patched.replaced == []
+    assert pool.shutdowns == []
+
+
+def test_finditer_many_non_timeout_exception_is_not_relabelled(monkeypatch, _patched):
+    """同 V4，批量路径对称。"""
+    import re
+
+    pool = _FakePool(_NonTimeoutFuture(re.error("boom: bad pattern at runtime")))
+    monkeypatch.setattr(safe_regex, "_get_pool", lambda: pool)
+    with pytest.raises(re.error):
+        safe_finditer_many(re.compile("a+"), ["aaa"])
+    assert _patched.replaced == []
+
+
+def test_finditer_timeout_raises_even_when_cancel_returns_false(monkeypatch, _patched):
+    """V10 型变异判红（cancel 失败则静默回空）。
+
+    `cancel()` 返回 False 只说明「在飞任务没被取消」，**不能**当作「不抛超时」的理由
+    ——否则超时被吞成零命中（静默漏检）。换池 + 抛错都必须照做。
+    """
+    future = _UncancellableTimedOutFuture()
+    pool = _FakePool(future)
+    monkeypatch.setattr(safe_regex, "_get_pool", lambda: pool)
+    with pytest.raises(RegexTimeoutError):
+        safe_finditer(re.compile("a+"), "aaa")
+    assert future.cancel_called is True
+    assert _patched.replaced == [True]
+    assert pool.names == ["_finditer_in_process"]  # N1(b)：callable 身份
+
+
+def test_finditer_many_timeout_raises_even_when_cancel_returns_false(monkeypatch, _patched):
+    """同 V10，批量路径对称。"""
+    pool = _FakePool(_UncancellableTimedOutFuture())
+    monkeypatch.setattr(safe_regex, "_get_pool", lambda: pool)
+    with pytest.raises(RegexTimeoutError):
+        safe_finditer_many(re.compile("a+"), ["aaa"])
+    assert _patched.replaced == [True]
+    assert pool.names == ["_finditer_many_in_process"]  # N1(b)
+
+
+def test_after_timeout_the_next_call_lands_on_a_new_pool_object(monkeypatch):
+    """N4：端到端换池——**不** patch `_kill_and_replace_pool`，只 patch `ProcessPoolExecutor`。
+
+    第一次调用超时 → 老池被关；第二次调用必须落在**另一个**池实例上（不得复用被污染的池）。
+    """
+    made = []
+
+    def _factory(*_args, **_kwargs):
+        pool = _FakePool(
+            _TimedOutFuture() if not made else _OkFuture([("aaa", 0, 3, [])])
+        )
+        made.append(pool)
+        return pool
+
+    monkeypatch.setattr(safe_regex, "ProcessPoolExecutor", _factory)
+    monkeypatch.setattr(safe_regex, "_pool", None, raising=False)
+    with pytest.raises(RegexTimeoutError):
+        safe_finditer(re.compile("a+"), "aaa")
+    assert len(made) == 1
+    matches = safe_finditer(re.compile("a+"), "aaa")
+    assert len(made) == 2, "超时后必须建新池，不得复用被污染的池对象"
+    assert made[0].shutdowns, "老池必须被关闭"
+    assert made[1].submitted[0][0] == "a+" and made[1].submitted[0][2] == "aaa"
+    assert [m.group() for m in matches] == ["aaa"]
