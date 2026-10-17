@@ -35,6 +35,10 @@
     python eval-ng/scripts/check_public_tree.py --self-test
 
 exit：0=干净；1=命中（或阳性对照失败）；2=用法错误。
+
+`--base` 默认判「改动文件的**整份内容**」；加 `--added-lines` 只判「本次改动**新增的行**」
+（Issue#187）：基线里既有的命中不再连坐，新增行里的红线照旧判红。无法定位新增行的文件
+（纯模式变更、重命名、二进制）退化为整文件判定并在 stderr 注明 —— 宁可多扫，不可漏扫。
 """
 
 from __future__ import annotations
@@ -297,6 +301,7 @@ KNOWN_RULE_IDS = frozenset({
     "public_ip", "abs_path", "win_path", "bearer", "api_key", "url_credential", "basic_auth",
     "credential_literal", "credential_flag", "credential_bare", "denylist",
 })
+_ADDED_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 _FINDING_LINE_RE = re.compile(r"^.+?:\d+: \[[a-z_]+\] ")
 
 #: 门①.5 r2 I-7：负面控制也必须有下限——两份干净样本清空后自检照样 rc=0 并照打
@@ -482,10 +487,30 @@ def scan(text: str, *, denylist: list[str], allow_prefixes: list[str]) -> list[t
     return findings
 
 
+def _split_lines(text: str) -> list[str]:
+    """**唯一**断行真源：只按 `\n` 断（与 `git diff` 的行号空间一致）。
+
+    Issue#187 冷审 Critical-1：`str.splitlines()` 还会按 `\v \f \x1c \x1d \x1e \x85 U+2028 U+2029`
+    断行，而 `git diff` 只按 `\n` 计数 ⇒ 若两者混用，`--added-lines` 掩码后的行号会与 git 的
+    新增行号错位，**新增的红线字面量可被静默漏判**（实测：文件含 `\f` 时新口径 rc=0、旧口径 rc=1）。
+    因此掩码与报行号必须共用本函数。
+    """
+    return text.split("\n")
+
+
+def _read_text_file(path: Path) -> str:
+    """**唯一**读文本真源：`newline=""` 关闭 universal-newline 转换。
+
+    默认 `read_text()` 会把孤立 `\r` 折成 `\n`，与 git 的行号空间不一致（同一个 Critical-1）。
+    """
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
 def scan_source(name: str, text: str, *, denylist: list[str], allow_prefixes: list[str]) -> list[str]:
     """逐行扫描并带行号；放过标记**按规则名**生效（Issue#160 AC3）。"""
     lines: list[str] = []
-    for lineno, line in enumerate(text.splitlines(), 1):
+    for lineno, line in enumerate(_split_lines(text), 1):
         marker = _IGNORE_LINE_RE.search(line)
         allowed = (
             {item.strip() for item in marker.group("rules").split(",") if item.strip()} if marker else set()
@@ -543,6 +568,64 @@ def changed_files(repo_root: Path, base: str) -> list[str]:
     rels += _git_lines(repo_root, ["diff", "-z", "--name-only", "--diff-filter=AMRT", "HEAD"])
     rels += _git_lines(repo_root, ["ls-files", "-z", "--others", "--exclude-standard"])
     return list(dict.fromkeys(rels))
+
+
+def _git_text(repo_root: Path, args: list[str]) -> str:
+    """跑 git 并返回**原始 stdout**（diff 文本口径；`_git_lines` 会丢空行，不能用于解析 diff）。"""
+    cmd = ["git", "-C", str(repo_root), *args]
+    try:
+        return subprocess.run(
+            cmd, check=True, capture_output=True, text=True,
+            encoding="utf-8", errors="surrogateescape",
+        ).stdout
+    except FileNotFoundError as exc:
+        raise GitError(f"找不到 git 可执行文件：{exc}") from exc
+    except OSError as exc:
+        raise GitError(f"调用 git 失败：{exc}") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = [line for line in (exc.stderr or "").splitlines() if line.strip()]
+        raise GitError(
+            f"git {' '.join(args)} 失败（rc={exc.returncode}）：{detail[-1] if detail else '无 stderr'}"
+        ) from exc
+
+
+def added_lines(repo_root: Path, base: str, rel: str) -> set[int] | None:
+    """`<base>` 以来该文件在**工作区坐标系**下的新增行号（含未提交改动）。
+
+    只跑一次 `git diff <base> -- rel`：该命令把 `<base>` 与**工作区文本**对比，与调用方实际读取并扫描的
+    文本**同一坐标系**。冷审 I-1：早先实现把 `base...HEAD`（HEAD 坐标系）与 `HEAD`（工作区坐标系）的
+    行号**取并集**再套到工作区文本上 —— 工作区相对 HEAD 少了若干行时（未提交删行）行号会漂移，
+    新增的凭据可被静默漏判（冷审已给最小反例）。
+
+    返回 `None` = **无法定位新增行**（改动清单里有该文件但 diff 无任何 hunk：纯模式变更、重命名、
+    二进制等，或只有删除没有新增）⇒ 调用方应按**整文件**判定并在输出里注明
+    （Issue#187 边界要求：宁可多扫，不可漏扫）。
+    """
+    added: set[int] = set()
+    hunks = 0
+    out = _git_text(repo_root, ["diff", "-U0", "--no-color", "--no-ext-diff", base, "--", rel])
+    for line in out.splitlines():
+        if not line.startswith("@@"):
+            continue
+        hunks += 1
+        match = _ADDED_HUNK_RE.match(line)
+        if match is None:
+            continue
+        start = int(match.group(1))
+        count = int(match.group(2)) if match.group(2) is not None else 1
+        if count > 0:
+            added.update(range(start, start + count))
+    if hunks == 0:
+        return None
+    if not added:
+        # 有 hunk 却没有任何新侧行号（只删不增 / 解析退化）⇒ 不做局部判定，退化为整文件（宁可多扫）。
+        return None
+    return added
+
+
+def mask_non_added_lines(text: str, added: set[int]) -> str:
+    """把**非新增行**替换成空行（保留行数）⇒ `scan_source` 报出的行号仍是文件真实行号。"""
+    return "\n".join(line if index in added else "" for index, line in enumerate(_split_lines(text), 1))
 
 
 def default_paths(repo_root: Path, base: str | None) -> list[Path]:
@@ -872,6 +955,10 @@ def main(argv: list[str] | None = None) -> int:
         "--base", default="origin/preview",
         help="改动基线（默认 origin/preview，即扫本次 PR 新增/修改的文件）；给空串则退化为整树 git ls-files",
     )
+    parser.add_argument(
+        "--added-lines", action="store_true",
+        help="只扫本次改动**新增的行**（须配合 --base；无法定位新增行的文件退化为整文件判定并在输出注明）",
+    )
     parser.add_argument("--denylist", default=None, help="词表文件（一行一词；re: 前缀走正则）")
     parser.add_argument("--allow-prefix", action="append", default=[], help="放行的路径前缀（可重复）")
     parser.add_argument("--self-test", action="store_true", help="只跑阳性对照")
@@ -899,6 +986,21 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.added_lines and not args.base:
+        print(
+            "[public-tree] --added-lines 需要 --base（要拿基线才能算新增行）；"
+            "整树巡检请去掉 --added-lines。",
+            file=sys.stderr,
+        )
+        return 2
+    if args.added_lines and args.paths:
+        print(
+            "[public-tree] --added-lines 与 --paths 互斥（显式路径没有基线语义）；"
+            "门禁请用 --base + --added-lines。",
+            file=sys.stderr,
+        )
+        return 2
+
     if not targets:
         print(
             "[public-tree] 本次范围内没有候选文件（--base 范围内无新增/修改，且无未跟踪文件）；"
@@ -935,6 +1037,7 @@ def main(argv: list[str] | None = None) -> int:
 
     findings: list[str] = []
     scanned = 0
+    whole_file_fallback: list[str] = []
     # 跳过必须**逐类说明**：intentional 两类放行但打印，其余（非文件/不可读）视为门被绕过的信号。
     skipped: dict[str, list[str]] = {"skip_suffix": [], "not_a_file": [], "too_large": [], "unreadable": []}
     for path in targets:
@@ -953,12 +1056,24 @@ def main(argv: list[str] | None = None) -> int:
             skipped["too_large"].append(_rel(path))
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = _read_text_file(path)
         except (OSError, UnicodeDecodeError):
             skipped["unreadable"].append(_rel(path))
             continue
         scanned += 1
-        findings.extend(scan_source(_rel(path), text, denylist=denylist, allow_prefixes=args.allow_prefix))
+        rel = _rel(path)
+        if args.added_lines:
+            try:
+                new_lines = added_lines(repo_root, args.base, rel)
+            except GitError as exc:
+                # 取新增行失败 ⇒ 宁可红：绝不静默退化成整文件或整树
+                print(f"[public-tree] --added-lines 取新增行失败（{rel}）：{exc}", file=sys.stderr)
+                return 2
+            if new_lines is None:
+                whole_file_fallback.append(rel)
+            else:
+                text = mask_non_added_lines(text, new_lines)
+        findings.extend(scan_source(rel, text, denylist=denylist, allow_prefixes=args.allow_prefix))
 
     # Issue#154 自检②：改动清单里的文件**凭空消失**（路径解析/转义回归的典型症状）⇒ 报错退出。
     # 其余跳过类别（后缀/超上限/非 UTF-8）都是「解释了为什么没扫」，打印出来但不判红。
@@ -973,6 +1088,15 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.added_lines:
+        print(
+            f"[public-tree] 只扫新增行（--added-lines，基线 {args.base}）：扫描 {scanned} 文件；"
+            f"整文件判定 {len(whole_file_fallback)} 个",
+            file=sys.stderr,
+        )
+        for rel in whole_file_fallback[:5]:
+            print(f"  - 无法定位新增行（纯模式变更/重命名/整文件重写）⇒ 按整文件判定：{rel}", file=sys.stderr)
+
     for items, reason in (
         (skipped["skip_suffix"], "后缀不在扫描范围"),
         (skipped["too_large"], f"超过 {MAX_BYTES // (1024 * 1024)}MiB 上限"),

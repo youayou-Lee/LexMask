@@ -98,9 +98,9 @@ jobs:
           set -e
           if [ -n "$BASE" ]; then
             git fetch origin "$BASE" --quiet
-            python3 eval-ng/scripts/check_public_tree.py --base "origin/$BASE"
+            python3 eval-ng/scripts/check_public_tree.py --base "origin/$BASE" --added-lines
           elif git rev-parse --verify --quiet HEAD~1 >/dev/null; then
-            python3 eval-ng/scripts/check_public_tree.py --base HEAD~1
+            python3 eval-ng/scripts/check_public_tree.py --base HEAD~1 --added-lines
           else
             echo "无可比基线（仓库首个提交），仅跑自检"
           fi
