@@ -2,6 +2,14 @@
 
 ## 2026-10-18
 
+### 工具链（Issue#160）公开树扫描器：中文取值口令不再漏判 + `ignore-line` 改为按规则点名
+
+- **漏判修复**：`_is_secret_shaped()` 原先对含汉字的值整类返回 `False` ⇒ `secret = "超机密密码9o0i"` 这类中文取值口令在公开树上**永不报出**（#140 的验收标准当时其实被静默绕过）。现改为：含汉字的值长度下限降到 **6**，但必须满足**混排证据**（含数字/ASCII 字母/符号），并排除含中文标点的正文与 `2023年6月15日` 形日期 ⇒ 中文口令命中、中文正文不误报。
+- **放过面收紧**：`ignore-line` 从「整行跳过」改为**按规则点名** `ignore-line(<规则名>, …)`；**裸标记不再放过任何规则**；新增自检契约 `_ignore_line_scope_check()` 实证「点名的放过、未点名的照报、裸标记不放过」。仓内 53 行既有标记按规则重算迁移，迁移后整树命中与旧版**逐条相同**。
+- **口径声明**：含汉字的值在 Issue#160 之前整类不参与判定 ⇒ 该 Issue 前后的命中数**不可跨版本对账**（同版本内 A/B 才可比），已写入 `_COVERAGE_NOTE`。
+- **验证**：`--self-test` 21 例阳性对照逐例命中 / 11 类全覆盖 / 干净样本零命中 / 四项自检契约通过；`backend/tests/test_public_tree_scanner.py` **34 passed**（新增两例：中文口令命中且中文正文不误报、`ignore-line` 规则级语义）；变异 **M1–M9 9/9 KILLED**；同树旧/新扫描器输出 **332 行逐条相同**（`abs_path` 292 / `public_ip` 24 / `win_path` 16，`credential_*` 0，`diff` 为 0）。
+- **不做**：不放宽任何规则；不动 CI 接线（`public-tree-scan` job 由 #159 建好）；纯汉字长口令（如 `"一二三四五六七八"`）仍在边界外（方案 §6.1）。
+
 ### 正则（Issue#156）超时可观测 + 真 `re.Match` 命名组语义（**生产行为不变**）
 
 - **可观测性**：`backend/app/core/safe_regex.py` 新增进程级累计计数 `regex_timeout_stats()`（三条链标签 `safe_compile` / `safe_finditer` / `safe_finditer_many`），经 `GET /health` 的新字段 `regex_timeouts` 暴露（`backend/app/main.py`、`backend/app/models/common.py`）。既有 `_regex_timeout_events` 属**另一口径**（沿用旧用途），两者不互相替代。
@@ -158,7 +166,7 @@
   - **两条测量线**：`--driver single`（Python 驱动逐页 `/redaction/{id}/vision`，页间并发由运行时 k 控制）与 `--driver batch`（建 `smart_batch` 作业 → 上传 → 提交 → 轮询，逐页仪表取自作业详情），两侧都出**页线**（页数/分钟、逐页墙钟 p50/p95/IQR）与**卷线**（提交→末页完成的 `file_wall_s`）两组数字。
   - **判定面（四态 PASS/UNVERIFIED/BLOCKED/FAIL）**：D2 并发自证（驱动声明 k + 在飞峰值实测 k 双证）、D3 闭合校验（环和 vs 页总**同钟** ≤2%、残差双侧 0≤·≤10%、两序列**非同源**且比值 ∈[1.00,1.25]、键路径压平后必含五个环叶子）、D4 自足（`file_wall_s` 与客户端墙钟互证 ≤5%、md 与 JSON 逐项一致）、D5 脱敏（八项环境脚注硬校验、实例指纹四键 + sha256、数值字段白名单**路径级**表、质量子树判 FALSE）、D6 边界（非法轮排除、载荷同一 `force=true&include_result_image=false`、批作业经网关 ≥8 MiB 单文件）、D8 旁证（计数类只累加、字符串状态不丢、补丁生效断言必须真在文件里）。
   - **名实不一即 FAIL**：`D8.patch_effect` 要求臂声明的 `patches[].to`/`expect[].contains` 真出现在目标文件里；`D5.numeric_whitelist` 按**字段路径**放行（`summary.agg_value` 这种换名会被点名），质量字段换名也走不脱。
-  - **新增公开树扫描器** `eval-ng/scripts/check_public_tree.py`（与报告脱敏扫描器同族，含**阳性对照自检**）：公网 IP / 绝对路径 / Windows 盘符路径 / 凭据形态 / `--denylist` 词表五类；默认只扫 `--base` 以来改动过的文件，行内 `public-tree-scan: ignore-line` 可显式放过（扫描器自己的阳性对照夹具用）。
+  - **新增公开树扫描器** `eval-ng/scripts/check_public_tree.py`（与报告脱敏扫描器同族，含**阳性对照自检**）：公网 IP / 绝对路径 / Windows 盘符路径 / 凭据形态 / `--denylist` 词表五类；默认只扫 `--base` 以来改动过的文件，行内 `public-tree-scan: ignore-line()` 可显式放过（扫描器自己的阳性对照夹具用）。
   - **单测 128 条**（本 PR 新增 `backend/tests/test_evalng_speed.py` **120** 条，另有既有 `backend/tests/test_evalng_cli.py` 8 条；eval-ng 测试文件合计 **183** 条（`--collect-only` 实测）；零网络：`SpeedApi` 构造在单测里被替换成抛错版本，AC24 请求捕获用 `httpx.MockTransport`）；④ 云门实测又钉掉三处死角：`_hardware_capture` 取设备身份行而非 `hy-smi` 表头、`dedupe_checks` 同 id 按四态取最严、k 双证按 `min(声明 k, 该轮页数)`（页数足够仍达不到声明值依旧 FAIL）；eval-ng 全量绿；本机全量 `pytest` 失败名集合与 clean base 逐条一致（无回归）。
   - ④ 云实例端到端实测（10 页扫描 canary / 3 页真实案卷切片 / 8.3 MiB 单文件（8,703,181 B 的 1 页填充分片）过网关；实例：云 DCU 单机 + `SINGLE` 起 uvicorn，后端 `68f0e7ba`，仪器 `de197b74`–`f1f249c`）：
     - **D1 锚点复现**：`single` 线冷跑各 4 轮（弃第 1 轮取 2–4 中位）——k=3 **92.594s**（离散 10.1%，锚点 86.65s ⇒ +6.9%）、k=1 **207.468s**（离散 2.9%，锚点 198.13s ⇒ +4.7%），**`D1.anchor_ratio` = 2.241× ≥ 1.8× PASS**；两臂闭合/残差/跨钟/键路径/冷跑证据（pid 与 `start_time` 三轮互异）/并发双证全 PASS，判定 UNVERIFIED（无 FAIL；未项只有 env 臂的 `D8.patch_effect` 与无基准的 `D7.parity`）。

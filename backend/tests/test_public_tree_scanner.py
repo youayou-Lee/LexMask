@@ -20,7 +20,8 @@
 - 非 UTF-8 文件系统编码下的警告，只在候选集合含非 ASCII 名时才打（M4）
 
 本文件在 tmp_path 里现搭 git 仓，零网络、不碰真实仓。
-注意：任何含红线样本字面量的行都必须带 `# public-tree-scan: ignore-line` 标记（本文件自身会被扫描）。
+注意：任何含红线样本字面量的行都必须带**按规则点名**的放过标记
+（`# public-tree-scan: ignore-line(<规则名>, …)`）；裸标记自 Issue#160 起不放过任何规则。
 """
 
 import os
@@ -34,7 +35,7 @@ import pytest
 
 ptree = boot.load("scripts/check_public_tree.py")
 
-_SAMPLE = "instance 8.8.8.8 path /srv/evidence/arm.json"  # public-tree-scan: ignore-line
+_SAMPLE = "instance 8.8.8.8 path /srv/evidence/arm.json"  # public-tree-scan: ignore-line(abs_path, public_ip)
 _CN_NAME = "docs/开发规范-中文.md"
 _SPACE_NAME = "docs/带 空格 的名字.txt"
 _ACCENT_NAME = "docs/重音-café-ü.md"
@@ -504,3 +505,38 @@ def test_finding_line_rule_discriminates():
     """钉汇总行形状的正则本身（r3 变异把它改成 `r""` 会让一切形状断言空转）。"""
     assert ptree._FINDING_LINE_RE.match("docs/x.md:12: [credential_literal] value")
     assert not ptree._FINDING_LINE_RE.match("docs/x.md:12: 没有规则标记的一行")
+
+
+def test_cjk_valued_credentials_hit_and_chinese_prose_does_not():
+    """Issue#160 AC1/AC2：中文取值口令必须命中；中文正文/日期不得误报。"""
+    hit_rules = {
+        rule for rule, _v in ptree.scan('cfg password="测试口令123"', denylist=[], allow_prefixes=[])  # public-tree-scan: ignore-line(credential_literal)
+    }
+    assert "credential_literal" in hit_rules
+    bare_rules = {
+        rule for rule, _v in ptree.scan("cfg password=测试口令123", denylist=[], allow_prefixes=[])  # public-tree-scan: ignore-line(credential_bare)
+    }
+    assert bare_rules == {"credential_bare"}, bare_rules
+    for clean in (
+        'SECRET_TEXT = "委托人陈文清，身份证号110101199001011234。"',
+        'cfg key="2023年6月15日"',
+        'cfg secret = "本院认为合同有效"',
+        "max_new_tokens=2048：生产预算公式",
+    ):
+        assert ptree.scan(clean, denylist=[], allow_prefixes=[]) == [], clean
+
+
+def test_ignore_line_marker_is_rule_scoped():
+    """Issue#160 AC3：放过标记只放过点名规则；裸标记不放过任何规则。"""
+    scoped = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + f"{ptree.IGNORE_MARKER}(credential_literal)"  # public-tree-scan: ignore-line(public_ip)
+    rules = {
+        line.split("[", 1)[1].split("]", 1)[0]
+        for line in ptree.scan_source("scope", scoped, denylist=[], allow_prefixes=[])
+    }
+    assert "credential_literal" not in rules and "public_ip" in rules, rules
+    bare = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + ptree.IGNORE_MARKER  # public-tree-scan: ignore-line(public_ip)
+    bare_rules = {
+        line.split("[", 1)[1].split("]", 1)[0]
+        for line in ptree.scan_source("bare", bare, denylist=[], allow_prefixes=[])
+    }
+    assert {"credential_literal", "public_ip"} <= bare_rules, bare_rules

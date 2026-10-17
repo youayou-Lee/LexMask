@@ -1370,7 +1370,7 @@ class TestCliReportCompleteness:
 
     def test_redact_path_covers_home_and_unc(self):
         """I13：`~` 与 UNC 同属绝对路径，必须压前缀；普通相对路径保持可重放。"""
-        assert report.redact_path("/srv/evidence/exam_d1.json") == "<abs>/…/exam_d1.json"  # public-tree-scan: ignore-line
+        assert report.redact_path("/srv/evidence/exam_d1.json") == "<abs>/…/exam_d1.json"  # public-tree-scan: ignore-line(abs_path)
         assert report.redact_path("~/private/x.json") == "<abs>/…/x.json"
         assert report.redact_path(r"\\srv\share\report.json") == "<abs>/…/report.json"
         assert report.redact_path("out/report.json") == "out/report.json"
@@ -1378,13 +1378,13 @@ class TestCliReportCompleteness:
     def test_redact_command_masks_credentials_and_paths(self):
         """I13：口令类开关的后一个 token 整体替换；值内 Bearer/口令字面量抹掉。"""
         masked = report.redact_command(
-            ["python", "eval-ng/cli.py", "speed", "/srv/evidence/exam.json", "--api-pass", _UNIT_API_PASS,  # public-tree-scan: ignore-line
+            ["python", "eval-ng/cli.py", "speed", "/srv/evidence/exam.json", "--api-pass", _UNIT_API_PASS,  # public-tree-scan: ignore-line(abs_path)
              "--api-base", "http://127.0.0.1:8000"]
         )
         joined = " ".join(masked)
         assert _UNIT_API_PASS not in joined, joined
         assert "<redacted>" in masked
-        assert "/srv/evidence" not in joined, joined  # public-tree-scan: ignore-line
+        assert "/srv/evidence" not in joined, joined  # public-tree-scan: ignore-line(abs_path)
         assert any(report.scrub_secrets(v) == v for v in ("plain",))  # 无凭据值原样
 
     def test_scrub_secrets_thresholds_are_pinned(self):
@@ -1395,7 +1395,7 @@ class TestCliReportCompleteness:
 
 
         env = report.redact_env({"API_PASS": _UNIT_API_PASS, "HAS_NER_GLOBAL_MAX_INFLIGHT": "8",
-                                 "NOTE": "Bearer abcdefghijklmnopqrstuvwxyz012345"})  # public-tree-scan: ignore-line
+                                 "NOTE": "Bearer abcdefghijklmnopqrstuvwxyz012345"})  # public-tree-scan: ignore-line(bearer)
         assert env["API_PASS"] == "<redacted>"
         assert env["HAS_NER_GLOBAL_MAX_INFLIGHT"] == "8"
         assert "abcdefghijklmnopqrstuvwxyz" not in env["NOTE"]
@@ -1561,10 +1561,10 @@ class TestPublicTreeScanner:
     def test_plain_alnum_secrets_are_caught(self):
         """反向钉子：字母数字混合口令必须命中——豁免一旦按「值形状」放宽，这里立刻红。"""
         for probe in (
-            '--api-pass "syntheticApiPass2026"',  # public-tree-scan: ignore-line
-            '--api-pass "REALLONGAPIPASS9"',  # public-tree-scan: ignore-line
-            "password=Hunter2Hunter2",  # public-tree-scan: ignore-line
-            'password="Passw0rd!2026"',  # public-tree-scan: ignore-line
+            '--api-pass "syntheticApiPass2026"',  # public-tree-scan: ignore-line(credential_flag)
+            '--api-pass "REALLONGAPIPASS9"',  # public-tree-scan: ignore-line(credential_flag)
+            "password=Hunter2Hunter2",  # public-tree-scan: ignore-line()
+            'password="Passw0rd!2026"',  # public-tree-scan: ignore-line(credential_literal)
         ):
             assert self._rules(probe) & {"credential_literal", "credential_flag", "credential_bare"}, probe
 
@@ -1585,42 +1585,42 @@ class TestPublicTreeScanner:
             "bearer", "api_key", "url_credential", "basic_auth",
         }
         for probe in (
-            "api_secret=Zz9Kk2Lm",  # public-tree-scan: ignore-line
-            'db_password="Hunter2Hunter2"',  # public-tree-scan: ignore-line
-            'API_SECRET = "Zz9Kk2Lm"',  # public-tree-scan: ignore-line
-            'clientSecret: "Ab3xY9Qq2"',  # public-tree-scan: ignore-line
-            'access_token = "ghp_abcdefghijklmnopqrstuvwxyz0123456"',  # public-tree-scan: ignore-line
-            'add_argument("--db-password", default="Qq11Ww22")',  # public-tree-scan: ignore-line
+            "api_secret=Zz9Kk2Lm",  # public-tree-scan: ignore-line()
+            'db_password="Hunter2Hunter2"',  # public-tree-scan: ignore-line(credential_literal)
+            'API_SECRET = "Zz9Kk2Lm"',  # public-tree-scan: ignore-line(credential_literal)
+            'clientSecret: "Ab3xY9Qq2"',  # public-tree-scan: ignore-line(credential_literal)
+            'access_token = "ghp_abcdefghijklmnopqrstuvwxyz0123456"',  # public-tree-scan: ignore-line(api_key, credential_literal)
+            'add_argument("--db-password", default="Qq11Ww22")',  # public-tree-scan: ignore-line(credential_flag)
             # R7-1/R8-1 形态：带类型注解的赋值（`[:=]` 会吃掉注解冒号把 `str` 当值 ⇒ 曾整类漏网）
             # 注解形态**穷举目录**：任何新形态都先进这里（R8-1 的 `|`/`()`/引号一族已补齐）
-            'client_secret: str = "Ab12Cd34"',  # public-tree-scan: ignore-line
-            'DB_PASSWORD: str = "Qq11Ww22"',  # public-tree-scan: ignore-line
-            'API_KEY: Final[str] = "Zz9Kk2Lm"',  # public-tree-scan: ignore-line
-            'db_password: str = "Qq11!Ww22"',  # public-tree-scan: ignore-line
-            'api_key: str | None = "Ab12Cd34"',  # public-tree-scan: ignore-line
-            'API_KEY: Final[str | None] = "Zz9Kk2Lm"',  # public-tree-scan: ignore-line
-            'client_secret: Literal["a"] = "Ab12Cd34"',  # public-tree-scan: ignore-line
-            'client_secret: Optional["Cfg"] = "Ab12Cd34"',  # public-tree-scan: ignore-line
-            'db_password: dict | None = "Qq11Ww22"',  # public-tree-scan: ignore-line
-            'access_token: list[str] | None = "ghp_abcdefghijklmnopqrstuvwxyz0123456"',  # public-tree-scan: ignore-line
+            'client_secret: str = "Ab12Cd34"',  # public-tree-scan: ignore-line(credential_literal)
+            'DB_PASSWORD: str = "Qq11Ww22"',  # public-tree-scan: ignore-line(credential_literal)
+            'API_KEY: Final[str] = "Zz9Kk2Lm"',  # public-tree-scan: ignore-line(credential_literal)
+            'db_password: str = "Qq11!Ww22"',  # public-tree-scan: ignore-line(credential_literal)
+            'api_key: str | None = "Ab12Cd34"',  # public-tree-scan: ignore-line(credential_literal)
+            'API_KEY: Final[str | None] = "Zz9Kk2Lm"',  # public-tree-scan: ignore-line(credential_literal)
+            'client_secret: Literal["a"] = "Ab12Cd34"',  # public-tree-scan: ignore-line(credential_literal)
+            'client_secret: Optional["Cfg"] = "Ab12Cd34"',  # public-tree-scan: ignore-line(credential_literal)
+            'db_password: dict | None = "Qq11Ww22"',  # public-tree-scan: ignore-line(credential_literal)
+            'access_token: list[str] | None = "ghp_abcdefghijklmnopqrstuvwxyz0123456"',  # public-tree-scan: ignore-line(api_key, credential_literal)
             # 引号键（dict / JSON / YAML）形态：键名被引号包起曾整类漏网（⑧期预前加固）
-            '"client_secret": "Ab12Cd34"',  # public-tree-scan: ignore-line
-            "{'db_password': 'Qq11Ww22'}",  # public-tree-scan: ignore-line
-            '"access_token": "ghp_abcdefghijklmnopqrstuvwxyz0123456"',  # public-tree-scan: ignore-line
+            '"client_secret": "Ab12Cd34"',  # public-tree-scan: ignore-line(credential_literal)
+            "{'db_password': 'Qq11Ww22'}",  # public-tree-scan: ignore-line(credential_literal)
+            '"access_token": "ghp_abcdefghijklmnopqrstuvwxyz0123456"',  # public-tree-scan: ignore-line(api_key, credential_literal)
             # R9-1：引号键含连字符（HTTP 头/配置文件惯用）曾整类漏网
-            '{"api-key": "Qq11Ww22Zz11"}',  # public-tree-scan: ignore-line
-            '"x-api-key": "Qq11Ww22Zz11"',  # public-tree-scan: ignore-line
-            '"auth-token": "Qq11Ww22Zz11"',  # public-tree-scan: ignore-line
-            "'client-secret': 'Qq11Ww22Zz11'",  # public-tree-scan: ignore-line
+            '{"api-key": "Qq11Ww22Zz11"}',  # public-tree-scan: ignore-line(credential_literal)
+            '"x-api-key": "Qq11Ww22Zz11"',  # public-tree-scan: ignore-line(credential_literal)
+            '"auth-token": "Qq11Ww22Zz11"',  # public-tree-scan: ignore-line(credential_literal)
+            "'client-secret': 'Qq11Ww22Zz11'",  # public-tree-scan: ignore-line(credential_literal)
             # R9-2：注解段以引号开头（顶层前向引用）曾整类漏网
-            'api_key: "Cfg" = "Ab12Cd34"',  # public-tree-scan: ignore-line
-            'api_key: "pkg.mod.Cfg" = "Ab12Cd34"',  # public-tree-scan: ignore-line
-            'api_key: "Cfg" | None = "Ab12Cd34"',  # public-tree-scan: ignore-line
+            'api_key: "Cfg" = "Ab12Cd34"',  # public-tree-scan: ignore-line(credential_literal)
+            'api_key: "pkg.mod.Cfg" = "Ab12Cd34"',  # public-tree-scan: ignore-line(credential_literal)
+            'api_key: "Cfg" | None = "Ab12Cd34"',  # public-tree-scan: ignore-line(credential_literal)
             # R9-3：flag 后空格分隔的**裸值**曾整类漏网
-            "--api-pass Ab12Cd34",  # public-tree-scan: ignore-line
+            "--api-pass Ab12Cd34",  # public-tree-scan: ignore-line(credential_flag)
             # 与键名无关的令牌形态（⑧期预前加固）：URL 内联凭据 / HTTP Basic
-            "postgresql://eval_user:Synthetic-Pass!123@127.0.0.1:5432/app",  # public-tree-scan: ignore-line
-            "auth Basic U3ludGhldGljLVBhc3MhMTIz",  # public-tree-scan: ignore-line
+            "postgresql://eval_user:Synthetic-Pass!123@127.0.0.1:5432/app",  # public-tree-scan: ignore-line(url_credential)
+            "auth Basic U3ludGhldGljLVBhc3MhMTIz",  # public-tree-scan: ignore-line(basic_auth)
         ):
             assert self._rules(probe) & creds, probe
 
@@ -1657,10 +1657,10 @@ class TestPublicTreeScanner:
     def test_vendor_token_separators_are_covered(self):
         """R10-1 钉子：厂商前缀的**下划线**形态（GitHub 系真实写法）在无凭据键名语境也必须命中。"""
         for probe in (
-            "Authorization: token ghp_abcdefghijklmnopqrstuvwx1234567890",  # public-tree-scan: ignore-line
-            "curl -H 'Authorization: gho_abcdefghijklmnopqrstuvwx1234'",  # public-tree-scan: ignore-line
-            "git https://ghs_abcdefghijklmnopqrstuvwx1234@example.invalid/repo",  # public-tree-scan: ignore-line
-            "remote: github_pat_abcdefghijklmnopqrstuvwx1234",  # public-tree-scan: ignore-line
+            "Authorization: token ghp_abcdefghijklmnopqrstuvwx1234567890",  # public-tree-scan: ignore-line(api_key)
+            "curl -H 'Authorization: gho_abcdefghijklmnopqrstuvwx1234'",  # public-tree-scan: ignore-line(api_key)
+            "git https://ghs_abcdefghijklmnopqrstuvwx1234@example.invalid/repo",  # public-tree-scan: ignore-line(api_key)
+            "remote: github_pat_abcdefghijklmnopqrstuvwx1234",  # public-tree-scan: ignore-line(api_key)
         ):
             assert "api_key" in self._rules(probe), probe
         # 假阳性守卫：厂商前缀的字母标识符邻居仍不得命中（分隔符必须真存在）
@@ -1670,9 +1670,9 @@ class TestPublicTreeScanner:
     def test_credential_thresholds_are_pinned(self):
         """M8/M10 钉子（⑨冷评审）：值下限与 Bearer 下限被放宽 ⇒ 这里必须红（多报方向的反向缺口）。"""
         assert self._rules('password = "Ab1Cd2"') == set()  # 6 字：低于下限 ⇒ 不误报
-        assert "credential_literal" in self._rules('password = "Ab1Cd2Ef"')  # public-tree-scan: ignore-line（下限正例）
+        assert "credential_literal" in self._rules('password = "Ab1Cd2Ef"')  # public-tree-scan: ignore-line(credential_literal)（下限正例）
         assert self._rules("Authorization: Bearer abcdefgh") == set()  # 8 字：低于 Bearer 下限
-        assert "bearer" in self._rules("Authorization: Bearer abcdefghijklmnopqrstuvwx")  # public-tree-scan: ignore-line（Bearer 下限正例）
+        assert "bearer" in self._rules("Authorization: Bearer abcdefghijklmnopqrstuvwx")  # public-tree-scan: ignore-line(bearer)（Bearer 下限正例）
         assert self._rules("--token Ab12") == set()  # 裸 flag 值 4 字：低于下限
 
 
@@ -1682,13 +1682,13 @@ class TestRedactionScanner:
         assert redact.main(["--self-test"]) == 0
 
     def test_scan_rules(self):
-        hits = redact.scan("ip 10.1.2.3 path /srv/evidence/d3.json win C:\\Users\\dev\\a.txt",  # public-tree-scan: ignore-line
+        hits = redact.scan("ip 10.1.2.3 path /srv/evidence/d3.json win C:\\Users\\dev\\a.txt",  # public-tree-scan: ignore-line(abs_path, win_path)
                            denylist=[], allow_prefixes=[])
         rules = {rule for rule, _ in hits}
         assert {"ip", "abs_path", "win_path"} <= rules
         assert redact.scan("ip 127.0.0.1 ok", denylist=[], allow_prefixes=[]) == []
-        assert redact.scan("path /srv/evidence/d3.json", denylist=[],  # public-tree-scan: ignore-line
-                           allow_prefixes=["/srv/evidence"]) == []  # public-tree-scan: ignore-line
+        assert redact.scan("path /srv/evidence/d3.json", denylist=[],  # public-tree-scan: ignore-line(abs_path)
+                           allow_prefixes=["/srv/evidence"]) == []  # public-tree-scan: ignore-line(abs_path)
         assert redact.scan("卷 苏A-某某公司", denylist=["苏A-某某公司"], allow_prefixes=[])
         assert redact.scan("rev abc123", denylist=["re:^rev"], allow_prefixes=[])
 
