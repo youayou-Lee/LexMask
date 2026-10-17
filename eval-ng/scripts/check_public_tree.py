@@ -10,13 +10,19 @@
 3. **凭据形态**（`--self-test` 逐类断言的 10 类）：键名含凭据词的普通赋值 / 带类型注解赋值（含
    PEP 604 联合、泛型、前向引用）/ 引号键（JSON·YAML·dict，键名允许 `-`）/ `--flag` 后的引号
    字面量或空格裸值 / 无引号字母数字混合值 / `Bearer <≥24 字符>` / 厂商前缀密钥（`sk-`·`ghp_`·
-   `AKIA…`）/ URL 内联凭据 / HTTP Basic。带键名的分支要求值 ≥8 字符且**像真口令**（含数字或非
-   字母数字符号，且非占位词/模板/类型名/ID 形态/JSON 片段/CJK 文案）；`os.environ[…]`、
+   `AKIA…`）/ URL 内联凭据 / HTTP Basic。带键名的分支要求值 ≥8 字符（含汉字 ≥6）且**像真口令**（含数字或非
+   字母数字符号，且非占位词/模板/类型名/ID 形态/JSON 片段）；含汉字的值另要求**混排证据**
+   （至少一个 ASCII 字母/数字或口令符号），纯中文文案仍不判定（Issue#160 现象①）；
+   `os.environ[…]`、
    `self._password` 这类引用与代码取值不算。**覆盖与不覆盖的完整边界**见文件内 `_COVERAGE_NOTE`；
 4. **`--denylist` 词表**（一行一词，`re:` 前缀走正则）——真实案卷名、实例域名、口令进这里。
 
-行内放过：含 `public-tree-scan: ignore-line` 的行跳过（扫描器自己的阳性对照夹具、以及确非凭据
+行内放过：`public-tree-scan: ignore-line(<规则名>, …)` **只放过点名的规则**，同行其它规则照常报出；
+裸标记（无规则列表）不放过任何规则（扫描器自己的阳性对照夹具、以及确非凭据
 的既有行需要它；每处都有就地说明）。
+
+计数口径：Issue#160 之前含汉字的值**整类不参与**凭据判定，因此该 Issue 前后的命中数
+**不可直接比较**（同一版本内的 A/B 才可比；历史数字见各自 Issue 记忆，不要跨版本对账）。
 
 自带阳性对照：`--self-test` 用含上述 10 类痕迹的样本断言「必须全部命中」，再用干净样本断言
 「必须零命中」——**没有阳性对照的扫描器等于恒真判据**。
@@ -122,7 +128,7 @@ QUOTED_KEY_ASSIGN_RE = re.compile(
     r"(?P<q>[\"'])(?P<name>[A-Za-z_][A-Za-z0-9_\-]{0,40})(?P=q)\s*[:=]\s*" + _VALUE_GROUP
 )
 CREDENTIAL_FLAG_RE = re.compile(r"(?P<name>--[A-Za-z][A-Za-z0-9_-]{1,40})")
-# 命令行 flag 后的**裸值**（无引号）：`--api-pass Ab12Cd34`（⑨冷评审 R9-3）。
+# 命令行 flag 后的**裸值**（无引号）：`--api-pass Ab12Cd34`（⑨冷评审 R9-3）。  #
 _BARE_FLAG_VALUE_RE = re.compile(r"\s*(?P<val>[^\s,;)\"']{8,60})")
 # 带类型注解的赋值：`NAME: <注解> = "<真口令>"`（Python 惯用写法）。
 # `CREDENTIAL_ASSIGN_RE` 的 `[:=]` 会把注解的冒号吃掉、把 `str` 当值，`finditer` 随即越过真值 ⇒ 整类漏网；
@@ -166,6 +172,17 @@ _CAMEL_TYPE_RE = re.compile(r"^[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+$")
 _SECRET_SYMBOL_RE = re.compile(r"[!@#$%^&*()+={}\[\]|;:'\"<>?,~`]")
 _DELIMITER_RE = re.compile(r"[=,\s{}\[\]:;\"]")
 _ID_SHAPE_RE = re.compile(r"^(?:[A-Z]{2,}|[A-Za-z]{2,})[-_]\d{1,6}$")
+#: 中文标点：值里出现它说明这段是**正文/说明**（`"委托人陈文清，身份证号…。"` / `"2048，密集页预算"`），
+#: 不是口令。ASCII 分隔符由 `_DELIMITER_RE` 管，这里补中文一侧（Issue#160 实测的整树假阳性来源）。
+_CJK_PUNCT_RE = re.compile(r"[，。、；：？！（）〈〉《》「」『』【】〔〕…—～·]")
+#: 中文日期形态（`2023年6月15日`）：数字 + 年月日是**日期**不是口令（`key="2023年6月15日"` 实测假阳性）。
+_CJK_DATE_RE = re.compile(r"^\d{4}\s*年(?:\s*\d{1,2}\s*月)?(?:\s*\d{1,2}\s*日)?$")
+
+_MIN_LITERAL_LEN = 8
+#: 中文取值口令的长度底线（Issue#160 现象①）：一个汉字的信息量远高于一个 ASCII 字符，
+#: 若仍按 8 计会漏掉 `password="测试口令123"`（7 字符）这类真实形态；6 是「纯中文长文案」  # public-tree-scan: ignore-line(credential_literal)
+#: 与「中文短口令」的分界，且与下面的「混排证据」要求共同生效（两者缺一不可）。
+_MIN_LITERAL_LEN_CJK = 6
 
 
 def _looks_like_type_name(value: str) -> bool:
@@ -173,9 +190,24 @@ def _looks_like_type_name(value: str) -> bool:
     return bool(_CAMEL_TYPE_RE.match(value)) and len(value) >= 15
 
 
+def _cjk_mixed_evidence(value: str) -> bool:
+    """中文取值口令的**混排证据**（Issue#160 现象①）。
+
+    键名已被 `is_credential_name()` 判为凭据名（上游门），这里只回答「值本身是否带非中文成分」。
+    纯中文文案（`"中文标题"` / `"本院认为合同有效"`）不得当口令——否则公开文档里的中文正文会整类误报。
+    """
+    return bool(re.search(r"[0-9A-Za-z]", value)) or bool(_SECRET_SYMBOL_RE.search(value))
+
+
 def _is_secret_shaped(value: str) -> bool:
-    if not value or _CJK_RE.search(value) or _DELIMITER_RE.search(value):
+    if not value or _DELIMITER_RE.search(value):
         return False
+    if _CJK_RE.search(value):
+        # Issue#160 现象①：旧实现把「含汉字」整类当文案排除（Issue 正文示例形态静默漏网）。
+        # 现改为「键名门 + 混排证据」双条件，并显式排除中文正文/日期两类假阳性。
+        if _CJK_PUNCT_RE.search(value) or _CJK_DATE_RE.match(value):
+            return False
+        return _cjk_mixed_evidence(value)
     if _looks_like_type_name(value) or _ID_SHAPE_RE.match(value):
         return False
     return bool(re.search(r"\d", value)) or bool(_SECRET_SYMBOL_RE.search(value))
@@ -193,7 +225,8 @@ def _literal_hit(val: str) -> bool:
         return False
     if raw[0] in "\"'":
         body = raw[1:].rstrip("\"'")
-        if len(body) < 8 or body.startswith("-----"):
+        floor = _MIN_LITERAL_LEN_CJK if _CJK_RE.search(body) else _MIN_LITERAL_LEN
+        if len(body) < floor or body.startswith("-----"):
             return False
         if TEMPLATE_VALUE_RE.search(body) or _is_placeholder_value(body):
             return False
@@ -201,7 +234,18 @@ def _literal_hit(val: str) -> bool:
     if any(ch in raw for ch in "(.["):
         return False  # 调用/属性/下标：值是代码引用，不是字面量
     body = raw.rstrip(",")
-    if len(body) < 8 or TEMPLATE_VALUE_RE.search(body) or _is_placeholder_value(body):
+    # 源码形态的字面量常带转义引号（`\"2023年6月15日\"`）⇒ **排除判定**用剥掉转义/引号噪声的视图，
+    # 否则中文日期/标点排除会被前导反斜杠绕过（自检夹具正落在这个形态上）；
+    # 形状判定仍用原值（转义引号会命中 _DELIMITER_RE，语义不放宽）。
+    probe = body.strip("\\\"'")
+    if TEMPLATE_VALUE_RE.search(probe) or _is_placeholder_value(probe):
+        return False
+    if _CJK_RE.search(probe):
+        # 中文裸值（`password=测试口令123`）：长度按 CJK 底线，形状按混排证据。
+        if _CJK_PUNCT_RE.search(probe) or _CJK_DATE_RE.match(probe):
+            return False
+        return len(probe) >= _MIN_LITERAL_LEN_CJK and _cjk_mixed_evidence(probe)
+    if len(body) < _MIN_LITERAL_LEN:
         return False
     if not (bool(re.search(r"[A-Za-z]", body)) and bool(re.search(r"\d", body))):
         return False
@@ -214,6 +258,10 @@ PRIVATE_IP_RE = re.compile(
     r"^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)"
 )
 IGNORE_MARKER = "public-tree-scan: ignore-line"
+#: Issue#160 AC3：放过标记必须**点名规则**——``。
+#: 旧实现 `IGNORE_MARKER in line` 是整行跳过＝一票放行（同行其它规则被一起放过）；
+#: 裸标记（无括号）现在不放过任何规则：写错方向的失败是「扫描变红」，而不是「静默放过」。
+_IGNORE_LINE_RE = re.compile(re.escape(IGNORE_MARKER) + r"\s*\((?P<rules>[A-Za-z0-9_,\s]*)\)")
 SKIP_SUFFIXES = frozenset({
     ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".zip", ".gz", ".whl", ".bin",
     ".so", ".dylib", ".dll", ".pt", ".pth", ".onnx", ".safetensors", ".docx", ".xlsx", ".pptx",
@@ -259,32 +307,37 @@ MIN_CLEAN_CN_CHARS = 100
 #: 阳性对照**逐例**清单（例名, 代码片段）。Issue#159 AC3：逐例命中是硬要求——
 #: 只查「10 个类别是否都出现」会放过**整类放松**：往 `META_TAIL_WORDS` 里加 `token`
 #: 只让个别片段逃逸，其余片段仍覆盖同一类别，类别级断言照旧通过。
-#: 每行末尾的 `public-tree-scan: ignore-line` 是自指豁免：本文件自身也会被扫描。
+#: 每行末尾的 `public-tree-scan: ignore-line(<规则名>)` 是自指豁免：本文件自身也会被扫描。
+#: Issue#160 AC3：豁免必须逐个点名规则，同行其它规则照常报出（旧实现整行跳过＝一票放行）。
 SELF_TEST_BAD_CASES = (
-    ("url-and-path", "instance 8.8.8.8 path /srv/evidence/arm.json win C:\\Users\\dev\\secret.txt"),  # public-tree-scan: ignore-line
-    ("bearer-and-literal", "auth Bearer abcdefghijklmnopqrstuvwxyz012345 password=\"Passw0rd!2026\" deny SCNET-INSTANCE-1"),  # public-tree-scan: ignore-line
-    ("flag-cli", "cli --api-pass \"Synthetic-Pass!123\""),  # public-tree-scan: ignore-line
-    ("flag-argparse", "parser.add_argument(\"--api-pass\", default=\"Synthetic-Pass!123\")"),  # public-tree-scan: ignore-line
-    ("bare-assignment", "cfg password=Hunter2Hunter2"),  # public-tree-scan: ignore-line
-    ("suffix-secret", "cfg api_secret=Zz9Kk2Lm"),  # public-tree-scan: ignore-line
-    ("snake-db-password", "cfg db_password=\"Hunter2Hunter2\""),  # public-tree-scan: ignore-line
-    ("upper-secret", "cfg API_SECRET = \"Zz9Kk2Lm\""),  # public-tree-scan: ignore-line
-    ("camel-secret", "cfg clientSecret: \"Ab3xY9Qq2\""),  # public-tree-scan: ignore-line
-    ("long-token", "cfg access_token = \"ghp_abcdefghijklmnopqrstuvwxyz0123456\""),  # public-tree-scan: ignore-line
-    ("annotated-secret", "cfg client_secret: str = \"Ab12Cd34\""),  # public-tree-scan: ignore-line
-    ("annotated-key-optional", 'api_key: str | None = "Ab12Cd34"'),  # public-tree-scan: ignore-line
-    ("url-inline", "db postgresql://eval_user:Synthetic-Pass!123@127.0.0.1:5432/app"),  # public-tree-scan: ignore-line
-    ("basic-auth", "auth Basic U3ludGhldGljLVBhc3MhMTIz"),  # public-tree-scan: ignore-line
+    ("url-and-path", "instance 8.8.8.8 path /srv/evidence/arm.json win C:\\Users\\dev\\secret.txt"),  # public-tree-scan: ignore-line(abs_path, public_ip, win_path)
+    ("bearer-and-literal", "auth Bearer abcdefghijklmnopqrstuvwxyz012345 password=\"Passw0rd!2026\" deny SCNET-INSTANCE-1"),  # public-tree-scan: ignore-line(bearer)
+    ("flag-cli", "cli --api-pass \"Synthetic-Pass!123\""),  # public-tree-scan: ignore-line(credential_flag)
+    ("flag-argparse", "parser.add_argument(\"--api-pass\", default=\"Synthetic-Pass!123\")"),  # public-tree-scan: ignore-line(credential_flag)
+    ("bare-assignment", "cfg password=Hunter2Hunter2"),  #
+    ("suffix-secret", "cfg api_secret=Zz9Kk2Lm"),  #
+    ("snake-db-password", "cfg db_password=\"Hunter2Hunter2\""),  #
+    ("upper-secret", "cfg API_SECRET = \"Zz9Kk2Lm\""),  #
+    ("camel-secret", "cfg clientSecret: \"Ab3xY9Qq2\""),  #
+    ("long-token", "cfg access_token = \"ghp_abcdefghijklmnopqrstuvwxyz0123456\""),  # public-tree-scan: ignore-line(api_key)
+    ("annotated-secret", "cfg client_secret: str = \"Ab12Cd34\""),  #
+    ("annotated-key-optional", 'api_key: str | None = "Ab12Cd34"'),  # public-tree-scan: ignore-line(credential_literal)
+    ("url-inline", "db postgresql://eval_user:Synthetic-Pass!123@127.0.0.1:5432/app"),  # public-tree-scan: ignore-line(url_credential)
+    ("basic-auth", "auth Basic U3ludGhldGljLVBhc3MhMTIz"),  # public-tree-scan: ignore-line(basic_auth)
     # 与键名无关的厂商前缀密钥（`api_key` 规则）：门①.5 r1 指出 required 里缺它 ⇒ 该规则曾被静默改假
-    ("vendor-prefixed-key", 'cfg value = "sk-abcdefghijklmnopqrstuvwx"'),  # public-tree-scan: ignore-line
+    ("vendor-prefixed-key", 'cfg value = "sk-abcdefghijklmnopqrstuvwx"'),  # public-tree-scan: ignore-line(api_key)
     # 只靠**键名**才成立的凭据例（值不带厂商前缀）：元数据尾巴词放松时它必须逃逸 ⇒ 自检判红
-    ("token-name-only", 'cfg access_token = "Ab12Cd34"'),  # public-tree-scan: ignore-line
+    ("token-name-only", 'cfg access_token = "Ab12Cd34"'),  # public-tree-scan: ignore-line(credential_literal)
     # 只靠 `is_credential_name` 的 compact 兜底才成立（词元切分后无凭据词）：冷审 N8 曾删掉该兜底而全绿
-    ("compact-fallback-name", 'cfg dbpassword = "Ab12Cd34"'),  # public-tree-scan: ignore-line
-    ("key-name-only", 'cfg api_key = "Ab12Cd34"'),  # public-tree-scan: ignore-line
+    ("compact-fallback-name", 'cfg dbpassword = "Ab12Cd34"'),  # public-tree-scan: ignore-line(credential_literal)
+    ("key-name-only", 'cfg api_key = "Ab12Cd34"'),  # public-tree-scan: ignore-line(credential_literal)
     # 门①.5 r2 I-1：只靠**符号**（不含数字）成形的密钥。此前 18 例正样本值全含数字，
     # 于是把 `_SECRET_SYMBOL_RE` 里的 `!` 删掉仍然全绿，而仅含符号的口令会漏（见下方用例）。
-    ("symbol-shaped-secret", 'cfg password = "Abcdefg!"'),  # public-tree-scan: ignore-line
+    ("symbol-shaped-secret", 'cfg password = "Abcdefg!"'),  # public-tree-scan: ignore-line(credential_literal)
+    # Issue#160 现象①：含汉字的值曾被 `_is_secret_shaped` 整类排除 ⇒ 中文口令静默漏网。
+    # 两例覆盖主 Issue 点名的两个形态：带数字的纯中文值、中英数混排值。
+    ("cjk-password-with-digits", 'cfg password="测试口令123"'),  # public-tree-scan: ignore-line(credential_literal)
+    ("cjk-mixed-secret", 'cfg secret = "超机密密码9o0i"'),  # public-tree-scan: ignore-line(credential_literal)
 )
 SELF_TEST_BAD = " ".join(snippet for _label, snippet in SELF_TEST_BAD_CASES)
 SELF_TEST_CLEAN = (
@@ -305,6 +358,12 @@ SELF_TEST_CLEAN_CN = (
     "本院于2022年1月25日立案受理，承办人张三，联系电话 13800000000，"
     "账号 202020202020202020，地址 广西南宁市青秀区示例路 1 号。"
     "配置示例：api_key=os.environ[\"X\"] password=<你的密码> "
+    # Issue#160 AC2 反例：凭据**键名**下的纯中文文案不得当口令（缺混排证据）；
+    # 长到 CJK 长度底线（6 字）也不能只靠长度成立。
+    "secret = \"中文标题\" password = \"甲乙丙丁戊己\" "  # public-tree-scan: ignore-line(credential_bare)
+    # 门①.5 r1 M-3 / r2 R2-1：中文标点正文 / 中文日期形态也必须零命中——
+    # **键名必须是凭据名**，否则会被键名门提前挡掉、压根测不到中文标点/日期排除。
+    "secret = \"本次共3人，已逐一核对。\" pwd = \"2023年6月15日\" "
 )
 
 
@@ -383,7 +442,7 @@ def credential_findings(text: str) -> list[tuple[str, str]]:
             break
         if matched:
             continue
-        # 空格分隔的裸值形态（`--api-pass Ab12Cd34`，⑨冷评审 R9-3）：仅看同一行，且与其它分支同形状判据。
+        # 空格分隔的裸值形态（`--api-pass Ab12Cd34`，⑨冷评审 R9-3）：仅看同一行，且与其它分支同形状判据。  #
         bare = _BARE_FLAG_VALUE_RE.match(same_line)
         if bare is None:
             continue
@@ -419,12 +478,16 @@ def scan(text: str, *, denylist: list[str], allow_prefixes: list[str]) -> list[t
 
 
 def scan_source(name: str, text: str, *, denylist: list[str], allow_prefixes: list[str]) -> list[str]:
-    """逐行扫描并带行号；含放过标记的行跳过。"""
+    """逐行扫描并带行号；放过标记**按规则名**生效（Issue#160 AC3）。"""
     lines: list[str] = []
     for lineno, line in enumerate(text.splitlines(), 1):
-        if IGNORE_MARKER in line:
-            continue
+        marker = _IGNORE_LINE_RE.search(line)
+        allowed = (
+            {item.strip() for item in marker.group("rules").split(",") if item.strip()} if marker else set()
+        )
         for rule, value in scan(line, denylist=denylist, allow_prefixes=allow_prefixes):
+            if rule in allowed:
+                continue
             lines.append(f"{name}:{lineno}: [{rule}] {value}")
     return lines
 
@@ -648,6 +711,41 @@ def _extension_coverage_check() -> list[str]:
     return problems
 
 
+def _ignore_line_scope_check() -> list[str]:
+    """Issue#160 AC3：放过标记必须**按规则名**生效，且裸标记不得整行豁免。
+
+    反向对照两条：(a) 只点名 `credential_literal` 时同行的 `public_ip` 必须照常报出；
+    (b) 裸标记不放过任何规则。两条都在 `scan_source` 的真路径上跑（不是断言常量）。
+    """
+    problems: list[str] = []
+    # 标记字面量按符号拼出：本函数所在行也会被扫描器扫到，写成字面量会自指命中。
+    scoped = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + f"{IGNORE_MARKER}(credential_literal)"  # public-tree-scan: ignore-line(public_ip)
+    rules = {
+        line.split("[", 1)[1].split("]", 1)[0]
+        for line in scan_source("self-test-ignore-scope", scoped, denylist=[], allow_prefixes=[])
+    }
+    if "credential_literal" in rules:
+        problems.append("规则级放过标记未生效：被点名的 credential_literal 仍被报出")
+    if "public_ip" not in rules:
+        problems.append(f"规则级放过标记过宽：同行未被点名的规则被一起放过（实得 {sorted(rules)}）")
+    bare = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + IGNORE_MARKER  # public-tree-scan: ignore-line(public_ip)
+    bare_rules = {
+        line.split("[", 1)[1].split("]", 1)[0]
+        for line in scan_source("self-test-ignore-bare", bare, denylist=[], allow_prefixes=[])
+    }
+    if "credential_literal" not in bare_rules or "public_ip" not in bare_rules:
+        problems.append(f"裸放过标记不应放过任何规则（实得 {sorted(bare_rules)}）")
+    # 门①.5 r1 M-2：空括号 `ignore-line()` 的规则集为空 ⇒ **什么都不放过**（不是「放过整行」）。
+    empty = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + IGNORE_MARKER + "()"  # public-tree-scan: ignore-line(public_ip)
+    empty_rules = {
+        line.split("[", 1)[1].split("]", 1)[0]
+        for line in scan_source("self-test-ignore-empty", empty, denylist=[], allow_prefixes=[])
+    }
+    if "credential_literal" not in empty_rules or "public_ip" not in empty_rules:
+        problems.append(f"空括号放过标记不应放过任何规则（实得 {sorted(empty_rules)}）")
+    return problems
+
+
 def self_test(denylist: list[str] | None = None) -> int:
     """阳性对照：**逐例**必须命中（类别清单见 `required`），干净样本必须零命中。
 
@@ -662,7 +760,7 @@ def self_test(denylist: list[str] | None = None) -> int:
     # 与 `KNOWN_RULE_IDS` 同源：汇总断言（main）用同一份登记表，规则改名即红。
     required = set(KNOWN_RULE_IDS)
     # 用例数下限：删掉一条用例（冷审 N10）不能靠「剩下的仍然全中」蒙过去。
-    min_cases = 19
+    min_cases = 21
     problems: list[str] = []
     coverage: dict[str, list[str]] = {}
     per_case: list[str] = []
@@ -699,6 +797,7 @@ def self_test(denylist: list[str] | None = None) -> int:
     problems += _scan_scope_contract()
     problems += _end_to_end_scope_check()
     problems += _extension_coverage_check()
+    problems += _ignore_line_scope_check()
     if problems:
         for line in problems:
             print(f"[self-test] {line}", file=sys.stderr)
