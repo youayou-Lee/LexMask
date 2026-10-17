@@ -351,7 +351,8 @@ def test_e3_entry_turns_failed_chunk_into_negative_marker(monkeypatch, tmp_path)
         )
     )
 
-    assert boxes is None and memo is None, "整卷不得被判为「文档级链已处理」"
+    assert boxes is None, "整卷不得被判为「文档级链已处理」"
+    assert memo and memo.get("reason_code") == "failed_chunks", "回落必须带机读原因（Issue#165）"
     reasons = [str(entry.get("reason") or "") for entry in source._MEMO.values()]
     assert any(reason.startswith("failed_chunks:") for reason in reasons), reasons
     # 旧代码上失败块静默成功 ⇒ 不会抛 _TransientIneligible ⇒ 上方断言必红。
@@ -396,7 +397,8 @@ def test_e4_fallback_is_memoized_and_does_not_rehit_upstream(monkeypatch, tmp_pa
         source.boxes_for_page(file_id="f" * 8, snapshot=snapshot, page=2, ocr_has_types=None)
     )
 
-    assert first == (None, None) and second == (None, None), "失败卷不得产出文本层框（须回落旧链）"
+    assert first[0] is None and second[0] is None, "失败卷不得产出文本层框（须回落旧链）"
+    assert first[1] and first[1].get("reason_code") == "failed_chunks", "负缓存命中也要带机读原因（Issue#165）"
     assert calls["n"] == 1, "TTL 内重复访问不得再次构建（否则每次翻页都会重打一遍上游 NER）"
     markers = [entry for entry in source._MEMO.values() if entry.get("unusable")]
     assert markers, "失败块必须落负缓存 marker"

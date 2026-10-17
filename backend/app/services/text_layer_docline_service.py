@@ -531,7 +531,7 @@ async def run_document_ner(
     semaphore = asyncio.Semaphore(max(1, limit))
     values_by_type: dict[str, set[str]] = {label: set() for label in labels}
     stats = {"calls": 0, "residual_calls": 0, "truncated": 0, "http_errors": 0,
-             "regex_values": 0, "failed_chunks": 0}
+             "regex_values": 0}
     failed_ranges: list[tuple[int, int]] = []
     lock = asyncio.Lock()
 
@@ -565,7 +565,6 @@ async def run_document_ner(
                 logger.warning("docline NER chunk failed: %s", exc)
                 async with lock:
                     stats["http_errors"] += 1
-                    stats["failed_chunks"] += 1
                 return None
         if not ok:
             # 上游没给出可用结论（HTTP 错/超时/整段不可解析/熔断开路，或同 payload
@@ -582,7 +581,6 @@ async def run_document_ner(
             )
             async with lock:
                 stats["http_errors"] += 1
-                stats["failed_chunks"] += 1
             return None
         async with lock:
             stats["calls"] += 1
@@ -683,6 +681,9 @@ async def run_document_ner(
     covered = _union_coverage(ok_chunks, len(stream))
     layer_chars = sum(len(w.text) for span in word_spans for w in [span.word])
     return DocLineResult(
+        # Issue#165：`failed_chunks` 的**唯一真源**就是这里（`len(failed_set)`）——
+        # 卷级门读的也是它。此前另有一个 `stats["failed_chunks"]` 计数器，全仓无读者，
+        # 已删除以免出现两个会漂移的口径。
         failed_chunks=len(failed_set),
         pages=len(pages),
         chunks=len(chunks),

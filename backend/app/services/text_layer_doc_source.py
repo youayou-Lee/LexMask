@@ -36,7 +36,20 @@ _LOCK = asyncio.Lock()
 
 
 class _TransientIneligible(Exception):
-    """临时不可用（如块失败超阈）。负缓存带 TTL，过期后允许重试。"""
+    """卷级门判定「本卷不接管」。
+
+    Issue#165：除了人读消息，还要把**机读原因**带给上层（负缓存 marker 与
+    `pipeline_status["text_layer_doc"]`），否则失败卷上「为什么回落到旧路径」完全不可见。
+    `permanent=True` 表示本快照下不会好转（无文本层/超预算/质量判定不可用），
+    对应 `retry_at=inf`；其余保持 120s 负缓存 TTL 语义不变。
+    """
+
+    def __init__(self, message: str, *, code: str = "ineligible",
+                 detail: dict | None = None, permanent: bool = False) -> None:
+        super().__init__(message)
+        self.code = code
+        self.detail = dict(detail or {})
+        self.permanent = bool(permanent)
 
 SOURCE_DETAIL = "text_layer_docline"
 
@@ -147,7 +160,7 @@ async def _build(
     pages = await asyncio.to_thread(docline.extract_text_layer_pages, path)
     if not pages:
         logger.info("text_layer_docline skipped: no text layer file=%s", file_id[:8])
-        return None
+        raise _TransientIneligible("no_text_layer", code="no_text_layer", permanent=True)
 
     # **建流预算闸**（Issue#129 评审 I1）：整卷建流在**首个请求里同步跑完**，页数过多
     # 会让该请求超过网关 `proxy_read_timeout`（`frontend/nginx.conf.template`，
@@ -167,7 +180,12 @@ async def _build(
                 len(pages),
                 file_id[:8],
             )
-            return None
+            raise _TransientIneligible(
+                f"build_budget:{estimated:.0f}s/{budget:.0f}s",
+                code="build_budget",
+                detail={"estimated_sec": round(estimated, 1), "budget_sec": budget},
+                permanent=True,
+            )
 
     ink = await asyncio.to_thread(docline.sample_ink_alignment, path, pages)
     metrics = quality.compute_metrics(
@@ -182,7 +200,12 @@ async def _build(
             file_id[:8],
             "; ".join(verdict.reasons),
         )
-        return None
+        raise _TransientIneligible(
+            f"verdict_unusable:{verdict.severity}",
+            code="verdict_unusable",
+            detail={"severity": str(verdict.severity)},
+            permanent=True,
+        )
 
     result = await docline.run_document_ner(
         pages, labels, has_client=has_client, regex_types=regex_types
@@ -194,13 +217,21 @@ async def _build(
             "text_layer_docline skipped: %d/%d chunks failed file=%s",
             result.failed_chunks, result.chunks, file_id[:8],
         )
-        raise _TransientIneligible(f"failed_chunks:{result.failed_chunks}/{result.chunks}")
+        raise _TransientIneligible(
+            f"failed_chunks:{result.failed_chunks}/{result.chunks}",
+            code="failed_chunks",
+            detail={"failed_chunks": int(result.failed_chunks), "chunks": int(result.chunks)},
+        )
     map_ratio = float(result.map_failure_ratio)
     if map_ratio > float(settings.TEXT_LAYER_MAX_MAP_FAILURE_RATIO):
         logger.warning(
             "text_layer_docline skipped: map failure ratio %.3f file=%s", map_ratio, file_id[:8]
         )
-        raise _TransientIneligible(f"map_failure_ratio:{map_ratio:.3f}")
+        raise _TransientIneligible(
+            f"map_failure_ratio:{map_ratio:.3f}",
+            code="map_failure_ratio",
+            detail={"ratio": round(map_ratio, 4)},
+        )
     max_errors = int(settings.TEXT_LAYER_MAX_BLOCK_ERRORS)
     if result.http_errors > max_errors:
         logger.warning(
@@ -210,7 +241,11 @@ async def _build(
             max_errors,
             file_id[:8],
         )
-        raise _TransientIneligible(f"block_errors:{result.http_errors}/{result.chunks}")
+        raise _TransientIneligible(
+            f"block_errors:{result.http_errors}/{result.chunks}",
+            code="block_errors",
+            detail={"http_errors": int(result.http_errors), "chunks": int(result.chunks)},
+        )
     truncated_ratio = (
         float(result.truncated_chunks) / float(result.chunks) if result.chunks else 0.0
     )
@@ -224,7 +259,10 @@ async def _build(
             result.truncated_chunks, result.chunks, max_truncated, file_id[:8],
         )
         raise _TransientIneligible(
-            f"truncated_ratio:{truncated_ratio:.3f}:{result.truncated_chunks}/{result.chunks}"
+            f"truncated_ratio:{truncated_ratio:.3f}:{result.truncated_chunks}/{result.chunks}",
+            code="truncated_chunks",
+            detail={"truncated": int(result.truncated_chunks), "chunks": int(result.chunks),
+                    "ratio": round(truncated_ratio, 4)},
         )
     coverage = float(result.coverage_ratio)
     if coverage < float(settings.TEXT_LAYER_MIN_COVERAGE):
@@ -232,7 +270,11 @@ async def _build(
             "text_layer_docline skipped: coverage %.3f < %.2f file=%s",
             coverage, float(settings.TEXT_LAYER_MIN_COVERAGE), file_id[:8],
         )
-        raise _TransientIneligible(f"coverage:{coverage:.3f}")
+        raise _TransientIneligible(
+            f"coverage:{coverage:.3f}",
+            code="coverage",
+            detail={"coverage": round(coverage, 4)},
+        )
     label_to_id = build_label_to_type_id(ocr_has_types)
     # **只有真正带词的页才算被覆盖**：`extract_text_layer_pages` 会把无文本层的页
     # 也返回（`words=[]`）。若按「页存在」算覆盖，混合卷里那些无层页会被判成
@@ -281,7 +323,6 @@ async def _build(
     return memo
 
 
-_NEGATIVE: dict = {"_negative": True}
 _KEY_LOCKS: dict[str, asyncio.Lock] = {}
 
 
@@ -301,7 +342,11 @@ def _key_lock(key: str) -> asyncio.Lock:
 
 
 async def _lookup_memo(key: str) -> dict | None:
-    """读 memo：命中且未过期返回 memo；负缓存仍有效返回 `_NEGATIVE`；否则 None（需重建）。"""
+    """读 memo：命中且未过期返回 memo；负缓存仍有效返回其 marker（带原因）；否则 None。
+
+    Issue#165：以前负缓存命中返回 `_NEGATIVE` 哨兵，调用方只能 `return None, None`
+    ⇒ 失败卷的原因（块失败数等）在上层彻底不可见。
+    """
     async with _LOCK:
         memo = _MEMO.get(key)
         if memo is None:
@@ -309,7 +354,7 @@ async def _lookup_memo(key: str) -> dict | None:
         if memo.get("unusable"):
             retry_at = float(memo.get("retry_at") or 0.0)
             if retry_at == float("inf") or time.monotonic() < retry_at:
-                return _NEGATIVE
+                return memo
             return None
         return memo
 
@@ -322,7 +367,14 @@ async def boxes_for_page(
     ocr_has_types,
     owner_id=None,
 ) -> tuple[list[BoundingBox] | None, dict | None]:
-    """返回该页的文档级框与元信息；资格不符或出错时返回 `(None, None)`。"""
+    """返回该页的文档级框与元信息。
+
+    Issue#165：**回落失败时第二个返回值不再恒为 `None`**——本卷不接管（资格不符 /
+    显式不跑 HaS / 无标签 / 非扫描件）仍返回 `(None, None)`；而「本该接管但判定失败」
+    （无文本层、超预算、质量或覆盖率闸、块失败、任何异常）返回
+    `(None, {"unusable": True, "reason_code": ..., "reason_detail": ...})`，
+    供上层写进 `pipeline_status["text_layer_doc"]`（否则失败卷上无任何机读回落信号）。
+    """
     if not settings.TEXT_LAYER_DOCLINE_ENABLED:
         return None, None
     # **「不跑 HaS」必须整条链跳过**（门⑥ 二轮 Critical#1）：`effective_ocr_has_types`
@@ -351,29 +403,47 @@ async def boxes_for_page(
     try:
         async with _key_lock(key):
             memo = await _lookup_memo(key)
-            if memo is _NEGATIVE:
-                return None, None
+            if memo is not None and memo.get("unusable"):
+                if memo.get("reason_code") == "not_applicable":
+                    return None, None
+                # Issue#165：负缓存也要把原因交回上层，否则失败卷的
+                # `pipeline_status["text_layer_doc"]` 整块缺失。
+                return None, memo
             if memo is None:
                 try:
                     built = await _build(file_id, snapshot, labels, ocr_has_types, regex_types)
                 except _TransientIneligible as exc:
                     built = None
-                    marker = {"unusable": True, "retry_at": time.monotonic() + _NEGATIVE_TTL_SEC,
-                              "reason": str(exc)}
+                    marker = {
+                        "unusable": True,
+                        "retry_at": (
+                            float("inf") if exc.permanent
+                            else time.monotonic() + _NEGATIVE_TTL_SEC
+                        ),
+                        "reason": str(exc),
+                        "reason_code": exc.code,
+                        "reason_detail": exc.detail,
+                    }
                 except Exception as exc:  # noqa: BLE001 - 本链任何故障都退回旧路径
                     logger.warning("text_layer_docline build failed file=%s: %s", file_id[:8], exc)
                     built = None
                     marker = {"unusable": True, "retry_at": time.monotonic() + _NEGATIVE_TTL_SEC,
-                              "reason": f"error:{type(exc).__name__}"}
+                              "reason": f"error:{type(exc).__name__}",
+                              "reason_code": "error", "reason_detail": {}}
                 else:
-                    marker = {"unusable": True, "retry_at": float("inf")}
+                    # `_build` 返回 None = **本卷不适用**（无路径 / 非扫描件），不是回落失败：
+                    # 不能报成 fallback，否则每个文本型 PDF 的每一页都会多出一块假失败。
+                    marker = {"unusable": True, "retry_at": float("inf"),
+                              "reason_code": "not_applicable"}
                 memo = built if built is not None else marker
                 async with _LOCK:
                     _MEMO[key] = memo
                     if len(_MEMO) > 16:
                         _MEMO.pop(next(iter(_MEMO)))
                 if memo.get("unusable"):
-                    return None, None
+                    if memo.get("reason_code") == "not_applicable":
+                        return None, None
+                    return None, memo
         if int(page) not in memo["covered_pages"]:
             # **混合卷**：本页没有内嵌文本层。此处绝不能返回空列表——那等于
             # 「文档级链说这页 0 个实体」，会让该页**静默丢检**。返回 None 让调用方
@@ -390,5 +460,15 @@ async def boxes_for_page(
             return None, memo
         return boxes, memo
     except Exception as exc:  # noqa: BLE001 - 本链任何故障都退回旧路径，绝不 5xx
-        logger.warning("text_layer_docline failed file=%s page=%d: %s", file_id[:8], page, exc)
-        return None, None
+        # Issue#165：用 `%s` 而非 `%d`——兜底分支正是为「入口参数不可信」而存在，
+        # 日志格式串本身不能再因为 page 不是整数而抛错（否则兜底分支反而把请求打成 5xx）。
+        logger.warning("text_layer_docline failed file=%s page=%s: %s", file_id[:8], page, exc)
+        # Issue#165：**意外故障**同样要带机读原因。此前这里也返回 `(None, None)`，
+        # 于是「本链出意外」与「本链不适用」在上层长得一模一样（都是无信号回落）。
+        return None, {
+            "unusable": True,
+            "retry_at": time.monotonic() + _NEGATIVE_TTL_SEC,
+            "reason": f"unexpected:{type(exc).__name__}",
+            "reason_code": "unexpected",
+            "reason_detail": {},
+        }
