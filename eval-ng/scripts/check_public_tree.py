@@ -261,6 +261,14 @@ SELF_TEST_CLEAN = (
     "--api-pass\", default=os.environ.get(\"EVAL_API_PASS\")"
 )
 
+# Issue#159 缺口③：干净样本补**中文内容 + 非 ASCII 路径**（自检此前只有 ASCII 路径/内容）。
+# 注意：缺口③的另一半（「应命中却曾被放过」的中文口令语料）属 Issue#160，不在此处假装覆盖。
+SELF_TEST_CLEAN_CN = (
+    "本院于2022年1月25日立案受理，承办人张三，联系电话 13800000000，"
+    "账号 202020202020202020，地址 广西南宁市青秀区示例路 1 号。"
+    "配置示例：api_key=os.environ[\"X\"] password=<你的密码> "
+)
+
 
 def _is_public_ip(ip: str) -> bool:
     if any(ip.startswith(prefix) for prefix in LOOPBACK_PREFIXES):
@@ -561,6 +569,11 @@ def self_test(denylist: list[str] | None = None) -> int:
     clean = scan_source("self-test-clean", SELF_TEST_CLEAN, denylist=words, allow_prefixes=[])
     if clean:
         problems.append(f"干净样本被误报：{clean}")
+    clean_cn = scan_source(
+        "自检/中文-非ASCII 路径示例.md", SELF_TEST_CLEAN_CN, denylist=words, allow_prefixes=[]
+    )
+    if clean_cn:
+        problems.append(f"中文/非 ASCII 干净样本被误报：{clean_cn}")
     problems += _scan_scope_contract()
     problems += _end_to_end_scope_check()
     if problems:
