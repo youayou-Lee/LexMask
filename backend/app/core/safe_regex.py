@@ -9,12 +9,40 @@ natively support cancellation.
 
 import multiprocessing
 import re
+import threading
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 
 class RegexTimeoutError(ValueError):
     """Raised when a regex operation exceeds its time budget."""
+
+
+# ---- 超时可观测面（Issue#156）--------------------------------------------
+#: 进程级超时计数。此前超时事件**只写不读**（只进日志与异常文本），运维侧只能
+#: grep 日志、无法判断超时发生过几次、在哪条链；这里给一个可读快照，由
+#: ``GET /health`` 暴露（``regex_timeouts`` 字段）。
+_TIMEOUT_STATS_LOCK = threading.Lock()
+_TIMEOUT_STATS: dict[str, int] = {}
+
+
+def _record_regex_timeout(operation: str) -> None:
+    """记一次超时。*operation* 取 ``safe_compile`` / ``safe_finditer`` /
+    ``safe_finditer_many``（对应三条调用链）。"""
+    with _TIMEOUT_STATS_LOCK:
+        _TIMEOUT_STATS[operation] = _TIMEOUT_STATS.get(operation, 0) + 1
+
+
+def regex_timeout_stats() -> dict[str, int]:
+    """超时计数快照 ``{operation: count}``（进程级累计值，只读副本）。"""
+    with _TIMEOUT_STATS_LOCK:
+        return dict(_TIMEOUT_STATS)
+
+
+def reset_regex_timeout_stats() -> None:
+    """清空超时计数（测试用）。"""
+    with _TIMEOUT_STATS_LOCK:
+        _TIMEOUT_STATS.clear()
 
 
 # Short probe string used to detect catastrophic backtracking at compile time.
@@ -33,12 +61,17 @@ def _compile_and_probe(pattern: str) -> re.Pattern:
 
 def _finditer_many_in_process(
     pattern_str: str, flags: int, texts: list[str]
-) -> list[list[tuple[str, int, int, list[tuple[str, int, int, str]]]]]:
+) -> list[list[tuple[str, int, int, list[tuple[str, int, int, str]], list[str]]]]:
     """Run finditer over several texts in ONE subprocess call.
 
     Same per-match payload as :func:`_finditer_in_process`, grouped per input
     text. Batched so callers that scan many short texts (per OCR block, see
     ``Issue#64``) pay one IPC round-trip instead of one per text.
+
+    Per match the payload also carries ``declared`` = pattern **声明了的**命名组名
+    （声明顺序）。Issue#156：调用方要能区分「没有声明命名组」（⇒ 整 match 一项）
+    与「声明了但本轮一个都没参与」（⇒ 不产出、不回退整 match）——只传参与组时
+    这两种情况在跨进程边界处都表现为空列表，语义丢失。
     """
     compiled = re.compile(pattern_str, flags)
     group_order = sorted(compiled.groupindex, key=compiled.groupindex.get)
@@ -51,19 +84,20 @@ def _finditer_many_in_process(
                 for name in group_order
                 if m.start(name) != -1
             ]
-            rows.append((m.group(), m.start(), m.end(), named))
+            rows.append((m.group(), m.start(), m.end(), named, list(group_order)))
         per_text.append(rows)
     return per_text
 
 
 def _finditer_in_process(
     pattern_str: str, flags: int, text: str
-) -> list[tuple[str, int, int, list[tuple[str, int, int, str]]]]:
+) -> list[tuple[str, int, int, list[tuple[str, int, int, str]], list[str]]]:
     """Run finditer in a subprocess and return serialisable tuples.
 
     Per match: whole-match text/start/end plus the participating named
     groups as ``(name, start, end, text)`` with absolute offsets (Issue#52:
-    interval / birth-context patterns emit per-group entities).
+    interval / birth-context patterns emit per-group entities), and ``declared``
+    = 该 pattern 声明了的命名组名（Issue#156，见 :func:`_finditer_many_in_process`）。
     """
     return _finditer_many_in_process(pattern_str, flags, [text])[0]
 
@@ -101,6 +135,7 @@ def safe_compile(pattern: str, timeout: float = 2.0) -> re.Pattern:
         future.cancel()
         # Kill and replace the pool so the stuck worker is terminated
         _kill_and_replace_pool()
+        _record_regex_timeout("safe_compile")
         raise RegexTimeoutError(
             f"Regex compile+probe timed out after {timeout}s — "
             f"pattern may cause catastrophic backtracking (ReDoS): {pattern!r}"
@@ -110,7 +145,7 @@ def safe_compile(pattern: str, timeout: float = 2.0) -> re.Pattern:
 
 class _MatchProxy:
     """Lightweight stand-in for ``re.Match`` returned from subprocess results."""
-    __slots__ = ("_text", "_start", "_end", "_named_groups")
+    __slots__ = ("_text", "_start", "_end", "_named_groups", "_declared_groups")
 
     def __init__(
         self,
@@ -118,11 +153,15 @@ class _MatchProxy:
         start: int,
         end: int,
         named_groups: list[tuple[str, int, int, str]] | None = None,
+        declared_groups: list[str] | None = None,
     ):
         self._text = text
         self._start = start
         self._end = end
         self._named_groups = list(named_groups or [])
+        #: pattern 声明了的命名组名（声明顺序）。真 ``re.Match`` 侧由
+        #: :func:`_declared_named_groups` 从 ``match.re.groupindex`` 取。
+        self._declared_groups = list(declared_groups or [])
 
     def group(self, *args: int) -> str:
         return self._text
@@ -136,6 +175,10 @@ class _MatchProxy:
     def named_groups(self) -> list[tuple[str, int, int, str]]:
         """参与匹配的命名组 ``(name, start, end, text)``，未参与的组不出现。"""
         return list(self._named_groups)
+
+    def declared_named_groups(self) -> list[str]:
+        """pattern 声明了的命名组名（声明顺序），**与是否参与本轮匹配无关**。"""
+        return list(self._declared_groups)
 
 
 # ---- 时间预算放缩与「match → 实体文本」语义（Issue#64 / Issue#65）----
@@ -163,6 +206,39 @@ def scaled_timeout(text: str, base: float = TIMEOUT_BASE_SECONDS) -> float:
     return min(TIMEOUT_MAX_SECONDS, max(base, megabytes * TIMEOUT_SECONDS_PER_MEGABYTE))
 
 
+def _declared_named_groups(match: "re.Match[str] | _MatchProxy") -> list[str]:
+    """该 match 的 pattern **声明**的命名组名（声明顺序）。
+
+    ``_MatchProxy``（子进程结果）直接带声明表；真 ``re.Match`` 从
+    ``match.re.groupindex`` 取（``{name: group_number}``，按组号升序 = 声明顺序）。
+    """
+    declared = getattr(match, "declared_named_groups", None)
+    if callable(declared):
+        return list(declared())
+    groupindex = getattr(getattr(match, "re", None), "groupindex", None) or {}
+    return sorted(groupindex, key=groupindex.__getitem__)
+
+
+def _named_groups_from_real_match(
+    match: "re.Match[str]", declared: list[str]
+) -> list[tuple[str, int, int, str]]:
+    """真 ``re.Match`` → 参与匹配的命名组（声明顺序、空组占位）。
+
+    与子进程侧逐字同规则（``m.start(name) != -1`` 才算参与），保证
+    ``_MatchProxy`` 与真 match 两条路径的编号基准一致（Issue#156 A10）。
+    """
+    out: list[tuple[str, int, int, str]] = []
+    for name in declared:
+        try:
+            start = match.start(name)
+        except (IndexError, re.error):  # 组名不属于该 pattern（理论不可达）
+            continue
+        if start == -1:
+            continue
+        out.append((name, start, match.end(name), match.group(name) or ""))
+    return out
+
+
 def match_items_indexed(
     match: "re.Match[str] | _MatchProxy",
 ) -> list[tuple[int, str, int, int]]:
@@ -177,8 +253,13 @@ def match_items_indexed(
 
     语义本体只在这里实现一次：:func:`match_items` 是本函数的去下标视图。
     """
-    named = match.named_groups() if hasattr(match, "named_groups") else []
-    if named:
+    declared = _declared_named_groups(match)
+    named = (
+        match.named_groups()
+        if hasattr(match, "named_groups")
+        else _named_groups_from_real_match(match, declared)
+    )
+    if declared:
         return [
             (index, text, start, end)
             for index, (_name, start, end, text) in enumerate(named)
@@ -205,8 +286,10 @@ def match_items(match: "re.Match[str] | _MatchProxy") -> list[tuple[str, int, in
     粒度分歧——vision 侧曾直接用 ``m.group(0)``，把「出生日期：」「至」等
     语境词/分隔符整段吞成伪实体（Issue#64，欠遮盖方向）。
 
-    兼容 ``_MatchProxy``（有 ``named_groups``）与真 ``re.Match``（无 ⇒ 按
-    无命名组处理）。
+    兼容 ``_MatchProxy``（子进程结果，带 ``declared_named_groups``）与**真
+    ``re.Match``**（Issue#156：声明组从 ``match.re.groupindex`` 取，参与判据与
+    子进程侧同规则 ``m.start(name) != -1``）。「声明了命名组但全组未参与」在两条
+    路径上都**不产出且不回退整 match**。
     """
     return [
         (text, start, end)
@@ -231,11 +314,14 @@ def safe_finditer(
     except FuturesTimeoutError:
         future.cancel()
         _kill_and_replace_pool()
+        _record_regex_timeout("safe_finditer")
         raise RegexTimeoutError(
             f"Regex finditer timed out after {timeout}s — "
             f"pattern may cause catastrophic backtracking (ReDoS)"
         )
-    return [_MatchProxy(t, s, e, named) for t, s, e, named in raw]
+    return [
+        _MatchProxy(t, s, e, named, declared) for t, s, e, named, declared in raw
+    ]
 
 
 def safe_finditer_many(
@@ -260,11 +346,15 @@ def safe_finditer_many(
     except FuturesTimeoutError:
         future.cancel()
         _kill_and_replace_pool()
+        _record_regex_timeout("safe_finditer_many")
         raise RegexTimeoutError(
             f"Regex finditer timed out after {timeout}s over {len(texts)} texts — "
             f"pattern may cause catastrophic backtracking (ReDoS)"
         )
-    return [[_MatchProxy(t, s, e, named) for t, s, e, named in rows] for rows in raw]
+    return [
+        [_MatchProxy(t, s, e, named, declared) for t, s, e, named, declared in rows]
+        for rows in raw
+    ]
 
 
 def _kill_and_replace_pool() -> None:
