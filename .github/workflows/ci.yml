@@ -96,6 +96,15 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # Issue#157：测试文件此前不在任何 tsc 程序内（tsconfig.json 显式 exclude 了
+      # `src/**/*.test.ts(x)`），而 `npm test` 已在 CI 里跑 ⇒ 测试文件的类型错误
+      # 在 CI 与本地都是盲区。这里用专用配置把测试一并纳入类型检查、fail-fast。
+      # 不改主 tsconfig：加 `@types/node` 会把 `window.setTimeout` 的返回类型从
+      # `number` 判成 `NodeJS.Timeout`，反而让三个产品文件报 TS2322。
+      - name: Type-check tests (Issue#157)
+        working-directory: frontend
+        run: npx tsc -p tsconfig.test.json
+
       # Issue#149：Issue#106 的页并发回归判据（`utils.vision-page-concurrency.test.ts`
       # 断言「勾选印章+签名、不传 concurrency 时在飞 vision POST 峰值 = 3」）此前只在本地跑：
       # 常量被改回 1、或重新引入「勾选视觉特征 ⇒ 串行」分支时 CI 全绿、生产静默退回串行。
