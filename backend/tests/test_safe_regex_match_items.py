@@ -21,10 +21,11 @@ from app.core.safe_regex import (
     _MatchProxy,
     match_items,
     match_items_indexed,
+    safe_compile,
+    safe_finditer,
     safe_finditer_many,
     scaled_timeout,
 )
-
 
 # ── match_items：命名组语义 ────────────────────────────────
 
@@ -121,6 +122,22 @@ def test_indexed_multiple_groups_keep_declaration_index():
     )
 
     assert match_items_indexed(match) == [(0, "a", 0, 1), (1, "b", 1, 2)]
+
+
+def test_subprocess_payload_keeps_declaration_order():
+    """端到端钉住**真子进程 payload** 的命名组取序（r1 自造变异 ① 的补丁）。
+
+    走 `safe_finditer`（真子进程路径，非手工 `_MatchProxy`），两个命名组的编号与顺序
+    必须按声明序；倒置取序应当被判红（见 `_i156/mutation.txt` 的 M9）。
+    """
+    assert match_items_indexed(safe_finditer(safe_compile(r"(?P<first>ab)(?P<second>cd)"), "abcd")[0]) == [
+        (0, "ab", 0, 2),
+        (1, "cd", 2, 4),
+    ]
+    assert match_items_indexed(safe_finditer(safe_compile(r"(?P<c>\d{4})-(?P<d>\d{2})"), "2026-10")[0]) == [
+        (0, "2026", 0, 4),
+        (1, "10", 5, 7),
+    ]
 
 
 def test_indexed_without_named_groups_uses_index_zero():

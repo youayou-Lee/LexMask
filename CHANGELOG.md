@@ -2,6 +2,18 @@
 
 ## 2026-10-18
 
+### 正则（Issue#156）超时可观测 + 真 `re.Match` 命名组语义（**生产行为不变**）
+
+- **可观测性**：`backend/app/core/safe_regex.py` 新增进程级累计计数 `regex_timeout_stats()`（三条链标签 `safe_compile` / `safe_finditer` / `safe_finditer_many`），经 `GET /health` 的新字段 `regex_timeouts` 暴露（`backend/app/main.py`、`backend/app/models/common.py`）。既有 `_regex_timeout_events` 属**另一口径**（沿用旧用途），两者不互相替代。
+- **真 `re.Match` 命名组语义**：按声明序取组、空组不占位；「声明了命名组但全组未参与 ⇒ 不产出、不回退整 match」**只作用于真 `re.Match` 路径**。
+- **⚠️ 行为边界（门①.5 r1 抓出并修正）**：该规则**不得**施加到生产路径（`_MatchProxy`，来自 `safe_finditer*` 子进程）——preset `DATE` 的单日期分支没有命名组（只有区间分支有 `seg_a/seg_b`），一旦越界，单日期实体被整条吞掉（`本院于2022年1月25日立案受理` 的 `2022年1月25日` 变成 0 条 = **漏打码/欠遮盖**）。修法=撤销子进程 payload 的五元组扩展（回到 4 元组，既有 stub 池兼容），生产路径**逐位保持**旧契约（无参与组 ⇒ 回退整 match）。新增生产入口回归闸 `backend/tests/test_issue156_date_preset_regression.py`（走 `HybridNERService._custom_regex_extract` + 真实 preset）；两路径在「命中分支无命名组」时的**按设计分歧**另有专门用例钉死。
+- **A 组边界用例**：A2（后缀语境只出 DATE + 改前形态反面对照）/ A8（真 match 声明未参与 ⇒ 空）/ A10（跨 alternation 参与集合两路径逐位一致）/ A11（窄值落在长词内部 ⇒ 零命中、区间右端不得多吃字符）；新增 4 个用例文件共 **17 例**，另在既有文件补 1 例（子进程侧取序基准）。
+- **零回归（本机 3.12、同刻两树、`PYTHONPATH=/tmp/pylibs`）**：修复树 **2270 passed / 6 failed / 47 skipped** vs 干净基线 `26d11eb` **2252 passed / 6 failed / 47 skipped**，`comm -3` 的 FAILED 集合 **0 行**（无新增、无消失）；差 **+18** = 新增 17 例 + 补 1 例。6 条既有失败两树逐条相同（json_repair 家族等环境依赖），显式标注为既有。
+- **变异**：9/9 KILLED（M1/M2 计数、M3' 代理退化、M4 真 match 声明、M5 判据退回、M6/M7 词边界、M8 `/health`、M9 子进程取序）。Issue 点名的 `groupdict()` 变异经复核实为**等价变异**（`re.Pattern` 无 `groupdict()`、6 种形态取序恒等）⇒ 已在 `mutation.txt` 写明理由并以替代变异覆盖。
+- **IPC 量化（AC5，本机，云未测 ⇒ 只作量级）**：vision 链每页每类型 2 次子进程往返（`safe_compile` + `safe_finditer_many`，无编译缓存）；冷启动首次 `safe_compile` 39.91 ms、热态 2 次约 0.56 ms、190 组约 0.11 s ⇒ 调用次数不变、成本可忽略。
+- **已知缺口（不影响本期四项交付，列二轮）**：A11 左边界与「同一命中重复登记」无判别用例；worker 内部超时形态无覆盖；超时计数为进程级累计（多 worker 需外部聚合）。
+- **证据**：`LexMask-workspace/github-issues/_i156/`（`mutation.txt`、`ipc-cost.md`、`regression-found.md`、`pitfalls.md`、`r1/` 四件交付）；方案 `issue156-regex-observability-plan.md` 含 §7 r1 逐项处置表。
+
 ### 视觉（Issue#96）公章来源可切 MinerU —— 门④ AC2 判 **FAIL**，以「默认关」形态合入
 
 - **背景**：#92 四臂单源对比显示 `mineru_seal`（58.0%）优于 `la`（43.5%），据此立项把公章框来源切到 MinerU。实现完成：框级替换（`official_seal` 照旧下传 LA，VL 印章通道不受影响）、失败回落 LA、新增三个配置键与 26 例单测、页号/单位/漂移三类口径缺陷修毕。
