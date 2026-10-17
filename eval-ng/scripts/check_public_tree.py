@@ -240,8 +240,12 @@ SELF_TEST_BAD_CASES = (
     ("annotated-key-optional", 'api_key: str | None = "Ab12Cd34"'),  # public-tree-scan: ignore-line
     ("url-inline", "db postgresql://eval_user:Synthetic-Pass!123@127.0.0.1:5432/app"),  # public-tree-scan: ignore-line
     ("basic-auth", "auth Basic U3ludGhldGljLVBhc3MhMTIz"),  # public-tree-scan: ignore-line
+    # 与键名无关的厂商前缀密钥（`api_key` 规则）：门①.5 r1 指出 required 里缺它 ⇒ 该规则曾被静默改假
+    ("vendor-prefixed-key", 'cfg value = "sk-abcdefghijklmnopqrstuvwx"'),  # public-tree-scan: ignore-line
     # 只靠**键名**才成立的凭据例（值不带厂商前缀）：元数据尾巴词放松时它必须逃逸 ⇒ 自检判红
     ("token-name-only", 'cfg access_token = "Ab12Cd34"'),  # public-tree-scan: ignore-line
+    # 只靠 `is_credential_name` 的 compact 兜底才成立（词元切分后无凭据词）：冷审 N8 曾删掉该兜底而全绿
+    ("compact-fallback-name", 'cfg dbpassword = "Ab12Cd34"'),  # public-tree-scan: ignore-line
     ("key-name-only", 'cfg api_key = "Ab12Cd34"'),  # public-tree-scan: ignore-line
 )
 SELF_TEST_BAD = " ".join(snippet for _label, snippet in SELF_TEST_BAD_CASES)
@@ -454,42 +458,118 @@ def _iter_targets(repo_root: Path, paths: list[str], base: str | None) -> list[P
     return default_paths(repo_root, base)
 
 
+def _scan_scope_contract() -> list[str]:
+    """门①.5 r1 必修①：**跳过面与范围**是自指盲区。
+
+    自检此前只直调 `scan_source`，结构上永远看不到 `SKIP_SUFFIXES` / `IGNORE_MARKER` /
+    `MAX_BYTES` 被放宽（冷审实测：往 `SKIP_SUFFIXES` 加 `.py` 后，CI 门、自检、仓内回归
+    三方全绿，而含凭据的 `.py` 照样进仓）。这里把三者钉成机械契约：
+    源码后缀不得进跳过集、忽略标记不得改宽、大小上限不得缩小。
+    """
+    problems: list[str] = []
+    source_suffixes = {
+        ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".json", ".yml", ".yaml",
+        ".md", ".sh", ".toml", ".cfg", ".ini", ".env", ".txt", ".sql", ".go", ".java", ".rb",
+    }
+    leaked = sorted(source_suffixes & SKIP_SUFFIXES)
+    if leaked:
+        problems.append(f"SKIP_SUFFIXES 含源码后缀（扫描面被放宽）：{leaked}")
+    if IGNORE_MARKER != "public-tree-scan: ignore-line":
+        problems.append(f"忽略标记被改宽：{IGNORE_MARKER!r}")
+    if MAX_BYTES < 64 * 1024:
+        problems.append(f"单文件大小上限被缩小到 {MAX_BYTES}")
+    return problems
+
+
+def _end_to_end_scope_check() -> list[str]:
+    """门①.5 r1 必修①：走 `main()` 的端到端自检（临时 git 仓 + **已提交**的 .py 凭据）。
+
+    与 CI 的调用路径一致（`--base` 取改动清单 ⇒ 候选 ⇒ 跳过面 ⇒ 扫描 ⇒ 退出码）。
+    作者原先的本地阳性对照用的是**未跟踪**文件，CI 上永远不出现那种路径。
+    """
+    import contextlib
+    import io
+    import os
+    import subprocess
+    import tempfile
+
+    problems: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "probe", "GIT_AUTHOR_EMAIL": "probe@example.com",
+            "GIT_COMMITTER_NAME": "probe", "GIT_COMMITTER_EMAIL": "probe@example.com",
+        }
+
+        def git(*args: str) -> None:
+            subprocess.run(["git", "-C", tmp, *args], capture_output=True, text=True, env=env, check=True)
+
+        git("init", "-q")
+        (Path(tmp) / "keep.txt").write_text("clean\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+        (Path(tmp) / "leak_probe.py").write_text('api_pass = "Synthetic-Pass!123"\n', encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "probe")
+        (Path(tmp) / "keep.txt").write_text("clean but changed\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "benign")
+        sink = io.StringIO()
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            leaked = main(["--repo-root", tmp, "--base", "HEAD~2"])
+            clean = main(["--repo-root", tmp, "--base", "HEAD~1"])
+        if leaked != 1:
+            problems.append(f"端到端自检：临时仓提交含凭据的 .py 后应 rc=1，实得 {leaked}")
+        if clean != 0:
+            problems.append(f"端到端自检：临时仓只改良性文件时应 rc=0，实得 {clean}（注意：无候选文件是 2）")
+    return problems
+
+
 def self_test(denylist: list[str] | None = None) -> int:
     """阳性对照：**逐例**必须命中（类别清单见 `required`），干净样本必须零命中。
 
     Issue#159 AC3：原先只断言「10 个类别是否都出现」。整类放松（例如往
     `META_TAIL_WORDS` 里加 `token`）只让个别片段逃逸，其余片段仍覆盖同一类别，
-    类别级断言照旧通过 ⇒ 放松判据**测不出来**。逐例断言后，任何让某一例逃逸的
-    规则改动都会让自检判红（本文件的变异证据见 Issue#159 方案 §5）。
+    类别级断言照旧通过 ⇒ 放松判据**测不出来**。逐例断言 + 用例数下限 + 规则归属
+    对账 + 跳过面机械契约 + 端到端 `main()` 正反对照之后，任一条放宽路径都会判红
+    （证据见 Issue#159 方案 §5 的变异矩阵）。
     """
     words = list(denylist or [])
     bad_denylist = words + ["SCNET-INSTANCE-1"]
     required = {
-        "public_ip", "abs_path", "win_path", "bearer", "url_credential", "basic_auth",
+        "public_ip", "abs_path", "win_path", "bearer", "api_key", "url_credential", "basic_auth",
         "credential_literal", "credential_flag", "credential_bare", "denylist",
     }
+    # 用例数下限：删掉一条用例（冷审 N10）不能靠「剩下的仍然全中」蒙过去。
+    min_cases = 18
     problems: list[str] = []
-    rules: set[str] = set()
+    coverage: dict[str, list[str]] = {}
     per_case: list[str] = []
     for label, snippet in SELF_TEST_BAD_CASES:
         hits = scan_source(f"self-test-bad:{label}", snippet, denylist=bad_denylist, allow_prefixes=[])
         if not hits:
             problems.append(f"阳性对照未命中：{label}")
-        rules |= {line.split("[", 1)[1].split("]", 1)[0] for line in hits}
+        for line in hits:
+            coverage.setdefault(line.split("[", 1)[1].split("]", 1)[0], []).append(label)
         per_case.append(f"{label}={len(hits)}")
-    missing = required - rules
+    if len(SELF_TEST_BAD_CASES) < min_cases:
+        problems.append(f"阳性对照用例数 {len(SELF_TEST_BAD_CASES)} 少于下限 {min_cases}")
+    missing = required - set(coverage)
     if missing:
-        problems.append(f"阳性对照类别未覆盖：{sorted(missing)}")
+        detail = {r: coverage.get(r, []) for r in sorted(missing)}
+        problems.append(f"阳性对照类别未覆盖：{sorted(missing)}（归属：{detail}）")
     clean = scan_source("self-test-clean", SELF_TEST_CLEAN, denylist=words, allow_prefixes=[])
     if clean:
         problems.append(f"干净样本被误报：{clean}")
+    problems += _scan_scope_contract()
+    problems += _end_to_end_scope_check()
     if problems:
         for line in problems:
             print(f"[self-test] {line}", file=sys.stderr)
         return 1
     print(
-        f"[self-test] 阳性对照 {len(SELF_TEST_BAD_CASES)} 例逐例命中、"
-        f"{len(required)} 类全覆盖（{'、'.join(per_case)}），干净样本零命中"
+        f"[self-test] 阳性对照 {len(SELF_TEST_BAD_CASES)} 例逐例命中、{len(required)} 类全覆盖"
+        f"（{'、'.join(per_case)}），干净样本零命中；跳过面契约与端到端 main() 正反对照通过"
     )
     return 0
 
@@ -680,6 +760,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     counts = Counter(line.split("[", 1)[1].split("]", 1)[0] for line in findings)
+    # AC2 自洽断言（门①.5 r1 I3）：逐规则计数之和必须等于命中总数，否则汇总会静默撒谎。
+    if sum(counts.values()) != len(findings):
+        print(
+            f"[public-tree] 内部不变量被破坏：逐规则计数之和 {sum(counts.values())} != 命中总数 {len(findings)}",
+            file=sys.stderr,
+        )
+        return 2
     dist = "、".join(f"{rule}={n}" for rule, n in sorted(counts.items())) or "无"
     if findings:
         for line in findings:
