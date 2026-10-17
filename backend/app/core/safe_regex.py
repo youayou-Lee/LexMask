@@ -177,8 +177,16 @@ class _MatchProxy:
         return list(self._named_groups)
 
     def declared_named_groups(self) -> list[str]:
-        """pattern 声明了的命名组名（声明顺序），**与是否参与本轮匹配无关**。"""
-        return list(self._declared_groups)
+        """pattern 声明了的命名组名（声明顺序），**与是否参与本轮匹配无关**。
+
+        兼容：子进程路径总会带上声明表（``declared=...``）；手工/旧调用方不传时退化为
+        「以参与组名当声明表」，保持既有实体 id 编号契约不漂移。这与
+        「声明了命名组但全组未参与 ⇒ 不产出、不回退整 match」不冲突——后者只可能发生在
+        携带声明表的路径上（``_declared_groups`` 非空）。
+        """
+        if self._declared_groups:
+            return list(self._declared_groups)
+        return [name for name, _start, _end, _text in self._named_groups]
 
 
 # ---- 时间预算放缩与「match → 实体文本」语义（Issue#64 / Issue#65）----
