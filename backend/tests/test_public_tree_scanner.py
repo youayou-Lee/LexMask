@@ -20,7 +20,8 @@
 - 非 UTF-8 文件系统编码下的警告，只在候选集合含非 ASCII 名时才打（M4）
 
 本文件在 tmp_path 里现搭 git 仓，零网络、不碰真实仓。
-注意：任何含红线样本字面量的行都必须带 `# public-tree-scan: ignore-line` 标记（本文件自身会被扫描）。
+注意：任何含红线样本字面量的行都必须带**按规则点名**的放过标记
+（`# public-tree-scan: ignore-line(<规则名>, …)`）；裸标记自 Issue#160 起不放过任何规则。
 """
 
 import os
@@ -34,7 +35,7 @@ import pytest
 
 ptree = boot.load("scripts/check_public_tree.py")
 
-_SAMPLE = "instance 8.8.8.8 path /srv/evidence/arm.json"  # public-tree-scan: ignore-line
+_SAMPLE = "instance 8.8.8.8 path /srv/evidence/arm.json"  # public-tree-scan: ignore-line(abs_path, public_ip)
 _CN_NAME = "docs/开发规范-中文.md"
 _SPACE_NAME = "docs/带 空格 的名字.txt"
 _ACCENT_NAME = "docs/重音-café-ü.md"
@@ -445,3 +446,138 @@ def test_tracked_public_tree_has_no_credential_findings():
             if "[credential" in line
         )
     assert offenders == [], "公开树出现凭据痕迹（Issue#140/#141 回归）：\n" + "\n".join(offenders)
+
+
+# --- 门①.5 r3：接线钉（防「删一行就全绿」） -------------------------------------
+# r3 自造变异证明：删掉 `problems += _extension_coverage_check()` 后 self-test 与 25 条单测
+# **全绿**（SURVIVED-BOTH），再叠加 `SKIP_SUFFIXES += .ps1` 仍然全绿 ⇒ 后缀/体积这道唯一
+# 防线可被无声拆掉。下面三条把「helper 真的被 self_test 调用」钉死，第四条把 `MAX_BYTES`
+# 的**使用点**（而不只是常量）钉死。
+
+
+def test_self_test_wires_extension_coverage_check(monkeypatch):
+    relaxed = frozenset(set(ptree.SKIP_SUFFIXES) | {".ps1"})
+    monkeypatch.setattr(ptree, "SKIP_SUFFIXES", relaxed)
+    assert ptree._extension_coverage_check(), "直接调用必须报出未被扫描的 .ps1 夹具"
+    assert ptree.self_test([]) == 1, "self_test 未把 _extension_coverage_check 的结论算进 rc"
+
+
+def test_self_test_wires_scan_scope_contract(monkeypatch):
+    monkeypatch.setattr(ptree, "MAX_BYTES", 8 * 1024)
+    assert ptree._scan_scope_contract(), "上限低于地板时必须报出"
+    assert ptree.self_test([]) == 1, "self_test 未把 _scan_scope_contract 的结论算进 rc"
+
+
+def test_self_test_wires_end_to_end_scope_check(monkeypatch):
+    monkeypatch.setattr(ptree, "main", lambda argv=None, **kwargs: 0)
+    assert ptree._end_to_end_scope_check(), "main 恒 0 时必须报出端到端对照失败"
+    assert ptree.self_test([]) == 1, "self_test 未把 _end_to_end_scope_check 的结论算进 rc"
+
+
+def test_self_test_wires_ignore_line_scope_check(monkeypatch):
+    """门①.5 r1 M-1：`_ignore_line_scope_check()` 的调用被删掉时 self_test 必须仍判红。
+
+    删掉调用后本测试的 monkeypatch 无处生效（返回值不再被并入 problems）⇒ rc=0 ⇒ 本用例失败。
+    """
+    monkeypatch.setattr(ptree, "_ignore_line_scope_check", lambda: ["forced-problem"])
+    assert ptree.self_test([]) == 1, "self_test 未把 _ignore_line_scope_check 的结论算进 rc"
+
+
+def test_ignore_line_scope_check_detects_a_silenced_scanner(monkeypatch):
+    """门①.5 r2 R2-2：把 `scan_source` 静默成空 ⇒ 该契约必须报出问题。
+
+    否则函数体被掏空（`return []`）时调用点接线钉仍绿——与 #159 r3 同类空转。
+    """
+    monkeypatch.setattr(ptree, "scan_source", lambda *args, **kwargs: [])
+    problems = ptree._ignore_line_scope_check()
+    assert problems, "扫描器被静默时放过标记契约仍报「无问题」"
+    assert any("放过标记过宽" in item for item in problems), problems
+
+
+def test_empty_parentheses_marker_suppresses_nothing():
+    """门①.5 r1 M-2：`ignore-line()`（空括号）的规则集为空 ⇒ 什么都不放过（不是整行豁免）。"""
+    line = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + ptree.IGNORE_MARKER + "()"  # public-tree-scan: ignore-line(public_ip, credential_literal)
+    rules = sorted(ptree.scan_source("empty-parens", line, denylist=[], allow_prefixes=[]))
+    assert rules, "空括号标记不得整行豁免"
+    joined = "\n".join(rules)
+    assert "credential_literal" in joined and "public_ip" in joined, joined
+    assert ptree._ignore_line_scope_check() == []
+
+
+def test_max_bytes_is_pinned_at_the_use_site(monkeypatch):
+    """契约钉常量（`MAX_BYTES >= 地板`），使用点 `size > MAX_BYTES` 也要钉。"""
+    monkeypatch.setattr(ptree, "MAX_BYTES", ptree._OVERSIZED_FIXTURE_BYTES - 1)
+    problems = ptree._extension_coverage_check()
+    assert any("oversized_probe.txt" in item for item in problems), (
+        "把上限压到超限夹具之下时必须报出该夹具未被扫描，否则使用点可被改坏而不自知"
+    )
+
+
+def test_self_test_reports_a_case_that_stops_hitting(monkeypatch):
+    """钉 `if not hits:` 这条逐例判据本身（r3 变异 `if not hits:`→`if False:` 曾 SURVIVED）。"""
+    monkeypatch.setattr(
+        ptree,
+        "SELF_TEST_BAD_CASES",
+        tuple(ptree.SELF_TEST_BAD_CASES) + (("no-hit-probe", "普通说明文字，没有键值对。"),),
+    )
+    assert ptree.self_test([]) == 1, "停打的阳性对照用例必须让 self-test 判红"
+
+
+def test_self_test_reports_a_declared_rule_without_coverage(monkeypatch):
+    """钉「登记表 − 实际覆盖」这条判据（r3 变异 `missing = [...]`→`[]` 曾 SURVIVED）。"""
+    monkeypatch.setattr(
+        ptree, "KNOWN_RULE_IDS", frozenset(set(ptree.KNOWN_RULE_IDS) | {"phantom_rule"})
+    )
+    assert ptree.self_test([]) == 1, "登记了但从无命中的规则 id 必须让 self-test 判红"
+
+
+def test_finding_line_rule_discriminates():
+    """钉汇总行形状的正则本身（r3 变异把它改成 `r""` 会让一切形状断言空转）。"""
+    assert ptree._FINDING_LINE_RE.match("docs/x.md:12: [credential_literal] value")
+    assert not ptree._FINDING_LINE_RE.match("docs/x.md:12: 没有规则标记的一行")
+
+
+def test_cjk_valued_credentials_hit_and_chinese_prose_does_not():
+    """Issue#160 AC1/AC2：中文取值口令必须命中；中文正文/日期不得误报。"""
+    hit_rules = {
+        rule for rule, _v in ptree.scan('cfg password="测试口令123"', denylist=[], allow_prefixes=[])  # public-tree-scan: ignore-line(credential_literal)
+    }
+    assert "credential_literal" in hit_rules
+    bare_rules = {
+        rule for rule, _v in ptree.scan("cfg password=测试口令123", denylist=[], allow_prefixes=[])  # public-tree-scan: ignore-line(credential_bare)
+    }
+    assert bare_rules == {"credential_bare"}, bare_rules
+    for clean in (
+        'SECRET_TEXT = "委托人陈文清，身份证号110101199001011234。"',
+        'cfg key="2023年6月15日"',
+        'cfg secret = "本院认为合同有效"',
+        "max_new_tokens=2048：生产预算公式",
+    ):
+        assert ptree.scan(clean, denylist=[], allow_prefixes=[]) == [], clean
+
+
+def test_ignore_line_marker_is_rule_scoped():
+    """Issue#160 AC3：放过标记只放过点名规则；裸标记不放过任何规则。"""
+    scoped = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + f"{ptree.IGNORE_MARKER}(credential_literal)"  # public-tree-scan: ignore-line(public_ip)
+    rules = {
+        line.split("[", 1)[1].split("]", 1)[0]
+        for line in ptree.scan_source("scope", scoped, denylist=[], allow_prefixes=[])
+    }
+    assert "credential_literal" not in rules and "public_ip" in rules, rules
+    bare = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + ptree.IGNORE_MARKER  # public-tree-scan: ignore-line(public_ip)
+    bare_rules = {
+        line.split("[", 1)[1].split("]", 1)[0]
+        for line in ptree.scan_source("bare", bare, denylist=[], allow_prefixes=[])
+    }
+    assert {"credential_literal", "public_ip"} <= bare_rules, bare_rules
+
+def test_bearer_fixtures_exist_and_are_caught():
+    """门①.5 r1 F2：新增的 bearer 大小写夹具必须存在**且真落网**（删夹具即判红）。
+
+    样本文本从 `SELF_TEST_BAD_CASES` 读出，避免在本文件复述令牌字面量导致自伤。
+    """
+    cases = dict(ptree.SELF_TEST_BAD_CASES)
+    for label in ("bearer-lowercase", "bearer-mixedcase"):
+        assert label in cases, f"夹具缺失：{label}"
+        hits = ptree.scan(cases[label], denylist=[], allow_prefixes=[])
+        assert any(rule == "bearer" for rule, _value in hits), (label, hits)

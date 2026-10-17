@@ -11,6 +11,46 @@
 - **耗时（AC3，数字带 head 归属）**：本机新门 6.08 / 6.60 / 6.81 s vs 旧 `tsc` 6.31 / 6.77 / 7.19 s；**CI 侧 5.0 s** 量的是加断言**前**的 head `1c5eaa5`（run `39060724050`，前端 job `117477946925`，该版只跑一条 tsc）；本分支加了计数断言后该步跑两次 tsc，本机整步 **12.73 s**（CI 预计 9–10 s），以合入 head 的 CI 实测为准。
 - **零回归**：`npx vitest run` 24 文件 / 166 例全绿；`npm run build` 绿（4.31 s）且 `dist` 无测试产物。
 - **同族盲区（登记 follow-up，不在本 PR）**：`frontend/vite.config.ts` 在 `tsconfig.node.json` 的 include 里，但仓内**没有任何程序跑 `tsc -b` / `--build`** ⇒ 它也不在任何被执行的程序内。
+### 修复（Issue#142）公开树扫描器 bearer 规则大小写对齐 + 文档精度
+
+- `eval-ng/scripts/check_public_tree.py`：bearer 规则补 `(?i)`（与 `eval-ng/engine/speedkit/report.py` 的 `_BEARER_RE` 对齐，消除同族规则大小写口径漂移）；自检夹具补小写/混合大小写正例与 `&lt;24` 字符反例；`_COVERAGE_NOTE` 措辞精确化（尺寸写不敏感、声明与报告侧 **12 vs 24 的阈值差异是有意保留**、声明 base64 形态属安全侧多报），并修正一处**非法正则引文**（`(?i)\bbearer\s+{24,}` → 完整正则）。
+- `eval-ng/scripts/check_report_redaction.py`：符号引用 `check_public_tree.SECRET_RES`（该符号不存在）→ `check_public_tree.credential_findings`。
+- `backend/tests/test_public_tree_scanner.py`：新增「夹具存在性 + 真落网」判据（删夹具即判红，堵住 r1 冷审自造的 M3/M3b 存活）。
+- `eval-ng/engine/speedkit/report.py` 的口径注释改动**撤回**：该文件含 11 处既有 `abs_path` 命中，任何改动都会被 G4 文件级判定误红 ⇒ 设计修法另立 **#187**（改为只扫新增行）。
+- 验证：`--self-test` rc=0（21 例 / 11 类 / 27 夹具）；`backend/tests/test_public_tree_scanner.py` **33 passed**；改动面 `--base origin/preview` **零命中**；整树新旧扫描器命中行 `diff` **0**；零回归同刻两树均 **2300 passed / 47 skipped / 0 failed**（`comm -3` 0 行）；变异 **6/6 KILLED**。
+
+### 工具链（Issue#160）公开树扫描器：中文取值口令不再漏判 + `ignore-line` 改为按规则点名
+
+- **漏判修复**：`_is_secret_shaped()` 原先对含汉字的值整类返回 `False` ⇒ 形如「中文取值口令」的字面量在公开树上**永不报出**（具体字面量见 Issue#160 与 `backend/tests/test_pdf_encryption.py`）（#140 的验收标准当时其实被静默绕过）。现改为：含汉字的值长度下限降到 **6**，但必须满足**混排证据**（含数字/ASCII 字母/符号），并排除含中文标点的正文与 `2023年6月15日` 形日期 ⇒ 中文口令命中、中文正文不误报。
+- **放过面收紧**：`ignore-line` 从「整行跳过」改为**按规则点名** `ignore-line(<规则名>, …)`；**裸标记不再放过任何规则**；新增自检契约 `_ignore_line_scope_check()` 实证「点名的放过、未点名的照报、裸标记不放过」。仓内既有标记按规则重算迁移（`git grep -c "public-tree-scan: ignore-line"` 合计 preview 76 行 → 本修订 82 行；含 `ignore-line(` 者 83 行），并订正 3 处**真**空括号标记；迁移后整树命中与旧版**逐条相同**。
+- **口径声明**：含汉字的值在 Issue#160 之前整类不参与判定 ⇒ 该 Issue 前后的命中数**不可跨版本对账**（同版本内 A/B 才可比），已写入 `_COVERAGE_NOTE`。
+- **验证**：`--self-test` 21 例阳性对照逐例命中 / 11 类全覆盖 / 干净样本零命中 / 四项自检契约通过；`backend/tests/test_public_tree_scanner.py` **37 passed**（新增五例：中文口令命中且中文正文不误报、`ignore-line` 规则级语义、`scope_check` 调用接线钉、空括号标记不放过、`scope_check` 函数体可判别性）；变异 **9/9 KILLED**（绑定本修订源码 sha256，见 `LexMask-workspace/github-issues/_i160/mutation.txt`；含「删 `scope_check` 调用」「掏空 `scope_check` 函数体」「空括号＝整行豁免」「去中文标点/日期排除」「去转义引号归一」）；同树旧/新扫描器输出 **逐条相同**（1007 文件 / **326 处**：`abs_path` 286 / `public_ip` 24 / `win_path` 16，`credential_*` 0，命中行 `diff` 为 0）。
+- **不做**：不放宽任何规则；不动 CI 接线（`public-tree-scan` job 由 #159 建好）；纯汉字长口令（如 `"一二三四五六七八"`）仍在边界外（方案 §6.1）。
+### 正交（Issue#135）`safe_finditer` 超时零计时协议用例
+
+- **背景**：`safe_compile` 的超时协议在 #109 已有零计时用例，但同族的 `safe_finditer` / `safe_finditer_many` 的超时分支（`future.cancel()` → `_kill_and_replace_pool()` → 抛 `RegexTimeoutError`）**没有任何协议用例**；漏掉任一步都只会静默退化。
+- **改动**：新增 `backend/tests/test_safe_regex_finditer_protocol.py`（16 例）：换池恰好一次、`cancel()` 被调用、异常类型与 message、命名组透传、批量顺序/空输入早退/单条失败隔离、非超时异常不得换池、真实池集成 2 例（受限环境按惯例显式 skip）。
+- **零回归**（同刻两棵干净 worktree）：fix `05a505e` **2300 passed / 47 skipped** vs 基线 `a29b22a` **2284 passed / 47 skipped**，`comm -3` FAILED 集合 0 行（差 +16 = 新增用例；两棵在本机各有 6 条 json_repair 家族既有失败，两树逐条相同）。
+- **AC4 的 CI 侧直接证据**：分支 backend job `2294 passed / 53 skipped` vs 基线 `2278 passed / 53 skipped` ⇒ passed +16、skipped 不变 ⇒ 16 例（含两条真池集成）在真 CI 上真执行。
+- **变异**：V4（`except FuturesTimeoutError` 放宽为 `except Exception`）、V10（`if not future.cancel(): return []`）均 KILLED，逐字节还原校验 sha256。
+- **遗留（已立案）**：`_MatchProxy` 的 `or []` 兜底分支不可达（冷审 Minor M3）⇒ 另立 #186。
+- **不做**：不改 `safe_regex` 行为（纯测试）。
+### 正则（Issue#156）超时可观测 + 真 `re.Match` 命名组语义（**生产行为不变**）
+
+- **可观测性**：`backend/app/core/safe_regex.py` 新增进程级累计计数 `regex_timeout_stats()`（三条链标签 `safe_compile` / `safe_finditer` / `safe_finditer_many`），经 `GET /health` 的新字段 `regex_timeouts` 暴露（`backend/app/main.py`、`backend/app/models/common.py`）。既有 `_regex_timeout_events` 属**另一口径**（沿用旧用途），两者不互相替代。
+- **门⑥ r6 处置（零行为改动）**：订正 `_declared_named_groups` 文档串（子进程载荷**刻意不传**声明表，代理只回参与组名）；把恒真反面对照 `test_successful_call_does_not_bump_counters` 改为**真跑一次成功路径**后断言计数为 0；A11 用例补「值变窄 ⇒ 命中数不增且命中区间被宽值区间包含」；新增 `get_type_hints` 契约用例钉住子进程载荷为 **4 元组**。
+- **真 `re.Match` 命名组语义**：按声明序取组、空组不占位；「声明了命名组但全组未参与 ⇒ 不产出、不回退整 match」**只作用于真 `re.Match` 路径**。
+- **⚠️ 行为边界（门①.5 r1 抓出并修正）**：该规则**不得**施加到生产路径（`_MatchProxy`，来自 `safe_finditer*` 子进程）——preset `DATE` 的单日期分支没有命名组（只有区间分支有 `seg_a/seg_b`），一旦越界，单日期实体被整条吞掉（`本院于2022年1月25日立案受理` 的 `2022年1月25日` 变成 0 条 = **漏打码/欠遮盖**）。修法=撤销子进程 payload 的五元组扩展（回到 4 元组，既有 stub 池兼容），生产路径**逐位保持**旧契约（无参与组 ⇒ 回退整 match）。新增生产入口回归闸 `backend/tests/test_issue156_date_preset_regression.py`（走 `HybridNERService._custom_regex_extract` + 真实 preset）；两路径在「命中分支无命名组」时的**按设计分歧**另有专门用例钉死。
+- **A 组边界用例**：A2（后缀语境只出 DATE + 改前形态反面对照）/ A8（真 match 声明未参与 ⇒ 空）/ A10（跨 alternation 参与集合两路径逐位一致）/ A11（窄值落在长词内部 ⇒ 零命中、区间右端不得多吃字符）；新增 4 个用例文件共 **17 例**，另在既有文件补 1 例（子进程侧取序基准）。
+- **零回归（本机 3.12、同刻两树、`PYTHONPATH=<临时 pylibs 目录>`）**：修复树 **2270 passed / 6 failed / 47 skipped** vs 干净基线 `26d11eb` **2252 passed / 6 failed / 47 skipped**，`comm -3` 的 FAILED 集合 **0 行**（无新增、无消失）；差 **+18** = 新增 17 例 + 补 1 例。6 条既有失败两树逐条相同（json_repair 家族等环境依赖），显式标注为既有。
+- **变异**：9/9 KILLED（M1/M2 计数、M3' 代理退化、M4 真 match 声明、M5 判据退回、M6/M7 词边界、M8 `/health`、M9 子进程取序）。Issue 点名的 `groupdict()` 变异经复核实为**等价变异**（`re.Pattern` 无 `groupdict()`、6 种形态取序恒等）⇒ 已在 `mutation.txt` 写明理由并以替代变异覆盖。
+- **IPC 量化（AC5，本机，云未测 ⇒ 只作量级）**：vision 链每页每类型 2 次子进程往返（`safe_compile` + `safe_finditer_many`，无编译缓存）；冷启动首次 `safe_compile` 39.91 ms、热态 2 次约 0.56 ms、190 组约 0.11 s ⇒ 调用次数不变、成本可忽略。
+- **已知缺口（不影响本期四项交付，列二轮）**：A11 左边界与「同一命中重复登记」无判别用例；worker 内部超时形态无覆盖；超时计数为进程级累计（多 worker 需外部聚合）。
+- **对外契约变更（唯一一处，向后兼容）**：`GET /health` 响应新增字段 `regex_timeouts`（进程级累计计数；**无超时发生时返回 `{}`**，字段始终存在）。此处「生产行为不变」的**限定范围**＝脱敏/NER 判定行为不变；该字段是新增只读观测面，多 worker 部署下只反映**被问到的那一个进程**。
+- **两条路径的分歧是有意设计，不是缺陷**：真 `re.Match` 路径「声明了命名组但全组未参与 ⇒ 不产出」；`_MatchProxy`（生产唯一来源）路径保持既有契约「无参与命名组 ⇒ 回退整 match」。统一二者需要改 preset（给 `DATE` 单日期分支补命名组），属另一 Issue 的范围。
+- **门①.5 r2 收尾处置（2026-10-18）**：清理收窄后残留的**误导性死管道**——两处返回注解改回 4 元组、删除零调用方的 `_MatchProxy.declared_groups` 形参与槽位、`declared_named_groups()` 与 `match_items` 的注释/docstring 重写（原 docstring 声称「两条路径都不回退」，与其自身用例矛盾；照它把声明表恢复传输会**重新引入漏打码**）。r2 独立复核结论：B1–B6 实质全闭合，自造 R2-1（恢复子进程声明表传输）⇒ 19 failed ⇒ 新闸真有判别力；变异 **12/12 KILLED**。
+
+- **证据**：`LexMask-workspace/github-issues/_i156/`（`mutation.txt`、`ipc-cost.md`、`regression-found.md`、`pitfalls.md`、`r1/` 四件交付）；方案 `issue156-regex-observability-plan.md` 含 §7 r1 逐项处置表。
 
 ### 视觉（Issue#96）公章来源可切 MinerU —— 门④ AC2 判 **FAIL**，以「默认关」形态合入
 
@@ -43,7 +83,7 @@
     **变异 13 条全部 KILLED**（门⑥ r6 判 SURVIVED 的 M6/M10/M15/M16 由新增接线契约用例补齐；M8/M9 由门①.5 r3 评审独立跑出）
   - **门①.5 r3 三条 Critical 的代码侧处置**：①**草稿往返回归修复**（r3 N4，真缺陷）——D1 之后识别期 `stage` 已是 `preview`，中途落盘的草稿会被 `parseDraft` 当成完整 preview 恢复，**半识别卷被呈现为已完成且不重跑**；草稿快照新增 `visionStream`，`parseDraft` 拒绝 `completed < total` 的草稿（走重跑），基线红先实证 **1 failed / 19 passed**（`AssertionError: expected {...} to be null`）；②`use-playground-file.ts` 在进入逐页检测前登记 `{completed: 0, total}`（r3 N3），遮罩进度从 0/N 起算；③`ImageBBoxEditor` 框容器新增 `data-lexmask-bbox` 锚点（r3 N2），供浏览器臂命中测试用（1 行、不改行为）
   - **门⑥ r6 处置 + 门④ k=8 重测（2026-10-17 18:46–18:59，head `7790a2f`，证据 `_i123/ac1-browser-arms-k8.md`）**：r6 指出「原四臂证据全部采集于合并前树（k=3）」，故同 head 配置重测。**AC1(b) 字面仍 FAIL**：对照件（1 页单独成卷）6.20 s ⇒ 阈值 7.44 s，P 三跑 t1 = 23.81 / 24.90 / 14.72 s；**k=1 臂 7.62 s 亦 FAIL（超 2.4%）**；机制硬证据不变（C 臂框到整卷结束 ≈40–52 s 才可见，P 臂 14.7–24.9 s 可见）。**AC3 在 k=8 下判 FAIL**：预注册配对口径 `ratio=C/P` 逐轮 0.7628 / 1.0005 / 0.9076 ⇒ 中位 **0.9076 < 0.98**，护栏 min **0.7628 < 0.90 被突破（记账）**；**负对照补做**：k=1 臂 ratio = 0.7356 < 0.98 ⇒ 判据可失败（正性证据成立）；反向顺序对照因 4 次无效臂（upload+parse 成功却未发起 vision）未完成 ⇒ 顺序偏置未排除；同臂轮间 CV 12–18% **远大于 2% 带宽** ⇒ 该带落在噪声地板下。**新事实**：k=8 使首屏比 k=3 更晚（P 中位 14.6 s → 23.8 s）⇒ Issue#123 原文「方向 2 首屏优先」未被本 PR 覆盖。**AC1(b)/AC3 两条 FAIL 与三条处置选项已升级用户裁决**，未单方改判据
-  - **变异自证 13 条：13 KILLED / 0 SURVIVED**（M1 谓词恒 false→KILLED；M2 `pageCount > 1`→`>= 1`→KILLED；M3 `stream.total > 1`→`>= 1`→KILLED；M4 容器忽略 passive→KILLED；M5 去掉 `pointer-events-none`→KILLED；M7 `overlayModeFor` 恒 `blocking`→KILLED；**M6 页面接线硬编码 `blocking`→SURVIVED**）。M6/M10/M15/M16 由 `wiring-contract.test.ts` 的表达式级契约用例判红（`/tmp/i123_mut2.py` 实测，源码回写一致）。**诚实边界**：这是表达式级覆盖，不是行为级——行为面仍由门④ 浏览器臂承担；接线改名会误报红，属设计意图）
+  - **变异自证 13 条：13 KILLED / 0 SURVIVED**（M1 谓词恒 false→KILLED；M2 `pageCount > 1`→`>= 1`→KILLED；M3 `stream.total > 1`→`>= 1`→KILLED；M4 容器忽略 passive→KILLED；M5 去掉 `pointer-events-none`→KILLED；M7 `overlayModeFor` 恒 `blocking`→KILLED；**M6 页面接线硬编码 `blocking`→SURVIVED**）。M6/M10/M15/M16 由 `wiring-contract.test.ts` 的表达式级契约用例判红（变异驱动脚本 `i123_mut2.py` 实测，源码回写一致）。**诚实边界**：这是表达式级覆盖，不是行为级——行为面仍由门④ 浏览器臂承担；接线改名会误报红，属设计意图）
   - **诚实边界**：①接线层（四根线）现有**表达式级契约用例**兜底（M6/M10/M15/M16 已 KILLED）；但它们不是行为级证明，行为面仍归门④ 浏览器臂；②**jsdom 无布局** ⇒ 可见性/命中测试（`document.elementFromPoint`）**全部归浏览器臂**，本机只判模块契约与元素存在性；③AC1(a) 的**承重断言**是「画布已挂载 + 第 1 页框节点在 document 内」而非「新属性存在」（否则红先失败退化为属性缺失）；④AC1(b) 阈值口径＝**同运行内**第 1 页实测耗时 × 1.2（不引用跨运行人口 p50——r2 实测 `8.674×1.2 = 10.41 s` 与实验臂预期 ≈10.4 s 零余量）；⑤**AC3 硬红线＝Issue 原文「整卷墙钟不劣化 ≥0.98」**，方案自加的「≥10% 改善」降为**观测项**；⑥AC4（失败页不阻塞已完成页）按既有 `recognitionIssue` 语义已覆盖，**降为观测项**，并把 D1 带来的 `stage === 'preview'` 六处副作用（首屏空画布闪烁 / 进度分母 / 重跑入口 / 动作按钮时序 / `onBackToEdit` / 会话切换弹窗）在门④ 逐条观测落表；⑦**「不改闸门」的范围＝不改后端识别闸门**（并发闸位、`MAX_HAS_CHUNKS`、env 开关一律不动），D1 改的是前端 `stage` UI 状态（术语已在方案 §4 拆分）
   - **不做**：不改识别算法与任何并发度、不改后端；「首屏优先调度」与「剩余时间预估」（Issue 候选方向 2/3）另立 Issue；批量向导不在范围
 
@@ -83,7 +123,7 @@
   - `backend/scripts/eval/benchmark_throughput.py` 用法示例里的口令改为 shell 环境变量形态（#140 AC1）
   - `backend/tests/test_pdf_encryption.py`、`backend/tests/test_ldap_auth.py`（bob/carol/dave/erin 共四处）、`backend/tests/test_role_matrix.py`、`backend/tests/test_dicom_core_realdata.py`（`mapping_secret` 两处）的夹具口令改为显式 `placeholder-*` 合成值
   - `backend/app/services/has_client.py` 的 `context_tokens` 文档行改书写形态：该行原本是 `键名: 值` 形态，被扫描器按 `credential_bare` 误报（键名尾巴 `token` 在 `CREDENTIAL_WORDS` 里，而值是文档引用 `Issue#104`）。**没有放宽任何规则**（#140 AC4）：把 `token` 整体挪进 `META_TAIL_WORDS` 会让真 `api_token: <真值>` 整类漏网，故只改被扫文件的写法
-  - 验证：整树 `python eval-ng/scripts/check_public_tree.py --base "" --allow-prefix /opt/dtk --allow-prefix /opt/hyhal` 的 `credential_*` 命中 **14 → 0**；`--self-test` 仍全中；本机门③ 与同刻基线的 FAILED 集合逐条一致
+  - 验证：整树 `python eval-ng/scripts/check_public_tree.py --base "" --allow-prefix <DCU 栈 dtk 前缀> --allow-prefix <DCU 栈 hyhal 前缀>` 的 `credential_*` 命中 **14 → 0**；`--self-test` 仍全中；本机门③ 与同刻基线的 FAILED 集合逐条一致
   - ⚠️ **代码清理不等于暴露撤销**：该测试账号口令自 `55002ec`（v1.0.0 首发）起就留在公开提交历史里（`git log -S` 可查），本 PR 只清工作区与后续提交。**须轮换/停用该测试账号口令**（#141 AC2，由部署方执行，本 PR 无法代劳）
 
 - fix(docline): **文本层文档级链的单块 NER 失败不再被静默当成「成功且零实体」**（Issue#148）
@@ -151,7 +191,7 @@
   - **两条测量线**：`--driver single`（Python 驱动逐页 `/redaction/{id}/vision`，页间并发由运行时 k 控制）与 `--driver batch`（建 `smart_batch` 作业 → 上传 → 提交 → 轮询，逐页仪表取自作业详情），两侧都出**页线**（页数/分钟、逐页墙钟 p50/p95/IQR）与**卷线**（提交→末页完成的 `file_wall_s`）两组数字。
   - **判定面（四态 PASS/UNVERIFIED/BLOCKED/FAIL）**：D2 并发自证（驱动声明 k + 在飞峰值实测 k 双证）、D3 闭合校验（环和 vs 页总**同钟** ≤2%、残差双侧 0≤·≤10%、两序列**非同源**且比值 ∈[1.00,1.25]、键路径压平后必含五个环叶子）、D4 自足（`file_wall_s` 与客户端墙钟互证 ≤5%、md 与 JSON 逐项一致）、D5 脱敏（八项环境脚注硬校验、实例指纹四键 + sha256、数值字段白名单**路径级**表、质量子树判 FALSE）、D6 边界（非法轮排除、载荷同一 `force=true&include_result_image=false`、批作业经网关 ≥8 MiB 单文件）、D8 旁证（计数类只累加、字符串状态不丢、补丁生效断言必须真在文件里）。
   - **名实不一即 FAIL**：`D8.patch_effect` 要求臂声明的 `patches[].to`/`expect[].contains` 真出现在目标文件里；`D5.numeric_whitelist` 按**字段路径**放行（`summary.agg_value` 这种换名会被点名），质量字段换名也走不脱。
-  - **新增公开树扫描器** `eval-ng/scripts/check_public_tree.py`（与报告脱敏扫描器同族，含**阳性对照自检**）：公网 IP / 绝对路径 / Windows 盘符路径 / 凭据形态 / `--denylist` 词表五类；默认只扫 `--base` 以来改动过的文件，行内 `public-tree-scan: ignore-line` 可显式放过（扫描器自己的阳性对照夹具用）。
+  - **新增公开树扫描器** `eval-ng/scripts/check_public_tree.py`（与报告脱敏扫描器同族，含**阳性对照自检**）：公网 IP / 绝对路径 / Windows 盘符路径 / 凭据形态 / `--denylist` 词表五类；默认只扫 `--base` 以来改动过的文件，行内 `public-tree-scan: ignore-line(<规则名>, …)` 可按规则放过（扫描器自己的阳性对照夹具用）。**注（Issue#160 起）**：该标记由「整行跳过」改为「按规则点名」，**裸标记与空括号 `ignore-line()` 都不再放过任何规则**。
   - **单测 128 条**（本 PR 新增 `backend/tests/test_evalng_speed.py` **120** 条，另有既有 `backend/tests/test_evalng_cli.py` 8 条；eval-ng 测试文件合计 **183** 条（`--collect-only` 实测）；零网络：`SpeedApi` 构造在单测里被替换成抛错版本，AC24 请求捕获用 `httpx.MockTransport`）；④ 云门实测又钉掉三处死角：`_hardware_capture` 取设备身份行而非 `hy-smi` 表头、`dedupe_checks` 同 id 按四态取最严、k 双证按 `min(声明 k, 该轮页数)`（页数足够仍达不到声明值依旧 FAIL）；eval-ng 全量绿；本机全量 `pytest` 失败名集合与 clean base 逐条一致（无回归）。
   - ④ 云实例端到端实测（10 页扫描 canary / 3 页真实案卷切片 / 8.3 MiB 单文件（8,703,181 B 的 1 页填充分片）过网关；实例：云 DCU 单机 + `SINGLE` 起 uvicorn，后端 `68f0e7ba`，仪器 `de197b74`–`f1f249c`）：
     - **D1 锚点复现**：`single` 线冷跑各 4 轮（弃第 1 轮取 2–4 中位）——k=3 **92.594s**（离散 10.1%，锚点 86.65s ⇒ +6.9%）、k=1 **207.468s**（离散 2.9%，锚点 198.13s ⇒ +4.7%），**`D1.anchor_ratio` = 2.241× ≥ 1.8× PASS**；两臂闭合/残差/跨钟/键路径/冷跑证据（pid 与 `start_time` 三轮互异）/并发双证全 PASS，判定 UNVERIFIED（无 FAIL；未项只有 env 臂的 `D8.patch_effect` 与无基准的 `D7.parity`）。
@@ -159,7 +199,7 @@
     - **D9 真实案卷（67 页证据卷前 3 页切片、纯扫描、文本层 0 字符）**：`single` k=3 cold —— 逐页 p50 **19.09s**、`file_wall_s` p50 **24.538s**、闭合 0.001556 / 残差 0.001556 / 跨钟 1.041956 全在阈内、无质量数值、脱敏扫描 clean 且案名自检 0 命中；抽数后真卷报告已删（不留私有产物）。
     - **D7 与旧基准脚本对照 → PASS（原 BLOCKED 已闭环）**：批线曾因 `smart_batch` 在飞入队后 worker 不取件（提交后长期 `queued`、`processing recognition` 0 次，**只有重启恢复路径**能处理）而拿不到数——已另立 **Issue#137**（根因：Python 3.10 下 `asyncio.TimeoutError` 不是内建 `TimeoutError` 的子类 ⇒ `_worker_loop` 的 `except TimeoutError` 捕不到首个 2s 空闲超时 ⇒ worker 静默退出），修复 PR#138 经三轮独立冷评审后合入 `bf38eaad`。修复后两侧**均冷跑**、10 页合成扫描卷、同窗口对照：`pages_per_min` 相对差 **7.9%**（4.226 vs 4.59）、页 p50 相对差 **1.4%**（3489.5 vs 3540 ms），均 ≤20% ⇒ **`D7.parity` PASS**。（更早一次 33.8% 的 FAIL 系基准侧未冷跑、两侧温冷态不同，属对照装置不公平，不作判据。）⚠️ 云侧产物（instrument rev `f4b6acba`、`scnet-main`）本机两仓不可解析；口径与私有验收方案 §9.12 一致。
   - **批线账本根同作用域订正（④ 云门 D7 期实测发现，2026-10-16 补）**：批线逐页 `duration_ms`（外层）含槽位等待/装配等账外墙钟，与各管线 `<prefix>.total` 不同作用域 ⇒ 页根改取 `duration_breakdown_ms["total"]`（外层墙钟单列 `page_wall_ms`、跨页累积账单列 `other_breakdown_ms`，两者**只记录不入和**）；新增机判 `D3.root_scope`（作用域不对 ⇒ FAIL 并点名后果）。**阈值一处未动**：真实两页账目上改前闭合差 3.66%（>2% 必 FAIL）、改后 1.84% PASS；5 条新单测共存，把根换回外层墙钟即 4 红（改前红自证）。
-  - **③ 第三轮冷评审处置**（裁决 REVISE；代码层无阻塞缺陷、无恒真判据，阻塞面在验收闭包）：新增 **`D1.corpus_premise`**——AC2/D1④ 从「只记录」变成**机判**：声明 `scanned_pdf`/`text_pdf` 必须与**本地 `pdftotext` 非空白计数**及**后端 `/parse` 的 `is_scanned`** 两侧一致，任一侧与声明不符 ⇒ FAIL，取不到某一侧 ⇒ UNVERIFIED（不猜 PASS）；夹具里的实例目录名字面量换成中性示例路径（不再靠 `ignore-line` 放行真实实例路径）；单测口径订正为 **128 条**（speed 120 + cli 8；eval-ng 测试文件合计 **183** 条，均 `--collect-only` 实测——含 R3/⑤ 补的扫描器判据与装配级接线用例，以及 ⑥/⑦ 补的**复合键 / 值形状 / 带类型注解赋值**三组扫描器判据；扫描器默认只扫 `--base origin/preview` 起的改动面，且需 `--allow-prefix /opt/dtk --allow-prefix /opt/hyhal` 才能过公开树红线门）。
+  - **③ 第三轮冷评审处置**（裁决 REVISE；代码层无阻塞缺陷、无恒真判据，阻塞面在验收闭包）：新增 **`D1.corpus_premise`**——AC2/D1④ 从「只记录」变成**机判**：声明 `scanned_pdf`/`text_pdf` 必须与**本地 `pdftotext` 非空白计数**及**后端 `/parse` 的 `is_scanned`** 两侧一致，任一侧与声明不符 ⇒ FAIL，取不到某一侧 ⇒ UNVERIFIED（不猜 PASS）；夹具里的实例目录名字面量换成中性示例路径（不再靠 `ignore-line` 放行真实实例路径）；单测口径订正为 **128 条**（speed 120 + cli 8；eval-ng 测试文件合计 **183** 条，均 `--collect-only` 实测——含 R3/⑤ 补的扫描器判据与装配级接线用例，以及 ⑥/⑦ 补的**复合键 / 值形状 / 带类型注解赋值**三组扫描器判据；扫描器默认只扫 `--base origin/preview` 起的改动面，且需 `--allow-prefix <DCU 栈 dtk 前缀> --allow-prefix <DCU 栈 hyhal 前缀>` 才能过公开树红线门）。
     - **门③ 第六轮处置（凭据面）**：公开树扫描器的口令识别从「键名 `\b` 正则」改为「键名按 `_`/`-`/camelCase 切词元查词表 + 值形状 + 语境豁免」，从而覆盖 `api_secret` / `db_password` / `clientSecret` 这类**凭据词作后缀**的复合键（旧 `\b` 在 `_` 前后不成边界，整类漏网）；同时收紧值形状（分隔符 / JSON 片段 / CJK 文案 / CamelCase 类型名 / ID 形态一律不算口令），整树噪声由 18 处降到 **1 处预存示例**；口令面改为 `check_public_tree.credential_findings()` 单一真源，报表扫描器同源导入；补两条 pytest 判据（复合键必中 + 元数据/值形状必净），变异 M-S2/S3/S4/S5/S6 全 KILLED。
     - **门③ 第七/八轮处置（凭据面形态封堵）**：公开树扫描器再补两类赋值形态——`NAME: <类型注解> = "…"`（`[:=]` 会吃掉注解冒号、把 `str` 当值 ⇒ 整类漏网；注解段现锚到标识符开头、不含 `=` 与换行，覆盖 PEP 604 `str | None`、`Final[str | None]`、`Literal["a"]`、`Optional["Cfg"]`）与**引号键**形态（JSON / YAML / dict 的 `"key": "…"`，普通赋值的键名组不含引号 ⇒ 也曾整类漏网）；值组改为可捕获完整引号字面量（含空白）。探针矩阵 **17 正例 / 16 反例**全绿并落成 pytest 目录；整树模式 `credential_*` 13 条全部为合成夹具/文档示例，其中 `cloud-deploy/` 4 处疑似真实测试账号口令另立 **Issue#141**（同族 #140）。
     - **口令外置的迁移声明（公开树零口令，G4）**：`--api-pass` 默认值不再内置任何口令字面量，改读环境变量 `EVAL_API_PASS`（`eval-ng/cli.py` 两处 + 范围外既有 `eval/scripts/{leak_check,run_eval,build_pseudonym_set}.py` 四处）；未导出该变量时这些入口的 `--api-pass` 为 `None` —— 旧 `eval/scripts/*` 的既有调用方须显式导出 `EVAL_API_PASS` 或继续传 `--api-pass`（既有行为只在「依赖内置默认值」这一点上改变，故单列声明）；整树扫描余 2 处**预存**凭据类痕迹另立 Issue#140。

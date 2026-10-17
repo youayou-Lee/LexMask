@@ -9,14 +9,20 @@
 2. **绝对路径**：POSIX 根用户/家目录/挂载点等前缀、Windows 盘符路径（`--allow-prefix` 放行指定前缀）；
 3. **凭据形态**（`--self-test` 逐类断言的 10 类）：键名含凭据词的普通赋值 / 带类型注解赋值（含
    PEP 604 联合、泛型、前向引用）/ 引号键（JSON·YAML·dict，键名允许 `-`）/ `--flag` 后的引号
-   字面量或空格裸值 / 无引号字母数字混合值 / `Bearer <≥24 字符>` / 厂商前缀密钥（`sk-`·`ghp_`·
-   `AKIA…`）/ URL 内联凭据 / HTTP Basic。带键名的分支要求值 ≥8 字符且**像真口令**（含数字或非
-   字母数字符号，且非占位词/模板/类型名/ID 形态/JSON 片段/CJK 文案）；`os.environ[…]`、
+   字面量或空格裸值 / 无引号字母数字混合值 / `Bearer <≥24 字符>`（**大小写不敏感**，Issue#142）/ 厂商前缀密钥（`sk-`·`ghp_`·
+   `AKIA…`）/ URL 内联凭据 / HTTP Basic。带键名的分支要求值 ≥8 字符（含汉字 ≥6）且**像真口令**（含数字或非
+   字母数字符号，且非占位词/模板/类型名/ID 形态/JSON 片段）；含汉字的值另要求**混排证据**
+   （至少一个 ASCII 字母/数字或口令符号），纯中文文案仍不判定（Issue#160 现象①）；
+   `os.environ[…]`、
    `self._password` 这类引用与代码取值不算。**覆盖与不覆盖的完整边界**见文件内 `_COVERAGE_NOTE`；
 4. **`--denylist` 词表**（一行一词，`re:` 前缀走正则）——真实案卷名、实例域名、口令进这里。
 
-行内放过：含 `public-tree-scan: ignore-line` 的行跳过（扫描器自己的阳性对照夹具、以及确非凭据
+行内放过：`public-tree-scan: ignore-line(<规则名>, …)` **只放过点名的规则**，同行其它规则照常报出；
+裸标记（无规则列表）不放过任何规则（扫描器自己的阳性对照夹具、以及确非凭据
 的既有行需要它；每处都有就地说明）。
+
+计数口径：Issue#160 之前含汉字的值**整类不参与**凭据判定，因此该 Issue 前后的命中数
+**不可直接比较**（同一版本内的 A/B 才可比；历史数字见各自 Issue 记忆，不要跨版本对账）。
 
 自带阳性对照：`--self-test` 用含上述 10 类痕迹的样本断言「必须全部命中」，再用干净样本断言
 「必须零命中」——**没有阳性对照的扫描器等于恒真判据**。
@@ -33,6 +39,7 @@ exit：0=干净；1=命中（或阳性对照失败）；2=用法错误。
 
 from __future__ import annotations
 
+from collections import Counter
 import argparse
 import re
 import subprocess
@@ -94,7 +101,7 @@ CODE_VALUE_PREFIXES = (
 )
 # 值本身就是令牌形态（与键名无关）：`Bearer <长串>`、厂商前缀密钥、URL 内联凭据、HTTP Basic
 TOKEN_RES = (
-    ("bearer", re.compile(r"\bBearer\s+[A-Za-z0-9\-._~+/]{24,}")),
+    ("bearer", re.compile(r"(?i)\bBearer\s+[A-Za-z0-9\-._~+/]{24,}")),
     # 必须带厂商分隔符，否则 `skeletonButtonSize` / `skippedNoCandidates` 这类标识符会误报。
     # 分隔符两种都要认：GitHub 系真实形态用**下划线**（`ghp_…`/`gho_…`/`ghs_…`/`github_pat_…`，
     # ⑩冷评审 R10-1 实测：硬写 `-` 时这些在无凭据键名的语境整类静默通过）。
@@ -121,7 +128,7 @@ QUOTED_KEY_ASSIGN_RE = re.compile(
     r"(?P<q>[\"'])(?P<name>[A-Za-z_][A-Za-z0-9_\-]{0,40})(?P=q)\s*[:=]\s*" + _VALUE_GROUP
 )
 CREDENTIAL_FLAG_RE = re.compile(r"(?P<name>--[A-Za-z][A-Za-z0-9_-]{1,40})")
-# 命令行 flag 后的**裸值**（无引号）：`--api-pass Ab12Cd34`（⑨冷评审 R9-3）。
+# 命令行 flag 后的**裸值**（无引号）：`--api-pass Ab12Cd34`（⑨冷评审 R9-3）。  #
 _BARE_FLAG_VALUE_RE = re.compile(r"\s*(?P<val>[^\s,;)\"']{8,60})")
 # 带类型注解的赋值：`NAME: <注解> = "<真口令>"`（Python 惯用写法）。
 # `CREDENTIAL_ASSIGN_RE` 的 `[:=]` 会把注解的冒号吃掉、把 `str` 当值，`finditer` 随即越过真值 ⇒ 整类漏网；
@@ -165,6 +172,17 @@ _CAMEL_TYPE_RE = re.compile(r"^[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+$")
 _SECRET_SYMBOL_RE = re.compile(r"[!@#$%^&*()+={}\[\]|;:'\"<>?,~`]")
 _DELIMITER_RE = re.compile(r"[=,\s{}\[\]:;\"]")
 _ID_SHAPE_RE = re.compile(r"^(?:[A-Z]{2,}|[A-Za-z]{2,})[-_]\d{1,6}$")
+#: 中文标点：值里出现它说明这段是**正文/说明**（`"委托人陈文清，身份证号…。"` / `"2048，密集页预算"`），
+#: 不是口令。ASCII 分隔符由 `_DELIMITER_RE` 管，这里补中文一侧（Issue#160 实测的整树假阳性来源）。
+_CJK_PUNCT_RE = re.compile(r"[，。、；：？！（）〈〉《》「」『』【】〔〕…—～·]")
+#: 中文日期形态（`2023年6月15日`）：数字 + 年月日是**日期**不是口令（`key="2023年6月15日"` 实测假阳性）。
+_CJK_DATE_RE = re.compile(r"^\d{4}\s*年(?:\s*\d{1,2}\s*月)?(?:\s*\d{1,2}\s*日)?$")
+
+_MIN_LITERAL_LEN = 8
+#: 中文取值口令的长度底线（Issue#160 现象①）：一个汉字的信息量远高于一个 ASCII 字符，
+#: 若仍按 8 计会漏掉 `password="测试口令123"`（7 字符）这类真实形态；6 是「纯中文长文案」  # public-tree-scan: ignore-line(credential_literal)
+#: 与「中文短口令」的分界，且与下面的「混排证据」要求共同生效（两者缺一不可）。
+_MIN_LITERAL_LEN_CJK = 6
 
 
 def _looks_like_type_name(value: str) -> bool:
@@ -172,9 +190,24 @@ def _looks_like_type_name(value: str) -> bool:
     return bool(_CAMEL_TYPE_RE.match(value)) and len(value) >= 15
 
 
+def _cjk_mixed_evidence(value: str) -> bool:
+    """中文取值口令的**混排证据**（Issue#160 现象①）。
+
+    键名已被 `is_credential_name()` 判为凭据名（上游门），这里只回答「值本身是否带非中文成分」。
+    纯中文文案（`"中文标题"` / `"本院认为合同有效"`）不得当口令——否则公开文档里的中文正文会整类误报。
+    """
+    return bool(re.search(r"[0-9A-Za-z]", value)) or bool(_SECRET_SYMBOL_RE.search(value))
+
+
 def _is_secret_shaped(value: str) -> bool:
-    if not value or _CJK_RE.search(value) or _DELIMITER_RE.search(value):
+    if not value or _DELIMITER_RE.search(value):
         return False
+    if _CJK_RE.search(value):
+        # Issue#160 现象①：旧实现把「含汉字」整类当文案排除（Issue 正文示例形态静默漏网）。
+        # 现改为「键名门 + 混排证据」双条件，并显式排除中文正文/日期两类假阳性。
+        if _CJK_PUNCT_RE.search(value) or _CJK_DATE_RE.match(value):
+            return False
+        return _cjk_mixed_evidence(value)
     if _looks_like_type_name(value) or _ID_SHAPE_RE.match(value):
         return False
     return bool(re.search(r"\d", value)) or bool(_SECRET_SYMBOL_RE.search(value))
@@ -192,7 +225,8 @@ def _literal_hit(val: str) -> bool:
         return False
     if raw[0] in "\"'":
         body = raw[1:].rstrip("\"'")
-        if len(body) < 8 or body.startswith("-----"):
+        floor = _MIN_LITERAL_LEN_CJK if _CJK_RE.search(body) else _MIN_LITERAL_LEN
+        if len(body) < floor or body.startswith("-----"):
             return False
         if TEMPLATE_VALUE_RE.search(body) or _is_placeholder_value(body):
             return False
@@ -200,7 +234,18 @@ def _literal_hit(val: str) -> bool:
     if any(ch in raw for ch in "(.["):
         return False  # 调用/属性/下标：值是代码引用，不是字面量
     body = raw.rstrip(",")
-    if len(body) < 8 or TEMPLATE_VALUE_RE.search(body) or _is_placeholder_value(body):
+    # 源码形态的字面量常带转义引号（`\"2023年6月15日\"`）⇒ **排除判定**用剥掉转义/引号噪声的视图，
+    # 否则中文日期/标点排除会被前导反斜杠绕过（自检夹具正落在这个形态上）；
+    # 形状判定仍用原值（转义引号会命中 _DELIMITER_RE，语义不放宽）。
+    probe = body.strip("\\\"'")
+    if TEMPLATE_VALUE_RE.search(probe) or _is_placeholder_value(probe):
+        return False
+    if _CJK_RE.search(probe):
+        # 中文裸值（`password=测试口令123`）：长度按 CJK 底线，形状按混排证据。
+        if _CJK_PUNCT_RE.search(probe) or _CJK_DATE_RE.match(probe):
+            return False
+        return len(probe) >= _MIN_LITERAL_LEN_CJK and _cjk_mixed_evidence(probe)
+    if len(body) < _MIN_LITERAL_LEN:
         return False
     if not (bool(re.search(r"[A-Za-z]", body)) and bool(re.search(r"\d", body))):
         return False
@@ -213,6 +258,10 @@ PRIVATE_IP_RE = re.compile(
     r"^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)"
 )
 IGNORE_MARKER = "public-tree-scan: ignore-line"
+#: Issue#160 AC3：放过标记必须**点名规则**——``。
+#: 旧实现 `IGNORE_MARKER in line` 是整行跳过＝一票放行（同行其它规则被一起放过）；
+#: 裸标记（无括号）现在不放过任何规则：写错方向的失败是「扫描变红」，而不是「静默放过」。
+_IGNORE_LINE_RE = re.compile(re.escape(IGNORE_MARKER) + r"\s*\((?P<rules>[A-Za-z0-9_,\s]*)\)")
 SKIP_SUFFIXES = frozenset({
     ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".zip", ".gz", ".whl", ".bin",
     ".so", ".dylib", ".dll", ".pt", ".pth", ".onnx", ".safetensors", ".docx", ".xlsx", ".pptx",
@@ -220,27 +269,80 @@ SKIP_SUFFIXES = frozenset({
 })
 MAX_BYTES = 2 * 1024 * 1024
 
-SELF_TEST_BAD = (
-    "instance 8.8.8.8 path /srv/evidence/arm.json win C:\\Users\\dev\\secret.txt "  # public-tree-scan: ignore-line
-    "auth Bearer abcdefghijklmnopqrstuvwxyz012345 password=\"Passw0rd!2026\" deny SCNET-INSTANCE-1 "  # public-tree-scan: ignore-line
-    # R1 形态：flag 与 add_argument(default=) 两种写法都必须落网（值用合成串，不是真实口令）
-    "cli --api-pass \"Synthetic-Pass!123\" "  # public-tree-scan: ignore-line
-    "parser.add_argument(\"--api-pass\", default=\"Synthetic-Pass!123\")"  # public-tree-scan: ignore-line
-    "cfg password=Hunter2Hunter2 "  # public-tree-scan: ignore-line
-    # R6 形态：凭据词作**后缀**的复合键与 camelCase 键（旧 `\b` 正则整类漏网）
-    "cfg api_secret=Zz9Kk2Lm "  # public-tree-scan: ignore-line
-    "cfg db_password=\"Hunter2Hunter2\" "  # public-tree-scan: ignore-line
-    "cfg API_SECRET = \"Zz9Kk2Lm\" "  # public-tree-scan: ignore-line
-    "cfg clientSecret: \"Ab3xY9Qq2\" "  # public-tree-scan: ignore-line
-    "cfg access_token = \"ghp_abcdefghijklmnopqrstuvwxyz0123456\" "  # public-tree-scan: ignore-line
-    # R7-1 形态：带类型注解的赋值（注解冒号会吃掉值位置，`str` 被当值 ⇒ 整类漏网）
-    "cfg client_secret: str = \"Ab12Cd34\" "  # public-tree-scan: ignore-line
-    'api_key: str | None = "Ab12Cd34"'  # public-tree-scan: ignore-line,
-    # 与键名无关的令牌形态：URL 内联凭据与 HTTP Basic（值均为合成串）
-    "db postgresql://eval_user:Synthetic-Pass!123@127.0.0.1:5432/app "  # public-tree-scan: ignore-line
-    "auth Basic U3ludGhldGljLVBhc3MhMTIz"  # public-tree-scan: ignore-line
+#: 门①.5 r2 I-3：旧契约只钉「`MAX_BYTES` 不得缩到 64 KiB 以下」，缩到恰在 64 KiB 仍全绿，
+#: 而真树实测会丢 6 处真实命中（1006→997 文件 / 332→326 处）。改为**超限夹具**驱动：
+#: `_extension_coverage_check()` 会造一个超过此下限的文件并要求它被扫到。
+#: 硬化（作者自查）：夹具体积用**与下限无关的固定字面量** `_OVERSIZED_FIXTURE_BYTES`，
+#: 且下限本身另有字面量地板 `MIN_MAX_BYTES_FLOOR`；否则「把下限调小」会让夹具跟着变小，
+#: 检查与夹具同源 ⇒ 自指空转。
+MIN_MAX_BYTES = 96 * 1024
+MIN_MAX_BYTES_FLOOR = 96 * 1024
+_OVERSIZED_FIXTURE_BYTES = 128 * 1024
 
+#: 门①.5 r2 I-2：必须被扫描的**文本/源码后缀**（反向白名单）。
+#: 旧契约只断言「21 个已知源码后缀不得进 `SKIP_SUFFIXES`」——白名单式 ⇒ 加一个名单外的
+#: 文本后缀（`.ps1` / `.example` / `.jsonl`）三层全绿，真树却丢 4–5 处命中。
+#: 这里改成**真文件驱动**：每个后缀造一个含凭据的文件走 `main()` 全链，少扫一个就判红。
+#: 另有数量地板 `MIN_REQUIRED_TEXT_SUFFIXES`：删条目同样会让检查与夹具一起变弱。
+REQUIRED_TEXT_SUFFIXES = (
+    ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".json", ".jsonl", ".yml", ".yaml",
+    ".md", ".sh", ".toml", ".cfg", ".ini", ".env", ".txt", ".sql", ".go", ".java", ".rb",
+    ".ps1", ".html", ".css", ".example",
 )
+MIN_REQUIRED_TEXT_SUFFIXES = 26
+
+#: 门①.5 r2 I-5：全部**已登记**的规则 id。它让 AC2 的汇总断言真正可失败——
+#: 规则改名/新规则涌现而未登记时判红，而不是恒真的「逐规则计数之和 == 命中总数」。
+KNOWN_RULE_IDS = frozenset({
+    "public_ip", "abs_path", "win_path", "bearer", "api_key", "url_credential", "basic_auth",
+    "credential_literal", "credential_flag", "credential_bare", "denylist",
+})
+_FINDING_LINE_RE = re.compile(r"^.+?:\d+: \[[a-z_]+\] ")
+
+#: 门①.5 r2 I-7：负面控制也必须有下限——两份干净样本清空后自检照样 rc=0 并照打
+#: 「干净样本零命中」，缺口③ 的唯一正面证据可被无声删除。长度 + CJK 双向比对封住它。
+MIN_CLEAN_CHARS = 200
+MIN_CLEAN_CN_CHARS = 100
+
+#: 阳性对照**逐例**清单（例名, 代码片段）。Issue#159 AC3：逐例命中是硬要求——
+#: 只查「10 个类别是否都出现」会放过**整类放松**：往 `META_TAIL_WORDS` 里加 `token`
+#: 只让个别片段逃逸，其余片段仍覆盖同一类别，类别级断言照旧通过。
+#: 每行末尾的 `public-tree-scan: ignore-line(<规则名>)` 是自指豁免：本文件自身也会被扫描。
+#: Issue#160 AC3：豁免必须逐个点名规则，同行其它规则照常报出（旧实现整行跳过＝一票放行）。
+SELF_TEST_BAD_CASES = (
+    ("url-and-path", "instance 8.8.8.8 path /srv/evidence/arm.json win C:\\Users\\dev\\secret.txt"),  # public-tree-scan: ignore-line(abs_path, public_ip, win_path)
+    ("bearer-and-literal", "auth Bearer abcdefghijklmnopqrstuvwxyz012345 password=\"Passw0rd!2026\" deny SCNET-INSTANCE-1"),  # public-tree-scan: ignore-line(bearer)
+    # Issue#142：Bearer 大小写不敏感——小写与混写必须同样落网（值均为合成串，非真实令牌）
+    ("bearer-lowercase", "auth bearer abcdefghijklmnopqrstuvwxyz012345"),  # public-tree-scan: ignore-line(bearer)
+    ("bearer-mixedcase", "auth BeArEr ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"),  # public-tree-scan: ignore-line(bearer)
+    ("flag-cli", "cli --api-pass \"Synthetic-Pass!123\""),  # public-tree-scan: ignore-line(credential_flag)
+    ("flag-argparse", "parser.add_argument(\"--api-pass\", default=\"Synthetic-Pass!123\")"),  # public-tree-scan: ignore-line(credential_flag)
+    ("bare-assignment", "cfg password=Hunter2Hunter2"),  #
+    ("suffix-secret", "cfg api_secret=Zz9Kk2Lm"),  #
+    ("snake-db-password", "cfg db_password=\"Hunter2Hunter2\""),  #
+    ("upper-secret", "cfg API_SECRET = \"Zz9Kk2Lm\""),  #
+    ("camel-secret", "cfg clientSecret: \"Ab3xY9Qq2\""),  #
+    ("long-token", "cfg access_token = \"ghp_abcdefghijklmnopqrstuvwxyz0123456\""),  # public-tree-scan: ignore-line(api_key)
+    ("annotated-secret", "cfg client_secret: str = \"Ab12Cd34\""),  #
+    ("annotated-key-optional", 'api_key: str | None = "Ab12Cd34"'),  # public-tree-scan: ignore-line(credential_literal)
+    ("url-inline", "db postgresql://eval_user:Synthetic-Pass!123@127.0.0.1:5432/app"),  # public-tree-scan: ignore-line(url_credential)
+    ("basic-auth", "auth Basic U3ludGhldGljLVBhc3MhMTIz"),  # public-tree-scan: ignore-line(basic_auth)
+    # 与键名无关的厂商前缀密钥（`api_key` 规则）：门①.5 r1 指出 required 里缺它 ⇒ 该规则曾被静默改假
+    ("vendor-prefixed-key", 'cfg value = "sk-abcdefghijklmnopqrstuvwx"'),  # public-tree-scan: ignore-line(api_key)
+    # 只靠**键名**才成立的凭据例（值不带厂商前缀）：元数据尾巴词放松时它必须逃逸 ⇒ 自检判红
+    ("token-name-only", 'cfg access_token = "Ab12Cd34"'),  # public-tree-scan: ignore-line(credential_literal)
+    # 只靠 `is_credential_name` 的 compact 兜底才成立（词元切分后无凭据词）：冷审 N8 曾删掉该兜底而全绿
+    ("compact-fallback-name", 'cfg dbpassword = "Ab12Cd34"'),  # public-tree-scan: ignore-line(credential_literal)
+    ("key-name-only", 'cfg api_key = "Ab12Cd34"'),  # public-tree-scan: ignore-line(credential_literal)
+    # 门①.5 r2 I-1：只靠**符号**（不含数字）成形的密钥。此前 18 例正样本值全含数字，
+    # 于是把 `_SECRET_SYMBOL_RE` 里的 `!` 删掉仍然全绿，而仅含符号的口令会漏（见下方用例）。
+    ("symbol-shaped-secret", 'cfg password = "Abcdefg!"'),  # public-tree-scan: ignore-line(credential_literal)
+    # Issue#160 现象①：含汉字的值曾被 `_is_secret_shaped` 整类排除 ⇒ 中文口令静默漏网。
+    # 两例覆盖主 Issue 点名的两个形态：带数字的纯中文值、中英数混排值。
+    ("cjk-password-with-digits", 'cfg password="测试口令123"'),  # public-tree-scan: ignore-line(credential_literal)
+    ("cjk-mixed-secret", 'cfg secret = "超机密密码9o0i"'),  # public-tree-scan: ignore-line(credential_literal)
+)
+SELF_TEST_BAD = " ".join(snippet for _label, snippet in SELF_TEST_BAD_CASES)
 SELF_TEST_CLEAN = (
     "api_base http://127.0.0.1:8000 fixture 203.0.113.9 host 10.1.2.3 "
     "password=<你的密码> api_key=os.environ['X'] path testdata/canary-issue106-scan-10p.pdf "
@@ -251,6 +353,22 @@ SELF_TEST_CLEAN = (
     # R10-1 假阳性守卫：厂商前缀正则的字母标识符邻居（`skeleton…`/`skippedNoCandidates`）不得命中
     "skeletonButtonSize skippedNoCandidates "
     "--api-pass\", default=os.environ.get(\"EVAL_API_PASS\")"
+    # Issue#142：<24 字符的 bearer 值属设计边界（阈值有意取 24），不得命中
+    "auth bearer ShortToken12345 "
+)
+
+# Issue#159 缺口③：干净样本补**中文内容 + 非 ASCII 路径**（自检此前只有 ASCII 路径/内容）。
+# 注意：缺口③的另一半（「应命中却曾被放过」的中文口令语料）属 Issue#160，不在此处假装覆盖。
+SELF_TEST_CLEAN_CN = (
+    "本院于2022年1月25日立案受理，承办人张三，联系电话 13800000000，"
+    "账号 202020202020202020，地址 广西南宁市青秀区示例路 1 号。"
+    "配置示例：api_key=os.environ[\"X\"] password=<你的密码> "
+    # Issue#160 AC2 反例：凭据**键名**下的纯中文文案不得当口令（缺混排证据）；
+    # 长到 CJK 长度底线（6 字）也不能只靠长度成立。
+    "secret = \"中文标题\" password = \"甲乙丙丁戊己\" "  # public-tree-scan: ignore-line(credential_bare)
+    # 门①.5 r1 M-3 / r2 R2-1：中文标点正文 / 中文日期形态也必须零命中——
+    # **键名必须是凭据名**，否则会被键名门提前挡掉、压根测不到中文标点/日期排除。
+    "secret = \"本次共3人，已逐一核对。\" pwd = \"2023年6月15日\" "
 )
 
 
@@ -263,9 +381,9 @@ def _is_public_ip(ip: str) -> bool:
 _COVERAGE_NOTE = """凭据面覆盖边界（⑦⑧⑨冷评审反复追问的口径，明写以免「静默盲区」）。
 覆盖：普通赋值 `n = "v"`；带类型注解赋值 `n: Ann = "v"`（含 PEP 604 `|`、泛型、顶层前向引用）；
 引号键（JSON/YAML/dict，键名可含 `-`）；`--flag` 后的引号字面量**与空格裸值**；无引号字母数字
-混合值；Bearer / 厂商前缀密钥 / URL 内联凭据 / HTTP Basic。
+混合值；Bearer（**大小写不敏感**：`(?i)\bBearer\s+[A-Za-z0-9\-._~+/]{24,}`；报告侧 `eval-ng/engine/speedkit/report.py` 的同族规则也带 `(?i)`，阈值 12 —— 差异为**有意**：公开树门取防误报、报告脱敏取防漏报，两侧大小写口径一致）/ 厂商前缀密钥 / URL 内联凭据 / HTTP Basic。
 不覆盖（设计边界，非静默盲区）：① 编码/拼接/运行时构造的口令（base64 常量、`"a"+"b"`、f-string
-插值——后者按模板豁免）；② 跨行材料（PEM 私钥正文逐行 `-`，形状判定视为分隔符）；③ 仅在密钥库/
+插值——后者按模板豁免）。**已知安全侧多报**：含数字且无 `=` 填充的 base64 常量会被判命中——**多报不是漏报**，处置方式是就地说明或 `ignore-line`；② 跨行材料（PEM 私钥正文逐行 `-`，形状判定视为分隔符）；③ 仅在密钥库/
 环境/凭据文件中出现、代码内无字面量的凭据；④ 长度 <8 或纯占位词的值。
 值形状判定要求「含数字或非字母数字符号」且非分隔符/JSON 片段/CJK 文案/类型名/ID 形态。"""
 def load_denylist(path: str | None) -> list[str]:
@@ -329,7 +447,7 @@ def credential_findings(text: str) -> list[tuple[str, str]]:
             break
         if matched:
             continue
-        # 空格分隔的裸值形态（`--api-pass Ab12Cd34`，⑨冷评审 R9-3）：仅看同一行，且与其它分支同形状判据。
+        # 空格分隔的裸值形态（`--api-pass Ab12Cd34`，⑨冷评审 R9-3）：仅看同一行，且与其它分支同形状判据。  #
         bare = _BARE_FLAG_VALUE_RE.match(same_line)
         if bare is None:
             continue
@@ -365,12 +483,16 @@ def scan(text: str, *, denylist: list[str], allow_prefixes: list[str]) -> list[t
 
 
 def scan_source(name: str, text: str, *, denylist: list[str], allow_prefixes: list[str]) -> list[str]:
-    """逐行扫描并带行号；含放过标记的行跳过。"""
+    """逐行扫描并带行号；放过标记**按规则名**生效（Issue#160 AC3）。"""
     lines: list[str] = []
     for lineno, line in enumerate(text.splitlines(), 1):
-        if IGNORE_MARKER in line:
-            continue
+        marker = _IGNORE_LINE_RE.search(line)
+        allowed = (
+            {item.strip() for item in marker.group("rules").split(",") if item.strip()} if marker else set()
+        )
         for rule, value in scan(line, denylist=denylist, allow_prefixes=allow_prefixes):
+            if rule in allowed:
+                continue
             lines.append(f"{name}:{lineno}: [{rule}] {value}")
     return lines
 
@@ -450,28 +572,246 @@ def _iter_targets(repo_root: Path, paths: list[str], base: str | None) -> list[P
     return default_paths(repo_root, base)
 
 
-def self_test(denylist: list[str] | None = None) -> int:
-    """阳性对照：坏样本必须**逐类**全中（类别清单见 `required`），干净样本必须零命中。"""
-    words = list(denylist or [])
-    bad = scan_source("self-test-bad", SELF_TEST_BAD, denylist=words + ["SCNET-INSTANCE-1"],
-                      allow_prefixes=[])
-    rules = {line.split("[", 1)[1].split("]", 1)[0] for line in bad}
-    required = {
-        "public_ip", "abs_path", "win_path", "bearer", "url_credential", "basic_auth",
-        "credential_literal", "credential_flag", "credential_bare", "denylist",
-    }
-    missing = required - rules
-    clean = scan_source("self-test-clean", SELF_TEST_CLEAN, denylist=words, allow_prefixes=[])
+def _scan_scope_contract() -> list[str]:
+    """门①.5 r1 必修①：**跳过面与范围**是自指盲区。
+
+    自检此前只直调 `scan_source`，结构上永远看不到 `SKIP_SUFFIXES` / `IGNORE_MARKER` /
+    `MAX_BYTES` 被放宽（冷审实测：往 `SKIP_SUFFIXES` 加 `.py` 后，CI 门、自检、仓内回归
+    三方全绿，而含凭据的 `.py` 照样进仓）。这里把三者钉成机械契约：
+    源码后缀不得进跳过集、忽略标记不得改宽、大小上限不得缩小。
+    """
     problems: list[str] = []
+    source_suffixes = {
+        ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".json", ".yml", ".yaml",
+        ".md", ".sh", ".toml", ".cfg", ".ini", ".env", ".txt", ".sql", ".go", ".java", ".rb",
+    }
+    leaked = sorted(source_suffixes & SKIP_SUFFIXES)
+    if leaked:
+        problems.append(f"SKIP_SUFFIXES 含源码后缀（扫描面被放宽）：{leaked}")
+    if IGNORE_MARKER != "public-tree-scan: ignore-line":
+        problems.append(f"忽略标记被改宽：{IGNORE_MARKER!r}")
+    if MAX_BYTES < MIN_MAX_BYTES:
+        problems.append(f"单文件大小上限被缩小到 {MAX_BYTES}（下限 {MIN_MAX_BYTES}）")
+    # 自查硬化：下限与后缀清单本身也要有地板，否则「把下限/清单调小」会让检查与其夹具同源变弱。
+    if MIN_MAX_BYTES < MIN_MAX_BYTES_FLOOR:
+        problems.append(f"大小下限被调小：{MIN_MAX_BYTES} < 地板 {MIN_MAX_BYTES_FLOOR}")
+    if len(REQUIRED_TEXT_SUFFIXES) < MIN_REQUIRED_TEXT_SUFFIXES:
+        problems.append(
+            f"必扫后缀清单被削短：{len(REQUIRED_TEXT_SUFFIXES)} < 地板 {MIN_REQUIRED_TEXT_SUFFIXES}"
+        )
+    if _OVERSIZED_FIXTURE_BYTES <= MIN_MAX_BYTES:
+        problems.append(
+            f"超限夹具({_OVERSIZED_FIXTURE_BYTES}) 不大于大小下限({MIN_MAX_BYTES})：检查会失去判别力"
+        )
+    return problems
+
+
+def _end_to_end_scope_check() -> list[str]:
+    """门①.5 r1 必修①：走 `main()` 的端到端自检（临时 git 仓 + **已提交**的 .py 凭据）。
+
+    与 CI 的调用路径一致（`--base` 取改动清单 ⇒ 候选 ⇒ 跳过面 ⇒ 扫描 ⇒ 退出码）。
+    作者原先的本地阳性对照用的是**未跟踪**文件，CI 上永远不出现那种路径。
+    """
+    import contextlib
+    import io
+    import os
+    import subprocess
+    import tempfile
+
+    problems: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "probe", "GIT_AUTHOR_EMAIL": "probe@example.com",
+            "GIT_COMMITTER_NAME": "probe", "GIT_COMMITTER_EMAIL": "probe@example.com",
+        }
+
+        def git(*args: str) -> None:
+            subprocess.run(["git", "-C", tmp, *args], capture_output=True, text=True, env=env, check=True)
+
+        git("init", "-q")
+        (Path(tmp) / "keep.txt").write_text("clean\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+        # 夹具文本按片段拼接：本文件自身也在扫描范围内（本 PR 改了它），
+        # 写成连续字面量 `api_pass = "<值>"` 会被自己的规则判红（实测 CI G4 FAILURE）。
+        probe_text = "".join(
+            ["api", "_pass", ' = "', "Synth", "etic-", "Pass!", "1", "2", "3", '"', "\n"]
+        )
+        (Path(tmp) / "leak_probe.py").write_text(probe_text, encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "probe")
+        (Path(tmp) / "keep.txt").write_text("clean but changed\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "benign")
+        sink = io.StringIO()
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            leaked = main(["--repo-root", tmp, "--base", "HEAD~2"])
+            clean = main(["--repo-root", tmp, "--base", "HEAD~1"])
+        if leaked != 1:
+            problems.append(f"端到端自检：临时仓提交含凭据的 .py 后应 rc=1，实得 {leaked}")
+        if clean != 0:
+            problems.append(f"端到端自检：临时仓只改良性文件时应 rc=0，实得 {clean}（注意：无候选文件是 2）")
+    return problems
+
+
+def _extension_coverage_check() -> list[str]:
+    """门①.5 r2 I-2 / I-3：后缀集与大小上限是**白名单式**契约，必须用真文件走 `main()` 全链。
+
+    旧契约只断言「已知源码后缀不在 `SKIP_SUFFIXES` 里」「`MAX_BYTES` 不小于 64 KiB」，
+    两条都只在**名单内**成立：往跳过集加一个名单外的文本后缀（`.ps1`/`.example`/`.jsonl`）
+    三层全绿而真树丢 4–5 处命中；把上限缩到恰在 64 KiB 也全绿而真树丢 6 处（实测）。
+
+    这里反向钉住「**哪些后缀必须被扫到**」：每个后缀造一个含凭据的文件 + 一个超过
+    `MIN_MAX_BYTES` 的大文件，提交后走 `--base HEAD~1` 全链，要求每个文件名都出现在
+    命中输出里。少扫一个、跳过集放宽一个、上限缩小到夹具以下，都会判红。
+    """
+    import contextlib
+    import io
+    import os
+    import subprocess
+    import tempfile
+
+    payload = 'cfg password = "Hunter2Hunter2"\n'
+    problems: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "probe", "GIT_AUTHOR_EMAIL": "probe@example.com",
+            "GIT_COMMITTER_NAME": "probe", "GIT_COMMITTER_EMAIL": "probe@example.com",
+        }
+
+        def git(*args: str) -> None:
+            subprocess.run(["git", "-C", tmp, *args], capture_output=True, text=True, env=env, check=True)
+
+        git("init", "-q")
+        (Path(tmp) / "keep.txt").write_text("clean\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+        expected: list[str] = []
+        for suffix in REQUIRED_TEXT_SUFFIXES:
+            name = f"probe{suffix}"
+            (Path(tmp) / name).write_text(payload, encoding="utf-8")
+            expected.append(name)
+        # 超限夹具：体积来自**与下限无关的固定字面量**（大于 `MIN_MAX_BYTES`），凭据落在文件末尾
+        # （截断/跳过都会漏掉它）。夹具不随下限缩放 ⇒「把下限调小」不会同时把检查变弱。
+        oversized = "oversized_probe.txt"
+        padding = "# padding line\n" * (_OVERSIZED_FIXTURE_BYTES // 14 + 64)
+        (Path(tmp) / oversized).write_text(padding + payload, encoding="utf-8")
+        expected.append(oversized)
+        git("add", "-A")
+        git("commit", "-q", "-m", "fixtures")
+
+        sink = io.StringIO()
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            rc = main(["--repo-root", tmp, "--base", "HEAD~1"])
+        out = sink.getvalue()
+        if rc != 1:
+            problems.append(f"后缀覆盖自检：{len(expected)} 个含凭据夹具提交后应 rc=1，实得 {rc}")
+        missing = [name for name in expected if f"{name}:" not in out]
+        if missing:
+            problems.append(
+                f"后缀/体积覆盖：{len(missing)} 个夹具未被扫描（跳过集放宽或上限缩小）：{missing}"
+            )
+    return problems
+
+
+def _ignore_line_scope_check() -> list[str]:
+    """Issue#160 AC3：放过标记必须**按规则名**生效，且裸标记不得整行豁免。
+
+    反向对照两条：(a) 只点名 `credential_literal` 时同行的 `public_ip` 必须照常报出；
+    (b) 裸标记不放过任何规则。两条都在 `scan_source` 的真路径上跑（不是断言常量）。
+    """
+    problems: list[str] = []
+    # 标记字面量按符号拼出：本函数所在行也会被扫描器扫到，写成字面量会自指命中。
+    scoped = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + f"{IGNORE_MARKER}(credential_literal)"  # public-tree-scan: ignore-line(public_ip)
+    rules = {
+        line.split("[", 1)[1].split("]", 1)[0]
+        for line in scan_source("self-test-ignore-scope", scoped, denylist=[], allow_prefixes=[])
+    }
+    if "credential_literal" in rules:
+        problems.append("规则级放过标记未生效：被点名的 credential_literal 仍被报出")
+    if "public_ip" not in rules:
+        problems.append(f"规则级放过标记过宽：同行未被点名的规则被一起放过（实得 {sorted(rules)}）")
+    bare = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + IGNORE_MARKER  # public-tree-scan: ignore-line(public_ip)
+    bare_rules = {
+        line.split("[", 1)[1].split("]", 1)[0]
+        for line in scan_source("self-test-ignore-bare", bare, denylist=[], allow_prefixes=[])
+    }
+    if "credential_literal" not in bare_rules or "public_ip" not in bare_rules:
+        problems.append(f"裸放过标记不应放过任何规则（实得 {sorted(bare_rules)}）")
+    # 门①.5 r1 M-2：空括号 `ignore-line()` 的规则集为空 ⇒ **什么都不放过**（不是「放过整行」）。
+    empty = 'cfg password="Ab12Cd34" host 8.8.8.8  # ' + IGNORE_MARKER + "()"  # public-tree-scan: ignore-line(public_ip)
+    empty_rules = {
+        line.split("[", 1)[1].split("]", 1)[0]
+        for line in scan_source("self-test-ignore-empty", empty, denylist=[], allow_prefixes=[])
+    }
+    if "credential_literal" not in empty_rules or "public_ip" not in empty_rules:
+        problems.append(f"空括号放过标记不应放过任何规则（实得 {sorted(empty_rules)}）")
+    return problems
+
+
+def self_test(denylist: list[str] | None = None) -> int:
+    """阳性对照：**逐例**必须命中（类别清单见 `required`），干净样本必须零命中。
+
+    Issue#159 AC3：原先只断言「10 个类别是否都出现」。整类放松（例如往
+    `META_TAIL_WORDS` 里加 `token`）只让个别片段逃逸，其余片段仍覆盖同一类别，
+    类别级断言照旧通过 ⇒ 放松判据**测不出来**。逐例断言 + 用例数下限 + 规则归属
+    对账 + 跳过面机械契约 + 端到端 `main()` 正反对照之后，任一条放宽路径都会判红
+    （证据见 Issue#159 方案 §5 的变异矩阵）。
+    """
+    words = list(denylist or [])
+    bad_denylist = words + ["SCNET-INSTANCE-1"]
+    # 与 `KNOWN_RULE_IDS` 同源：汇总断言（main）用同一份登记表，规则改名即红。
+    required = set(KNOWN_RULE_IDS)
+    # 用例数下限：删掉一条用例（冷审 N10）不能靠「剩下的仍然全中」蒙过去。
+    min_cases = 21
+    problems: list[str] = []
+    coverage: dict[str, list[str]] = {}
+    per_case: list[str] = []
+    for label, snippet in SELF_TEST_BAD_CASES:
+        hits = scan_source(f"self-test-bad:{label}", snippet, denylist=bad_denylist, allow_prefixes=[])
+        if not hits:
+            problems.append(f"阳性对照未命中：{label}")
+        for line in hits:
+            coverage.setdefault(line.split("[", 1)[1].split("]", 1)[0], []).append(label)
+        per_case.append(f"{label}={len(hits)}")
+    if len(SELF_TEST_BAD_CASES) < min_cases:
+        problems.append(f"阳性对照用例数 {len(SELF_TEST_BAD_CASES)} 少于下限 {min_cases}")
+    missing = required - set(coverage)
     if missing:
-        problems.append(f"阳性对照未命中：{sorted(missing)}")
+        detail = {r: coverage.get(r, []) for r in sorted(missing)}
+        problems.append(f"阳性对照类别未覆盖：{sorted(missing)}（归属：{detail}）")
+    clean = scan_source("self-test-clean", SELF_TEST_CLEAN, denylist=words, allow_prefixes=[])
     if clean:
         problems.append(f"干净样本被误报：{clean}")
+    clean_cn = scan_source(
+        "自检/中文-非ASCII 路径示例.md", SELF_TEST_CLEAN_CN, denylist=words, allow_prefixes=[]
+    )
+    if clean_cn:
+        problems.append(f"中文/非 ASCII 干净样本被误报：{clean_cn}")
+    # 门①.5 r2 I-7：负面控制的下限（长度 + CJK 双向），否则清空样本仍 rc=0。
+    if len(SELF_TEST_CLEAN) < MIN_CLEAN_CHARS:
+        problems.append(f"ASCII 干净样本被删短：{len(SELF_TEST_CLEAN)} < {MIN_CLEAN_CHARS}")
+    if len(SELF_TEST_CLEAN_CN) < MIN_CLEAN_CN_CHARS:
+        problems.append(f"中文干净样本被删短：{len(SELF_TEST_CLEAN_CN)} < {MIN_CLEAN_CN_CHARS}")
+    if not _CJK_RE.search(SELF_TEST_CLEAN_CN):
+        problems.append("中文干净样本不含 CJK：非 ASCII 路径覆盖被无声删除")
+    if SELF_TEST_CLEAN == SELF_TEST_CLEAN_CN:
+        problems.append("两份干净样本内容完全相同：非 ASCII 覆盖被合并掉")
+    problems += _scan_scope_contract()
+    problems += _end_to_end_scope_check()
+    problems += _extension_coverage_check()
+    problems += _ignore_line_scope_check()
     if problems:
         for line in problems:
             print(f"[self-test] {line}", file=sys.stderr)
         return 1
-    print(f"[self-test] 阳性对照 {len(required)} 类全中，干净样本零命中")
+    print(
+        f"[self-test] 阳性对照 {len(SELF_TEST_BAD_CASES)} 例逐例命中、{len(required)} 类全覆盖"
+        f"（{'、'.join(per_case)}），干净样本零命中；跳过面契约、端到端 main() 正反对照、"
+        f"后缀/体积真文件覆盖（{len(REQUIRED_TEXT_SUFFIXES) + 1} 个夹具）通过"
+    )
     return 0
 
 
@@ -660,13 +1000,31 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    counts = Counter(line.split("[", 1)[1].split("]", 1)[0] for line in findings)
+    # AC2 自洽断言（门①.5 r2 I-5）：原先的「逐规则计数之和 == 命中总数」是**恒真**的
+    # （`counts` 就是从 `findings` 派生的），断言空转。改为两条真正可失败的不变式：
+    # ① 每条命中行必须符合 `路径:行号: [规则] 值` 的严格形状；
+    # ② 出现的规则 id 必须全部已登记（`KNOWN_RULE_IDS`）——规则改名/新增而未登记即红。
+    malformed = [line for line in findings if not _FINDING_LINE_RE.match(line)]
+    unknown = sorted(set(counts) - KNOWN_RULE_IDS)
+    if malformed or unknown:
+        print(
+            f"[public-tree] 汇总自洽检查失败：形状异常 {len(malformed)} 行、未登记规则 id {unknown}"
+            f"（已登记：{sorted(KNOWN_RULE_IDS)}）",
+            file=sys.stderr,
+        )
+        return 2
+    dist = "、".join(f"{rule}={n}" for rule, n in sorted(counts.items())) or "无"
     if findings:
         for line in findings:
             print(line)
-        print(f"[public-tree] {scanned} 文件，命中 {len(findings)} 处（exit 1）", file=sys.stderr)
+        print(
+            f"[public-tree] {scanned} 文件，命中 {len(findings)} 处（按规则：{dist}）（exit 1）",
+            file=sys.stderr,
+        )
         return 1
     tail = f"，跳过 {sum(len(v) for v in skipped.values())} 个（有意）" if any(skipped.values()) else ""
-    print(f"[public-tree] {scanned} 文件，零命中{tail}")
+    print(f"[public-tree] {scanned} 文件，零命中（按规则：{dist}）{tail}")
     return 0
 
 

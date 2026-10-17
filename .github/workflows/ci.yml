@@ -76,6 +76,35 @@ jobs:
             exit 1
           fi
 
+  # 公开树红线扫描（G4，Issue#159）。此前只在本地手动跑：规则被放松、或改动面
+  # 引入凭据字面量，CI 一句话不说（#140/#141 就是这么漏出去的）。
+  public-tree-scan:
+    name: Public tree scan (G4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # 与 base-guard 同理：pull_request 默认检出 merge 提交，扫描面会变成 head×base 合并结果
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+
+      - name: Scanner self-test (planted forms must each be caught)
+        run: python3 eval-ng/scripts/check_public_tree.py --self-test
+
+      - name: Scan changed files for red-line traces
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -e
+          if [ -n "$BASE" ]; then
+            git fetch origin "$BASE" --quiet
+            python3 eval-ng/scripts/check_public_tree.py --base "origin/$BASE"
+          elif git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+            python3 eval-ng/scripts/check_public_tree.py --base HEAD~1
+          else
+            echo "无可比基线（仓库首个提交），仅跑自检"
+          fi
+
   frontend:
     name: Frontend build
     runs-on: ubuntu-latest

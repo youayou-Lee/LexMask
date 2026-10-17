@@ -7,7 +7,7 @@
 2. **绝对路径**（POSIX 根用户/家目录/挂载点等前缀、Windows 盘符路径；`--allow-prefix` 可放行指定前缀）；
 3. **口令面**（`Bearer <token>` / `sk-`·`rk-`·`ghp_`·`gho_`·`ghs_`·`github_pat_`·`AKIA` 厂商密钥 /
    `password=…` 字面量；规则从同族公开树扫描器
-   `check_public_tree.SECRET_RES` **同一真源**导入，避免两处口径漂移——②冷评审 I13 指其原本无机检）；
+   `check_public_tree.credential_findings` **同一真源**导入，避免两处口径漂移——②冷评审 I13 指其原本无机检）；
 4. **`--denylist` 词表**（一行一词；`re:<正则>` 前缀走正则）。
 
 自带阳性对照：`--self-test` 会用含 IP/绝对路径/denylist 词的样本断言「必须命中」，再用干净样本断言
@@ -45,9 +45,9 @@ WIN_PATH_RE = re.compile(r"(?<![\w])[A-Za-z]:\\[^\s\"'`,)]*")
 LOOPBACK_PREFIXES = ("127.", "0.0.0.0", "::1")
 
 SELF_TEST_BAD = (
-    "instance 10.11.12.13 path /srv/evidence/d3-after-1.json win C:\\Users\\dev\\secret.txt "  # public-tree-scan: ignore-line
-    'auth Bearer abcdefghijklmnopqrstuvwxyz012345 password="Passw0rd!2026" '  # public-tree-scan: ignore-line
-    "case 苏A-某某公司-2021"  # public-tree-scan: ignore-line
+    "instance 10.11.12.13 path /srv/evidence/d3-after-1.json win C:\\Users\\dev\\secret.txt "  # public-tree-scan: ignore-line(abs_path, win_path)
+    'auth Bearer abcdefghijklmnopqrstuvwxyz012345 password="Passw0rd!2026" '  # public-tree-scan: ignore-line(bearer, credential_literal)
+    "case 苏A-某某公司-2021"  # public-tree-scan: ignore-line(denylist)
 )
 SELF_TEST_CLEAN = "instance local path testdata/canary-issue106-scan-10p.pdf ip 127.0.0.1 ok"
 
