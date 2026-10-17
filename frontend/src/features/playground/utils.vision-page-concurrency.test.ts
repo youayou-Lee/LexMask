@@ -166,7 +166,7 @@ describe('Issue#175 首屏优先：第 1 页独占首发', () => {
     };
   }
 
-  it('卷页数 > 并发槽位时，首发窗口里只有第 1 页一条在飞（判别点）', async () => {
+  it('10 页 / k=8（页数 > 槽位）：首发窗口里只有第 1 页一条在飞', async () => {
     const { runner } = await startRunner({ totalPages: 10, visualFeatureTypes: ['official_seal'] });
     // 首发窗口：不给任何请求放行，只让 microtask/宏任务推进几轮
     for (let i = 0; i < 5; i += 1) await flush();
