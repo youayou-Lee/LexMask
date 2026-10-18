@@ -1099,6 +1099,8 @@ const zhOverrides: Record<string, string> = {
   // Issue#194：后台任务识别的阶段人话（进度数字来自任务轮询）
   'playground.taskParsing': '后台解析中…',
   'playground.taskRecognizing': '后台识别中 {current}/{total}…',
+  // Issue#194（T10/D3）：打码改后台任务——提交成功后的 passive 提示，可离开页面
+  'playground.taskRedacting': '后台打码中…',
   'playground.uploadFailed': '文件上传失败。',
   'playground.parseFailed': '文件解析失败。',
   'playground.processFailed': '文件处理失败。',

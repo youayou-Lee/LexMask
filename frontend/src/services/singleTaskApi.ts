@@ -20,6 +20,12 @@ import { listJobs, type JobSummary } from './jobsApi';
 /** 受理回执：后台 job / item / file 三元组（与后端 SingleTaskRef 同形）。 */
 export type SingleTaskRef = { job_id: string; item_id: string; file_id: string };
 
+/**
+ * 打码受理回执（与后端 SingleRedactResult 同形）：只有 job_id/item_id/status。
+ * Controller 交接约束：回执无 file_id——fileId 一律以调用方现有状态为准，不得从打码回执读。
+ */
+export type SingleRedactReceipt = { job_id: string; item_id: string; status: string };
+
 /** 单文件识别：把已上传文件转后台任务（409 = 账号下已有活动任务）。 */
 export function submitRecognitionTask(
   fileId: string,
@@ -30,21 +36,25 @@ export function submitRecognitionTask(
   });
 }
 
-/** 单文件确认后打码：前端调整后的实体 seed + 展示配置（打码工人按既有键读取）。 */
+/**
+ * 单文件确认后打码：前端调整后的实体 seed + 展示配置（打码工人按既有键读取）。
+ * entities/bounding_boxes 按不透明载荷透传（序列化层不解释键，形状归后端工人所有），
+ * 调用方传前端 Entity/BoundingBox 域对象即可。
+ */
 export function submitRedactionTask(
   jobId: string,
   itemId: string,
   body: {
-    entities: Array<Record<string, unknown>>;
-    bounding_boxes: Array<Record<string, unknown>>;
+    entities: unknown[];
+    bounding_boxes: unknown[];
     config: {
       replacement_mode: 'mask' | 'pseudonym';
       custom_replacements?: Record<string, string>;
       watermark_text?: string;
     };
   },
-): Promise<SingleTaskRef> {
-  return post<SingleTaskRef>(
+): Promise<SingleRedactReceipt> {
+  return post<SingleRedactReceipt>(
     `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/redact`,
     body,
   );

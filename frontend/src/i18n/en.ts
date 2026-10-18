@@ -1190,6 +1190,8 @@ const enOverrides: Record<string, string> = {
   // Issue#194: stage messages for background-task recognition (numbers from task polling)
   'playground.taskParsing': 'Parsing in background…',
   'playground.taskRecognizing': 'Recognizing in background {current}/{total}…',
+  // Issue#194 (T10/D3): redaction moved to a background task — passive hint after submit, safe to leave
+  'playground.taskRedacting': 'Redacting in background…',
   'playground.uploadFailed': 'File upload failed.',
   'playground.parseFailed': 'File parsing failed.',
   'playground.processFailed': 'File processing failed.',
