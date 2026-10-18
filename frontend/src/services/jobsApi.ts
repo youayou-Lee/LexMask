@@ -57,6 +57,11 @@ export type JobItemRow = {
   error_message?: string | null;
   reviewed_at?: string | null;
   reviewer?: string | null;
+  /**
+   * Issue#194：原始 performance_json（getJob 默认 performance=true 时透出）。
+   * 处理详情卡消费；轻量模式（performance:false）下为 null。
+   */
+  performance?: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 };
@@ -272,6 +277,7 @@ function normalizeJobItemRow(rawItem: unknown): JobItemRow {
     error_message: asNullableString(item.error_message),
     reviewed_at: asNullableString(item.reviewed_at),
     reviewer: asNullableString(item.reviewer),
+    performance: isRecord(item.performance) ? item.performance : null,
     created_at: createdAt,
     updated_at: asString(item.updated_at, createdAt),
   };

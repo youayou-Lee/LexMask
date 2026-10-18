@@ -8,6 +8,8 @@ import { Progress } from '@/components/ui/progress';
 import { useT } from '@/i18n';
 import { PLAYGROUND_LOADING_TICK_MS, PLAYGROUND_LONG_RUNNING_HINT_MS } from '@/constants/timing';
 import { useInteractionLock } from '@/hooks/use-interaction-lock';
+import { buildProcessingRows } from '../lib/processing-details';
+import { ProcessingRowsList } from './processing-details-card';
 
 export interface PlaygroundLoadingProps {
   loadingMessage: string;
@@ -25,10 +27,15 @@ export interface PlaygroundLoadingProps {
    * total > 0 时进度条用真值；缺省回落到既有的时间 fake 公式。
    */
   progress?: { completed: number; total: number } | null;
+  /**
+   * Issue#194 Task 11：任务 item 的 performance_json（SingleTaskView.performance）。
+   * 提供时用与结果页详情卡同一个 buildProcessingRows 渲染已产出阶段行（三处一致性）。
+   */
+  performance?: Record<string, unknown> | null;
 }
 
 export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
-  ({ loadingMessage, isImageMode, onCancel, overlay = 'blocking', progress = null }) => {
+  ({ loadingMessage, isImageMode, onCancel, overlay = 'blocking', progress = null, performance = null }) => {
     const t = useT();
     const panelRef = useRef<HTMLDivElement>(null);
     const [elapsedMs, setElapsedMs] = useState(0);
@@ -96,6 +103,13 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
             aria-label={t('playground.loadingProgress')}
             data-testid="playground-loading-progress"
           />
+
+          {/* Issue#194 Task 11：已产出阶段行——与结果页详情卡同一 buildProcessingRows 同源 */}
+          {performance && (
+            <div className="mb-3">
+              <ProcessingRowsList rows={buildProcessingRows(performance)} testId="playground-processing-rows" />
+            </div>
+          )}
 
           {isImageMode ? (
             <>

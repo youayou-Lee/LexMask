@@ -977,6 +977,7 @@ export function usePlayground() {
     loadingMessage: fileCtx.loadingMessage,
     visionStream: fileCtx.visionStream,
     taskRecognition: fileCtx.taskRecognition,
+    taskPerformance: fileCtx.taskPerformance,
     uploadIssue: fileCtx.uploadIssue,
     recognitionIssue: fileCtx.recognitionIssue,
     entityMap,

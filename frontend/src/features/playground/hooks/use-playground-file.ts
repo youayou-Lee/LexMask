@@ -142,6 +142,12 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     taskRecognitionRef.current = value;
     setTaskRecognition(value);
   }, []);
+  /**
+   * Issue#194 Task 11：识别中任务的 item performance（provider 轮询经 SingleTaskView 透出）。
+   * 进行中视图（PlaygroundLoading）据此用与结果页详情卡同一个 buildProcessingRows
+   * 渲染已产出阶段行；任务退出（迁移/失败/取消）即清空。
+   */
+  const [taskPerformance, setTaskPerformance] = useState<Record<string, unknown> | null>(null);
   /** 迁移处理守卫：每个 job 的 awaiting_review/终态处理只执行一次（防重复拉快照/重复报错）。 */
   const handledJobRef = useRef<string | null>(null);
   /** 用户主动取消过的 job：provider 报 failed 时静默（cancelProcessing 已收拾过 UI）。 */
@@ -587,6 +593,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       // 后端进度语义（task_queue_pipelines）：parse 段无计数（total=0）→「后台解析中」；
       // ner 段 1/1、vision 段 page/total →「后台识别中 current/total」+ visionStream 真进度
       //（沿用 Issue#123 的 UI 管道，字段换源）。
+      setTaskPerformance(task.performance ?? null);
       if (task.total > 0) {
         setVisionStream({ completed: task.current, total: task.total });
         setLoadingMessage(
@@ -631,6 +638,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         } finally {
           if (!signal.aborted && handledJobRef.current === jobId) {
             setTaskRecognitionJob(null);
+            setTaskPerformance(null);
             setVisionStream(null);
             setIsLoading(false);
             setLoadingMessage('');
@@ -645,6 +653,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       if (handledJobRef.current === task.jobId) return;
       handledJobRef.current = task.jobId;
       setTaskRecognitionJob(null);
+      setTaskPerformance(null);
       setVisionStream(null);
       setIsLoading(false);
       setLoadingMessage('');
@@ -655,6 +664,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     if (handledJobRef.current === task.jobId) return;
     handledJobRef.current = task.jobId;
     setTaskRecognitionJob(null);
+    setTaskPerformance(null);
     setVisionStream(null);
     if (cancelledJobsRef.current.has(task.jobId)) return;
     setIsLoading(false);
@@ -676,6 +686,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       cancelledJobsRef.current.delete(jobId);
       handledJobRef.current = null;
       setTaskRecognitionJob({ jobId });
+      setTaskPerformance(null); // 旧任务残留清空，等 provider 轮询回填
       setIsLoading(true);
       setRecognitionIssue(null);
       setLoadingMessage(t('playground.taskParsing'));
@@ -684,6 +695,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         if (taskForFileRef.current(fileId)) return; // provider 已认领，继续等轮询
         handledJobRef.current = jobId;
         setTaskRecognitionJob(null);
+        setTaskPerformance(null);
         setVisionStream(null);
         setIsLoading(false);
         setLoadingMessage('');
@@ -769,6 +781,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     clearEncryptedPrompt,
     // Issue#194：任务驱动识别的状态与重挂入口（表现层据此降级遮罩 / 草稿恢复据此重挂）
     taskRecognition,
+    taskPerformance,
     reattachTask,
   };
 }

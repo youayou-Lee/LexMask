@@ -68,6 +68,7 @@ function placeholderView(entry: LedgerEntry): SingleTaskView {
     total: 0,
     message: null,
     error: null,
+    performance: null,
   };
 }
 

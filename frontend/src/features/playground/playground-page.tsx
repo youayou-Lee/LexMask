@@ -53,6 +53,7 @@ const PlaygroundInner: FC = () => {
     loadingMessage,
     visionStream,
     taskRecognition,
+    taskPerformance,
     recognitionIssue,
     entityMap,
     redactedCount,
@@ -576,6 +577,7 @@ const PlaygroundInner: FC = () => {
           isImageMode={isImageMode}
           onCancel={cancelProcessing}
           progress={visionStream}
+          performance={taskRecognition ? taskPerformance : null}
           overlay={overlayModeFor(progressiveRecognition)}
         />
       )}

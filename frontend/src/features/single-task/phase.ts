@@ -30,6 +30,11 @@ export type SingleTaskView = {
   total: number;
   message: string | null;
   error: string | null;
+  /**
+   * Issue#194 Task 11：item 的原始 performance_json（识别进行中视图的已产出
+   * 阶段行与结果页详情卡共用同一 buildProcessingRows 输入）。轻量轮询/占位为 null。
+   */
+  performance?: Record<string, unknown> | null;
 };
 
 /** job/item 状态 → phase。itemStatus 未知（列表 summary 基线）传 null，按识别段处理。 */
@@ -90,5 +95,6 @@ export function buildSingleTaskView(params: {
     total: item?.progress_total ?? 0,
     message: item?.progress_message ?? null,
     error: item?.error_message ?? detail.error_message ?? null,
+    performance: item?.performance ?? null,
   };
 }

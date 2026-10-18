@@ -111,4 +111,16 @@ describe('Issue#123 接线契约：四处接线不得被静默摘掉', () => {
     expect(context).toMatch(/taskRecognition: ctx\.taskRecognition,/);
     expect(context).toMatch(/ctx\.taskRecognition,/);
   });
+
+  it('Issue#194 Task11：taskPerformance 贯通 hook → context → page → loading（三处一致性接线）', () => {
+    // hook 层：provider view 的 performance 登记与退出清空（识别中）/ 透传
+    expect(fileHook).toMatch(/setTaskPerformance\(task\.performance \?\? null\);/);
+    expect(playgroundHook).toMatch(/taskPerformance: fileCtx\.taskPerformance,/);
+    // context 层：类型 + 映射 + 依赖数组
+    expect(context).toContain("taskPerformance: PlaygroundContextValue['taskPerformance'];");
+    expect(context).toMatch(/taskPerformance: ctx\.taskPerformance,/);
+    expect(context).toMatch(/ctx\.taskPerformance,/);
+    // 页面层：loading 拿到 performance（任务驱动识别期间才非 null）
+    expect(page).toMatch(/performance=\{taskRecognition \? taskPerformance : null\}/);
+  });
 });

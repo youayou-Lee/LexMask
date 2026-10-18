@@ -20,6 +20,7 @@ import type { VersionHistoryEntry } from '@/types';
 import type { BoundingBox, Entity, FileInfo, VisionTypeConfig } from '../types';
 import { PlaygroundResultActionBar, RedactionReportSection } from './playground-result-action-bar';
 import { TextResultView, ImageResultView, OutputResultView } from './playground-result-views';
+import { PlaygroundProcessingDetails } from './processing-details-card';
 import { useOutputPagePreview } from '../hooks/use-output-page-preview';
 
 export interface PlaygroundResultProps {
@@ -307,6 +308,13 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
           onToggle={() => setReportOpen((open) => !open)}
         />
       )}
+
+      {/* Issue#194 Task 11：处理详情卡（质量报告旁）——fileId→jobId 经 provider/草稿，
+          旧文件（无任务）不渲染（AC3 条款）。fileId/page_count 缺失时安全置空。 */}
+      <PlaygroundProcessingDetails
+        fileId={fileInfo?.file_id ?? null}
+        filePageCount={fileInfo?.page_count ?? fileInfo?.pages?.length ?? null}
+      />
 
       {outputPreviewAvailable && (
         <div
