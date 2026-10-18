@@ -15,7 +15,8 @@ import logging
 from typing import Any
 
 from app.services.file_management_service import file_owner_id, get_file_info
-from app.services.job_models import JobType
+from app.services.job_management_service import refresh_job_status, seed_file_store_from_draft_payload
+from app.services.job_models import JobItemStatus, JobType
 from app.services.job_store import JobStore
 from app.services.task_queue import TaskItem, get_task_queue
 
@@ -114,3 +115,56 @@ async def submit_single_recognition(
         TaskItem(job_id=job_id, item_id=item_id, file_id=file_id, task_type="recognition")
     )
     return {"job_id": job_id, "item_id": item_id, "file_id": file_id}
+
+
+async def submit_single_redaction(
+    store: JobStore,
+    *,
+    job_id: str,
+    item_id: str,
+    entities: list[dict],
+    bounding_boxes: list[dict],
+    redact_config: dict[str, Any],
+    owner_id: str,
+) -> dict[str, str]:
+    """提交单文件打码：确认后的实体 seed 进 file_store，item 推进入队打码。
+
+    镜像批量线 approve_review 的「迁移 + 刷新」写法（store.approve_item_review
+    → touch → refresh_job_status），入队打码复用批量线 redaction 工人。
+    守门（D2）与识别提交同源（``_active_single_task``）但**排除自身 job_id**：
+    本任务自身处于「计算中」状态不构成自拦。
+
+    job/item 不存在或非本人抛 KeyError；item 不在 awaiting_review 抛
+    ValueError；他 single 任务「计算中」抛 :class:`SingleTaskConflictError`。
+    pseudonym 在单文件允许（批量守卫 ``_reject_batch_pseudonym`` 不适用）。
+    """
+    job = store.get_job(job_id)
+    if not job or str(job.get("owner_id") or "local_user") != owner_id:
+        raise KeyError(job_id)
+    items = [it for it in store.list_items(job_id) if it["id"] == item_id]
+    if not items:
+        raise KeyError(item_id)
+    if items[0]["status"] != JobItemStatus.AWAITING_REVIEW.value:
+        raise ValueError(f"item not awaiting_review: {items[0]['status']}")
+    async with _submit_lock:
+        running = _active_single_task(store, owner_id)
+        if running and running["id"] != job_id:
+            cfg = _config_dict(running)
+            raise SingleTaskConflictError(
+                str(cfg.get("single_file_id") or ""),
+                str(running.get("title") or cfg.get("single_file_id") or running.get("id") or ""),
+            )
+        file_id = str(items[0]["file_id"])
+        # 前端确认后的实体 seed 进 file_store（扁平 list，打码工人自适配 per-page dict）
+        await seed_file_store_from_draft_payload(file_id, {"entities": entities, "bounding_boxes": bounding_boxes})
+        # 打码工人读 job config 的键（replacement_mode/custom_replacements/...）：
+        # body 的 config merge 进 config_json，既有键不丢
+        store.merge_job_config(job_id, redact_config)
+        # ↓ 镜像 approve_review：item 迁移 REVIEW_APPROVED（含清输出）+ 刷新 job 状态
+        store.approve_item_review(item_id, reviewer=owner_id)
+        store.touch_job_updated(job_id)
+        refresh_job_status(store, job_id)
+    logger.info("single redaction submitted: job=%s item=%s owner=%s", job_id[:8], item_id, owner_id)
+    # 入队在锁外，与 submit_single_recognition 一致（锁只护「查守门 → 落库」）
+    get_task_queue().enqueue(TaskItem(job_id=job_id, item_id=item_id, file_id=file_id, task_type="redaction"))
+    return {"job_id": job_id, "item_id": item_id, "status": "queued"}

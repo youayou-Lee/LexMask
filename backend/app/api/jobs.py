@@ -18,6 +18,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from starlette.responses import StreamingResponse
 
 import app.services.job_management_service as _jms
+import app.services.single_task_service as _sts
 from app.core.audit import audit_log
 from app.core.auth import require_auth, require_bulk_confirm
 from app.models.errors import ConflictError, NotFoundError, ValidationError
@@ -36,6 +37,7 @@ from app.models.schemas import (
     ReviewDraftBody,
     ReviewDraftResponse,
 )
+from app.models.single_task_schemas import SingleRedactBody, SingleRedactResult
 from app.services.job_store import JobItemStatus, JobStatus, JobStore, get_job_store
 
 router = APIRouter(prefix="/jobs", tags=["batch jobs"])
@@ -492,6 +494,36 @@ async def commit_item_review(
         raise HTTPException(status_code=400, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/{job_id}/items/{item_id}/redact", response_model=SingleRedactResult)
+async def redact_job_item(
+    job_id: str,
+    item_id: str,
+    body: SingleRedactBody,
+    store: JobStore = Depends(get_job_store),
+    owner_id: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """Issue#194: 单文件任务确认后打码。前端调整后的实体 seed 进 file_store，
+    item 从 awaiting_review 推进入队打码（复用批量线打码工人）。
+    pseudonym 在单文件允许（批量守卫不适用）。"""
+    try:
+        _jms.assert_job_owner(store.get_job(job_id), owner_id)
+        return await _sts.submit_single_redaction(
+            store,
+            job_id=job_id,
+            item_id=item_id,
+            entities=body.entities,
+            bounding_boxes=body.bounding_boxes,
+            redact_config=body.config,
+            owner_id=owner_id or "",
+        )
+    except _sts.SingleTaskConflictError as exc:
+        raise HTTPException(status_code=409, detail=f"有文件正在处理：{exc.running_filename}，请等它完成")
+    except KeyError:
+        raise HTTPException(status_code=404, detail="job or item not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("/{job_id}/review/commit-all", response_model=dict)
