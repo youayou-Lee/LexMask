@@ -2092,6 +2092,13 @@ Object.assign(zhOverrides, {
   'notify.recognitionDoneBody': '共 {n} 份文件已识别完毕，可以开始审阅',
   'notify.bulkConfirmDone': '批量确认已全部落定',
   'notify.outputsReady': '成品已全部生成，可以进入导出',
+  'singleTask.notify.recognized': '识别完成：{name}',
+  'singleTask.notify.redacted': '打码完成：{name}',
+  'singleTask.notify.failed': '处理失败：{name}',
+  'singleTask.phase.recognizing': '识别中',
+  'singleTask.phase.redacting': '打码中',
+  'singleTask.phase.awaiting_review': '待确认',
+  'singleTask.offline': '连接断开，任务仍在后台运行',
   'batchWizard.inbox.button': '从服务器目录导入',
   'batchWizard.inbox.title': '从服务器目录导入',
   'batchWizard.inbox.description':

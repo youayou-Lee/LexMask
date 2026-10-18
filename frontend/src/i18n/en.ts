@@ -2123,6 +2123,13 @@ Object.assign(enOverrides, {
   'notify.recognitionDoneBody': 'All {n} files recognized - ready for review',
   'notify.bulkConfirmDone': 'Bulk confirmation completed',
   'notify.outputsReady': 'All redacted outputs are ready - you can proceed to export',
+  'singleTask.notify.recognized': 'Recognition complete: {name}',
+  'singleTask.notify.redacted': 'Redaction complete: {name}',
+  'singleTask.notify.failed': 'Processing failed: {name}',
+  'singleTask.phase.recognizing': 'Recognizing',
+  'singleTask.phase.redacting': 'Redacting',
+  'singleTask.phase.awaiting_review': 'Awaiting review',
+  'singleTask.offline': 'Connection lost — tasks keep running in the background',
   'batchWizard.inbox.button': 'Import from server folder',
   'batchWizard.inbox.title': 'Import from server folder',
   'batchWizard.inbox.description':

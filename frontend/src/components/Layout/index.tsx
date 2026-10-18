@@ -8,6 +8,7 @@ import { OfflineBanner } from '@/components/OfflineBanner';
 import { OnboardingGuide } from '@/components/OnboardingGuide';
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
 import { PlaygroundProvider } from '@/features/playground/playground-context';
+import { SingleTaskProvider } from '@/features/single-task/single-task-context';
 
 import { AppSidebar } from './app-sidebar';
 import { AppHeader } from './app-header';
@@ -22,20 +23,23 @@ export function Layout() {
     >
       {/* PlaygroundProvider 必须在 <main key> 之外，路由切换时才不会重建 Provider/会话状态。 */}
       <PlaygroundProvider>
-        <OfflineBanner />
-        <AppSidebar />
-        <SidebarInset className="h-dvh overflow-hidden lg:h-[calc(100dvh-1rem)]">
-          <AppHeader />
-          <main
-            key={location.pathname}
-            className="flex min-h-0 flex-1 flex-col overflow-hidden animate-fade-in"
-          >
-            <Outlet />
-          </main>
-        </SidebarInset>
+        {/* SingleTaskProvider 同理：全局任务账本（轮询/恢复/通知）不随路由切换重建。 */}
+        <SingleTaskProvider>
+          <OfflineBanner />
+          <AppSidebar />
+          <SidebarInset className="h-dvh overflow-hidden lg:h-[calc(100dvh-1rem)]">
+            <AppHeader />
+            <main
+              key={location.pathname}
+              className="flex min-h-0 flex-1 flex-col overflow-hidden animate-fade-in"
+            >
+              <Outlet />
+            </main>
+          </SidebarInset>
 
-        <ToastContainer />
-        <OnboardingGuide />
+          <ToastContainer />
+          <OnboardingGuide />
+        </SingleTaskProvider>
       </PlaygroundProvider>
     </SidebarProvider>
   );
