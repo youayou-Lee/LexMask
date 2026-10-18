@@ -13,6 +13,7 @@ import { formatAggregateJobStatus } from '@/utils/jobStatusLabels';
 import {
   buildJobPrimaryNavigationLabels,
   resolveJobPrimaryNavigation,
+  jobTypeForNav,
 } from '@/utils/jobPrimaryNavigation';
 import type { JobSummary } from '@/services/jobsApi';
 
@@ -133,7 +134,7 @@ const JobRow = memo(function JobRow({
   const primary = resolveJobPrimaryNavigation({
     jobId: job.id,
     status: job.status,
-    jobType: job.job_type,
+    jobType: jobTypeForNav(job.job_type),
     items: [],
     currentPage: 'other',
     navHints: job.nav_hints,

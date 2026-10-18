@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { getStorageItem, setStorageItem } from '@/lib/storage';
 import type { BatchWizardMode } from '@/services/batchPipeline';
 import { listJobs, type JobSummary } from '@/services/jobsApi';
-import { resolveJobPrimaryNavigation } from '@/utils/jobPrimaryNavigation';
+import { jobTypeForNav, resolveJobPrimaryNavigation } from '@/utils/jobPrimaryNavigation';
 import { buildPreviewBatchRoute } from '../lib/batch-preview-fixtures';
 
 function isActiveJob(status: string): boolean {
@@ -170,7 +170,7 @@ export function useBatchHub() {
       const navTarget = resolveJobPrimaryNavigation({
         jobId: job.id,
         status: job.status,
-        jobType: job.job_type,
+        jobType: jobTypeForNav(job.job_type),
         items: [],
         currentPage: 'other',
         navHints: job.nav_hints,

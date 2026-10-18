@@ -13,7 +13,7 @@ import type {
   JobExportReportRedactedZip,
 } from '../types';
 
-export type JobTypeApi = 'text_batch' | 'image_batch' | 'smart_batch' | 'structured_batch';
+export type JobTypeApi = 'text_batch' | 'image_batch' | 'smart_batch' | 'structured_batch' | 'single';
 export type JobStatusFilterApi =
   | 'active'
   | 'awaiting_review'
@@ -200,7 +200,8 @@ function normalizeJobType(raw: unknown): JobTypeApi {
     raw === 'text_batch' ||
     raw === 'image_batch' ||
     raw === 'smart_batch' ||
-    raw === 'structured_batch'
+    raw === 'structured_batch' ||
+    raw === 'single'
   )
     return raw;
   if (raw === 'text') return 'text_batch';

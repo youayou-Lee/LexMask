@@ -15,6 +15,7 @@ import {
 import {
   buildJobPrimaryNavigationLabels,
   resolveJobPrimaryNavigation,
+  jobTypeForNav,
 } from '@/utils/jobPrimaryNavigation';
 import { localizeErrorMessage } from '@/utils/localizeError';
 import { resolveRedactionState } from '@/utils/redactionState';
@@ -291,7 +292,7 @@ export function JobDetailPage() {
   const primaryNav = resolveJobPrimaryNavigation({
     jobId,
     status: j.status,
-    jobType: j.job_type,
+    jobType: jobTypeForNav(j.job_type),
     items: j.items,
     currentPage: 'job_detail',
     navHints: j.nav_hints,

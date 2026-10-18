@@ -1,6 +1,18 @@
 // Copyright 2026 LexMask Contributors
 
+import type { JobTypeApi } from '@/services/jobsApi';
+
 export type JobTypeForNav = 'text_batch' | 'image_batch' | 'smart_batch' | 'structured_batch';
+
+/**
+ * 批量向导导航的 job_type 边界。Issue#194 起 JobTypeApi 含 'single'，但
+ * 单文件线没有批量向导路由，其导航交互归 T8-T12 设计；在接入前沿用既有
+ * 运行时行为（jobsApi.normalizeJobType 曾把未知类型归一为 text_batch）
+ * 保持现状零漂移，单文件任务在批量面板的入口表现由后续任务收口。
+ */
+export function jobTypeForNav(jobType: JobTypeApi): JobTypeForNav {
+  return jobType === 'single' ? 'text_batch' : jobType;
+}
 
 export type PrimaryNavAction =
   | { kind: 'link'; label: string; to: string }

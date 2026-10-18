@@ -28,6 +28,7 @@ import type { JobsStatusFilter } from '../hooks/use-jobs';
 import {
   buildJobPrimaryNavigationLabels,
   resolveJobPrimaryNavigation,
+  jobTypeForNav,
 } from '@/utils/jobPrimaryNavigation';
 import { JobStatusBadge, JobTypeBadge } from './jobs-status-badge';
 import { canDeleteJob } from '../hooks/use-jobs';
@@ -444,7 +445,7 @@ const JobRow = memo(function JobRow({
   const primary = resolveJobPrimaryNavigation({
     jobId: job.id,
     status: job.status,
-    jobType: job.job_type,
+    jobType: jobTypeForNav(job.job_type),
     items: [],
     currentPage: 'other',
     navHints: job.nav_hints,
