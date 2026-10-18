@@ -7,6 +7,8 @@
   structured_batch）与 batch 同语义——COMPLETED 无 output 回 awaiting_review，
   有 output 不动。
 """
+from pathlib import Path
+
 from app.services import file_management_service
 from app.services.job_models import JobItemStatus, JobStatus, JobType
 from app.services.job_store import JobStore
@@ -72,3 +74,14 @@ def test_repair_resets_completed_single_item_without_output(tmp_path, monkeypatc
     # 对照组：有 output_path 的 item/job 原样不动
     assert store.get_item(item_b)["status"] == JobItemStatus.COMPLETED.value
     assert store.get_job(job_b)["status"] == JobStatus.COMPLETED.value
+
+
+def test_main_startup_wiring_uses_redispatch_pure_function():
+    # 接线判据（#159 同构教训）：上面的映射测试只钉纯函数本身，钉不住 main.py
+    # 启动段是否真的调用它——将来若改回内联状态集合而纯函数留存，测试仍绿。
+    # 这里静态断言 main.py 源码含纯函数调用、且旧内联集合不复存在。
+    import app.main
+
+    src = Path(app.main.__file__).read_text(encoding="utf-8")
+    assert "redispatch_task_type_for(" in src  # 调用形：注释里只剩名字不算接线
+    assert "_recognition_statuses" not in src  # 旧内联集合，抽出时已删
