@@ -421,6 +421,7 @@ const enBase: Record<string, string> = {
 
   'jobs.batchTask': 'Batch Task',
   'jobs.structuredTask': 'Structured Task',
+  'jobs.type.single': 'Single file',
   'jobs.updatedAtUnknown': 'Update time unknown',
   'jobs.completed': '{n} completed',
   'jobs.loadFailed': 'Failed to load',

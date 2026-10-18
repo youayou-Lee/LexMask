@@ -17,6 +17,7 @@ import { useT } from '@/i18n';
 import { BRAND, brandName, brandTagline } from '@/config/brand';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/features/auth/auth-context';
+import { useSingleTask } from '@/features/single-task/single-task-context';
 import {
   useServiceHealth,
   type ServiceInfo,
@@ -59,6 +60,8 @@ interface NavItem {
   icon: React.FC<{ className?: string }>;
   end?: boolean;
   children?: NavItem[];
+  /** 可选计数角标（Issue#194 T12：/jobs 挂单文件任务数）；0/缺省不渲染。 */
+  badgeCount?: number;
 }
 
 export function AppSidebar() {
@@ -66,6 +69,7 @@ export function AppSidebar() {
   const location = useLocation();
   const { status } = useAuth();
   const { health, checking, roundTripMs, refresh } = useServiceHealth();
+  const { tasks } = useSingleTask();
   const isAdmin = Boolean(status?.is_super_admin);
 
   const workflowNavItems: NavItem[] = [
@@ -129,7 +133,14 @@ export function AppSidebar() {
       sublabel: t('nav.restore.sub'),
       icon: Undo2,
     },
-    { path: '/jobs', label: t('nav.jobs'), sublabel: t('nav.jobs.sub'), icon: JobsCenterIcon },
+    {
+      path: '/jobs',
+      label: t('nav.jobs'),
+      sublabel: t('nav.jobs.sub'),
+      icon: JobsCenterIcon,
+      // Issue#194 T12：全局单文件任务账本计数（AC2 全局入口 + 进度可达）。
+      badgeCount: tasks.length,
+    },
     {
       path: '/history',
       label: t('nav.history'),
@@ -241,6 +252,8 @@ export function AppSidebar() {
 function SidebarNavItem({ item, pathname }: { item: NavItem; pathname: string }) {
   const active = isNavActive(item, pathname);
   const showChildren = active && item.children && item.children.length > 0;
+  const pathKey = item.path.replace(/\//g, '-').replace(/^-/, '') || 'start';
+  const showBadge = typeof item.badgeCount === 'number' && item.badgeCount > 0;
 
   return (
     <SidebarMenuItem>
@@ -258,7 +271,7 @@ function SidebarNavItem({ item, pathname }: { item: NavItem; pathname: string })
           to={item.path}
           end={item.end}
           aria-label={item.sublabel ? `${item.label} - ${item.sublabel}` : item.label}
-          data-testid={`nav-${item.path.replace(/\//g, '-').replace(/^-/, '') || 'start'}`}
+          data-testid={`nav-${pathKey}`}
         >
           <item.icon className="size-4 shrink-0 opacity-70" />
           {item.sublabel ? (
@@ -271,6 +284,16 @@ function SidebarNavItem({ item, pathname }: { item: NavItem; pathname: string })
           ) : (
             <span className="truncate text-xs font-medium leading-tight">{item.label}</span>
           )}
+          {showBadge ? (
+            // 计数角标：pill 抄 SidebarServiceStatus 的徽章 span（rounded-full px-1
+            // py-0.5 text-[10px]），色调用品牌 success 面（与侧边栏 ring 同族的强调色）。
+            <span
+              className="ml-auto shrink-0 rounded-full bg-[var(--success-surface)] px-1 py-0.5 text-[10px] font-semibold leading-none text-[var(--success-foreground)] tabular-nums"
+              data-testid={`nav-badge-${pathKey}`}
+            >
+              {item.badgeCount}
+            </span>
+          ) : null}
         </NavLink>
       </SidebarMenuButton>
       {showChildren ? (

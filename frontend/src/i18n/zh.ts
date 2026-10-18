@@ -358,6 +358,7 @@ const zhBase: Record<string, string> = {
 
   'jobs.batchTask': '批量任务',
   'jobs.structuredTask': '库表任务',
+  'jobs.type.single': '单文件',
   'jobs.updatedAtUnknown': '更新时间未知',
   'jobs.completed': '完成 {n}',
   'jobs.loadFailed': '加载失败',
