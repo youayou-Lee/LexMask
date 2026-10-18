@@ -55,6 +55,42 @@ def _config_dict(job_row: dict[str, Any]) -> dict[str, Any]:
     return cfg if isinstance(cfg, dict) else {}
 
 
+# 启动重派口径（main.py lifespan 恢复循环同源，此处为判定唯一出处）：
+# 识别态 → recognition（仅 structured_batch 派 structured）、打码态 → redaction。
+_REDISPATCH_RECOGNITION_STATUSES = frozenset(
+    {
+        JobItemStatus.PENDING.value,
+        JobItemStatus.PROCESSING.value,
+        JobItemStatus.QUEUED.value,
+        JobItemStatus.PARSING.value,
+        JobItemStatus.NER.value,
+        JobItemStatus.VISION.value,
+    }
+)
+_REDISPATCH_REDACTION_STATUSES = frozenset(
+    {
+        JobItemStatus.REVIEW_APPROVED.value,
+        JobItemStatus.REDACTING.value,
+    }
+)
+
+
+def redispatch_task_type_for(job: dict, item: dict) -> str | None:
+    """启动恢复重派：给定 job 行 + item 行 → 应派 task_type，无需重派返回 None。
+
+    main.py 启动段内联判定的纯函数抽出（等价重构）：识别态
+    {pending, processing, queued, parsing, ner, vision} → recognition
+    （仅 ``structured_batch`` → structured）；打码态 {review_approved, redacting}
+    → redaction；其余状态（如 awaiting_review/completed）不重派。
+    """
+    status = item["status"]
+    if status in _REDISPATCH_RECOGNITION_STATUSES:
+        return "structured" if job.get("job_type") == "structured_batch" else "recognition"
+    if status in _REDISPATCH_REDACTION_STATUSES:
+        return "redaction"
+    return None
+
+
 def _active_single_task(store: JobStore, owner_id: str) -> dict[str, Any] | None:
     """该账号最近一个「计算中」的单文件任务行；无则 None。
 
