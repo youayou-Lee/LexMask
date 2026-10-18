@@ -21,16 +21,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError, authFetch } from '@/services/api-client';
 import { showToast } from '@/components/Toast';
+import { STORAGE_KEYS } from '@/constants/storage-keys';
+import { setScopedStorageItem } from '@/lib/storage';
 import { cancelJob, getJob, type JobDetail, type JobSummary } from '@/services/jobsApi';
-import { listActiveSingleJobs, submitRecognitionTask, submitRedactionTask } from '@/services/singleTaskApi';
+import {
+  listActiveSingleJobs,
+  resolveAwaitingReviewTask,
+  submitRecognitionTask,
+  submitRedactionTask,
+} from '@/services/singleTaskApi';
 import { SingleTaskProvider, useSingleTask } from '@/features/single-task/single-task-context';
 
+import { buildDraftSnapshot, serializeDraft, PLAYGROUND_DRAFT_VERSION } from '../lib/playground-draft';
 import { usePlayground } from './use-playground';
 
 vi.mock('@/services/singleTaskApi', () => ({
   submitRecognitionTask: vi.fn(),
   submitRedactionTask: vi.fn(),
   listActiveSingleJobs: vi.fn(),
+  resolveAwaitingReviewTask: vi.fn(),
 }));
 vi.mock('@/services/jobsApi', () => ({
   getJob: vi.fn(),
@@ -436,5 +445,102 @@ describe('Issue#194 打码走任务流第二段（T10）', () => {
     const fetchUrls = vi.mocked(authFetch).mock.calls.map((call) => String(call[0]));
     expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/report'))).toBe(false);
     expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/versions'))).toBe(false);
+  });
+});
+
+// --- Issue#194 Bug#2：刷新后 awaiting_review 态点打码 ---
+//
+// 真实场景：识别完成停在 awaiting_review 后用户刷新——provider 全新挂载，账本
+// 只恢复 active 任务（listActiveSingleJobs），watch 未注册 ⇒ taskForFile miss。
+// playground 会话由草稿快照恢复（draft restore 是挂载路径，与真实刷新同构）：
+// 预置 localStorage 草稿后直接渲染，不经过识别提交。
+
+/** 与真实刷新同构的现场：预置草稿 → 新 provider 树恢复 preview 会话，账本无该任务。 */
+async function seedRefreshedPreview() {
+  const snapshot = {
+    version: PLAYGROUND_DRAFT_VERSION,
+    savedAt: '2026-10-18T00:00:00.000Z',
+    stage: 'preview' as const,
+    fileInfo: {
+      file_id: 'f1',
+      filename: 'a.pdf',
+      file_size: 13,
+      file_type: 'pdf',
+      is_scanned: false,
+      page_count: 1,
+    },
+    content: '合同内容',
+    entities: [
+      { id: 'e1', text: '张三', type: 'NAME', start: 0, end: 2, selected: true, source: 'llm' as const },
+      { id: 'e2', text: '李四', type: 'NAME', start: 4, end: 6, selected: true, source: 'llm' as const },
+    ],
+    boundingBoxes: [],
+    processingMode: 'mask' as const,
+    replacementMode: 'structured' as const,
+    watermarkText: '',
+    pseudonymMap: {},
+    pseudonymUserEditedKeys: [] as string[],
+    confirmedPseudonymMap: null,
+    entityMap: {},
+    redactedCount: 0,
+    currentPage: 0,
+    visionStream: null,
+  };
+  // 与 hook 写入侧同一 API（serializeDraft 产出 JSON 字符串，setScopedStorageItem
+  // 再包一层 JSON）——直接 setItem(对象) 会因存储层双重序列化对不上，恢复必 miss。
+  setScopedStorageItem(
+    STORAGE_KEYS.PLAYGROUND_DRAFT,
+    serializeDraft(buildDraftSnapshot(snapshot)) ?? '',
+    'tester',
+  );
+  renderHarness();
+  await waitFor(() => expect(screen.getByTestId('stage').textContent).toBe('preview'));
+  await waitFor(() => expect(harness.pg!.entities.length).toBe(2));
+  // 刷新模拟成立的判据：账本里没有该文件的任务（watch 未注册、active 恢复为空）
+  expect(harness.task!.taskForFile('f1')).toBeUndefined();
+}
+
+describe('Issue#194 Bug#2：刷新后 awaiting_review 态打码兜底解析', () => {
+  it('provider 无该任务：handleRedact 走 awaiting_review 兜底解析成功提交，并把任务注册回账本', async () => {
+    await seedRefreshedPreview();
+
+    vi.mocked(resolveAwaitingReviewTask).mockResolvedValue({
+      job_id: 'j9',
+      item_id: 'it9',
+      file_id: 'f1',
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+
+    await waitFor(() => expect(submitRedactionTask).toHaveBeenCalledTimes(1));
+    expect(resolveAwaitingReviewTask).toHaveBeenCalledWith('f1');
+    expect(submitRedactionTask).toHaveBeenCalledWith(
+      'j9',
+      'it9',
+      expect.objectContaining({
+        config: expect.objectContaining({ replacement_mode: 'mask' }),
+      }),
+    );
+    // 兜底命中后任务注册回账本：完成推进与正常路径同轨（provider 轮询可接手）
+    expect(harness.task!.taskForFile('f1')?.jobId).toBe('j9');
+    // passive 提示照旧，停留 preview 等任务推进
+    expect(showToast).toHaveBeenCalledWith('后台打码中…', 'info');
+    expect(screen.getByTestId('stage').textContent).toBe('preview');
+  });
+
+  it('兜底解析也查无任务 → 报「匿名化失败。」且不提交', async () => {
+    await seedRefreshedPreview();
+
+    vi.mocked(resolveAwaitingReviewTask).mockResolvedValue(null);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith('匿名化失败。', 'error'));
+    expect(submitRedactionTask).not.toHaveBeenCalled();
+    expect(screen.getByTestId('stage').textContent).toBe('preview');
   });
 });

@@ -1,7 +1,7 @@
 // Copyright 2026 LexMask Contributors
 
 import { post } from './api-client';
-import { listJobs, type JobSummary } from './jobsApi';
+import { getJobsBatch, listJobs, type JobSummary } from './jobsApi';
 
 /**
  * Issue#194 单文件任务的前端 API 层。
@@ -63,4 +63,23 @@ export function submitRedactionTask(
 /** 活动中的单文件任务（守门冲突提示 / 断点恢复轮询用）。 */
 export function listActiveSingleJobs(): Promise<JobSummary[]> {
   return listJobs({ job_type: 'single', status: 'active' }).then((response) => response.jobs);
+}
+
+/**
+ * 刷新后兜底解析 awaiting_review 态的单文件任务句柄（Issue#194 Bug#2）。
+ *
+ * provider 的挂载恢复只认领 active 任务（listActiveSingleJobs）；识别完成停稳在
+ * awaiting_review 的任务刷新后不在账本里（watch 未注册），taskForFile 必 miss。
+ * 这里按 fileId 直查后端任务清单：`config.single_file_id === fileId` 的 single
+ * job → batch 详情取 `items[0].id` 作处理项（单文件任务恒一件）。查无返回 null，
+ * 由调用方决定报错；网络错误原样上抛（外层统一 toast 后端文案）。
+ */
+export async function resolveAwaitingReviewTask(fileId: string): Promise<SingleTaskRef | null> {
+  const response = await listJobs({ job_type: 'single', status: 'awaiting_review' });
+  const job = response.jobs.find((candidate) => candidate.config.single_file_id === fileId);
+  if (!job) return null;
+  const { jobs } = await getJobsBatch([job.id]);
+  const item = jobs[0]?.items[0];
+  if (!item) return null;
+  return { job_id: job.id, item_id: item.id, file_id: fileId };
 }

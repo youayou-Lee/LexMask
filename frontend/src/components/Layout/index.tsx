@@ -21,10 +21,12 @@ export function Layout() {
       className="h-dvh min-h-0 overflow-hidden"
       style={{ '--sidebar-width': '17.5rem' } as CSSProperties}
     >
-      {/* PlaygroundProvider 必须在 <main key> 之外，路由切换时才不会重建 Provider/会话状态。 */}
-      <PlaygroundProvider>
-        {/* SingleTaskProvider 同理：全局任务账本（轮询/恢复/通知）不随路由切换重建。 */}
-        <SingleTaskProvider>
+      {/* Issue#194 Bug#1：SingleTaskProvider 必须在 PlaygroundProvider 外侧——
+          PlaygroundProvider 自身渲染即调用 usePlayground()/usePlaygroundFile()，
+          二者消费 useSingleTask()，Context 只向下游可见；反序会全路由白屏。 */}
+      <SingleTaskProvider>
+        {/* PlaygroundProvider 必须在 <main key> 之外，路由切换时才不会重建 Provider/会话状态。 */}
+        <PlaygroundProvider>
           <OfflineBanner />
           <AppSidebar />
           <SidebarInset className="h-dvh overflow-hidden lg:h-[calc(100dvh-1rem)]">
@@ -39,8 +41,8 @@ export function Layout() {
 
           <ToastContainer />
           <OnboardingGuide />
-        </SingleTaskProvider>
-      </PlaygroundProvider>
+        </PlaygroundProvider>
+      </SingleTaskProvider>
     </SidebarProvider>
   );
 }

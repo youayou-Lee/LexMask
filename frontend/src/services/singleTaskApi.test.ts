@@ -6,6 +6,7 @@ import { SINGLE_TASK_POLL_MS } from '@/constants/timing';
 import { ApiError, apiClient } from './api-client';
 import {
   listActiveSingleJobs,
+  resolveAwaitingReviewTask,
   submitRecognitionTask,
   submitRedactionTask,
 } from './singleTaskApi';
@@ -254,6 +255,94 @@ describe('Issue#194 T7：listActiveSingleJobs', () => {
     });
 
     await expect(listActiveSingleJobs()).resolves.toEqual([]);
+  });
+});
+
+describe('Issue#194 Bug#2：resolveAwaitingReviewTask（刷新后 awaiting_review 兜底解析）', () => {
+  beforeEach(() => {
+    mockedGet.mockReset();
+    mockedPost.mockReset();
+  });
+
+  function awaitingSummary(config: Record<string, unknown> = { single_file_id: 'f1' }) {
+    return {
+      id: 'j-9',
+      job_type: 'single',
+      title: 'a.pdf',
+      status: 'awaiting_review',
+      skip_item_review: false,
+      config,
+      created_at: '2026-10-18T00:00:00Z',
+      updated_at: '2026-10-18T00:00:00Z',
+      progress: {},
+    };
+  }
+
+  it('命中：GET /jobs?job_type=single&status=awaiting_review 按 config.single_file_id 找 job，再 batch-details 取 items[0].id 作处理项', async () => {
+    mockedGet.mockResolvedValueOnce({
+      jobs: [awaitingSummary()],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      stats: {},
+    });
+    mockedPost.mockResolvedValueOnce({
+      jobs: [
+        {
+          ...awaitingSummary(),
+          items: [
+            {
+              id: 'it-9',
+              job_id: 'j-9',
+              file_id: 'f1',
+              sort_order: 0,
+              status: 'awaiting_review',
+              created_at: '2026-10-18T00:00:00Z',
+              updated_at: '2026-10-18T00:00:00Z',
+            },
+          ],
+        },
+      ],
+    });
+
+    await expect(resolveAwaitingReviewTask('f1')).resolves.toEqual({
+      job_id: 'j-9',
+      item_id: 'it-9',
+      file_id: 'f1',
+    });
+
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+    expect(mockedGet).toHaveBeenCalledWith('/jobs', {
+      params: { job_type: 'single', status: 'awaiting_review' },
+    });
+    expect(mockedPost).toHaveBeenCalledTimes(1);
+    expect(mockedPost).toHaveBeenCalledWith('/jobs/batch-details', { ids: ['j-9'] });
+  });
+
+  it('清单里没有 config.single_file_id 匹配的 job → null，且不发 batch-details', async () => {
+    mockedGet.mockResolvedValueOnce({
+      jobs: [awaitingSummary({ single_file_id: 'other-file' })],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      stats: {},
+    });
+
+    await expect(resolveAwaitingReviewTask('f1')).resolves.toBeNull();
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+
+  it('job 命中但 batch 详情无 items（异常形态）→ null，不造句柄', async () => {
+    mockedGet.mockResolvedValueOnce({
+      jobs: [awaitingSummary()],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      stats: {},
+    });
+    mockedPost.mockResolvedValueOnce({ jobs: [] });
+
+    await expect(resolveAwaitingReviewTask('f1')).resolves.toBeNull();
   });
 });
 

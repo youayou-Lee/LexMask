@@ -13,7 +13,7 @@ import {
   setScopedStorageItem,
 } from '@/lib/storage';
 import { authFetch, downloadFile } from '@/services/api-client';
-import { submitRedactionTask } from '@/services/singleTaskApi';
+import { resolveAwaitingReviewTask, submitRedactionTask } from '@/services/singleTaskApi';
 import { useSingleTask } from '@/features/single-task/single-task-context';
 import type { VersionHistoryEntry } from '@/types';
 import { localizeErrorMessage } from '@/utils/localizeError';
@@ -66,9 +66,12 @@ export function usePlayground() {
   // Issue#194：打码段复用识别段的同一个单文件任务（全局账本）。
   // provider 的挂载恢复是异步的（fileId 要等首轮轮询回填），查询经 ref 走最新值，
   // 提交前的一拍 miss 由 handleRedact 内 refresh 容忍（loadExistingFile 同款）。
-  const { taskForFile: getSingleTask, refresh: refreshSingleTasks } = useSingleTask();
+  const { taskForFile: getSingleTask, watch: watchSingleTask, refresh: refreshSingleTasks } =
+    useSingleTask();
   const getSingleTaskRef = useRef(getSingleTask);
   getSingleTaskRef.current = getSingleTask;
+  const watchSingleTaskRef = useRef(watchSingleTask);
+  watchSingleTaskRef.current = watchSingleTask;
   const refreshSingleTasksRef = useRef(refreshSingleTasks);
   refreshSingleTasksRef.current = refreshSingleTasks;
 
@@ -488,10 +491,27 @@ export function usePlayground() {
         await refreshSingleTasksRef.current();
         task = getSingleTaskRef.current(fileId);
       }
-      if (!task || !task.jobId || !task.itemId) {
+      let jobId = task?.jobId ?? '';
+      let itemId = task?.itemId ?? '';
+      if (!jobId || !itemId) {
+        // Bug#2 刷新后兜底：provider 账本只恢复 active 任务，识别完成停稳在
+        // awaiting_review 的任务不在其中（watch 未注册）⇒ 按 fileId 直查后端
+        // awaiting_review 清单。命中后 watch 注册回账本——完成推进与正常路径
+        // 同轨（provider 轮询可接手收尾进结果页）。
+        const fallback = await resolveAwaitingReviewTask(fileId);
+        if (fallback) {
+          watchSingleTaskRef.current(
+            fallback.job_id,
+            fileId,
+            fileCtx.fileInfo?.filename || fileId,
+          );
+          jobId = fallback.job_id;
+          itemId = fallback.item_id;
+        }
+      }
+      if (!jobId || !itemId) {
         throw new Error(t('playground.redactFailed'));
       }
-      const jobId = task.jobId;
 
       // Issue #66：mask 模式下实体的选中状态由它的 ner 框代表（框即实体的
       // UI）；无框实体（定位失败）保持原选中态交后端 residual 兜底
@@ -530,7 +550,7 @@ export function usePlayground() {
       };
       // Issue #66 A 案：文本型文件在替换模式下不携带拉框（后端见到「文本 PDF + 有框」
       // 会整份转图像管线栅格化）；框保留在前端状态里，切回打码原样恢复参与执行。
-      await submitRedactionTask(jobId, task.itemId, {
+      await submitRedactionTask(jobId, itemId, {
         entities: execEntities,
         bounding_boxes: boxesForRedactPayload(
           fileCtx.isImageMode,
