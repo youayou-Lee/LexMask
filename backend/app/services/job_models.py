@@ -21,6 +21,7 @@ class JobType(str, Enum):
     IMAGE_BATCH = "image_batch"
     SMART_BATCH = "smart_batch"
     STRUCTURED_BATCH = "structured_batch"
+    SINGLE = "single"
 
 
 class JobStatus(str, Enum):
@@ -142,7 +143,7 @@ def _deep_merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, A
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
-  job_type TEXT NOT NULL CHECK(job_type IN ('text_batch','image_batch','smart_batch','structured_batch')),
+  job_type TEXT NOT NULL CHECK(job_type IN ('text_batch','image_batch','smart_batch','structured_batch','single')),
   title TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL,
   skip_item_review INTEGER NOT NULL DEFAULT 0,

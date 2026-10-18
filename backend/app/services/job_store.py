@@ -68,7 +68,7 @@ class JobStore(RepairMixin):
             try:
                 conn.execute(
                     "INSERT INTO jobs (id, job_type, status, created_at, updated_at) "
-                    "VALUES ('__test_structured', 'structured_batch', 'draft', '', '')"
+                    "VALUES ('__test_structured', 'single', 'draft', '', '')"
                 )
                 conn.execute("DELETE FROM jobs WHERE id = '__test_structured'")
             except sqlite3.IntegrityError:
@@ -81,7 +81,7 @@ class JobStore(RepairMixin):
                     conn.execute("""
                         CREATE TABLE jobs (
                             id TEXT PRIMARY KEY,
-                            job_type TEXT NOT NULL CHECK(job_type IN ('text_batch','image_batch','smart_batch','structured_batch')),
+                            job_type TEXT NOT NULL CHECK(job_type IN ('text_batch','image_batch','smart_batch','structured_batch','single')),
                             title TEXT NOT NULL DEFAULT '',
                             status TEXT NOT NULL,
                             skip_item_review INTEGER NOT NULL DEFAULT 0,
