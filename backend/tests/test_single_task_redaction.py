@@ -131,6 +131,8 @@ async def test_submit_redaction_seeds_store_advances_item_and_enqueues(store, mo
     assert cfg["replacement_mode"] == "mask"
     assert cfg["single_file_id"] == file_id
     assert cfg["entity_type_ids"] == ["t1"]
+    # 打码生命周期进 ACTIVE 门：提交即升 PROCESSING（评审 Critical-1）
+    assert store.get_job(job_id)["status"] == JobStatus.PROCESSING.value
 
 
 @pytest.mark.asyncio
@@ -212,6 +214,44 @@ async def test_submit_redaction_excludes_itself_from_gate(store, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_submit_redaction_blocks_new_recognition_until_finished(store, monkeypatch):
+    """（评审 Critical-1）打码生命周期对 D2 门可见：提交打码后同账号再提交识别 → 409 语义冲突；
+    打码收尾（worker 刷 COMPLETED）后守门自动重开。"""
+    _enqueue_capture(monkeypatch)
+    file_id = _seed_file()
+    _seed_file("f2", "u1")  # 下一单识别的素材
+    job_id, item_id = _make_awaiting_single_job(store, file_id)
+
+    await sts.submit_single_redaction(
+        store,
+        job_id=job_id,
+        item_id=item_id,
+        entities=[],
+        bounding_boxes=[],
+        redact_config={"replacement_mode": "mask"},
+        owner_id="u1",
+    )
+
+    # 打码在跑：同账号新识别提交被守门拦下，且能报出在跑文件（f1/a.pdf）
+    with pytest.raises(sts.SingleTaskConflictError) as ei:
+        await sts.submit_single_recognition(
+            store, file_id="f2", entity_type_ids=[], owner_id="u1"
+        )
+    assert ei.value.running_file_id == "f1"
+    assert ei.value.running_filename == "a.pdf"
+
+    # 模拟打码工人收尾：item COMPLETED → worker finally 刷 job（PROCESSING→COMPLETED 合法）
+    store.update_item_status(item_id, JobItemStatus.COMPLETED)
+    jms.refresh_job_status(store, job_id)
+    assert store.get_job(job_id)["status"] == JobStatus.COMPLETED.value
+    # 守门重开：识别提交放行
+    ref = await sts.submit_single_recognition(
+        store, file_id="f2", entity_type_ids=[], owner_id="u1"
+    )
+    assert ref["job_id"] != job_id
+
+
+@pytest.mark.asyncio
 async def test_submit_redaction_missing_or_foreign_job_raises_key_error(store, monkeypatch):
     """job 不存在 / 非本人 / item 不属于该 job → KeyError（端点层映射 404）。"""
     _enqueue_capture(monkeypatch)
@@ -286,3 +326,12 @@ def test_redact_endpoint_wiring_and_error_mapping(monkeypatch):
     monkeypatch.setattr(sts, "submit_single_redaction", bad_state)
     resp = client.post("/api/v1/jobs/j1/items/i1/redact", json={})
     assert resp.status_code == 400
+
+
+def test_redact_endpoint_missing_job_404_without_stubs(store):
+    """（评审 Important-2）缺失 job 不打桩走真实 assert_job_owner 路径 → 404（非 400）。
+
+    NotFoundError 是 ValueError 子类，except 链必须先接 NotFoundError→404。
+    """
+    resp = client.post("/api/v1/jobs/ghost-job/items/i1/redact", json={})
+    assert resp.status_code == 404

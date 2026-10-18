@@ -522,6 +522,9 @@ async def redact_job_item(
         raise HTTPException(status_code=409, detail=f"有文件正在处理：{exc.running_filename}，请等它完成")
     except KeyError:
         raise HTTPException(status_code=404, detail="job or item not found")
+    except NotFoundError as exc:
+        # assert_job_owner 的缺失/非本人 job（评审 Important-2：须在 ValueError 之前接住→404）
+        raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

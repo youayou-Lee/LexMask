@@ -16,7 +16,7 @@ from typing import Any
 
 from app.services.file_management_service import file_owner_id, get_file_info
 from app.services.job_management_service import refresh_job_status, seed_file_store_from_draft_payload
-from app.services.job_models import JobItemStatus, JobType
+from app.services.job_models import JobItemStatus, JobStatus, JobType
 from app.services.job_store import JobStore
 from app.services.task_queue import TaskItem, get_task_queue
 
@@ -134,6 +134,12 @@ async def submit_single_redaction(
     守门（D2）与识别提交同源（``_active_single_task``）但**排除自身 job_id**：
     本任务自身处于「计算中」状态不构成自拦。
 
+    评审 Critical-1：提交即把 job 升 PROCESSING（awaiting_review→PROCESSING
+    合法迁移）——打码工人不像识别工人那样升 job 状态，不升则整个打码生命周期
+    job 停在 awaiting_review、D2 门对「打码在跑」失明；其后 refresh_job_status
+    无 review_approved 分支不会回退，收尾由 worker 既有 finally 刷成
+    COMPLETED/FAILED、守门自动重开。
+
     job/item 不存在或非本人抛 KeyError；item 不在 awaiting_review 抛
     ValueError；他 single 任务「计算中」抛 :class:`SingleTaskConflictError`。
     pseudonym 在单文件允许（批量守卫 ``_reject_batch_pseudonym`` 不适用）。
@@ -162,6 +168,8 @@ async def submit_single_redaction(
         store.merge_job_config(job_id, redact_config)
         # ↓ 镜像 approve_review：item 迁移 REVIEW_APPROVED（含清输出）+ 刷新 job 状态
         store.approve_item_review(item_id, reviewer=owner_id)
+        # 评审 Critical-1：打码工人不升 job 状态，提交即升 PROCESSING 让 D2 门看见打码在跑
+        store.update_job_status(job_id, JobStatus.PROCESSING)
         store.touch_job_updated(job_id)
         refresh_job_status(store, job_id)
     logger.info("single redaction submitted: job=%s item=%s owner=%s", job_id[:8], item_id, owner_id)
