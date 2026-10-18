@@ -376,7 +376,7 @@ describe('Issue#194 打码走任务流第二段（T10）', () => {
     expect(screen.getByTestId('stage').textContent).toBe('preview');
   });
 
-  it('(d) 打码中无 interaction lock：body.overflow 非 hidden、无 inert（点完即可离开）', async () => {
+  it('(d) 打码中无 interaction lock：全程不设 loading、body.overflow 非 hidden、无 inert（点完即可离开）', async () => {
     await seedPreview();
 
     let resolveSubmit: (value: { job_id: string; item_id: string; status: string }) => void =
@@ -390,7 +390,11 @@ describe('Issue#194 打码走任务流第二段（T10）', () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId('redact-btn'));
     });
-    // 提交在途：无全屏 blocking 遮罩（useInteractionLock 不激活）
+    // 提交在途：D3 判据（评审 Important-1）——打码全程不设 loading。
+    // 这是 hook 级真判据：页面级 lock（body.overflow/inert）由 PlaygroundLoading 的
+    // useInteractionLock 设置，而 lock 只在 isLoading 时渲染——isLoading=false
+    // 即锁必然不激活。若 handleRedact 加回 setIsLoading(true)，此处立即判红。
+    expect(harness.pg!.isLoading).toBe(false);
     expect(document.body.style.overflow).not.toBe('hidden');
     expect(document.documentElement.getAttribute('inert')).toBeNull();
     expect(screen.getByTestId('stage').textContent).toBe('preview');
@@ -398,9 +402,39 @@ describe('Issue#194 打码走任务流第二段（T10）', () => {
     await act(async () => {
       resolveSubmit({ job_id: 'j1', item_id: 'it1', status: 'queued' });
     });
-    // 提交完成（任务后台打码中）：依然无 lock，用户可离开
+    // 提交完成（任务后台打码中）：依然无 loading/无 lock，用户可离开
+    expect(harness.pg!.isLoading).toBe(false);
     expect(document.body.style.overflow).not.toBe('hidden');
     expect(document.documentElement.getAttribute('inert')).toBeNull();
     expect(screen.getByTestId('stage').textContent).toBe('preview');
+  });
+
+  it('(e) 负样本：账本内其他 job 到 done 不收口本会话（stage 不变、不发 result 拉取）', async () => {
+    await seedPreview();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+    await waitFor(() => expect(submitRedactionTask).toHaveBeenCalledTimes(1));
+
+    // 注册另一 job j2（同账本）；j1 仍在打码段（pending 在途），j2 先完成
+    await act(async () => {
+      harness.task!.watch('j2', 'f1', 'a.pdf');
+    });
+    vi.mocked(getJob).mockImplementation(async (jobId: string) =>
+      jobId === 'j2'
+        ? makeDetail('completed', 'completed', { id: 'j2' })
+        : makeDetail('processing', 'redacting'),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+
+    await waitFor(() => expect(harness.task!.taskForFile('f1')?.phase).toBe('redacting'));
+    // j2 已 done，但本会话 pending 的是 j1：不切 result、不发 result 侧拉取
+    expect(screen.getByTestId('stage').textContent).toBe('preview');
+    const fetchUrls = vi.mocked(authFetch).mock.calls.map((call) => String(call[0]));
+    expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/report'))).toBe(false);
+    expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/versions'))).toBe(false);
   });
 });
