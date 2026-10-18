@@ -12,8 +12,9 @@
 // （features/jobs/hooks/use-jobs.ts:427），本文件用 fake timers 验证节拍与迁移序。
 // @vitest-environment jsdom
 
-import { act, cleanup, render } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { useEffect } from 'react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SINGLE_TASK_POLL_MS } from '@/constants/timing';
@@ -106,10 +107,18 @@ function renderSingleTaskProvider(): {
   const onReady = (ctx: Ctx) => {
     handle.current = ctx;
   };
+  // Issue#194 终审 D：provider 发通知要 navigate（useNavigate），必须在 Router
+  // 上下文内渲染——/single 路由用标记元素承接，供点击直达判据断言落点。
   const utils = render(
-    <SingleTaskProvider>
-      <Probe onReady={onReady} />
-    </SingleTaskProvider>,
+    <MemoryRouter initialEntries={['/history']}>
+      <SingleTaskProvider>
+        <Probe onReady={onReady} />
+        <Routes>
+          <Route path="/single" element={<div data-testid="single-page" />} />
+          <Route path="*" element={<div data-testid="other-page" />} />
+        </Routes>
+      </SingleTaskProvider>
+    </MemoryRouter>,
   );
   return { handle, unmount: () => utils.unmount() };
 }
@@ -156,7 +165,9 @@ describe('SingleTaskProvider（Issue#194 Task 8 集成契约）', () => {
     // fileId 首轮轮询回填后 taskForFile 可命中（恢复路径真实可用）
     expect(handle.current!.taskForFile('f1')).toBeDefined();
     expect(notifyDone).toHaveBeenCalledTimes(1);
-    expect(notifyDone).toHaveBeenCalledWith('识别完成：a.pdf');
+    expect(vi.mocked(notifyDone).mock.calls[0][0]).toBe('识别完成：a.pdf');
+    // Issue#194 终审 D：通知第三参携带 onClick（点击直达，判据见 (e)）
+    expect(typeof vi.mocked(notifyDone).mock.calls[0][2]).toBe('function');
   });
 
   it('(b) 识别完成→打码入队→完成：迁移通知 recognized/redacted 各一次，failed 不发', async () => {
@@ -230,6 +241,26 @@ describe('SingleTaskProvider（Issue#194 Task 8 集成契约）', () => {
     expect(hit!.phase).toBe('recognizing');
     expect(handle.current!.taskForFile('missing')).toBeUndefined();
     expect(getJob).not.toHaveBeenCalled();
+  });
+
+  it('(e) Issue#194 终审 D（AC2）：迁移通知携带 onClick，点击直达 /single?file_id=<fileId>', async () => {
+    vi.mocked(listActiveSingleJobs).mockResolvedValue([makeSummary({ status: 'processing' })]);
+    vi.mocked(getJob).mockResolvedValue(makeDetail('awaiting_review', 'awaiting_review'));
+
+    const { handle } = renderSingleTaskProvider();
+    await advance(SINGLE_TASK_POLL_MS * 2);
+
+    // 三类通知统一：点击都去 /single?file_id=（识别页按状态呈现，无需按 phase 区分目标）
+    expect(notifyDone).toHaveBeenCalledTimes(1);
+    const onClick = vi.mocked(notifyDone).mock.calls[0][2] as (() => void) | undefined;
+    expect(typeof onClick).toBe('function');
+    expect(screen.getByTestId('other-page')).toBeTruthy();
+    act(() => {
+      onClick!();
+    });
+    // 直达判定：落在 /single 路由（改前第三参为 undefined ⇒ 此处判红）
+    expect(screen.getByTestId('single-page')).toBeTruthy();
+    expect(handle.current!.tasks[0].fileId).toBe('f1');
   });
 });
 

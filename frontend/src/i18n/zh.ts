@@ -1116,6 +1116,8 @@ const zhOverrides: Record<string, string> = {
   'playground.redactFailed': '匿名化失败。',
   'playground.restored': '已恢复上次单文件处理现场',
   'playground.restoredFromServer': '已从服务端恢复上次识别结果',
+  // Issue#194 终审 A：待确认扫描件回场（不重提识别任务，直接恢复确认视图）
+  'playground.restoredAwaitingReview': '该文件识别已完成，请确认识别结果后开始匿名化',
   'playground.restoreFileGone': '原文件已不存在，无法恢复上次现场',
   'playground.switchSessionTitle': '切换处理文件？',
   'playground.switchSessionMessage': '当前单文件处理现场将被替换，尚未执行的编辑不会保留。',
@@ -1972,6 +1974,7 @@ Object.assign(zhOverrides, {
   'playground.toast.entityDeleted': '已删除',
   'playground.loading.rerunHybridText': '重新识别中（正则+AI语义识别）...',
   'playground.toast.rerunTextDone': '重新识别完成：{count} 处',
+  'toast.open': '查看',
   'toast.fallbackError': '操作失败，请稍后重试',
   'health.serviceName.visualFeatures': '视觉特征',
 });

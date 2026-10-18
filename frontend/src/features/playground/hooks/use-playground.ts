@@ -98,13 +98,15 @@ export function usePlayground() {
   // Issue#194：已提交未收尾的打码任务（done/failed/换文件/重置时收尾）。
   // 回执无 file_id（controller 交接约束）：fileId 一直以 fileCtx 现有状态为准，
   // 这里记 fileId 只为「换文件后不跟进旧任务的结果」。
+  // 终审 C：用 state 而非 ref——草稿落盘 effect 的依赖里要有它，提交打码后落盘的
+  // 草稿才能带上 pendingRedactJobId（刷新恢复的唯一凭据）。
   type PendingRedact = {
     fileId: string;
     jobId: string;
     /** 提交时前端点名的处理项数：快照不可用时兜底 redactedCount 展示。 */
     requestedCount: number;
   };
-  const lastRedactSubmitRef = useRef<PendingRedact | null>(null);
+  const [pendingRedact, setPendingRedact] = useState<PendingRedact | null>(null);
   /** 用户主动放弃会话（取消/重置）时登记的 job：provider 报 failed 时静默收尾。 */
   const redactAbandonedJobsRef = useRef<Set<string>>(new Set());
 
@@ -233,17 +235,21 @@ export function usePlayground() {
     setTypeTab(fileCtx.isImageMode ? 'vision' : 'text');
   }, [fileCtx.isImageMode, setTypeTab]);
 
+  // 文件切换：在途异步结果一律失效（epoch 前进）。只随 file_id 变化——终审 C 后
+  // pendingRedact 不再并入本 effect（提交打码/收尾清守门都会变它，若并入会把
+  // done 分支刚登记的 epoch 顶掉，结果页快照回填全被丢弃）。
   useEffect(() => {
-    const nextFileId = fileCtx.fileInfo?.file_id ?? null;
-    // 换文件/重置：上一文件的在途打码不再跟进（任务后台继续，完成由 provider 通知）
-    const pending = lastRedactSubmitRef.current;
-    if (pending && pending.fileId !== nextFileId) {
-      lastRedactSubmitRef.current = null;
-      redactionInFlightRef.current = false;
-    }
-    latestFileIdRef.current = nextFileId;
+    latestFileIdRef.current = fileCtx.fileInfo?.file_id ?? null;
     asyncResultEpochRef.current += 1;
   }, [fileCtx.fileInfo?.file_id]);
+
+  // 换文件/重置：上一文件的在途打码不再跟进（任务后台继续，完成由 provider 通知）
+  useEffect(() => {
+    if (pendingRedact && pendingRedact.fileId !== latestFileIdRef.current) {
+      redactionInFlightRef.current = false;
+      setPendingRedact(null);
+    }
+  }, [pendingRedact]);
 
   const allSelectedVisionTypes = useMemo(
     () => [...recognition.selectedOcrHasTypes, ...recognition.selectedVisualFeatureTypes],
@@ -543,11 +549,11 @@ export function usePlayground() {
         }
       }
 
-      lastRedactSubmitRef.current = {
+      setPendingRedact({
         fileId,
         jobId,
         requestedCount: requestedRedactionItemCount,
-      };
+      });
       // Issue #66 A 案：文本型文件在替换模式下不携带拉框（后端见到「文本 PDF + 有框」
       // 会整份转图像管线栅格化）；框保留在前端状态里，切回打码原样恢复参与执行。
       await submitRedactionTask(jobId, itemId, {
@@ -566,7 +572,7 @@ export function usePlayground() {
       if (latestFileIdRef.current !== fileId) {
         // 提交期间用户已切走/重置：任务后台继续，本会话不再跟进结果
         redactionInFlightRef.current = false;
-        lastRedactSubmitRef.current = null;
+        setPendingRedact(null);
         return;
       }
       // 替换模式执行过（结果页据此展示「下载化名对照表」）：提交成功即确认
@@ -575,7 +581,7 @@ export function usePlayground() {
       showToast(t('playground.taskRedacting'), 'info');
     } catch (err) {
       redactionInFlightRef.current = false;
-      lastRedactSubmitRef.current = null;
+      setPendingRedact(null);
       // 409（同账号其他任务在跑）等提交失败：toast 后端文案，停留 preview 不切 stage
       showToast(localizeErrorMessage(err, 'playground.redactFailed'), 'error');
     }
@@ -597,13 +603,13 @@ export function usePlayground() {
   const { setStage: setFileStage } = fileCtx;
   useEffect(() => {
     if (!currentFileId) return;
-    const pending = lastRedactSubmitRef.current;
+    const pending = pendingRedact;
     if (!pending || pending.fileId !== currentFileId) return;
     const task = getSingleTask(currentFileId);
     if (!task || task.jobId !== pending.jobId) return;
 
     if (task.phase === 'failed') {
-      lastRedactSubmitRef.current = null;
+      setPendingRedact(null);
       redactionInFlightRef.current = false;
       if (redactAbandonedJobsRef.current.has(task.jobId)) return; // 用户已放弃会话，静默
       showToast(task.error || t('playground.redactFailed'), 'error');
@@ -612,7 +618,7 @@ export function usePlayground() {
     if (task.phase !== 'done') return;
 
     // 打码完成（provider 已发完成通知）：快照 + report/versions → 结果页
-    lastRedactSubmitRef.current = null;
+    setPendingRedact(null);
     redactionInFlightRef.current = false;
     latestFileIdRef.current = currentFileId;
     const asyncResultEpoch = asyncResultEpochRef.current + 1;
@@ -676,16 +682,16 @@ export function usePlayground() {
     canApplyAsyncResult,
     currentFileId,
     getSingleTask,
+    pendingRedact,
     setFileStage,
   ]);
 
   const cancelProcessing = useCallback(() => {
     asyncResultEpochRef.current += 1;
     // 在途打码同会话放弃：登记 job（provider 报 failed 时静默收尾）
-    const pendingRedact = lastRedactSubmitRef.current;
     if (pendingRedact) {
       redactAbandonedJobsRef.current.add(pendingRedact.jobId);
-      lastRedactSubmitRef.current = null;
+      setPendingRedact(null);
     }
     redactionInFlightRef.current = false;
     fileCtx.cancelProcessing(false);
@@ -694,7 +700,7 @@ export function usePlayground() {
     fileCtx.setIsLoading(false);
     fileCtx.setLoadingMessage('');
     showToast(t('playground.cancelled'), 'info');
-  }, [entityCtx, fileCtx, imageCtx]);
+  }, [entityCtx, fileCtx, imageCtx, pendingRedact]);
 
   const hasResetRisk = useMemo(
     () =>
@@ -725,10 +731,9 @@ export function usePlayground() {
     pseudonymEpochRef.current += 1;
     latestFileIdRef.current = null;
     // 在途打码同会话放弃：登记 job（provider 报 failed 时静默收尾）
-    const pendingRedact = lastRedactSubmitRef.current;
     if (pendingRedact) {
       redactAbandonedJobsRef.current.add(pendingRedact.jobId);
-      lastRedactSubmitRef.current = null;
+      setPendingRedact(null);
     }
     redactionInFlightRef.current = false;
     // 与 applyDraftSnapshot 同享防护：取消在途识别，防止 R2（重置后重跑）
@@ -760,7 +765,7 @@ export function usePlayground() {
     setVersionHistory([]);
     setVersionHistoryOpen(false);
     removeStorageItem(scopedStorageKey(STORAGE_KEYS.PLAYGROUND_DRAFT, ownerKey));
-  }, [entityCtx, fileCtx, imageCtx, ownerKey, setRecognitionProcessingMode]);
+  }, [entityCtx, fileCtx, imageCtx, ownerKey, pendingRedact, setRecognitionProcessingMode]);
 
   // 会话草稿（Issue #33）：有活动文件时防抖落盘；显式重置时清除。
   // 上传新文件后本 effect 随 fileInfo 变化自然覆盖旧草稿。
@@ -780,11 +785,16 @@ export function usePlayground() {
         pseudonymUserEditedKeys: [...pseudonymUserEditedRef.current],
         confirmedPseudonymMap,
         entityMap,
-    redactedCount,
-    currentPage: imageCtx.currentPage,
-    visionStream: fileCtx.visionStream,
-    taskJobId: fileCtx.taskRecognition?.jobId,
-  });
+        redactedCount,
+        currentPage: imageCtx.currentPage,
+        visionStream: fileCtx.visionStream,
+        taskJobId: fileCtx.taskRecognition?.jobId,
+        // Issue#194 终审 C：打码在途时落盘凭据——刷新后据此重挂收尾订阅（结果页可达）
+        pendingRedactJobId:
+          pendingRedact && pendingRedact.fileId === fileCtx.fileInfo!.file_id
+            ? pendingRedact.jobId
+            : undefined,
+      });
       const json = serializeDraft(snapshot);
       if (json === null) return; // 超限：放弃持久化，内存会话不受影响
       setScopedStorageItem(STORAGE_KEYS.PLAYGROUND_DRAFT, json, ownerKey);
@@ -806,6 +816,7 @@ export function usePlayground() {
     confirmedPseudonymMap,
     entityMap,
     redactedCount,
+    pendingRedact,
     ownerKey,
   ]);
 
@@ -850,6 +861,26 @@ export function usePlayground() {
       if (snapshot.taskJobId && snapshot.fileInfo?.file_id) {
         fileCtx.reattachTask(
           snapshot.taskJobId,
+          snapshot.fileInfo.file_id,
+          snapshot.fileInfo.filename,
+        );
+      }
+      // Issue#194 终审 C（AC1）：打码在途的草稿——收尾守门是纯内存，刷新后必须重挂：
+      // pendingRedact 登记回订阅守门 + watch 重挂 provider 账本。任务在刷新期间已
+      // completed ⇒ provider 轮询报 done ⇒ 订阅 effect 照常拉快照+report 收尾进结果页；
+      // failed ⇒ 报错退出；仍在打码 ⇒ 继续等（点完打码即可离开的语义不受影响）。
+      if (
+        snapshot.pendingRedactJobId &&
+        snapshot.fileInfo?.file_id &&
+        snapshot.stage !== 'result'
+      ) {
+        setPendingRedact({
+          fileId: snapshot.fileInfo.file_id,
+          jobId: snapshot.pendingRedactJobId,
+          requestedCount: snapshot.redactedCount,
+        });
+        watchSingleTaskRef.current(
+          snapshot.pendingRedactJobId,
           snapshot.fileInfo.file_id,
           snapshot.fileInfo.filename,
         );

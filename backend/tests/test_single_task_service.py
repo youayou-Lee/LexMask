@@ -86,6 +86,41 @@ async def test_submit_creates_single_job_and_enqueues_recognition(store, file_id
 
 
 @pytest.mark.asyncio
+async def test_submit_persists_vision_type_selections_into_config(store, file_id, monkeypatch):
+    """Issue#194 终审 B：视觉要素选择写进 job config。
+
+    识别工人视觉段按 resolve_optional_type_list(cfg, "ocr_has_types",
+    "selected_ocr_has_types") 等键读取；不透传则编排器恒按默认全类型集跑
+    （用户勾选对任务化扫描件无效的回归）。空列表=用户显式清空该管道，
+    必须原样保留（与 resolve_optional_type_list 的 None/[] 语义对齐）。
+    """
+    _enqueue_capture(monkeypatch)
+    ref = await sts.submit_single_recognition(
+        store,
+        file_id=file_id,
+        entity_type_ids=["t1"],
+        owner_id="u1",
+        ocr_has_types=["ocr_seal"],
+        visual_feature_types=[],
+    )
+    cfg = json.loads(store.get_job(ref["job_id"])["config_json"])
+    assert cfg["ocr_has_types"] == ["ocr_seal"]
+    assert cfg["visual_feature_types"] == []
+
+
+@pytest.mark.asyncio
+async def test_submit_without_vision_selections_keeps_config_keys_absent(store, file_id, monkeypatch):
+    """未提供视觉选择（None）⇒ config 不写这两个键 ⇒ 编排器默认语义不变（老调用方零漂移）。"""
+    _enqueue_capture(monkeypatch)
+    ref = await sts.submit_single_recognition(
+        store, file_id=file_id, entity_type_ids=[], owner_id="u1"
+    )
+    cfg = json.loads(store.get_job(ref["job_id"])["config_json"])
+    assert "ocr_has_types" not in cfg
+    assert "visual_feature_types" not in cfg
+
+
+@pytest.mark.asyncio
 async def test_missing_file_raises_key_error(store, monkeypatch):
     _enqueue_capture(monkeypatch)
     _fake_file_info(monkeypatch, {})

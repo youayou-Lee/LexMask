@@ -17,12 +17,18 @@
 
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { useEffect } from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError, authFetch } from '@/services/api-client';
 import { getJob, cancelJob, type JobDetail, type JobSummary } from '@/services/jobsApi';
-import { listActiveSingleJobs, submitRecognitionTask } from '@/services/singleTaskApi';
+import {
+  listActiveSingleJobs,
+  resolveAwaitingReviewTask,
+  submitRecognitionTask,
+} from '@/services/singleTaskApi';
 import { SingleTaskProvider, useSingleTask } from '@/features/single-task/single-task-context';
+import { showToast } from '@/components/Toast';
 
 import { overlayModeFor, shouldUsePassiveOverlay } from '../lib/progressive-render';
 import { PlaygroundLoading } from '../components/playground-loading';
@@ -33,11 +39,13 @@ vi.mock('@/services/singleTaskApi', () => ({
   submitRecognitionTask: vi.fn(),
   submitRedactionTask: vi.fn(),
   listActiveSingleJobs: vi.fn(),
+  resolveAwaitingReviewTask: vi.fn(),
 }));
 vi.mock('@/services/jobsApi', () => ({
   getJob: vi.fn(),
   cancelJob: vi.fn(),
   listJobs: vi.fn(),
+  getJobsBatch: vi.fn(),
 }));
 vi.mock('@/services/api-client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/services/api-client')>();
@@ -169,9 +177,12 @@ function renderHarness() {
     harness.task = task;
   };
   return render(
-    <SingleTaskProvider>
-      <Probe onReady={onReady} />
-    </SingleTaskProvider>,
+    // Issue#194 终审 D：provider 发通知要 navigate（useNavigate）⇒ 必须在 Router 上下文内
+    <MemoryRouter>
+      <SingleTaskProvider>
+        <Probe onReady={onReady} />
+      </SingleTaskProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -195,6 +206,8 @@ beforeEach(() => {
   vi.mocked(cancelJob).mockResolvedValue(makeSummary({ status: 'cancelled' }));
   vi.mocked(getJob).mockRejectedValue(new Error('job fetch disabled'));
   vi.mocked(listActiveSingleJobs).mockResolvedValue([]);
+  // 终审 A：默认查无待确认任务（(f) 用例各自覆盖）
+  vi.mocked(resolveAwaitingReviewTask).mockResolvedValue(null);
   const fetchMock = vi.mocked(authFetch);
   fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -229,7 +242,8 @@ describe('Issue#194 识别页任务流（T9）', () => {
     await dropTextFile();
 
     await waitFor(() => expect(submitRecognitionTask).toHaveBeenCalledTimes(1));
-    expect(submitRecognitionTask).toHaveBeenCalledWith('f1', ['NAME']);
+    // 文本件：第三参 undefined（视觉要素选择不携带，终审 B 的 isVisionFile 分支）
+    expect(submitRecognitionTask).toHaveBeenCalledWith('f1', ['NAME'], undefined);
     // 不再直调 ner/hybrid
     const fetchUrls = vi.mocked(authFetch).mock.calls.map((call) => String(call[0]));
     expect(fetchUrls.some((url) => url.includes('ner/hybrid'))).toBe(false);
@@ -345,5 +359,104 @@ describe('Issue#194 识别页任务流（T9）', () => {
     await waitFor(() => expect(screen.getByTestId('encrypted-prompt').textContent).toBe('f1:a.txt'));
     expect(screen.getByTestId('stage').textContent).toBe('upload');
     expect(harness.file!.isLoading).toBe(false);
+  });
+});
+
+// --- Issue#194 终审 A：扫描件停待确认后经任务中心/历史回场 ⇒ 不得重复提交识别任务 ---
+//
+// 机制：扫描件 file 记录 entities 恒空（planServerCachedResume 必 miss）→ 旧路径
+// 落 rerun 自动 submitRecognitionTask，而旧任务仍停在 awaiting_review ⇒ 双任务孤儿。
+// 修法：loadExistingFile 的 rerun 分支前按 fileId 直查 awaiting_review 清单
+// （resolveAwaitingReviewTask），命中即恢复确认视图、不自动重提。
+
+describe('Issue#194 终审 A：待确认扫描件回场不重复提交', () => {
+  function mockScannedFileWithEmptyEntities() {
+    const fetchMock = vi.mocked(authFetch);
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/files/f1/parse')) {
+        return jsonResponse({
+          content: '',
+          file_type: 'pdf_scanned',
+          is_scanned: true,
+          page_count: 3,
+        });
+      }
+      if (url.endsWith('/files/f1')) {
+        // 扫描件：识别完成也不写 entities（实体在 vision 框/确认流呈现）
+        return jsonResponse({ original_filename: 'scan.pdf', file_size: 99, entities: [] });
+      }
+      throw new Error(`unexpected authFetch: ${url}`);
+    });
+  }
+
+  it('(f) rerun 前命中 awaiting_review：恢复确认视图（stage=preview），不重复提交识别任务', async () => {
+    mockScannedFileWithEmptyEntities();
+    // awaiting_review 任务不在 active 恢复清单（provider 账本双 miss 的前提）；
+    // resolveAwaitingReviewTask 按 fileId 直查命中（j7 停待确认）
+    vi.mocked(listActiveSingleJobs).mockResolvedValue([]);
+    vi.mocked(resolveAwaitingReviewTask).mockResolvedValue({
+      job_id: 'j7',
+      item_id: 'it7',
+      file_id: 'f1',
+    });
+
+    renderHarness();
+    await act(async () => {
+      await harness.file!.loadExistingFile('f1');
+    });
+
+    // 判据（改前红：旧路径会自动 submitRecognitionTask 建第二个识别任务）
+    expect(submitRecognitionTask).not.toHaveBeenCalled();
+    expect(resolveAwaitingReviewTask).toHaveBeenCalledWith('f1');
+    expect(screen.getByTestId('stage').textContent).toBe('preview');
+    expect(harness.file!.isLoading).toBe(false);
+    // 提示该文件识别完成待确认（i18n 新键），实体列表允许为空（不新造 UI）
+    expect(showToast).toHaveBeenCalledWith('该文件识别已完成，请确认识别结果后开始匿名化', 'info');
+  });
+
+  it('(g) rerun 前未命中 awaiting_review（真未识别过）：照旧自动重提', async () => {
+    mockScannedFileWithEmptyEntities();
+    vi.mocked(listActiveSingleJobs).mockResolvedValue([]);
+    vi.mocked(resolveAwaitingReviewTask).mockResolvedValue(null);
+
+    renderHarness();
+    await act(async () => {
+      await harness.file!.loadExistingFile('f1');
+    });
+
+    // 查无待确认任务 → rerun 语义保留：自动提交识别任务（负样本，防一刀切）
+    await waitFor(() => expect(submitRecognitionTask).toHaveBeenCalledTimes(1));
+  });
+
+  it('(h) Issue#194 终审 B：扫描件任务化识别透传视觉要素选择（第三参）', async () => {
+    // 扫描件：识别工人视觉段读 job config 的 ocr_has_types/visual_feature_types，
+    // 不透传则编排器按默认全类型集跑（用户勾选无效的回归）
+    const fetchMock = vi.mocked(authFetch);
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/files/upload')) {
+        return jsonResponse({ file_id: 'f1', filename: 'scan.pdf', file_size: 99, file_type: 'pdf' });
+      }
+      if (url.endsWith('/files/f1/parse')) {
+        return jsonResponse({ content: '', file_type: 'pdf_scanned', is_scanned: true, page_count: 2 });
+      }
+      throw new Error(`unexpected authFetch: ${url}`);
+    });
+    baseOptions.latestOcrHasTypesRef.current = ['ocr_seal'];
+    baseOptions.latestVisualFeatureTypesRef.current = ['visual_stamp'];
+
+    try {
+      renderHarness();
+      await dropTextFile();
+      await waitFor(() => expect(submitRecognitionTask).toHaveBeenCalledTimes(1));
+      expect(submitRecognitionTask).toHaveBeenCalledWith('f1', ['NAME'], {
+        ocrHasTypes: ['ocr_seal'],
+        visualFeatureTypes: ['visual_stamp'],
+      });
+    } finally {
+      baseOptions.latestOcrHasTypesRef.current = [];
+      baseOptions.latestVisualFeatureTypesRef.current = [];
+    }
   });
 });

@@ -11,9 +11,16 @@ class RecognitionTaskBody(BaseModel):
     """POST /files/{file_id}/recognition-task 请求体。
 
     entity_type_ids 可为空：空列表交给识别管道按默认实体类型处理。
+    ocr_has_types / visual_feature_types（Issue#194 终审 B）：扫描件/图片的视觉
+    要素选择，原样写进 job config（识别工人视觉段按 resolve_optional_type_list
+    读取）；None=未提供 ⇒ 不写键 ⇒ 编排器默认全类型集（与旧同步流
+    VisionDetectRequest 的 selected_ocr_has_types/selected_visual_feature_types
+    缺省语义一致）。空列表=用户显式清空该管道，原样保留。
     """
 
     entity_type_ids: list[str] = Field(default_factory=list)
+    ocr_has_types: list[str] | None = None
+    visual_feature_types: list[str] | None = None
 
 
 class SingleTaskRef(BaseModel):

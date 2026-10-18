@@ -24,9 +24,14 @@ export function ensureNotifyPermission(): void {
   }
 }
 
-/** 完成通知：toast 常显；页签隐藏时再发系统通知。 */
-export function notifyDone(title: string, body?: string): void {
-  showToast(body ? `${title}：${body}` : title, 'success');
+/**
+ * 完成通知：toast 常显；页签隐藏时再发系统通知。
+ * Issue#194 终审 D（AC2）：onClick 让 toast 可点击直达（/single?file_id=）。
+ * 系统通知（页签隐藏时）降级为不可点击——浏览器 Notification 的 onclick 回调
+ * 接不进 SPA 路由（无 React 树上下文），聚焦页签后由页面内 toast 承担直达。
+ */
+export function notifyDone(title: string, body?: string, onClick?: () => void): void {
+  showToast(body ? `${title}：${body}` : title, 'success', onClick ? { onClick } : undefined);
   try {
     if (typeof document === 'undefined' || document.visibilityState === 'visible') return;
     if (typeof window === 'undefined' || !('Notification' in window)) return;

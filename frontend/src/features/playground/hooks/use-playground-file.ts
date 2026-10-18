@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useDropzone, type FileRejection } from 'react-dropzone';
 import { ApiError, authFetch } from '@/services/api-client';
 import { cancelJob } from '@/services/jobsApi';
-import { submitRecognitionTask } from '@/services/singleTaskApi';
+import { resolveAwaitingReviewTask, submitRecognitionTask } from '@/services/singleTaskApi';
 import { useSingleTask } from '@/features/single-task/single-task-context';
 import { SINGLE_TASK_POLL_MS } from '@/constants/timing';
 import { showToast } from '@/components/Toast';
@@ -497,6 +497,29 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
           return;
         }
 
+        // Issue#194 终审 A：awaiting_review 任务不在 provider 恢复的 active 清单里
+        // （上面的活跃任务分支必 miss），扫描件的实体又恒空（cached 分支必 miss）⇒
+        // 直接落 rerun 会自动重提第二个识别任务（旧任务孤儿）。回场先按 fileId 直查
+        // awaiting_review 清单：命中即恢复确认视图、不自动重提——后续打码提交由
+        // handleRedact 自带的 awaiting_review 兜底解析接手，实体列表允许为空
+        // （扫描件的实体在 vision 框/确认流呈现，沿用确认页对空实体的既有表现）。
+        let awaitingTask: Awaited<ReturnType<typeof resolveAwaitingReviewTask>> = null;
+        try {
+          awaitingTask = await resolveAwaitingReviewTask(fileId);
+        } catch {
+          // 查询失败（离线等）不阻塞回场：下方重提路径自会暴露网络问题
+          awaitingTask = null;
+        }
+        if (signal.aborted) return;
+        if (awaitingTask) {
+          opts.setEntities([]);
+          setStage('preview');
+          setIsLoading(false);
+          setLoadingMessage('');
+          showToast(t('playground.restoredAwaitingReview'), 'info');
+          return;
+        }
+
         opts.setEntities([]);
         setPendingFile({
           fileId,
@@ -548,7 +571,20 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       setIsLoading(true);
       setLoadingMessage(t('playground.taskParsing'));
       try {
-        const ref = await submitRecognitionTask(fileId, opts.latestSelectedTypesRef.current);
+        // Issue#194 终审 B：扫描件/图片的视觉要素选择随任务透传（写进 job config，
+        // 识别工人视觉段按 ocr_has_types/visual_feature_types 读取）——不传则编排器
+        // 恒按默认全类型集跑，用户勾选对任务化扫描件无效（老同步流的回归）。
+        const isVisionFile = pendingFile.isScanned || pendingFile.fileType === 'image';
+        const ref = await submitRecognitionTask(
+          fileId,
+          opts.latestSelectedTypesRef.current,
+          isVisionFile
+            ? {
+                ocrHasTypes: opts.latestOcrHasTypesRef.current,
+                visualFeatureTypes: opts.latestVisualFeatureTypesRef.current,
+              }
+            : undefined,
+        );
         if (fileInfoRef.current?.file_id !== fileId) return; // 提交期间用户已切走/重置
         watch(ref.job_id, fileId, fileInfoRef.current?.filename || fileId);
         cancelledJobsRef.current.delete(ref.job_id);

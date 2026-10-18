@@ -93,6 +93,14 @@ describe('buildDraftSnapshot + serializeDraft + parseDraft', () => {
     expect(parseDraft(serializeDraft(snapshot))).toEqual(snapshot);
   });
 
+  // Issue#194 终审 C：打码在途草稿携带 pendingRedactJobId，roundtrip 无损（恢复凭据）
+  it('pendingRedactJobId roundtrip：旧草稿无此字段照常解析，新草稿原样保留', () => {
+    const without = parseDraft(serializeDraft(buildDraftSnapshot(baseInput)));
+    expect(without?.pendingRedactJobId).toBeUndefined();
+    const withRedact = buildDraftSnapshot({ ...baseInput, pendingRedactJobId: 'jr1' });
+    expect(parseDraft(serializeDraft(withRedact))?.pendingRedactJobId).toBe('jr1');
+  });
+
 describe('planResume', () => {
   it('草稿命中：file_id 一致 → draft', () => {
     const snapshot = buildDraftSnapshot(baseInput);

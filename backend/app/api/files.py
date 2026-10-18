@@ -922,6 +922,8 @@ async def submit_recognition_task(
             get_job_store(),
             file_id=file_id,
             entity_type_ids=body.entity_type_ids,
+            ocr_has_types=body.ocr_has_types,
+            visual_feature_types=body.visual_feature_types,
             owner_id=owner_id,
             title=str(info.get("original_filename") or ""),
         )

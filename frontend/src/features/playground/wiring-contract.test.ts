@@ -68,9 +68,12 @@ describe('Issue#123 接线契约：四处接线不得被静默摘掉', () => {
     // 识别页本流程不再直调旧端点/旧函数（AC5：函数与端点保留给重跑等调用方，见下一用例）
     expect(fileHook).not.toContain('runVisionDetectionPages');
     expect(fileHook).not.toContain('ner/hybrid');
-    expect(fileHook).toContain("import { submitRecognitionTask } from '@/services/singleTaskApi';");
+    expect(fileHook).toContain(
+      "import { resolveAwaitingReviewTask, submitRecognitionTask } from '@/services/singleTaskApi';",
+    );
+    // Issue#194 终审 B：扫描件/图片的视觉要素选择随任务透传（isVisionFile 三参分支）
     expect(fileHook).toMatch(
-      /await submitRecognitionTask\(fileId, opts\.latestSelectedTypesRef\.current\);/,
+      /await submitRecognitionTask\(\s*\n\s*fileId,\s*\n\s*opts\.latestSelectedTypesRef\.current,\s*\n\s*isVisionFile\s*\n\s*\? \{\s*\n\s*ocrHasTypes: opts\.latestOcrHasTypesRef\.current,\s*\n\s*visualFeatureTypes: opts\.latestVisualFeatureTypesRef\.current,\s*\n\s*\}\s*\n\s*: undefined,\s*\n\s*\);/,
     );
     // provider watch 注册（占位视图即刻可被 taskForFile 命中）
     expect(fileHook).toMatch(/watch\(ref\.job_id, fileId,/);

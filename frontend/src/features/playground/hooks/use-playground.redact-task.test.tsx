@@ -17,12 +17,13 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useEffect, useRef } from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError, authFetch } from '@/services/api-client';
 import { showToast } from '@/components/Toast';
 import { STORAGE_KEYS } from '@/constants/storage-keys';
-import { setScopedStorageItem } from '@/lib/storage';
+import { getScopedStorageItem, setScopedStorageItem } from '@/lib/storage';
 import { cancelJob, getJob, type JobDetail, type JobSummary } from '@/services/jobsApi';
 import {
   listActiveSingleJobs,
@@ -181,11 +182,14 @@ function TaskProbe() {
 }
 
 function renderHarness() {
+  // Issue#194 终审 D：provider 发通知要 navigate（useNavigate）⇒ 必须在 Router 上下文内
   return render(
-    <SingleTaskProvider>
-      <Probe />
-      <TaskProbe />
-    </SingleTaskProvider>,
+    <MemoryRouter>
+      <SingleTaskProvider>
+        <Probe />
+        <TaskProbe />
+      </SingleTaskProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -542,5 +546,122 @@ describe('Issue#194 Bug#2：刷新后 awaiting_review 态打码兜底解析', ()
     await waitFor(() => expect(showToast).toHaveBeenCalledWith('匿名化失败。', 'error'));
     expect(submitRedactionTask).not.toHaveBeenCalled();
     expect(screen.getByTestId('stage').textContent).toBe('preview');
+  });
+});
+
+// --- Issue#194 终审 C（AC1 破口）：打码在途刷新后「结果页」恢复 ---
+//
+// 真实场景：点「开始匿名化」后任务在后台打码（stage=preview），此时刷新/关浏览器——
+// 收尾守门 lastRedactSubmit 是纯内存，草稿里若不带打码 job id，恢复分支永不触发
+// ⇒ 成品下载入口只在结果页 ⇒ UI 孤儿化；再点「开始匿名化」吃后端 400。
+// 修法（对称识别段 taskJobId/reattachTask）：草稿带 pendingRedactJobId，恢复时重挂
+// provider 账本；任务在刷新期间已 completed ⇒ 轮询报 done ⇒ 订阅 effect 照常
+// 拉快照+report/versions 收尾进结果页。
+
+/** 打码在途的现场：stage=preview 草稿 + pendingRedactJobId（写侧契约见下一条用例）。 */
+async function seedRefreshedRedacting() {
+  const snapshot = {
+    version: PLAYGROUND_DRAFT_VERSION,
+    savedAt: '2026-10-18T00:00:00.000Z',
+    stage: 'preview' as const,
+    fileInfo: {
+      file_id: 'f1',
+      filename: 'a.pdf',
+      file_size: 13,
+      file_type: 'pdf',
+      is_scanned: false,
+      page_count: 1,
+    },
+    content: '合同内容',
+    entities: [
+      { id: 'e1', text: '张三', type: 'NAME', start: 0, end: 2, selected: true, source: 'llm' as const },
+      { id: 'e2', text: '李四', type: 'NAME', start: 4, end: 6, selected: true, source: 'llm' as const },
+    ],
+    boundingBoxes: [],
+    processingMode: 'mask' as const,
+    replacementMode: 'structured' as const,
+    watermarkText: '',
+    pseudonymMap: {},
+    pseudonymUserEditedKeys: [] as string[],
+    confirmedPseudonymMap: null,
+    entityMap: {},
+    redactedCount: 0,
+    currentPage: 0,
+    visionStream: null,
+    // 刷新期间打码已完成的判定前提：任务不在 active 清单（listActiveSingleJobs=[]），
+    // 只能靠草稿里的 job id 重挂账本。
+    pendingRedactJobId: 'jr1',
+  };
+  setScopedStorageItem(
+    STORAGE_KEYS.PLAYGROUND_DRAFT,
+    serializeDraft(buildDraftSnapshot(snapshot)) ?? '',
+    'tester',
+  );
+}
+
+describe('Issue#194 终审 C：打码在途刷新后结果页恢复', () => {
+  it('(读侧) 草稿带 pendingRedactJobId：恢复后任务已 completed ⇒ 自动收尾进结果页（快照+report+versions）', async () => {
+    await seedRefreshedRedacting();
+    // 打码任务刷新期间已完成：不在 active 恢复清单；getJob 直报 completed
+    vi.mocked(listActiveSingleJobs).mockResolvedValue([]);
+    vi.mocked(getJob).mockResolvedValue(makeDetail('completed', 'completed', { id: 'jr1' }));
+    const fetchMock = vi.mocked(authFetch);
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/files/f1')) {
+        return jsonResponse({
+          original_filename: 'a.pdf',
+          file_size: 13,
+          entity_map: { 张三: '张＊', 李四: '李＊' },
+          redacted_count: 2,
+        });
+      }
+      if (url.endsWith('/redaction/f1/report')) {
+        return jsonResponse({ file_id: 'f1', redacted_entities: 2 });
+      }
+      if (url.endsWith('/redaction/f1/versions')) {
+        return jsonResponse({ file_id: 'f1', versions: [{ version: 1 }], total: 1 });
+      }
+      throw new Error(`unexpected authFetch: ${url}`);
+    });
+
+    renderHarness();
+    // 重挂账本：草稿恢复把 jr1 注册回 provider（不等首轮轮询即可命中）
+    await waitFor(() => expect(harness.task!.taskForFile('f1')?.jobId).toBe('jr1'));
+
+    // 手动驱动一轮轮询（真实定时器 1.5s 一拍，手动 refresh 确定性更快）
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+
+    // AC1 判据：结果页可达（改前 stage 永远停在 preview ⇒ 此处超时判红）
+    await waitFor(() => expect(screen.getByTestId('stage').textContent).toBe('result'));
+    await waitFor(() =>
+      expect(screen.getByTestId('entity-map').textContent).toBe('张三=张＊;李四=李＊'),
+    );
+    expect(screen.getByTestId('redacted-count').textContent).toBe('2');
+    const fetchUrls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/report'))).toBe(true);
+    expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/versions'))).toBe(true);
+  });
+
+  it('(写侧) 打码提交后落盘的草稿带 pendingRedactJobId（刷新可恢复的前提）', async () => {
+    await seedPreview();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+    await waitFor(() => expect(submitRedactionTask).toHaveBeenCalledTimes(1));
+
+    // 草稿落盘有 400ms 防抖：提交引发的 pendingRedact 状态变化触发重写
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    });
+    const raw = getScopedStorageItem<string | null>(
+      STORAGE_KEYS.PLAYGROUND_DRAFT,
+      null,
+      'tester',
+    );
+    expect(raw).toContain('"pendingRedactJobId":"j1"');
   });
 });

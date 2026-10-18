@@ -26,13 +26,25 @@ export type SingleTaskRef = { job_id: string; item_id: string; file_id: string }
  */
 export type SingleRedactReceipt = { job_id: string; item_id: string; status: string };
 
-/** 单文件识别：把已上传文件转后台任务（409 = 账号下已有活动任务）。 */
+/** 单文件识别：把已上传文件转后台任务（409 = 账号下已有活动任务）。
+ *
+ * Issue#194 终审 B：visionTypes 携带扫描件/图片的视觉要素选择（扫描件识别页
+ * 的 ocr_has/visual_features 勾选）。不传 ⇒ 请求体不含这两个键 ⇒ 后端编排器
+ * 默认全类型集（文本件走该缺省，勾选只对视觉段有意义）。
+ */
 export function submitRecognitionTask(
   fileId: string,
   entityTypeIds: string[],
+  visionTypes?: { ocrHasTypes: string[]; visualFeatureTypes: string[] },
 ): Promise<SingleTaskRef> {
   return post<SingleTaskRef>(`/files/${encodeURIComponent(fileId)}/recognition-task`, {
     entity_type_ids: entityTypeIds,
+    ...(visionTypes
+      ? {
+          ocr_has_types: visionTypes.ocrHasTypes,
+          visual_feature_types: visionTypes.visualFeatureTypes,
+        }
+      : {}),
   });
 }
 

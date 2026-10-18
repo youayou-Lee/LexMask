@@ -10,6 +10,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { t } from '@/i18n';
 import { notifyDone } from '@/lib/notifications';
 import { showToast } from '@/components/Toast';
@@ -79,6 +80,9 @@ export function SingleTaskProvider({ children }: { children: ReactNode }) {
   const entriesRef = useRef<LedgerEntry[]>([]);
   const removalTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const failStreakRef = useRef(0);
+  // Issue#194 终审 D（AC2）：三类迁移通知可点击直达 /single?file_id=（识别页按
+  // 状态呈现现场，无需按 phase 区分目标）。fileId 还没回填的占位条目不发导航。
+  const navigate = useNavigate();
 
   const commitEntries = useCallback((next: LedgerEntry[]) => {
     entriesRef.current = next;
@@ -172,6 +176,7 @@ export function SingleTaskProvider({ children }: { children: ReactNode }) {
         jobId: string;
         to: SingleTaskPhase;
         filename: string;
+        fileId: string;
       }> = [];
       // 先在 ref 上算好下一帧（迁移/回填），再同步 state —— 通知与定时器副作用不进 setState updater。
       const nextEntries = entriesRef.current.map((entry) => {
@@ -185,7 +190,7 @@ export function SingleTaskProvider({ children }: { children: ReactNode }) {
           entriesChanged = true;
         }
         if (phase !== entry.phase) {
-          transitions.push({ jobId: entry.jobId, to: phase, filename });
+          transitions.push({ jobId: entry.jobId, to: phase, filename, fileId });
         }
         return { ...entry, phase, fileId, filename };
       });
@@ -205,7 +210,16 @@ export function SingleTaskProvider({ children }: { children: ReactNode }) {
       for (const transition of transitions) {
         const notifyKey = notifyKeyForPhase(transition.to);
         if (notifyKey) {
-          notifyDone(t(notifyKey).replace('{name}', transition.filename));
+          // Issue#194 终审 D（AC2）：toast 可点击直达 /single?file_id=——识别页按
+          // 状态呈现现场（awaiting_review=确认视图，done=结果页，failed=重跑入口），
+          // 无需按 phase 区分目标。fileId 未回填（占位条目）时退化为纯提示。
+          notifyDone(
+            t(notifyKey).replace('{name}', transition.filename),
+            undefined,
+            transition.fileId
+              ? () => navigate(`/single?file_id=${encodeURIComponent(transition.fileId)}`)
+              : undefined,
+          );
         }
         if (isTerminalPhase(transition.to)) {
           scheduleRemoval(transition.jobId);

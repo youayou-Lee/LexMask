@@ -32,6 +32,11 @@ export type DraftSnapshotInput = {
   // 恢复时喂给 SingleTaskProvider.watch 重挂（applyDraftSnapshot）。可选字段、
   // 旧草稿无此值照常解析，故 PLAYGROUND_DRAFT_VERSION 不变。
   taskJobId?: string;
+  // Issue#194 终审 C（AC1）：打码在途期间落盘的草稿带打码 job id。收尾守门
+  // （use-playground 的 pendingRedact）是纯内存，刷新后不重挂则「任务 completed ⇒
+  // 收尾进结果页」的订阅永不触发 ⇒ 成品下载入口（只在结果页）孤儿化。恢复时对称
+  // 识别段 reattachTask：重挂 provider 账本，任务已 completed 即自动收尾进结果页。
+  pendingRedactJobId?: string;
 };
 
 export type PlaygroundDraftSnapshot = DraftSnapshotInput & {

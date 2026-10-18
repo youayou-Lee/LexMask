@@ -114,6 +114,8 @@ async def submit_single_recognition(
     entity_type_ids: list[str],
     owner_id: str,
     title: str = "",
+    ocr_has_types: list[str] | None = None,
+    visual_feature_types: list[str] | None = None,
 ) -> dict[str, str]:
     """提交单文件识别：守门（D2 唯一性 + 归属）→ 建 SINGLE job → 入识别队列。
 
@@ -121,6 +123,10 @@ async def submit_single_recognition(
     文件不存在抛 KeyError；非本人文件抛 PermissionError；
     PDF 加密态由调用方（端点层预探测）与识别管道处理，本层不吞
     :class:`~app.services.file_parser.PdfEncryptedError`。
+
+    Issue#194 终审 B：ocr_has_types / visual_feature_types 为扫描件/图片的视觉
+    要素选择，写进 job config 供识别工人视觉段（resolve_optional_type_list）读取；
+    None=未提供 ⇒ 不写键 ⇒ 编排器默认语义（老调用方零漂移）。
     """
     info = await get_file_info(file_id)
     if not info:
@@ -137,11 +143,21 @@ async def submit_single_recognition(
                 str(cfg.get("single_file_id") or ""),
                 str(running.get("title") or cfg.get("single_file_id") or running.get("id") or ""),
             )
+        config: dict[str, Any] = {
+            "entity_type_ids": list(entity_type_ids),
+            # single_file_id：list_jobs 行无 file_id，冲突时靠它报「在跑的文件」
+            "single_file_id": file_id,
+        }
+        # 键名与识别工人视觉段的 resolve_optional_type_list 首选别名一致
+        # （task_queue_pipelines._run_vision）；None 不写键，空列表原样保留。
+        if ocr_has_types is not None:
+            config["ocr_has_types"] = list(ocr_has_types)
+        if visual_feature_types is not None:
+            config["visual_feature_types"] = list(visual_feature_types)
         job_id = store.create_job(
             job_type=JobType.SINGLE,
             title=title or str(info.get("filename") or "") or file_id,
-            # single_file_id：list_jobs 行无 file_id，冲突时靠它报「在跑的文件」
-            config={"entity_type_ids": list(entity_type_ids), "single_file_id": file_id},
+            config=config,
             owner_id=owner_id,
         )
         item_id = store.add_item(job_id, file_id)

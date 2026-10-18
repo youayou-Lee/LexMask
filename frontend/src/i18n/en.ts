@@ -1209,6 +1209,8 @@ const enOverrides: Record<string, string> = {
   'playground.redactFailed': 'Redaction failed.',
   'playground.restored': 'Last single-file session restored',
   'playground.restoredFromServer': 'Restored last recognition from server',
+  // Issue#194 终审 A：待确认扫描件回场（不重提识别任务，直接恢复确认视图）
+  'playground.restoredAwaitingReview': 'Recognition already completed — review the results and start redaction',
   'playground.restoreFileGone': 'Original file no longer exists; last session cannot be restored',
   'playground.switchSessionTitle': 'Switch file?',
   'playground.switchSessionMessage': 'The current single-file session will be replaced; unexecuted edits will be lost.',
@@ -2001,6 +2003,7 @@ Object.assign(enOverrides, {
   'playground.toast.entityDeleted': 'Deleted',
   'playground.loading.rerunHybridText': 'Re-running recognition (regex + AI semantic)...',
   'playground.toast.rerunTextDone': 'Re-recognition complete: {count} found',
+  'toast.open': 'View',
   'toast.fallbackError': 'Operation failed. Please try again later.',
   'health.serviceName.visualFeatures': 'Visual Features',
 });

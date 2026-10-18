@@ -58,7 +58,7 @@ def test_recognition_task_happy_path_passes_body_and_title(monkeypatch):
     _register()
     seen: dict = {}
 
-    async def fake_submit(store, *, file_id, entity_type_ids, owner_id, title=""):
+    async def fake_submit(store, *, file_id, entity_type_ids, owner_id, title="", **kwargs):
         seen.update(
             file_id=file_id,
             entity_type_ids=list(entity_type_ids),
@@ -77,6 +77,51 @@ def test_recognition_task_happy_path_passes_body_and_title(monkeypatch):
     assert seen["entity_type_ids"] == ["t1", "t2"]
     assert seen["owner_id"] == "anonymous"
     assert seen["title"] == "记录.txt"
+
+
+def test_recognition_task_passes_vision_type_selections(monkeypatch):
+    """Issue#194 终审 B：请求体的视觉要素选择原样透传服务层（端点纯接线）。"""
+    _register()
+    seen: dict = {}
+
+    async def fake_submit(store, *, file_id, entity_type_ids, owner_id, title="",
+                          ocr_has_types=None, visual_feature_types=None):
+        seen.update(
+            entity_type_ids=list(entity_type_ids),
+            ocr_has_types=ocr_has_types,
+            visual_feature_types=visual_feature_types,
+        )
+        return {"job_id": "j1", "item_id": "i1", "file_id": file_id}
+
+    monkeypatch.setattr(sts, "submit_single_recognition", fake_submit)
+    resp = client.post(
+        "/api/v1/files/f1/recognition-task",
+        json={
+            "entity_type_ids": ["t1"],
+            "ocr_has_types": ["ocr_seal"],
+            "visual_feature_types": ["visual_stamp"],
+        },
+    )
+    assert resp.status_code == 200
+    assert seen["ocr_has_types"] == ["ocr_seal"]
+    assert seen["visual_feature_types"] == ["visual_stamp"]
+
+
+def test_recognition_task_without_vision_selections_passes_none(monkeypatch):
+    """未提供视觉选择 ⇒ 服务层收到 None（编排器默认语义），而非空列表。"""
+    _register()
+    seen: dict = {}
+
+    async def fake_submit(store, *, file_id, entity_type_ids, owner_id, title="",
+                          ocr_has_types=None, visual_feature_types=None):
+        seen.update(ocr_has_types=ocr_has_types, visual_feature_types=visual_feature_types)
+        return {"job_id": "j1", "item_id": "i1", "file_id": file_id}
+
+    monkeypatch.setattr(sts, "submit_single_recognition", fake_submit)
+    resp = client.post("/api/v1/files/f1/recognition-task", json={"entity_type_ids": []})
+    assert resp.status_code == 200
+    assert seen["ocr_has_types"] is None
+    assert seen["visual_feature_types"] is None
 
 
 def test_recognition_task_conflict_maps_409_with_running_filename(monkeypatch):
@@ -171,7 +216,7 @@ def test_recognition_task_plain_pdf_passes_precheck(monkeypatch):
     _make_pdf(path)
     _register(file_type="pdf", path=path)
 
-    async def fake_submit(store, *, file_id, entity_type_ids, owner_id, title=""):
+    async def fake_submit(store, *, file_id, entity_type_ids, owner_id, title="", **kwargs):
         return {"job_id": "j2", "item_id": "i2", "file_id": file_id}
 
     monkeypatch.setattr(sts, "submit_single_recognition", fake_submit)
@@ -184,7 +229,7 @@ def test_recognition_task_idempotency_key_hit_returns_cached(monkeypatch):
     _register()
     calls: list = []
 
-    async def fake_submit(store, *, file_id, entity_type_ids, owner_id, title=""):
+    async def fake_submit(store, *, file_id, entity_type_ids, owner_id, title="", **kwargs):
         calls.append(1)
         return {"job_id": "j3", "item_id": "i3", "file_id": file_id}
 

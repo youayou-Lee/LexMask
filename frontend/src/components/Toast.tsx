@@ -36,11 +36,21 @@ function normalizeToastMessage(message: unknown): string {
   return t('toast.fallbackError');
 }
 
-export function showToast(message: unknown, type: ToastType = 'info') {
+export function showToast(
+  message: unknown,
+  type: ToastType = 'info',
+  // Issue#194 终审 D（AC2）：通知类 toast 可点击直达。sonner 2.0.7 的 toast 本体
+  // 无原生 onClick（ExternalToast 不收该键，传了既类型报错又运行时静默丢弃），
+  // 故用其受支持的 action 按钮承担点击直达；旧调用不传即无按钮、外观不变。
+  options?: { onClick?: () => void },
+) {
   const Icon = TOAST_ICON[type];
 
   toast(normalizeToastMessage(message), {
     duration: 2400,
+    ...(options?.onClick
+      ? { action: { label: t('toast.open'), onClick: options.onClick } }
+      : {}),
     className: [
       'rounded-2xl border px-4 py-3 shadow-[var(--shadow-lg)] backdrop-blur-xl',
       TOAST_CLASS[type],
