@@ -20,16 +20,26 @@ export interface PlaygroundLoadingProps {
    *   （画布此时由 `ImageBBoxEditor` 的 `lockDraw` 置只读，见 playground-page.tsx）。
    */
   overlay?: 'blocking' | 'passive';
+  /**
+   * 真实进度（Issue#123 页流式 / Issue#194 任务轮询，均为 completed/total）。
+   * total > 0 时进度条用真值；缺省回落到既有的时间 fake 公式。
+   */
+  progress?: { completed: number; total: number } | null;
 }
 
 export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
-  ({ loadingMessage, isImageMode, onCancel, overlay = 'blocking' }) => {
+  ({ loadingMessage, isImageMode, onCancel, overlay = 'blocking', progress = null }) => {
     const t = useT();
     const panelRef = useRef<HTMLDivElement>(null);
     const [elapsedMs, setElapsedMs] = useState(0);
     const elapsedSec = Math.floor(elapsedMs / 1_000);
     const safeElapsedSec = Math.max(0, elapsedSec);
-    const progressValue = Math.min(92, Math.round(12 + 80 * (1 - Math.exp(-safeElapsedSec / 90))));
+    // Issue#194：有真实 current/total 时进度条用真值；假公式仅作 fallback。
+    const progressTotal = progress?.total ?? 0;
+    const progressValue =
+      progressTotal > 0
+        ? Math.min(100, Math.round(((progress?.completed ?? 0) / progressTotal) * 100))
+        : Math.min(92, Math.round(12 + 80 * (1 - Math.exp(-safeElapsedSec / 90))));
     const showLongRunningHint = elapsedMs >= PLAYGROUND_LONG_RUNNING_HINT_MS;
     // Issue#123：passive 不锁交互——遮罩透明且 pointer-events:none，用户可滚动/缩放画布
     // （画布编辑由 lockDraw 单独置只读，避免识别中途改框）。

@@ -28,6 +28,10 @@ export type DraftSnapshotInput = {
   // 会被 parseDraft 当成完整 preview 恢复（半识别卷被呈现为已完成且不重跑）；
   // 记录流式进度，未完成（completed < total）的草稿一律拒绝 → 走重跑。
   visionStream?: { completed: number; total: number } | null;
+  // Issue#194：识别走后台任务后，任务驱动的识别期间落盘的草稿带 job id——
+  // 恢复时喂给 SingleTaskProvider.watch 重挂（applyDraftSnapshot）。可选字段、
+  // 旧草稿无此值照常解析，故 PLAYGROUND_DRAFT_VERSION 不变。
+  taskJobId?: string;
 };
 
 export type PlaygroundDraftSnapshot = DraftSnapshotInput & {

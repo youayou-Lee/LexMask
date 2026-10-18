@@ -689,10 +689,11 @@ export function usePlayground() {
         pseudonymUserEditedKeys: [...pseudonymUserEditedRef.current],
         confirmedPseudonymMap,
         entityMap,
-        redactedCount,
-        currentPage: imageCtx.currentPage,
-        visionStream: fileCtx.visionStream,
-      });
+    redactedCount,
+    currentPage: imageCtx.currentPage,
+    visionStream: fileCtx.visionStream,
+    taskJobId: fileCtx.taskRecognition?.jobId,
+  });
       const json = serializeDraft(snapshot);
       if (json === null) return; // 超限：放弃持久化，内存会话不受影响
       setScopedStorageItem(STORAGE_KEYS.PLAYGROUND_DRAFT, json, ownerKey);
@@ -703,6 +704,7 @@ export function usePlayground() {
     fileCtx.stage,
     fileCtx.visionStream,
     fileCtx.content,
+    fileCtx.taskRecognition,
     entityCtx.entities,
     imageCtx.boundingBoxes,
     imageCtx.currentPage,
@@ -752,6 +754,16 @@ export function usePlayground() {
       recognition.setReplacementMode(snapshot.replacementMode);
       recognition.setProcessingMode(snapshot.processingMode);
       recognition.setWatermarkText(snapshot.watermarkText);
+      // Issue#194：草稿里带在途识别任务 → 重挂 provider（watch 幂等；任务若已终态，
+      // 订阅 effect 的 redacting/done/failed 分支会兜底退出识别中视图）。
+      // 注意放在最后：上面的 cancelProcessing(false) 会清掉旧任务态。
+      if (snapshot.taskJobId && snapshot.fileInfo?.file_id) {
+        fileCtx.reattachTask(
+          snapshot.taskJobId,
+          snapshot.fileInfo.file_id,
+          snapshot.fileInfo.filename,
+        );
+      }
       setResetConfirmOpen(false);
       setReportOpen(false);
       setVersionHistoryOpen(false);
@@ -894,6 +906,7 @@ export function usePlayground() {
     isLoading: fileCtx.isLoading,
     loadingMessage: fileCtx.loadingMessage,
     visionStream: fileCtx.visionStream,
+    taskRecognition: fileCtx.taskRecognition,
     uploadIssue: fileCtx.uploadIssue,
     recognitionIssue: fileCtx.recognitionIssue,
     entityMap,

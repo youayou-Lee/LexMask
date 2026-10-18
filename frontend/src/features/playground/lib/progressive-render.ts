@@ -30,13 +30,18 @@ export function shouldEnterPreviewDuringRecognition(input: {
 
 /**
  * 是否把全屏遮罩降级为 `passive`（透明、不遮挡、不锁交互）。
- * 仅当「正在加载」且「多页流式识别中」才降级；单页扫描件 / 文本 NER / 图片单页
- * 一律保持 `blocking` ⇒ 与改前的遮罩行为逐字节一致。
+ * - 多页流式识别中（Issue#123）：正在加载且逐页进度已登记；
+ * - 后台任务识别中（Issue#194 `taskDriven`）：进度来自轮询而非前端在飞请求，
+ *   画布/文本均已就位，前端没有可遮挡的「正在进行」画面 ⇒ 一律 passive。
+ * 其余（单页扫描件 / 图片单页 / 非流式路径且非任务驱动）保持 `blocking`
+ * ⇒ 与改前的遮罩行为一致。
  */
 export function shouldUsePassiveOverlay(
   isLoading: boolean,
   stream: VisionStreamProgress | null,
+  taskDriven = false,
 ): boolean {
+  if (isLoading && taskDriven) return true;
   return isLoading && stream !== null && stream.total > 1;
 }
 

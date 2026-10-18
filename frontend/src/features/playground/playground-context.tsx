@@ -18,6 +18,7 @@ export interface PlaygroundDataContextValue {
   isLoading: PlaygroundContextValue['isLoading'];
   loadingMessage: PlaygroundContextValue['loadingMessage'];
   visionStream: PlaygroundContextValue['visionStream'];
+  taskRecognition: PlaygroundContextValue['taskRecognition'];
   uploadIssue: PlaygroundContextValue['uploadIssue'];
   recognitionIssue: PlaygroundContextValue['recognitionIssue'];
   entityMap: PlaygroundContextValue['entityMap'];
@@ -112,6 +113,7 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       isLoading: ctx.isLoading,
       loadingMessage: ctx.loadingMessage,
       visionStream: ctx.visionStream,
+      taskRecognition: ctx.taskRecognition,
       uploadIssue: ctx.uploadIssue,
       recognitionIssue: ctx.recognitionIssue,
       entityMap: ctx.entityMap,
@@ -154,6 +156,7 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       ctx.isLoading,
       ctx.loadingMessage,
       ctx.visionStream,
+      ctx.taskRecognition,
       ctx.uploadIssue,
       ctx.recognitionIssue,
       ctx.entityMap,

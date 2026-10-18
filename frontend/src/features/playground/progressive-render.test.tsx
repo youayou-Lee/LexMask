@@ -78,6 +78,21 @@ describe('shouldUsePassiveOverlay（遮罩降级判据）', () => {
   it('非加载态 ⇒ blocking（遮罩本就不渲染，判据不得为真）', () => {
     expect(shouldUsePassiveOverlay(false, { completed: 5, total: 10 })).toBe(false);
   });
+
+  // Issue#194：后台任务驱动的识别一律 passive（进度来自轮询，前端没有可遮挡画面）
+  it('任务驱动（taskDriven）+ 无流式进度 ⇒ passive', () => {
+    expect(shouldUsePassiveOverlay(true, null, true)).toBe(true);
+  });
+
+  it('任务驱动 + 单页 ⇒ passive（不受 total>1 门槛限制）', () => {
+    expect(shouldUsePassiveOverlay(true, { completed: 0, total: 1 }, true)).toBe(true);
+  });
+
+  it('非任务驱动省略第三参 ⇒ 行为与旧两参签名一致（向后兼容）', () => {
+    expect(shouldUsePassiveOverlay(true, { completed: 0, total: 1 })).toBe(false);
+    expect(shouldUsePassiveOverlay(true, { completed: 1, total: 10 })).toBe(true);
+    expect(shouldUsePassiveOverlay(false, null, true)).toBe(false);
+  });
 });
 
 describe('overlayModeFor（表现层接线档位）', () => {

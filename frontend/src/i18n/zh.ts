@@ -1096,6 +1096,9 @@ const zhOverrides: Record<string, string> = {
   'playground.processing': '处理中...',
   'playground.uploading': '正在上传文件...',
   'playground.parsing': '正在解析文件...',
+  // Issue#194：后台任务识别的阶段人话（进度数字来自任务轮询）
+  'playground.taskParsing': '后台解析中…',
+  'playground.taskRecognizing': '后台识别中 {current}/{total}…',
   'playground.uploadFailed': '文件上传失败。',
   'playground.parseFailed': '文件解析失败。',
   'playground.processFailed': '文件处理失败。',
