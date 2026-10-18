@@ -119,6 +119,36 @@ def test_recognition_task_not_owner_403(monkeypatch):
     assert not calls  # 非本人文件不进守门层
 
 
+def test_recognition_task_file_deleted_between_precheck_and_submit_maps_404(monkeypatch):
+    """TOCTOU：预检与提交之间文件被并发删除 → 守门层 KeyError 映射 404（不 500）。"""
+    _register()
+
+    async def gone(*a, **k):
+        raise KeyError("f1")
+
+    monkeypatch.setattr(sts, "submit_single_recognition", gone)
+    resp = client.post("/api/v1/files/f1/recognition-task", json={"entity_type_ids": []})
+    assert resp.status_code == 404
+    assert resp.json()["message"] == "文件不存在"
+
+
+def test_recognition_task_permission_lost_between_precheck_and_submit_maps_403(monkeypatch):
+    """TOCTOU：预检与提交之间归属变化 → 守门层 PermissionError 映射 403（不 500）。
+
+    文件登记为本人（anonymous），预检放行；异常从守门层抛出，验证的是
+    submit 之后的 PermissionError 映射，而非既有预检 403。
+    """
+    _register()
+
+    async def denied(*a, **k):
+        raise PermissionError("f1")
+
+    monkeypatch.setattr(sts, "submit_single_recognition", denied)
+    resp = client.post("/api/v1/files/f1/recognition-task", json={"entity_type_ids": []})
+    assert resp.status_code == 403
+    assert resp.json()["message"] == "无权操作该文件"
+
+
 def test_recognition_task_encrypted_pdf_maps_400_needs_password(monkeypatch):
     path = os.path.join(settings.UPLOAD_DIR, "enc.pdf")
     _make_pdf(path, user_pw="secret")

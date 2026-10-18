@@ -927,6 +927,12 @@ async def submit_recognition_task(
         )
     except _sts.SingleTaskConflictError as exc:
         raise HTTPException(status_code=409, detail=f"有文件正在处理：{exc.running_filename}，请等它完成")
+    except KeyError:
+        # TOCTOU：预检与提交之间文件被并发删除 → 守门层查无此文件
+        raise HTTPException(status_code=404, detail="文件不存在")
+    except PermissionError:
+        # TOCTOU：预检与提交之间归属变化 → 守门层归属不符
+        raise HTTPException(status_code=403, detail="无权操作该文件")
     save_idempotency(scoped, ref)
     return ref
 
