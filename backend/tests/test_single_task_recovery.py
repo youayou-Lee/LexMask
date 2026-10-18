@@ -59,8 +59,11 @@ def test_repair_resets_completed_single_item_without_output(tmp_path, monkeypatc
     class _FakeFileStore:
         def get(self, fid):
             if fid == "file-b":
-                return {"file_path": "/data/b.pdf", "output_path": "/data/b_out.pdf"}
-            return {"file_path": "/data/a.pdf"}
+                return {
+                    "file_path": str(tmp_path / "b.pdf"),
+                    "output_path": str(tmp_path / "b_out.pdf"),
+                }
+            return {"file_path": str(tmp_path / "a.pdf")}
 
     monkeypatch.setattr(file_management_service, "get_file_store", lambda: _FakeFileStore())
 

@@ -189,7 +189,7 @@ def test_recognition_task_idempotency_key_hit_returns_cached(monkeypatch):
         return {"job_id": "j3", "item_id": "i3", "file_id": file_id}
 
     monkeypatch.setattr(sts, "submit_single_recognition", fake_submit)
-    headers = {"X-Idempotency-Key": "idem-cache-1"}
+    headers = {"X-Idempotency-Key": "idem-cache-run"}
     first = client.post("/api/v1/files/f1/recognition-task", json={"entity_type_ids": []}, headers=headers)
     second = client.post("/api/v1/files/f1/recognition-task", json={"entity_type_ids": []}, headers=headers)
     assert first.status_code == 200
