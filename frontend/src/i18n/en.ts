@@ -1191,10 +1191,12 @@ const enOverrides: Record<string, string> = {
   // Issue#194: stage messages for background-task recognition (numbers from task polling)
   'playground.taskParsing': 'Parsing in background…',
   'playground.taskRecognizing': 'Recognizing in background {current}/{total}…',
+  // Issue#194 user acceptance #4: waiting-view top line (filename composed by the hook)
+  'playground.identifying': 'Recognizing "{filename}"',
   // Issue#194 user acceptance #3: human labels for the two-pass vision pipeline stages
   // (mapped from server progress_message; see playground/lib/task-progress.ts)
   'playground.taskStage.ocrHas': 'Text recognition',
-  'playground.taskStage.visualFeatures': 'Visual features',
+  'playground.taskStage.visualFeatures': 'Visual feature recognition',
   'playground.taskStage.vision': 'Vision recognition',
   'playground.taskStage.text': 'Entity recognition',
   // Issue#194 (T10/D3): redaction moved to a background task — passive hint after submit, safe to leave

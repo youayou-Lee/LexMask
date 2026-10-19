@@ -1100,10 +1100,12 @@ const zhOverrides: Record<string, string> = {
   // Issue#194：后台任务识别的阶段人话（进度数字来自任务轮询）
   'playground.taskParsing': '后台解析中…',
   'playground.taskRecognizing': '后台识别中 {current}/{total}…',
+  // Issue#194 用户验收④：等待视图顶部行（文件名由 hook 组装；拿不到回落既有文案）
+  'playground.identifying': '正在识别「{filename}」',
   // Issue#194 用户验收③：两段式视觉管线的段名人话（服务端 progress_message 映射，
   // 见 playground/lib/task-progress.ts——第二段不再看起来像重新开始）
   'playground.taskStage.ocrHas': '文字识别',
-  'playground.taskStage.visualFeatures': '视觉要素',
+  'playground.taskStage.visualFeatures': '视觉要素识别',
   'playground.taskStage.vision': '视觉识别',
   'playground.taskStage.text': '实体识别',
   // Issue#194（T10/D3）：打码改后台任务——提交成功后的 passive 提示，可离开页面

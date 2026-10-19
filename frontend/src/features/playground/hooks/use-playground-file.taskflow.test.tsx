@@ -165,6 +165,7 @@ function Probe({ onReady }: { onReady: (file: FileApi, task: TaskApi) => void })
           isImageMode={false}
           overlay={overlay}
           progress={file.visionStream}
+          stage={file.taskStageLabel}
           onCancel={() => file.cancelProcessing()}
         />
       )}
@@ -414,7 +415,7 @@ describe('Issue#194 识别页任务流（T9）', () => {
     expect(boxes[1]).toMatchObject({ id: 'bbox_1', page: 2, type: 'SEAL', selected: true });
   });
 
-  it('(j) 用户验收③：识别中视图显示服务端段名——第二段显示「视觉要素」，不再像重新开始', async () => {
+  it('(j) 用户验收③④：段名行 + 顶部带文件名——第二段不再像重新开始，等待页单一活计数', async () => {
     renderHarness();
     await dropTextFile();
     await waitFor(() => expect(harness.task!.taskForFile('f1')).toBeDefined());
@@ -437,10 +438,12 @@ describe('Issue#194 识别页任务流（T9）', () => {
       await harness.task!.refresh();
     });
 
-    // 判据：段名人话 + 数字保留（改前红：只显示「后台识别中 5/20」，与第一段一模一样）
+    // 顶部行：正在识别「文件名」（hook 组装；upload mock filename='a.txt'）
     await waitFor(() =>
-      expect(screen.getByTestId('loading-message').textContent).toBe('视觉要素 5/20'),
+      expect(screen.getByTestId('loading-message').textContent).toBe('正在识别「a.txt」'),
     );
+    // 段名行：第二段显示「视觉要素识别 5/20」（改前只有「后台识别中 5/20」，与第一段一模一样）
+    expect(screen.getByTestId('playground-loading-stage').textContent).toBe('视觉要素识别 5/20');
 
     // 第一段（OCR+HaS）→ 文字识别
     vi.mocked(getJob).mockResolvedValue(
@@ -460,10 +463,10 @@ describe('Issue#194 识别页任务流（T9）', () => {
       await harness.task!.refresh();
     });
     await waitFor(() =>
-      expect(screen.getByTestId('loading-message').textContent).toBe('文字识别 3/20'),
+      expect(screen.getByTestId('playground-loading-stage').textContent).toBe('文字识别 3/20'),
     );
 
-    // 无段名消息（vision 排队）→ 回落既有「后台识别中」模板（负样本：不秀英文原文）
+    // 无段名消息（vision 排队）→ 段行消失（不秀英文原文），顶部保持「正在识别」人话
     vi.mocked(getJob).mockResolvedValue(
       makeDetail('processing', 'vision', {
         items: [
@@ -481,8 +484,9 @@ describe('Issue#194 识别页任务流（T9）', () => {
       await harness.task!.refresh();
     });
     await waitFor(() =>
-      expect(screen.getByTestId('loading-message').textContent).toBe('后台识别中 0/20…'),
+      expect(screen.queryByTestId('playground-loading-stage')).toBeNull(),
     );
+    expect(screen.getByTestId('loading-message').textContent).toBe('正在识别「a.txt」');
   });
 });
 

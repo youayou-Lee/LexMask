@@ -149,6 +149,11 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
    * 渲染已产出阶段行；任务退出（迁移/失败/取消）即清空。
    */
   const [taskPerformance, setTaskPerformance] = useState<Record<string, unknown> | null>(null);
+  /**
+   * Issue#194 用户验收③④：当前段人话段名（progress_message 经 recognitionStageFromMessage
+   * 映射 + t）。等待视图的段名行（唯一活数字）与 ✓ 清单的当前段排除都用它；任务退出即清空。
+   */
+  const [taskStageLabel, setTaskStageLabel] = useState<string | null>(null);
   /** 迁移处理守卫：每个 job 的 awaiting_review/终态处理只执行一次（防重复拉快照/重复报错）。 */
   const handledJobRef = useRef<string | null>(null);
   /** 用户主动取消过的 job：provider 报 failed 时静默（cancelProcessing 已收拾过 UI）。 */
@@ -638,11 +643,15 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       setTaskPerformance(task.performance ?? null);
       if (task.total > 0) {
         setVisionStream({ completed: task.current, total: task.total });
-        // Issue#194 用户验收③：视觉管线两段式（先 OCR 一遍 N 页、再视觉要素一遍 N 页），
-        // 两轮数字 0→N 相同——只显示数字时第二段像「重新开始」。优先显示服务端
-        // progress_message 映射的段名（人话，i18n），数字保留；无段名消息回落既有模板。
+        // 用户验收③④：段名（人话）单独透出给等待视图的段名行（第二段不像重新开始）；
+        // loadingMessage 升级为「正在识别「文件名」」顶部行——等待页从此只有一处活数字。
+        // 拿不到文件名回落既有文案（段名+页码 / 后台识别中模板）。
         const stage = recognitionStageFromMessage(task.message);
-        if (stage) {
+        setTaskStageLabel(stage ? t(stage.labelKey) : null);
+        const filename = fileInfoRef.current?.filename;
+        if (filename) {
+          setLoadingMessage(t('playground.identifying').replace('{filename}', filename));
+        } else if (stage) {
           setLoadingMessage(`${t(stage.labelKey)} ${stage.current}/${stage.total}`);
         } else {
           setLoadingMessage(
@@ -653,6 +662,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         }
       } else {
         setVisionStream(null);
+        setTaskStageLabel(null);
         setLoadingMessage(t('playground.taskParsing'));
       }
       return;
@@ -696,6 +706,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
           if (!signal.aborted && handledJobRef.current === jobId) {
             setTaskRecognitionJob(null);
             setTaskPerformance(null);
+            setTaskStageLabel(null);
             setVisionStream(null);
             setIsLoading(false);
             setLoadingMessage('');
@@ -711,6 +722,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       handledJobRef.current = task.jobId;
       setTaskRecognitionJob(null);
       setTaskPerformance(null);
+      setTaskStageLabel(null);
       setVisionStream(null);
       setIsLoading(false);
       setLoadingMessage('');
@@ -722,6 +734,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     handledJobRef.current = task.jobId;
     setTaskRecognitionJob(null);
     setTaskPerformance(null);
+    setTaskStageLabel(null);
     setVisionStream(null);
     if (cancelledJobsRef.current.has(task.jobId)) return;
     setIsLoading(false);
@@ -743,7 +756,8 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       cancelledJobsRef.current.delete(jobId);
       handledJobRef.current = null;
       setTaskRecognitionJob({ jobId });
-      setTaskPerformance(null); // 旧任务残留清空，等 provider 轮询回填
+      setTaskPerformance(null);
+      setTaskStageLabel(null); // 旧任务残留清空，等 provider 轮询回填
       setIsLoading(true);
       setRecognitionIssue(null);
       setLoadingMessage(t('playground.taskParsing'));
@@ -753,6 +767,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         handledJobRef.current = jobId;
         setTaskRecognitionJob(null);
         setTaskPerformance(null);
+        setTaskStageLabel(null);
         setVisionStream(null);
         setIsLoading(false);
         setLoadingMessage('');
@@ -839,6 +854,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     // Issue#194：任务驱动识别的状态与重挂入口（表现层据此降级遮罩 / 草稿恢复据此重挂）
     taskRecognition,
     taskPerformance,
+    taskStageLabel,
     reattachTask,
   };
 }

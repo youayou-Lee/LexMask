@@ -1029,6 +1029,7 @@ export function usePlayground() {
     visionStream: fileCtx.visionStream,
     taskRecognition: fileCtx.taskRecognition,
     taskPerformance: fileCtx.taskPerformance,
+    taskStageLabel: fileCtx.taskStageLabel,
     uploadIssue: fileCtx.uploadIssue,
     recognitionIssue: fileCtx.recognitionIssue,
     entityMap,

@@ -159,29 +159,40 @@ describe('ProcessingDetailsCard — 失败态与无卡形态', () => {
   });
 });
 
-describe('PlaygroundLoading performance prop — 第二消费形态（同一行构建器）', () => {
-  it('进行中视图渲染与卡片同源的已产出阶段行', () => {
+describe('PlaygroundLoading 等待视图 — 单一活计数 + ✓ 已完成清单（用户验收④）', () => {
+  it('不渲染「已等待」秒数与阶段耗时明细；当前段行 + ✓ 清单（固定顺序、非当前段）', () => {
     render(
       <PlaygroundLoading
-        loadingMessage="识别中"
-        isImageMode={false}
+        loadingMessage="正在识别「刑事判决书.pdf」"
+        isImageMode
+        stage="视觉要素识别"
+        progress={{ completed: 5, total: 20 }}
         performance={FULL_VISION_PERF}
       />,
     );
-    const container = screen.getByTestId('playground-processing-rows');
-    expect(container).toBeTruthy();
-    for (const row of buildProcessingRows(FULL_VISION_PERF)) {
-      for (const part of expectedRowParts(row)) {
-        expect(screen.getByTestId(`processing-row-${row.key}`).textContent).toContain(part);
-      }
-    }
-    // 进行中视图不渲染卡片专属的标题/总耗时（那是结果页卡的形态）
-    expect(screen.queryByTestId('processing-details-total')).toBeNull();
+    // 删①：秒数计时行；删②：阶段耗时明细（秒数只留在结果页详情卡）
+    expect(screen.queryByTestId('playground-loading-timer')).toBeNull();
+    expect(screen.queryByTestId('playground-processing-rows')).toBeNull();
+    expect(screen.queryByText(/已等待/)).toBeNull();
+    // 当前段行：段名 + 页码——等待页唯一活数字
+    expect(screen.getByTestId('playground-loading-stage').textContent).toBe('视觉要素识别 5/20');
+    // ✓ 已完成清单：固定顺序、只含有数据的非当前段行
+    expect(screen.getByTestId('playground-checklist-parse').textContent).toContain('文本解析');
+    expect(screen.getByTestId('playground-checklist-ocr').textContent).toContain('文字识别');
+    expect(screen.getByTestId('playground-checklist-ner').textContent).toContain('实体识别');
+    // 当前段（visual_features）不进清单；四段之外的行（排队/匹配/打码/失败回落）不上等待页
+    expect(screen.queryByTestId('playground-checklist-visual_features')).toBeNull();
+    expect(screen.queryByTestId('playground-checklist-redaction')).toBeNull();
+    expect(screen.queryByTestId('playground-checklist-queue_wait')).toBeNull();
+    expect(screen.queryByTestId('playground-checklist-match')).toBeNull();
   });
 
-  it('无 performance（旧流式识别）不渲染行区，行为不变', () => {
-    render(<PlaygroundLoading loadingMessage="识别中" isImageMode={false} />);
+  it('无 performance / 无 stage（解析段、旧流式识别）：无清单无段行，顶部回落 loadingMessage', () => {
+    render(<PlaygroundLoading loadingMessage="后台解析中…" isImageMode={false} />);
+    expect(screen.queryByTestId('playground-loading-checklist')).toBeNull();
+    expect(screen.queryByTestId('playground-loading-stage')).toBeNull();
     expect(screen.queryByTestId('playground-processing-rows')).toBeNull();
+    expect(screen.getByText('后台解析中…')).toBeTruthy();
   });
 });
 

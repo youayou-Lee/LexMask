@@ -136,7 +136,9 @@ describe('PlaygroundLoading 遮罩契约', () => {
         onCancel={onCancel}
       />,
     );
-    expect(screen.getByTestId('playground-loading-timer')).toBeTruthy();
+    // 用户验收④：秒数计时行已删——passive 仍保留真进度条与取消入口
+    expect(screen.getByTestId('playground-loading-progress')).toBeTruthy();
+    expect(screen.queryByTestId('playground-loading-timer')).toBeNull();
     const cancel = screen.getByRole('button');
     fireEvent.click(cancel);
     expect(onCancel).toHaveBeenCalledTimes(1);
