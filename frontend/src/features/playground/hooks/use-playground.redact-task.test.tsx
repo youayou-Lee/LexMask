@@ -683,7 +683,7 @@ describe('Issue#194 终审 C：打码在途刷新后结果页恢复', () => {
           bounding_boxes: {
             '1': [{ id: 'b1', x: 0, y: 0, width: 1, height: 1, type: 'NAME' }],
           },
-          output_path: '/data/out.pdf',
+          output_path: 'out/result.pdf',
           entity_map: { 张三: '张某某' },
           redacted_count: 5,
         });
@@ -724,7 +724,7 @@ describe('Issue#194 终审 C：打码在途刷新后结果页恢复', () => {
         return jsonResponse({
           original_filename: 'a.pdf',
           entities: [],
-          output_path: '/data/out.pdf',
+          output_path: 'out/result.pdf',
           entity_map: { 张三: '张某某' },
           redacted_count: 5,
         });
