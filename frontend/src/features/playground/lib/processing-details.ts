@@ -127,15 +127,18 @@ function fill(template: string, params: Record<string, string>): string {
   );
 }
 
+/**
+ * Issue#194 用户验收②：时长人话中文格式（mockup「2 分 10 秒」「6 秒」），
+ * 单位词走 i18n（processingDetails.unit.*，zh/en 双语）——不再输出 ms/s/m 英文单位裸数字。
+ * 三档：<1s → 不足 1 秒；<60s → X 秒（四舍五入到整数）；≥60s → X 分 Y 秒。
+ */
 export function formatDurationMs(ms: number): string {
-  if (ms < 1_000) return `${Math.round(ms)}ms`;
-  if (ms < 60_000) {
-    const seconds = Math.round((ms / 1_000) * 10) / 10;
-    return `${seconds}s`;
-  }
-  const minutes = Math.floor(ms / 60_000);
-  const seconds = Math.round((ms % 60_000) / 1_000);
-  return `${minutes}m ${seconds}s`;
+  if (ms < 1_000) return t('processingDetails.unit.underSec');
+  const totalSeconds = Math.round(ms / 1_000);
+  if (totalSeconds < 60) return `${totalSeconds} ${t('processingDetails.unit.sec')}`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes} ${t('processingDetails.unit.min')} ${seconds} ${t('processingDetails.unit.sec')}`;
 }
 
 /** 文本直读判定：workers 文本流写 recognition.mode==='text'（无 pages）。 */

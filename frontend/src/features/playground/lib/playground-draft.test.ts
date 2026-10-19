@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   PLAYGROUND_DRAFT_MAX_JSON_LENGTH,
   PLAYGROUND_DRAFT_VERSION,
+  boundingBoxesFromServerInfo,
   buildDraftSnapshot,
   needsSwitchConfirm,
   parseDraft,
@@ -159,6 +160,65 @@ describe('planServerCachedResume', () => {
     expect(
       planServerCachedResume({ entities: [{ id: 'e1' }], recognition_config: { entity_type_ids: null } }),
     ).toEqual({ mode: 'cached', entities: [{ id: 'e1' }], entityTypeIds: null });
+  });
+});
+
+describe('boundingBoxesFromServerInfo — 识别快照 bounding_boxes → 画布框（Issue#194 用户验收①）', () => {
+  it('按页 dict（页号→框数组）→ 拍平为带页号的框数组，字段规范化', () => {
+    const boxes = boundingBoxesFromServerInfo({
+      '1': [{ id: 'b1', x: 10, y: 20, width: 30, height: 40, type: 'NAME', text: '张三' }],
+      '2': [{ x: 1, y: 2, width: 3, height: 4, type: 'SEAL', confidence: 0.9 }],
+    });
+    expect(boxes).toEqual([
+      {
+        id: 'b1',
+        x: 10,
+        y: 20,
+        width: 30,
+        height: 40,
+        page: 1,
+        type: 'NAME',
+        text: '张三',
+        selected: true,
+        confidence: undefined,
+        source: undefined,
+        evidence_source: undefined,
+        source_detail: undefined,
+        warnings: undefined,
+      },
+      {
+        id: 'bbox_1', // 缺 id → 扁平序号兜底（与旧 vision 流 bbox_${idx} 同族）
+        x: 1,
+        y: 2,
+        width: 3,
+        height: 4,
+        page: 2, // 页号来自 dict 键
+        type: 'SEAL',
+        text: undefined,
+        selected: true, // 缺 selected → 默认选中（与旧流 selected: true 一致）
+        confidence: 0.9,
+        source: undefined,
+        evidence_source: undefined,
+        source_detail: undefined,
+        warnings: undefined,
+      },
+    ]);
+  });
+
+  it('数组形状与框内自带页号：原样规范化、页号优先取框内', () => {
+    const boxes = boundingBoxesFromServerInfo([
+      { id: 'b9', x: 5, y: 5, width: 5, height: 5, page: 7, type: 'SIGN' },
+    ]);
+    expect(boxes).toHaveLength(1);
+    expect(boxes[0]).toMatchObject({ id: 'b9', page: 7, type: 'SIGN', selected: true });
+  });
+
+  it('空 / 缺失 / 意外形状 → []（不炸）', () => {
+    expect(boundingBoxesFromServerInfo(undefined)).toEqual([]);
+    expect(boundingBoxesFromServerInfo(null)).toEqual([]);
+    expect(boundingBoxesFromServerInfo({})).toEqual([]);
+    expect(boundingBoxesFromServerInfo('bad')).toEqual([]);
+    expect(boundingBoxesFromServerInfo({ '1': 'not-an-array' })).toEqual([]);
   });
 });
 

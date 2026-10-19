@@ -12,7 +12,8 @@ import { t } from '@/i18n';
 import { localizeErrorMessage } from '@/utils/localizeError';
 import { ACCEPTED_UPLOAD_FILE_TYPES } from '@/utils/fileUploadAccept';
 import { safeJson } from '../utils';
-import { planServerCachedResume } from '../lib/playground-draft';
+import { boundingBoxesFromServerInfo, planServerCachedResume } from '../lib/playground-draft';
+import { recognitionStageFromMessage } from '../lib/task-progress';
 import { shouldEnterPreviewDuringRecognition } from '../lib/progressive-render';
 import type {
   FileInfo,
@@ -513,6 +514,11 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         if (signal.aborted) return;
         if (awaitingTask) {
           opts.setEntities([]);
+          // Issue#194 用户验收①：回场恢复确认视图同样要装回快照里的框（与上方
+          // 订阅 effect 的 awaiting_review 迁移同一语义，两条路都到确认视图）
+          if (isScanned || parsedFileType === 'image') {
+            opts.setBoundingBoxes(boundingBoxesFromServerInfo(info.bounding_boxes));
+          }
           setStage('preview');
           setIsLoading(false);
           setLoadingMessage('');
@@ -632,11 +638,19 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       setTaskPerformance(task.performance ?? null);
       if (task.total > 0) {
         setVisionStream({ completed: task.current, total: task.total });
-        setLoadingMessage(
-          t('playground.taskRecognizing')
-            .replace('{current}', String(task.current))
-            .replace('{total}', String(task.total)),
-        );
+        // Issue#194 用户验收③：视觉管线两段式（先 OCR 一遍 N 页、再视觉要素一遍 N 页），
+        // 两轮数字 0→N 相同——只显示数字时第二段像「重新开始」。优先显示服务端
+        // progress_message 映射的段名（人话，i18n），数字保留；无段名消息回落既有模板。
+        const stage = recognitionStageFromMessage(task.message);
+        if (stage) {
+          setLoadingMessage(`${t(stage.labelKey)} ${stage.current}/${stage.total}`);
+        } else {
+          setLoadingMessage(
+            t('playground.taskRecognizing')
+              .replace('{current}', String(task.current))
+              .replace('{total}', String(task.total)),
+          );
+        }
       } else {
         setVisionStream(null);
         setLoadingMessage(t('playground.taskParsing'));
@@ -665,6 +679,13 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
               opts.setEntities(toEntitiesWithDefaults(cached.entities));
               opts.resetEntityHistory();
               if (cached.entityTypeIds) opts.setSelectedTypes(cached.entityTypeIds);
+            }
+            // Issue#194 用户验收①：扫描件/图片的框只在快照里（任务流没有旧同步流的
+            // 逐页 onPageComplete 回流）——确认视图必须把 bounding_boxes 装进画布，
+            // 否则服务端明明有几百个框、用户看到的却是空画布。文本件不受影响。
+            const currentInfo = fileInfoRef.current;
+            if (currentInfo && (currentInfo.is_scanned || currentInfo.file_type === 'image')) {
+              opts.setBoundingBoxes(boundingBoxesFromServerInfo(info.bounding_boxes));
             }
           }
           setStage('preview');

@@ -220,7 +220,7 @@ describe('PlaygroundProcessingDetails — fileId→jobId 解析链', () => {
 
     await waitFor(() => expect(screen.getByTestId('processing-details-card')).toBeTruthy());
     expect(mockedGetJob).toHaveBeenCalledWith('j1', { performance: true });
-    expect(screen.getByTestId('processing-row-redaction').textContent).toContain('880ms');
+    expect(screen.getByTestId('processing-row-redaction').textContent).toContain('不足 1 秒');
   });
 
   it('旧文件（provider 未命中且无草稿）→ 不渲染、不发请求', () => {

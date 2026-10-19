@@ -33,7 +33,7 @@ import { showToast } from '@/components/Toast';
 import { overlayModeFor, shouldUsePassiveOverlay } from '../lib/progressive-render';
 import { PlaygroundLoading } from '../components/playground-loading';
 import { usePlaygroundFile, type UsePlaygroundFileOptions } from './use-playground-file';
-import type { Entity } from '../types';
+import type { BoundingBox, Entity } from '../types';
 
 vi.mock('@/services/singleTaskApi', () => ({
   submitRecognitionTask: vi.fn(),
@@ -85,6 +85,24 @@ function makeSummary(overrides: Partial<JobSummary> = {}): JobSummary {
   };
 }
 
+function makeItem(overrides: Partial<JobDetail['items'][number]> = {}): JobDetail['items'][number] {
+  return {
+    id: 'it1',
+    job_id: 'j1',
+    file_id: 'f1',
+    sort_order: 0,
+    status: 'awaiting_review',
+    progress_stage: 'parse',
+    progress_current: 0,
+    progress_total: 0,
+    progress_message: null,
+    error_message: null,
+    created_at: CREATED,
+    updated_at: CREATED,
+    ...overrides,
+  } as JobDetail['items'][number];
+}
+
 function makeDetail(
   jobStatus: string,
   itemStatus: string,
@@ -92,22 +110,7 @@ function makeDetail(
 ): JobDetail {
   return {
     ...makeSummary({ status: jobStatus }),
-    items: [
-      {
-        id: 'it1',
-        job_id: 'j1',
-        file_id: 'f1',
-        sort_order: 0,
-        status: itemStatus,
-        progress_stage: 'parse',
-        progress_current: 0,
-        progress_total: 0,
-        progress_message: null,
-        error_message: null,
-        created_at: CREATED,
-        updated_at: CREATED,
-      },
-    ],
+    items: [makeItem({ status: itemStatus })],
     ...overrides,
   } as JobDetail;
 }
@@ -123,6 +126,7 @@ type TaskApi = ReturnType<typeof useSingleTask>;
 
 let harness: { file: FileApi | null; task: TaskApi | null } = { file: null, task: null };
 let entities: Entity[] = [];
+let boxes: BoundingBox[] = [];
 
 const baseOptions: UsePlaygroundFileOptions = {
   latestOcrHasTypesRef: { current: [] },
@@ -134,7 +138,10 @@ const baseOptions: UsePlaygroundFileOptions = {
     entities = typeof value === 'function' ? value(entities) : value;
   },
   setSelectedTypes: () => {},
-  setBoundingBoxes: () => {},
+  // 用户验收①：记录画布框写入（迁移/回场路径是否把快照 bounding_boxes 装进画布）
+  setBoundingBoxes: (value) => {
+    boxes = typeof value === 'function' ? value(boxes) : value;
+  },
 };
 
 function Probe({ onReady }: { onReady: (file: FileApi, task: TaskApi) => void }) {
@@ -197,6 +204,7 @@ async function dropTextFile() {
 beforeEach(() => {
   vi.clearAllMocks();
   entities = [];
+  boxes = [];
   harness = { file: null, task: null };
   vi.mocked(submitRecognitionTask).mockResolvedValue({
     job_id: 'j1',
@@ -226,6 +234,8 @@ beforeEach(() => {
           { id: 'e2', text: '李四', type: 'NAME', start: 4, end: 6 },
         ],
         recognition_config: { entity_type_ids: ['NAME'] },
+        // 用户验收①负样本：文本件快照即便带框也不许装进画布（框只在视觉件语义里）
+        bounding_boxes: { '1': [{ id: 'bX', x: 0, y: 0, width: 1, height: 1, type: 'NAME' }] },
       });
     }
     throw new Error(`unexpected authFetch: ${url}`);
@@ -271,6 +281,8 @@ describe('Issue#194 识别页任务流（T9）', () => {
     await waitFor(() => expect(screen.getByTestId('stage').textContent).toBe('preview'));
     expect(entities.map((entity) => entity.text)).toEqual(['张三', '李四']);
     expect(entities.every((entity) => entity.selected === true)).toBe(true);
+    // 用户验收①负样本：文本件不受影响——快照即便带 bounding_boxes 也不装进画布
+    expect(boxes).toEqual([]);
     // 快照拉的是文件记录（planServerCachedResume 同源），不是 ner 端点
     const fetchUrls = vi.mocked(authFetch).mock.calls.map((call) => String(call[0]));
     expect(fetchUrls.some((url) => url.endsWith('/files/f1'))).toBe(true);
@@ -359,6 +371,118 @@ describe('Issue#194 识别页任务流（T9）', () => {
     await waitFor(() => expect(screen.getByTestId('encrypted-prompt').textContent).toBe('f1:a.txt'));
     expect(screen.getByTestId('stage').textContent).toBe('upload');
     expect(harness.file!.isLoading).toBe(false);
+  });
+
+  it('(i) 用户验收①：扫描件 awaiting_review 迁移——快照 bounding_boxes 装进画布（改前红：画布空空）', async () => {
+    // 扫描件：parse 出 is_scanned，快照 entities 恒空、框按页 dict 存在 bounding_boxes
+    const fetchMock = vi.mocked(authFetch);
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/files/upload')) {
+        return jsonResponse({ file_id: 'f1', filename: 'scan.pdf', file_size: 99, file_type: 'pdf' });
+      }
+      if (url.endsWith('/files/f1/parse')) {
+        return jsonResponse({ content: '', file_type: 'pdf_scanned', is_scanned: true, page_count: 2 });
+      }
+      if (url.endsWith('/files/f1')) {
+        return jsonResponse({
+          original_filename: 'scan.pdf',
+          file_size: 99,
+          entities: [],
+          bounding_boxes: {
+            '1': [{ id: 'b1', x: 10, y: 20, width: 30, height: 40, type: 'NAME', text: '张三' }],
+            '2': [{ x: 1, y: 2, width: 3, height: 4, type: 'SEAL' }],
+          },
+        });
+      }
+      throw new Error(`unexpected authFetch: ${url}`);
+    });
+
+    renderHarness();
+    await dropTextFile();
+    await waitFor(() => expect(harness.task!.taskForFile('f1')).toBeDefined());
+
+    vi.mocked(getJob).mockResolvedValue(makeDetail('awaiting_review', 'awaiting_review'));
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('stage').textContent).toBe('preview'));
+    // 判据：拍平的框数组进画布——页号来自 dict 键、缺 id 走扁平序号兜底、默认选中
+    await waitFor(() => expect(boxes).toHaveLength(2));
+    expect(boxes[0]).toMatchObject({ id: 'b1', page: 1, type: 'NAME', selected: true });
+    expect(boxes[1]).toMatchObject({ id: 'bbox_1', page: 2, type: 'SEAL', selected: true });
+  });
+
+  it('(j) 用户验收③：识别中视图显示服务端段名——第二段显示「视觉要素」，不再像重新开始', async () => {
+    renderHarness();
+    await dropTextFile();
+    await waitFor(() => expect(harness.task!.taskForFile('f1')).toBeDefined());
+
+    // 视觉第二段（merge pass）：progress_message 带 stage_label + 页码
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'vision', {
+        items: [
+          makeItem({
+            status: 'vision',
+            progress_stage: 'vision',
+            progress_current: 5,
+            progress_total: 20,
+            progress_message: '视觉特征识别 page 5/20',
+          }),
+        ],
+      }),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+
+    // 判据：段名人话 + 数字保留（改前红：只显示「后台识别中 5/20」，与第一段一模一样）
+    await waitFor(() =>
+      expect(screen.getByTestId('loading-message').textContent).toBe('视觉要素 5/20'),
+    );
+
+    // 第一段（OCR+HaS）→ 文字识别
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'vision', {
+        items: [
+          makeItem({
+            status: 'vision',
+            progress_stage: 'vision',
+            progress_current: 3,
+            progress_total: 20,
+            progress_message: 'OCR+HaS识别 page 3/20',
+          }),
+        ],
+      }),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('loading-message').textContent).toBe('文字识别 3/20'),
+    );
+
+    // 无段名消息（vision 排队）→ 回落既有「后台识别中」模板（负样本：不秀英文原文）
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'vision', {
+        items: [
+          makeItem({
+            status: 'vision',
+            progress_stage: 'vision',
+            progress_current: 0,
+            progress_total: 20,
+            progress_message: 'Vision recognition queued for 20 page(s)',
+          }),
+        ],
+      }),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('loading-message').textContent).toBe('后台识别中 0/20…'),
+    );
   });
 });
 

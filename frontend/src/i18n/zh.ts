@@ -1100,6 +1100,12 @@ const zhOverrides: Record<string, string> = {
   // Issue#194：后台任务识别的阶段人话（进度数字来自任务轮询）
   'playground.taskParsing': '后台解析中…',
   'playground.taskRecognizing': '后台识别中 {current}/{total}…',
+  // Issue#194 用户验收③：两段式视觉管线的段名人话（服务端 progress_message 映射，
+  // 见 playground/lib/task-progress.ts——第二段不再看起来像重新开始）
+  'playground.taskStage.ocrHas': '文字识别',
+  'playground.taskStage.visualFeatures': '视觉要素',
+  'playground.taskStage.vision': '视觉识别',
+  'playground.taskStage.text': '实体识别',
   // Issue#194（T10/D3）：打码改后台任务——提交成功后的 passive 提示，可离开页面
   'playground.taskRedacting': '后台打码中…',
   'playground.uploadFailed': '文件上传失败。',
@@ -2125,6 +2131,10 @@ Object.assign(zhOverrides, {
   'processingDetails.entityCount': '{n} 个实体',
   'processingDetails.boxCount': '{n} 个框',
   'processingDetails.failed': '处理失败',
+  // Issue#194 用户验收②：时长人话单位词（formatDurationMs 三档拼接）
+  'processingDetails.unit.underSec': '不足 1 秒',
+  'processingDetails.unit.sec': '秒',
+  'processingDetails.unit.min': '分',
   'batchWizard.inbox.button': '从服务器目录导入',
   'batchWizard.inbox.title': '从服务器目录导入',
   'batchWizard.inbox.description':

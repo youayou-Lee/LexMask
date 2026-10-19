@@ -115,7 +115,7 @@ describe('buildProcessingRows — spec §5 完整映射', () => {
     const byKey = Object.fromEntries(rows.map((row) => [row.key, row]));
     expect(byKey.queue_wait.counts).toBeNull();
     expect(byKey.parse.counts).toBe('3 页');
-    expect(byKey.ocr.counts).toBe('3 页 · 均 733ms/页'); // 2200/3 = 733.33 → 733
+    expect(byKey.ocr.counts).toBe('3 页 · 均 不足 1 秒/页'); // 2200/3 = 733.33 → 733 → 不足 1 秒
     expect(byKey.match.counts).toBeNull();
     expect(byKey.ner.counts).toBeNull();
     expect(byKey.visual_features.counts).toBeNull();
@@ -250,19 +250,28 @@ describe('buildProcessingRows — 空值族（AC3 旧文件条款）', () => {
     });
     expect(rows.map((row) => row.key)).toEqual(['ocr']);
     expect(rows[0].durationMs).toBe(0);
-    // 页记录存在（分母 1）→ 均速段保留，均速如实为 0ms；「分母 0 兜底」只在无页记录时成立，
+    // 页记录存在（分母 1）→ 均速段保留，均速如实为 0；「分母 0 兜底」只在无页记录时成立，
     // 而无页记录整行都不显示（上一用例），故兜底文案不出现于任何可达路径。
-    expect(rows[0].counts).toBe('1 页 · 均 0ms/页');
+    expect(rows[0].counts).toBe('1 页 · 均 不足 1 秒/页');
   });
 });
 
 describe('formatDurationMs / mergeFilePageCount', () => {
-  it('formatDurationMs：ms / s / 分秒三段', () => {
-    expect(formatDurationMs(880)).toBe('880ms');
-    expect(formatDurationMs(1500)).toBe('1.5s');
-    expect(formatDurationMs(4500)).toBe('4.5s');
-    expect(formatDurationMs(61000)).toBe('1m 1s');
-    expect(formatDurationMs(0)).toBe('0ms');
+  it('formatDurationMs：中文三档（不足 1 秒 / X 秒 / X 分 Y 秒，Issue#194 用户验收②）', () => {
+    // <1s → 不足 1 秒
+    expect(formatDurationMs(0)).toBe('不足 1 秒');
+    expect(formatDurationMs(880)).toBe('不足 1 秒');
+    expect(formatDurationMs(999)).toBe('不足 1 秒');
+    // <60s → 整数秒
+    expect(formatDurationMs(1000)).toBe('1 秒');
+    expect(formatDurationMs(6000)).toBe('6 秒');
+    // ≥60s → 分 + 秒（60.2s 属此档，不再出现「60.2s」英文单位裸数字）
+    expect(formatDurationMs(61_000)).toBe('1 分 1 秒');
+    expect(formatDurationMs(130_000)).toBe('2 分 10 秒');
+    expect(formatDurationMs(60_200)).toBe('1 分 0 秒');
+    // 进位边界：59999ms 四舍五入 60 秒 → 1 分 0 秒
+    expect(formatDurationMs(59_999)).toBe('1 分 0 秒');
+    expect(formatDurationMs(59_950)).toBe('1 分 0 秒');
   });
 
   it('mergeFilePageCount：文本件 page_count 组件层合并，已有值不覆盖，非法输入原样返回', () => {
