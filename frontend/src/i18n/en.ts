@@ -1215,6 +1215,7 @@ const enOverrides: Record<string, string> = {
   'playground.recognitionPausedModelServices':
     'Recognition is paused because required model services are unavailable: {services}. Start the services, then run recognition again.',
   'playground.redactFailed': 'Redaction failed.',
+  'playground.redactAlreadyDone': 'Already redacted — opened the result view for you.',
   'playground.restored': 'Last single-file session restored',
   'playground.restoredFromServer': 'Restored last recognition from server',
   // Issue#194 终审 A：待确认扫描件回场（不重提识别任务，直接恢复确认视图）

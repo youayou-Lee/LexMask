@@ -1122,6 +1122,7 @@ const zhOverrides: Record<string, string> = {
   'playground.cancelled': '\u5df2\u53d6\u6d88\u5f53\u524d\u5904\u7406\u3002',
   'playground.recognizeFailed': '识别失败。',
   'playground.redactFailed': '匿名化失败。',
+  'playground.redactAlreadyDone': '该文件已完成匿名化，已为你打开结果。',
   'playground.restored': '已恢复上次单文件处理现场',
   'playground.restoredFromServer': '已从服务端恢复上次识别结果',
   // Issue#194 终审 A：待确认扫描件回场（不重提识别任务，直接恢复确认视图）

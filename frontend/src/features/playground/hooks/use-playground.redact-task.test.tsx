@@ -709,4 +709,42 @@ describe('Issue#194 终审 C：打码在途刷新后结果页恢复', () => {
     expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/report'))).toBe(true);
     expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/versions'))).toBe(true);
   });
+
+  it('(l) 打码已完成后再点打码（400 not awaiting_review）：自动恢复结果页而非失败弹窗', async () => {
+    // sulan 场景：打码成功后回到确认页又点了一次打码，后端 400 拒绝——
+    // 不应弹「匿名化失败。」误导用户，而应查到成品在、直接带去结果页。
+    await seedPreview();
+    vi.mocked(submitRedactionTask).mockRejectedValue(
+      new ApiError('item not awaiting_review: completed', 400),
+    );
+    const fetchMock = vi.mocked(authFetch);
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/files/f1')) {
+        return jsonResponse({
+          original_filename: 'a.pdf',
+          entities: [],
+          output_path: '/data/out.pdf',
+          entity_map: { 张三: '张某某' },
+          redacted_count: 5,
+        });
+      }
+      if (url.endsWith('/redaction/f1/report')) {
+        return jsonResponse({ total_entities: 5, redacted_entities: 5 });
+      }
+      if (url.endsWith('/redaction/f1/versions')) {
+        return jsonResponse({ versions: [] });
+      }
+      return jsonResponse({});
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+
+    await waitFor(() => expect(screen.getByTestId('stage').textContent).toBe('result'));
+    expect(screen.getByTestId('entity-map').textContent).toContain('张三=张某某');
+    // 失败文案不出现：全程没有 error toast（完成提示是 info 级）
+    expect(vi.mocked(showToast).mock.calls.some(([, kind]) => kind === 'error')).toBe(false);
+  });
 });

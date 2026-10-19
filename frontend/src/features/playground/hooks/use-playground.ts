@@ -481,6 +481,20 @@ export function usePlayground() {
     handleRerunNer,
   ]);
 
+  // Issue#194 验收反馈（sulan 场景）：打码提交失败时先查一次文件——成品在说明
+  // 其实已经打完（常见于完成后回到确认页又点了一次），直接恢复结果页并返回 true。
+  const recoverCompletedRedact = useCallback(async (fileId: string): Promise<boolean> => {
+    try {
+      const response = await authFetch(`/api/v1/files/${fileId}`);
+      if (!response.ok) return false;
+      const info = await safeJson<Record<string, unknown>>(response);
+      if (!info.output_path) return false;
+      return await resumeCompletedResultRef.current(fileId, info);
+    } catch {
+      return false;
+    }
+  }, []);
+
   const handleRedact = useCallback(async () => {
     if (!fileCtx.fileInfo) return;
     if (redactionInFlightRef.current) return;
@@ -589,6 +603,13 @@ export function usePlayground() {
     } catch (err) {
       redactionInFlightRef.current = false;
       setPendingRedact(null);
+      // Issue#194 验收反馈（sulan 场景）：打码可能已在别处/上一会话完成（完成后
+      // 回到确认页又点了一次打码，后端 400 not awaiting_review）。此时不弹失败——
+      // 查一次文件：成品在就直接恢复结果页并提示，只有查无成品才走失败文案。
+      if (await recoverCompletedRedact(fileId)) {
+        showToast(t('playground.redactAlreadyDone'), 'info');
+        return;
+      }
       // 409（同账号其他任务在跑）等提交失败：toast 后端文案，停留 preview 不切 stage
       showToast(localizeErrorMessage(err, 'playground.redactFailed'), 'error');
     }
@@ -601,6 +622,7 @@ export function usePlayground() {
     pseudonymMap,
     replaceUnready,
     textPdfMaskMode,
+    recoverCompletedRedact,
   ]);
 
   // --- Issue#194：打码任务收尾订阅——provider 报 done/failed 时推进/退出 ---
