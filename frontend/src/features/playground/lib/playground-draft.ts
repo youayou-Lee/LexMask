@@ -1,5 +1,7 @@
 // Copyright 2026 LexMask Contributors
 
+import { flattenBoundingBoxesFromStore } from '@/services/batchPipeline';
+import { normalizeReviewBox } from '@/features/batch/hooks/use-batch-review-normalize';
 import type { BoundingBox, Entity, FileInfo, Stage } from '../types';
 
 /** 草稿结构版本：字段变更时 +1，旧草稿解析即废弃（走重跑路径） */
@@ -28,6 +30,15 @@ export type DraftSnapshotInput = {
   // 会被 parseDraft 当成完整 preview 恢复（半识别卷被呈现为已完成且不重跑）；
   // 记录流式进度，未完成（completed < total）的草稿一律拒绝 → 走重跑。
   visionStream?: { completed: number; total: number } | null;
+  // Issue#194：识别走后台任务后，任务驱动的识别期间落盘的草稿带 job id——
+  // 恢复时喂给 SingleTaskProvider.watch 重挂（applyDraftSnapshot）。可选字段、
+  // 旧草稿无此值照常解析，故 PLAYGROUND_DRAFT_VERSION 不变。
+  taskJobId?: string;
+  // Issue#194 终审 C（AC1）：打码在途期间落盘的草稿带打码 job id。收尾守门
+  // （use-playground 的 pendingRedact）是纯内存，刷新后不重挂则「任务 completed ⇒
+  // 收尾进结果页」的订阅永不触发 ⇒ 成品下载入口（只在结果页）孤儿化。恢复时对称
+  // 识别段 reattachTask：重挂 provider 账本，任务已 completed 即自动收尾进结果页。
+  pendingRedactJobId?: string;
 };
 
 export type PlaygroundDraftSnapshot = DraftSnapshotInput & {
@@ -109,6 +120,18 @@ export function planServerCachedResume(info: ServerResumeInfo): ServerCachedResu
     entities: info.entities as Record<string, unknown>[],
     entityTypeIds: Array.isArray(ids) ? ids : null,
   };
+}
+
+/**
+ * Issue#194 用户验收①：识别快照（GET /files/{id}）里的 `bounding_boxes`（按页 dict，
+ * 页号→框数组）→ 画布 BoundingBox[]。任务流没有旧同步流的逐页 onPageComplete 回流，
+ * 扫描件/图片的框只在快照里——恢复确认视图（awaiting_review 迁移 / 回场）必须装回。
+ * 规范化复用批量审阅的现成纯函数（flattenBoundingBoxesFromStore + normalizeReviewBox，
+ * 只读复用），产物格式与旧 vision 流 onPageComplete 灌入的一致（页号、id 兜底、默认选中）。
+ * 空 / 缺失 / 形状意外 → []。
+ */
+export function boundingBoxesFromServerInfo(raw: unknown): BoundingBox[] {
+  return flattenBoundingBoxesFromStore(raw).map((box, index) => normalizeReviewBox(box, index, 1));
 }
 
 /** 超长单页文本的虚拟分页：按固定字符窗口切分，避免全文+全实体一次性渲染 */

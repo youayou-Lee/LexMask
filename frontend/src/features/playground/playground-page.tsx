@@ -52,6 +52,9 @@ const PlaygroundInner: FC = () => {
     isLoading,
     loadingMessage,
     visionStream,
+    taskRecognition,
+    taskPerformance,
+    taskStageLabel,
     recognitionIssue,
     entityMap,
     redactedCount,
@@ -175,10 +178,12 @@ const PlaygroundInner: FC = () => {
   /**
    * Issue#123：多页扫描件逐页流式识别期间，把全屏遮罩降级为 passive（透明、不遮挡、
    * 不锁交互），使已回流页的框在识别期间可见；同时画布置只读（lockDraw，仍可缩放滚动），
-   * 避免识别中途改框。仅当 total > 1 才降级——单页扫描件 / 文本 NER / 图片模式的
+   * 避免识别中途改框。仅当 total > 1 才降级——单页扫描件 / 图片模式的
    * 遮罩与交互行为与改前逐字节一致。
+   * Issue#194：后台任务驱动的识别（taskRecognition 非 null）一律 passive——进度来自
+   * 轮询而非前端在飞请求，前端没有可遮挡的「正在进行」画面。
    */
-  const progressiveRecognition = shouldUsePassiveOverlay(isLoading, visionStream);
+  const progressiveRecognition = shouldUsePassiveOverlay(isLoading, visionStream, taskRecognition !== null);
 
   const pagesArr = fileInfo?.pages;
   // 虚拟分页（Issue #33 验收反馈）：MinerU 转出的 markdown 单页可达数十万字符、
@@ -572,6 +577,9 @@ const PlaygroundInner: FC = () => {
           loadingMessage={loadingMessage}
           isImageMode={isImageMode}
           onCancel={cancelProcessing}
+          progress={visionStream}
+          performance={taskRecognition ? taskPerformance : null}
+          stage={taskRecognition ? taskStageLabel : null}
           overlay={overlayModeFor(progressiveRecognition)}
         />
       )}

@@ -259,36 +259,20 @@ async def lifespan(app: FastAPI):
     _task_queue.start()
 
     # 恢复未完成的任务：根据 item 状态区分 recognition / redaction
-    from app.services.job_store import JobItemStatus
+    # （判定抽为纯函数 redispatch_task_type_for，SINGLE 与 batch 同一口径）
+    from app.services.single_task_service import redispatch_task_type_for
     _all_jobs = _store.list_schedulable_jobs()
     _redispatched = 0
-    _recognition_statuses = {
-        JobItemStatus.PENDING.value,
-        JobItemStatus.PROCESSING.value,
-        JobItemStatus.QUEUED.value,
-        JobItemStatus.PARSING.value,
-        JobItemStatus.NER.value,
-        JobItemStatus.VISION.value,
-    }
-    _redaction_statuses = {
-        JobItemStatus.REVIEW_APPROVED.value,
-        JobItemStatus.REDACTING.value,
-    }
     for _j in _all_jobs:
         for _it in _store.list_items(_j["id"]):
-            if _it["status"] in _recognition_statuses:
-                _task_type = "structured" if _j.get("job_type") == "structured_batch" else "recognition"
-                _task_queue.enqueue(TaskItem(
-                    job_id=_j["id"], item_id=_it["id"], file_id=_it["file_id"],
-                    task_type=_task_type,
-                ))
-                _redispatched += 1
-            elif _it["status"] in _redaction_statuses:
-                _task_queue.enqueue(TaskItem(
-                    job_id=_j["id"], item_id=_it["id"], file_id=_it["file_id"],
-                    task_type="redaction",
-                ))
-                _redispatched += 1
+            _task_type = redispatch_task_type_for(_j, _it)
+            if _task_type is None:
+                continue
+            _task_queue.enqueue(TaskItem(
+                job_id=_j["id"], item_id=_it["id"], file_id=_it["file_id"],
+                task_type=_task_type,
+            ))
+            _redispatched += 1
     if _redispatched:
         logger.info("Startup: re-enqueued %d items (recognition + redaction)", _redispatched)
 

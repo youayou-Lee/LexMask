@@ -1,6 +1,18 @@
 // Copyright 2026 LexMask Contributors
 
+import type { JobSummary, JobTypeApi } from '@/services/jobsApi';
+
 export type JobTypeForNav = 'text_batch' | 'image_batch' | 'smart_batch' | 'structured_batch';
+
+/**
+ * 批量向导导航的 job_type 边界。JobTypeApi 含 'single'，但批量向导路由不接收
+ * 单文件任务：任务中心 single 行的主操作由 {@link resolveJobRowNavigation} 分流到
+ * 识别页（T12 收口），不经过本函数。本函数仍把 'single' 显式归一为 'text_batch'
+ * 作为兜底口径（T7 行为钉）：万一 single 误入批量解析分支，落批量向导而非崩溃。
+ */
+export function jobTypeForNav(jobType: JobTypeApi): JobTypeForNav {
+  return jobType === 'single' ? 'text_batch' : jobType;
+}
 
 export type PrimaryNavAction =
   | { kind: 'link'; label: string; to: string }
@@ -321,4 +333,56 @@ export function resolveJobPrimaryNavigation(input: {
     nav: action,
     labels,
   });
+}
+
+/** 任务中心行解析输入：list 行形状（JobSummary 子集，single 的 file_id 在 config 里）。 */
+export type JobRowNavInput = Pick<JobSummary, 'id' | 'status' | 'job_type' | 'config'> & {
+  nav_hints?: JobSummary['nav_hints'];
+};
+
+/**
+ * 任务中心行的主操作解析（Issue#194 T12 收口）：single 行分流到识别页
+ * `/single?file_id=<config.single_file_id>`——awaiting_review（确认）、completed（结果）、
+ * failed/cancelled（失败详情）、识别中（重挂识别视图）全部进同一入口，具体状态视图由
+ * 识别页 loadExistingFile + adoptActiveTask 接管，不再经 jobTypeForNav 落批量向导。
+ *
+ * file_id 取 `job.config.single_file_id`——后端 submit_single_recognition 提交时写入
+ * config_json（list 行无 items 也带它）；缺失（异常数据）返回 kind:'none'，
+ * 行退化为占位、详情列仍可达，绝不落批量向导。
+ *
+ * 批量四类型沿用 {@link resolveJobPrimaryNavigation} 既有行为（T7 行为钉保底零漂移）。
+ */
+export function resolveJobRowNavigation(
+  job: JobRowNavInput,
+  labels?: JobPrimaryNavigationLabels,
+): PrimaryNavAction {
+  const resolvedLabels = labels ?? DEFAULT_JOB_PRIMARY_NAVIGATION_LABELS;
+  if (job.job_type !== 'single') {
+    return resolveJobPrimaryNavigation({
+      jobId: job.id,
+      status: job.status,
+      jobType: jobTypeForNav(job.job_type),
+      items: [],
+      currentPage: 'other',
+      navHints: job.nav_hints,
+      jobConfig: job.config,
+      labels: resolvedLabels,
+    });
+  }
+  const rawFileId = job.config?.single_file_id;
+  const fileId = typeof rawFileId === 'string' ? rawFileId : '';
+  if (!fileId) return { kind: 'none', reason: resolvedLabels.viewDetail };
+  const to = `/single?file_id=${encodeURIComponent(fileId)}`;
+  switch (job.status) {
+    case 'awaiting_review':
+      return { kind: 'link', label: resolvedLabels.continueReview, to };
+    case 'completed':
+      return { kind: 'link', label: resolvedLabels.downloadRedactedResult, to };
+    case 'failed':
+    case 'cancelled':
+      return { kind: 'link', label: resolvedLabels.viewFailureDetail, to };
+    default:
+      // queued/processing/running/redacting/draft：识别段或打码段，识别页自带重挂视图。
+      return { kind: 'link', label: resolvedLabels.viewProgress, to };
+  }
 }

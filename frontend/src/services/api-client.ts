@@ -33,6 +33,8 @@ export class ApiError extends Error {
     message: string,
     public status?: number,
     public errorType: ApiErrorType = 'unknown',
+    /** 机器可读错误码（后端统一信封的 error_code，如 PDF_ENCRYPTED_NEEDS_PASSWORD）。 */
+    public errorCode?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -155,7 +157,15 @@ apiClient.interceptors.response.use(
     if (import.meta.env.DEV) {
       console.error(`API Error [${errorType}]:`, message);
     }
-    return Promise.reject(new ApiError(message, error.response?.status, errorType));
+    const errorCode = error.response?.data?.error_code;
+    return Promise.reject(
+      new ApiError(
+        message,
+        error.response?.status,
+        errorType,
+        typeof errorCode === 'string' && errorCode ? errorCode : undefined,
+      ),
+    );
   },
 );
 

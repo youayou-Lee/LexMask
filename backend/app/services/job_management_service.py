@@ -1079,11 +1079,16 @@ def reject_review(store: JobStore, job_id: str, item_id: str, reviewer: str = "l
     return item_to_out(ir)
 
 
-async def _seed_file_store_from_draft_payload(file_id: str, draft: dict) -> None:
+async def seed_file_store_from_draft_payload(file_id: str, draft: dict) -> None:
     """Push a saved review draft into the file store so the async redaction
     worker (which reads recognized regions from the file store) honours the
     reviewer's edits. No-op when the item has no draft (un-opened files keep
-    their recognized regions)."""
+    their recognized regions).
+
+    Issue#194：升为公开名——单文件打码提交（submit_single_redaction）把前端
+    确认后的实体从同一入口 seed 进 file_store；旧名保留为别名兼容既有调用
+    （test_bulk_confirm 等按旧名 monkeypatch 的判据不受影响）。
+    """
     from app.services.file_management_service import _file_store_lock, file_store
 
     entities = draft.get("entities")
@@ -1100,6 +1105,10 @@ async def _seed_file_store_from_draft_payload(file_id: str, draft: dict) -> None
             # The redaction worker accepts a flat list of box dicts directly.
             info["bounding_boxes"] = to_jsonable(boxes)
         file_store.set(file_id, info)
+
+
+# 旧名别名：既有调用面（commit_all_reviews / 批量线）与测试 monkeypatch 不动。
+_seed_file_store_from_draft_payload = seed_file_store_from_draft_payload
 
 
 async def commit_all_reviews(

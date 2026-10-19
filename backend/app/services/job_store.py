@@ -68,7 +68,7 @@ class JobStore(RepairMixin):
             try:
                 conn.execute(
                     "INSERT INTO jobs (id, job_type, status, created_at, updated_at) "
-                    "VALUES ('__test_structured', 'structured_batch', 'draft', '', '')"
+                    "VALUES ('__test_structured', 'single', 'draft', '', '')"
                 )
                 conn.execute("DELETE FROM jobs WHERE id = '__test_structured'")
             except sqlite3.IntegrityError:
@@ -81,7 +81,7 @@ class JobStore(RepairMixin):
                     conn.execute("""
                         CREATE TABLE jobs (
                             id TEXT PRIMARY KEY,
-                            job_type TEXT NOT NULL CHECK(job_type IN ('text_batch','image_batch','smart_batch','structured_batch')),
+                            job_type TEXT NOT NULL CHECK(job_type IN ('text_batch','image_batch','smart_batch','structured_batch','single')),
                             title TEXT NOT NULL DEFAULT '',
                             status TEXT NOT NULL,
                             skip_item_review INTEGER NOT NULL DEFAULT 0,
@@ -834,6 +834,34 @@ class JobStore(RepairMixin):
         with self._connect() as conn:
             conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (now, job_id))
             conn.commit()
+
+    def merge_job_config(self, job_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        """读 config_json → dict merge → 写回（Issue#194 单文件打码提交用）。
+
+        与 update_job_draft 的差别：不要求 DRAFT 状态——单文件任务停在
+        awaiting_review 时也要能把打码配置（replacement_mode 等）合进
+        job config 供打码工人读取；既有键保留，仅覆盖 patch 中的键。
+        损坏/缺失的 config_json 按空 dict 处理。job 不存在抛 KeyError。
+        """
+        job = self.get_job(job_id)
+        if not job:
+            raise KeyError(job_id)
+        raw = job.get("config_json")
+        try:
+            cfg = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except json.JSONDecodeError:
+            cfg = {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        cfg.update(patch or {})
+        now = _utc_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE jobs SET config_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(cfg, ensure_ascii=False), now, job_id),
+            )
+            conn.commit()
+        return cfg
 
     def update_job_draft(self, job_id: str, patch: dict[str, Any]) -> bool:
         """Update draft fields: title, config, skip_item_review."""

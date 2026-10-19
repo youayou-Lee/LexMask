@@ -22,6 +22,8 @@ def is_file_type_allowed_for_job_type(job_type: JobType | str, file_type: Any) -
         return ft != FileType.IMAGE.value
     if jt == JobType.IMAGE_BATCH.value:
         return ft in {FileType.IMAGE.value, FileType.PDF.value, FileType.PDF_SCANNED.value}
+    if jt == JobType.SINGLE.value:
+        return True
     return False
 
 

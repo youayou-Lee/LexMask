@@ -27,7 +27,7 @@ import type { JobSummary } from '@/services/jobsApi';
 import type { JobsStatusFilter } from '../hooks/use-jobs';
 import {
   buildJobPrimaryNavigationLabels,
-  resolveJobPrimaryNavigation,
+  resolveJobRowNavigation,
 } from '@/utils/jobPrimaryNavigation';
 import { JobStatusBadge, JobTypeBadge } from './jobs-status-badge';
 import { canDeleteJob } from '../hooks/use-jobs';
@@ -441,21 +441,15 @@ const JobRow = memo(function JobRow({
 }: JobRowProps) {
   const t = useT();
   const navLabels = buildJobPrimaryNavigationLabels(t);
-  const primary = resolveJobPrimaryNavigation({
-    jobId: job.id,
-    status: job.status,
-    jobType: job.job_type,
-    items: [],
-    currentPage: 'other',
-    navHints: job.nav_hints,
-    jobConfig: job.config,
-    labels: navLabels,
-  });
+  // T12：single 行分流识别页（/single?file_id=），批量四类型沿用既有解析（零漂移）。
+  const primary = resolveJobRowNavigation(job, navLabels);
   const detailHref = `/jobs/${encodeURIComponent(job.id)}`;
-  const showContinueReview =
+  // single 行所有状态都出直达按钮（识别页接管状态视图）；批量行保持只对
+  // 「继续复审」出按钮的既有口径。
+  const showPrimaryAction =
     primary.kind === 'link' &&
     primary.to !== detailHref &&
-    primary.label === navLabels.continueReview;
+    (job.job_type === 'single' || primary.label === navLabels.continueReview);
   const deleteBlocked = !canDeleteJob(job.status);
   const stripe = index % 2 === 1 ? 'bg-muted/30' : 'bg-background';
   const counts = getJobCounts(job);
@@ -560,7 +554,7 @@ const JobRow = memo(function JobRow({
           </div>
 
           <div className="jobs-action-cell" onClick={stopEvent}>
-            {showContinueReview && primary.kind === 'link' ? (
+            {showPrimaryAction && primary.kind === 'link' ? (
               <Button
                 asChild
                 variant="outline"

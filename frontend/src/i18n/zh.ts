@@ -358,6 +358,7 @@ const zhBase: Record<string, string> = {
 
   'jobs.batchTask': '批量任务',
   'jobs.structuredTask': '库表任务',
+  'jobs.type.single': '单文件',
   'jobs.updatedAtUnknown': '更新时间未知',
   'jobs.completed': '完成 {n}',
   'jobs.loadFailed': '加载失败',
@@ -1096,6 +1097,19 @@ const zhOverrides: Record<string, string> = {
   'playground.processing': '处理中...',
   'playground.uploading': '正在上传文件...',
   'playground.parsing': '正在解析文件...',
+  // Issue#194：后台任务识别的阶段人话（进度数字来自任务轮询）
+  'playground.taskParsing': '后台解析中…',
+  'playground.taskRecognizing': '后台识别中 {current}/{total}…',
+  // Issue#194 用户验收④：等待视图顶部行（文件名由 hook 组装；拿不到回落既有文案）
+  'playground.identifying': '正在识别「{filename}」',
+  // Issue#194 用户验收③：两段式视觉管线的段名人话（服务端 progress_message 映射，
+  // 见 playground/lib/task-progress.ts——第二段不再看起来像重新开始）
+  'playground.taskStage.ocrHas': '文字识别',
+  'playground.taskStage.visualFeatures': '视觉要素识别',
+  'playground.taskStage.vision': '视觉识别',
+  'playground.taskStage.text': '实体识别',
+  // Issue#194（T10/D3）：打码改后台任务——提交成功后的 passive 提示，可离开页面
+  'playground.taskRedacting': '后台打码中…',
   'playground.uploadFailed': '文件上传失败。',
   'playground.parseFailed': '文件解析失败。',
   'playground.processFailed': '文件处理失败。',
@@ -1108,8 +1122,11 @@ const zhOverrides: Record<string, string> = {
   'playground.cancelled': '\u5df2\u53d6\u6d88\u5f53\u524d\u5904\u7406\u3002',
   'playground.recognizeFailed': '识别失败。',
   'playground.redactFailed': '匿名化失败。',
+  'playground.redactAlreadyDone': '该文件已完成匿名化，已为你打开结果。',
   'playground.restored': '已恢复上次单文件处理现场',
   'playground.restoredFromServer': '已从服务端恢复上次识别结果',
+  // Issue#194 终审 A：待确认扫描件回场（不重提识别任务，直接恢复确认视图）
+  'playground.restoredAwaitingReview': '该文件识别已完成，请确认识别结果后开始匿名化',
   'playground.restoreFileGone': '原文件已不存在，无法恢复上次现场',
   'playground.switchSessionTitle': '切换处理文件？',
   'playground.switchSessionMessage': '当前单文件处理现场将被替换，尚未执行的编辑不会保留。',
@@ -1966,6 +1983,7 @@ Object.assign(zhOverrides, {
   'playground.toast.entityDeleted': '已删除',
   'playground.loading.rerunHybridText': '重新识别中（正则+AI语义识别）...',
   'playground.toast.rerunTextDone': '重新识别完成：{count} 处',
+  'toast.open': '查看',
   'toast.fallbackError': '操作失败，请稍后重试',
   'health.serviceName.visualFeatures': '视觉特征',
 });
@@ -2092,6 +2110,34 @@ Object.assign(zhOverrides, {
   'notify.recognitionDoneBody': '共 {n} 份文件已识别完毕，可以开始审阅',
   'notify.bulkConfirmDone': '批量确认已全部落定',
   'notify.outputsReady': '成品已全部生成，可以进入导出',
+  'singleTask.notify.recognized': '识别完成：{name}',
+  'singleTask.notify.redacted': '打码完成：{name}',
+  'singleTask.notify.failed': '处理失败：{name}',
+  'singleTask.phase.recognizing': '识别中',
+  'singleTask.phase.redacting': '打码中',
+  'singleTask.phase.awaiting_review': '待确认',
+  'singleTask.offline': '连接断开，任务仍在后台运行',
+  // Issue#194 Task 11：处理详情卡（结果页 / 识别进行中视图共用行构建器）
+  'processingDetails.title': '处理详情',
+  'processingDetails.total': '总耗时',
+  'processingDetails.queueWait': '排队等待',
+  'processingDetails.parse': '文本解析',
+  'processingDetails.ocr': '文字识别（OCR）',
+  'processingDetails.match': '实体匹配',
+  'processingDetails.ner': '实体识别（NER）',
+  'processingDetails.visualFeatures': '视觉要素',
+  'processingDetails.redaction': '打码渲染',
+  'processingDetails.failedChunks': '有 {n} 处识别失败，已自动回落',
+  'processingDetails.textDirect': '文本直读，无需 OCR',
+  'processingDetails.pages': '{n} 页',
+  'processingDetails.perPage': '均 {s}/页',
+  'processingDetails.entityCount': '{n} 个实体',
+  'processingDetails.boxCount': '{n} 个框',
+  'processingDetails.failed': '处理失败',
+  // Issue#194 用户验收②：时长人话单位词（formatDurationMs 三档拼接）
+  'processingDetails.unit.underSec': '不足 1 秒',
+  'processingDetails.unit.sec': '秒',
+  'processingDetails.unit.min': '分',
   'batchWizard.inbox.button': '从服务器目录导入',
   'batchWizard.inbox.title': '从服务器目录导入',
   'batchWizard.inbox.description':

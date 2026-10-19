@@ -24,6 +24,12 @@ export const JOBS_LIST_POLL_HIDDEN_MS = 30_000;
 /** Interval for polling batch file analysis progress. */
 export const BATCH_FILE_POLL_MS = 650;
 
+/** Interval for polling single-file task status (Issue#194 recognition/redaction progress). */
+export const SINGLE_TASK_POLL_MS = 1500;
+
+/** Delay used before checking single-file tasks again while the page is hidden (Issue#194). */
+export const SINGLE_TASK_POLL_HIDDEN_MS = 30_000;
+
 /** Interval for lightweight history refresh while batch results are still settling. */
 export const HISTORY_ACTIVE_POLL_MS = 900;
 

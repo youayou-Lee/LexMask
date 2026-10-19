@@ -1,7 +1,7 @@
 // Copyright 2026 LexMask Contributors
 
 import type { JobDetail, JobItemRow } from '@/services/jobsApi';
-import { buildBatchWorkbenchUrl } from '@/utils/jobPrimaryNavigation';
+import { buildBatchWorkbenchUrl, jobTypeForNav } from '@/utils/jobPrimaryNavigation';
 
 export type JobRecoveryCategory =
   | 'file_missing'
@@ -108,7 +108,7 @@ export function buildJobRecoveryPlan(job: JobDetail): JobRecoveryPlan {
             count: awaitingReviewCount,
             to: buildBatchWorkbenchUrl(
               job.id,
-              job.job_type,
+              jobTypeForNav(job.job_type),
               4,
               firstAwaitingReview ?? job.nav_hints?.first_awaiting_review_item_id ?? undefined,
               job.config,
@@ -125,11 +125,11 @@ function buildRecoveryTarget(
 ): string {
   if (category === 'text_model') return '/model-settings/text';
   if (category === 'vision_model') return '/model-settings/vision';
-  if (category === 'file_missing') return buildBatchWorkbenchUrl(job.id, job.job_type, 2, undefined, job.config);
+  if (category === 'file_missing') return buildBatchWorkbenchUrl(job.id, jobTypeForNav(job.job_type), 2, undefined, job.config);
   if (category === 'redaction') {
-    return buildBatchWorkbenchUrl(job.id, job.job_type, 4, itemId, job.config);
+    return buildBatchWorkbenchUrl(job.id, jobTypeForNav(job.job_type), 4, itemId, job.config);
   }
-  return buildBatchWorkbenchUrl(job.id, job.job_type, 3, undefined, job.config);
+  return buildBatchWorkbenchUrl(job.id, jobTypeForNav(job.job_type), 3, undefined, job.config);
 }
 
 // INVENTORY(pending backend error codes): the keyword tables below are a

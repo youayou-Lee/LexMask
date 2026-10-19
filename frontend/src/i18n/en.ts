@@ -421,6 +421,7 @@ const enBase: Record<string, string> = {
 
   'jobs.batchTask': 'Batch Task',
   'jobs.structuredTask': 'Structured Task',
+  'jobs.type.single': 'Single file',
   'jobs.updatedAtUnknown': 'Update time unknown',
   'jobs.completed': '{n} completed',
   'jobs.loadFailed': 'Failed to load',
@@ -1187,6 +1188,19 @@ const enOverrides: Record<string, string> = {
   'playground.processing': 'Processing...',
   'playground.uploading': 'Uploading file...',
   'playground.parsing': 'Parsing file...',
+  // Issue#194: stage messages for background-task recognition (numbers from task polling)
+  'playground.taskParsing': 'Parsing in background…',
+  'playground.taskRecognizing': 'Recognizing in background {current}/{total}…',
+  // Issue#194 user acceptance #4: waiting-view top line (filename composed by the hook)
+  'playground.identifying': 'Recognizing "{filename}"',
+  // Issue#194 user acceptance #3: human labels for the two-pass vision pipeline stages
+  // (mapped from server progress_message; see playground/lib/task-progress.ts)
+  'playground.taskStage.ocrHas': 'Text recognition',
+  'playground.taskStage.visualFeatures': 'Visual feature recognition',
+  'playground.taskStage.vision': 'Vision recognition',
+  'playground.taskStage.text': 'Entity recognition',
+  // Issue#194 (T10/D3): redaction moved to a background task — passive hint after submit, safe to leave
+  'playground.taskRedacting': 'Redacting in background…',
   'playground.uploadFailed': 'File upload failed.',
   'playground.parseFailed': 'File parsing failed.',
   'playground.processFailed': 'File processing failed.',
@@ -1201,8 +1215,11 @@ const enOverrides: Record<string, string> = {
   'playground.recognitionPausedModelServices':
     'Recognition is paused because required model services are unavailable: {services}. Start the services, then run recognition again.',
   'playground.redactFailed': 'Redaction failed.',
+  'playground.redactAlreadyDone': 'Already redacted — opened the result view for you.',
   'playground.restored': 'Last single-file session restored',
   'playground.restoredFromServer': 'Restored last recognition from server',
+  // Issue#194 终审 A：待确认扫描件回场（不重提识别任务，直接恢复确认视图）
+  'playground.restoredAwaitingReview': 'Recognition already completed — review the results and start redaction',
   'playground.restoreFileGone': 'Original file no longer exists; last session cannot be restored',
   'playground.switchSessionTitle': 'Switch file?',
   'playground.switchSessionMessage': 'The current single-file session will be replaced; unexecuted edits will be lost.',
@@ -1995,6 +2012,7 @@ Object.assign(enOverrides, {
   'playground.toast.entityDeleted': 'Deleted',
   'playground.loading.rerunHybridText': 'Re-running recognition (regex + AI semantic)...',
   'playground.toast.rerunTextDone': 'Re-recognition complete: {count} found',
+  'toast.open': 'View',
   'toast.fallbackError': 'Operation failed. Please try again later.',
   'health.serviceName.visualFeatures': 'Visual Features',
 });
@@ -2123,6 +2141,34 @@ Object.assign(enOverrides, {
   'notify.recognitionDoneBody': 'All {n} files recognized - ready for review',
   'notify.bulkConfirmDone': 'Bulk confirmation completed',
   'notify.outputsReady': 'All redacted outputs are ready - you can proceed to export',
+  'singleTask.notify.recognized': 'Recognition complete: {name}',
+  'singleTask.notify.redacted': 'Redaction complete: {name}',
+  'singleTask.notify.failed': 'Processing failed: {name}',
+  'singleTask.phase.recognizing': 'Recognizing',
+  'singleTask.phase.redacting': 'Redacting',
+  'singleTask.phase.awaiting_review': 'Awaiting review',
+  'singleTask.offline': 'Connection lost — tasks keep running in the background',
+  // Issue#194 Task 11: processing details card (shared row builder for result page / loading view)
+  'processingDetails.title': 'Processing details',
+  'processingDetails.total': 'Total time',
+  'processingDetails.queueWait': 'Queue wait',
+  'processingDetails.parse': 'Text parsing',
+  'processingDetails.ocr': 'OCR',
+  'processingDetails.match': 'Entity matching',
+  'processingDetails.ner': 'NER',
+  'processingDetails.visualFeatures': 'Visual features',
+  'processingDetails.redaction': 'Redaction rendering',
+  'processingDetails.failedChunks': '{n} page(s) failed recognition and fell back automatically',
+  'processingDetails.textDirect': 'Direct text input — no OCR needed',
+  'processingDetails.pages': '{n} pages',
+  'processingDetails.perPage': '{s}/page',
+  'processingDetails.entityCount': '{n} entities',
+  'processingDetails.boxCount': '{n} boxes',
+  'processingDetails.failed': 'Processing failed',
+  // Issue#194 user acceptance #2: human duration unit words (formatDurationMs three tiers)
+  'processingDetails.unit.underSec': 'under 1s',
+  'processingDetails.unit.sec': 'sec',
+  'processingDetails.unit.min': 'min',
   'batchWizard.inbox.button': 'Import from server folder',
   'batchWizard.inbox.title': 'Import from server folder',
   'batchWizard.inbox.description':

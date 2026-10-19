@@ -13,6 +13,8 @@ import {
   setScopedStorageItem,
 } from '@/lib/storage';
 import { authFetch, downloadFile } from '@/services/api-client';
+import { resolveAwaitingReviewTask, submitRedactionTask } from '@/services/singleTaskApi';
+import { useSingleTask } from '@/features/single-task/single-task-context';
 import type { VersionHistoryEntry } from '@/types';
 import { localizeErrorMessage } from '@/utils/localizeError';
 import {
@@ -32,7 +34,6 @@ import {
   mergeNerBoxes,
   syncEntitiesWithNerBoxes,
 } from '../utils';
-import type { RedactionResult } from '../types';
 import { usePlaygroundEntities } from './use-playground-entities';
 import { usePlaygroundFile } from './use-playground-file';
 import { usePlaygroundHistory } from './use-playground-history';
@@ -62,6 +63,18 @@ export function usePlayground() {
   const { health, checking: healthChecking } = useServiceHealth();
   const { setProcessingMode: setRecognitionProcessingMode } = recognition;
 
+  // Issue#194：打码段复用识别段的同一个单文件任务（全局账本）。
+  // provider 的挂载恢复是异步的（fileId 要等首轮轮询回填），查询经 ref 走最新值，
+  // 提交前的一拍 miss 由 handleRedact 内 refresh 容忍（loadExistingFile 同款）。
+  const { taskForFile: getSingleTask, watch: watchSingleTask, refresh: refreshSingleTasks } =
+    useSingleTask();
+  const getSingleTaskRef = useRef(getSingleTask);
+  getSingleTaskRef.current = getSingleTask;
+  const watchSingleTaskRef = useRef(watchSingleTask);
+  watchSingleTaskRef.current = watchSingleTask;
+  const refreshSingleTasksRef = useRef(refreshSingleTasks);
+  refreshSingleTasksRef.current = refreshSingleTasks;
+
   const latestOcrHasTypesRef = useRef(recognition.selectedOcrHasTypes);
   const latestVisualFeatureTypesRef = useRef(recognition.selectedVisualFeatureTypes);
   const latestSelectedTypesRef = recognition.selectedTypesRef;
@@ -80,8 +93,22 @@ export function usePlayground() {
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const latestFileIdRef = useRef<string | null>(null);
   const asyncResultEpochRef = useRef(0);
-  const redactionAbortRef = useRef<AbortController | null>(null);
   const redactionInFlightRef = useRef(false);
+
+  // Issue#194：已提交未收尾的打码任务（done/failed/换文件/重置时收尾）。
+  // 回执无 file_id（controller 交接约束）：fileId 一直以 fileCtx 现有状态为准，
+  // 这里记 fileId 只为「换文件后不跟进旧任务的结果」。
+  // 终审 C：用 state 而非 ref——草稿落盘 effect 的依赖里要有它，提交打码后落盘的
+  // 草稿才能带上 pendingRedactJobId（刷新恢复的唯一凭据）。
+  type PendingRedact = {
+    fileId: string;
+    jobId: string;
+    /** 提交时前端点名的处理项数：快照不可用时兜底 redactedCount 展示。 */
+    requestedCount: number;
+  };
+  const [pendingRedact, setPendingRedact] = useState<PendingRedact | null>(null);
+  /** 用户主动放弃会话（取消/重置）时登记的 job：provider 报 failed 时静默收尾。 */
+  const redactAbandonedJobsRef = useRef<Set<string>>(new Set());
 
   // 化名映射确认（替换模式）：原文 → 化名。用户编辑过的行不被自动补全覆盖。
   const [pseudonymMap, setPseudonymMap] = useState<Record<string, string>>({});
@@ -128,6 +155,12 @@ export function usePlayground() {
     [health, healthChecking, latestSelectedTypesRef],
   );
 
+  // Issue#194 验收反馈：completed 单文件回场恢复结果页——实现在 fileCtx 之后
+  // 赋值（latest-ref 模式），options 字面量先引用 trampoline。
+  const resumeCompletedResultRef = useRef<
+    (fileId: string, info: Record<string, unknown>) => Promise<boolean>
+  >(async () => false);
+
   const fileCtx = usePlaygroundFile({
     latestOcrHasTypesRef,
     latestVisualFeatureTypesRef,
@@ -138,6 +171,7 @@ export function usePlayground() {
     setSelectedTypes: recognition.setSelectedTypes,
     setBoundingBoxes: (val) => imageCtx.setBoundingBoxes(val),
     getRecognitionBlocker,
+    resumeCompletedResult: (fileId, info) => resumeCompletedResultRef.current(fileId, info),
   });
 
   // Issue #83：预览范式由文件形态决定——文本型 PDF（不分打码/替换）都走页
@@ -208,17 +242,21 @@ export function usePlayground() {
     setTypeTab(fileCtx.isImageMode ? 'vision' : 'text');
   }, [fileCtx.isImageMode, setTypeTab]);
 
+  // 文件切换：在途异步结果一律失效（epoch 前进）。只随 file_id 变化——终审 C 后
+  // pendingRedact 不再并入本 effect（提交打码/收尾清守门都会变它，若并入会把
+  // done 分支刚登记的 epoch 顶掉，结果页快照回填全被丢弃）。
   useEffect(() => {
     latestFileIdRef.current = fileCtx.fileInfo?.file_id ?? null;
     asyncResultEpochRef.current += 1;
   }, [fileCtx.fileInfo?.file_id]);
 
-  useEffect(
-    () => () => {
-      redactionAbortRef.current?.abort();
-    },
-    [],
-  );
+  // 换文件/重置：上一文件的在途打码不再跟进（任务后台继续，完成由 provider 通知）
+  useEffect(() => {
+    if (pendingRedact && pendingRedact.fileId !== latestFileIdRef.current) {
+      redactionInFlightRef.current = false;
+      setPendingRedact(null);
+    }
+  }, [pendingRedact]);
 
   const allSelectedVisionTypes = useMemo(
     () => [...recognition.selectedOcrHasTypes, ...recognition.selectedVisualFeatureTypes],
@@ -443,6 +481,20 @@ export function usePlayground() {
     handleRerunNer,
   ]);
 
+  // Issue#194 验收反馈（sulan 场景）：打码提交失败时先查一次文件——成品在说明
+  // 其实已经打完（常见于完成后回到确认页又点了一次），直接恢复结果页并返回 true。
+  const recoverCompletedRedact = useCallback(async (fileId: string): Promise<boolean> => {
+    try {
+      const response = await authFetch(`/api/v1/files/${fileId}`);
+      if (!response.ok) return false;
+      const info = await safeJson<Record<string, unknown>>(response);
+      if (!info.output_path) return false;
+      return await resumeCompletedResultRef.current(fileId, info);
+    } catch {
+      return false;
+    }
+  }, []);
+
   const handleRedact = useCallback(async () => {
     if (!fileCtx.fileInfo) return;
     if (redactionInFlightRef.current) return;
@@ -452,17 +504,42 @@ export function usePlayground() {
       return;
     }
 
-    redactionAbortRef.current?.abort();
-    const controller = new AbortController();
-    redactionAbortRef.current = controller;
+    // Issue#194（D3「点完打码即可离开」）：提交后台任务后即返回——不切 stage、
+    // 不设 loading/遮罩；完成由 provider 轮询推进（下方订阅 effect 收尾进 result）。
+    // 任务提交本身不可中止：redactionInFlightRef 只防双击/重复提交。
     redactionInFlightRef.current = true;
-    const { signal } = controller;
-
     const fileId = fileCtx.fileInfo.file_id;
-    fileCtx.setIsLoading(true);
-    fileCtx.setLoadingMessage(t('playground.redacting'));
 
     try {
+      // 任务句柄：识别段已注册（T9）。provider 挂载恢复异步回填 fileId，一拍 miss
+      // 容忍：先问一次，miss 则 refresh 后再问（loadExistingFile 同款）。
+      let task = getSingleTaskRef.current(fileId);
+      if (!task || !task.itemId) {
+        await refreshSingleTasksRef.current();
+        task = getSingleTaskRef.current(fileId);
+      }
+      let jobId = task?.jobId ?? '';
+      let itemId = task?.itemId ?? '';
+      if (!jobId || !itemId) {
+        // Bug#2 刷新后兜底：provider 账本只恢复 active 任务，识别完成停稳在
+        // awaiting_review 的任务不在其中（watch 未注册）⇒ 按 fileId 直查后端
+        // awaiting_review 清单。命中后 watch 注册回账本——完成推进与正常路径
+        // 同轨（provider 轮询可接手收尾进结果页）。
+        const fallback = await resolveAwaitingReviewTask(fileId);
+        if (fallback) {
+          watchSingleTaskRef.current(
+            fallback.job_id,
+            fileId,
+            fileCtx.fileInfo?.filename || fileId,
+          );
+          jobId = fallback.job_id;
+          itemId = fallback.item_id;
+        }
+      }
+      if (!jobId || !itemId) {
+        throw new Error(t('playground.redactFailed'));
+      }
+
       // Issue #66：mask 模式下实体的选中状态由它的 ner 框代表（框即实体的
       // UI）；无框实体（定位失败）保持原选中态交后端 residual 兜底
       const execEntities = textPdfMaskMode
@@ -482,8 +559,7 @@ export function usePlayground() {
           : selectedEntities.length;
 
       // Issue #79 v3：打码无子选项，固定 mask（文本型 PDF=栅格化涂黑框）；
-      // 替换分支唯一方案=化名词池+对照表确认（pseudonym），「打码方式」选择
-      // 已整体移除。replacementMode 残留值不再参与任何执行决策。
+      // 替换分支唯一方案=化名词池+对照表确认（pseudonym）。
       const isPseudonym = recognition.processingMode === 'replace' && !fileCtx.isImageMode;
       const effectiveReplacementMode = isPseudonym ? 'pseudonym' : 'mask';
       const pseudonymReplacements: Record<string, string> = {};
@@ -494,112 +570,194 @@ export function usePlayground() {
         }
       }
 
-      const res = await authFetch('/api/v1/redaction/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          file_id: fileId,
-          entities: execEntities,
-          // Issue #66 A 案：文本型文件在替换模式下不携带拉框——后端见到
-          // 「文本 PDF + 有框」会整份转图像管线栅格化，替换请求会产出错误
-          // 成品。框保留在前端状态里，切回打码原样恢复参与执行。
-          bounding_boxes: boxesForRedactPayload(
-            fileCtx.isImageMode,
-            recognition.processingMode,
-            imageCtx.boundingBoxes,
-          ),
-          config: {
-            replacement_mode: effectiveReplacementMode,
-            entity_types: [],
-            custom_replacements: pseudonymReplacements,
-            watermark_text: recognition.watermarkText.trim() || undefined,
-          },
-        }),
-        signal,
+      setPendingRedact({
+        fileId,
+        jobId,
+        requestedCount: requestedRedactionItemCount,
       });
-      if (signal.aborted) return;
-
-      if (!res.ok) throw new Error(t('playground.redactFailed'));
-      const result = await safeJson<RedactionResult>(res);
-      if (signal.aborted) return;
-      const completedCount = requestedRedactionItemCount;
-      setEntityMap(result.entity_map || {});
-      setRedactedCount(completedCount);
+      // Issue #66 A 案：文本型文件在替换模式下不携带拉框（后端见到「文本 PDF + 有框」
+      // 会整份转图像管线栅格化）；框保留在前端状态里，切回打码原样恢复参与执行。
+      await submitRedactionTask(jobId, itemId, {
+        entities: execEntities,
+        bounding_boxes: boxesForRedactPayload(
+          fileCtx.isImageMode,
+          recognition.processingMode,
+          imageCtx.boundingBoxes,
+        ),
+        config: {
+          replacement_mode: effectiveReplacementMode,
+          custom_replacements: pseudonymReplacements,
+          watermark_text: recognition.watermarkText.trim() || undefined,
+        },
+      });
+      if (latestFileIdRef.current !== fileId) {
+        // 提交期间用户已切走/重置：任务后台继续，本会话不再跟进结果
+        redactionInFlightRef.current = false;
+        setPendingRedact(null);
+        return;
+      }
+      // 替换模式执行过（结果页据此展示「下载化名对照表」）：提交成功即确认
       setConfirmedPseudonymMap(isPseudonym ? { ...pseudonymReplacements } : null);
-      setRedactionVersion((version) => version + 1);
-      fileCtx.setStage('result');
-
-      latestFileIdRef.current = fileId;
-      const asyncResultEpoch = asyncResultEpochRef.current + 1;
-      asyncResultEpochRef.current = asyncResultEpoch;
-
-      const loadAsyncResult = async <T>(url: string): Promise<T> => {
-        const response = await authFetch(url, { signal });
-        if (signal.aborted) {
-          throw new DOMException('Aborted', 'AbortError');
-        }
-        if (!response.ok) {
-          throw new Error(`Failed to load ${url}`);
-        }
-        return safeJson<T>(response);
-      };
-
-      loadAsyncResult<Record<string, unknown>>(`/api/v1/redaction/${fileId}/report`)
-        .then((data) => {
-          if (canApplyAsyncResult(fileId, asyncResultEpoch)) {
-            setRedactionReport(data);
-          }
-        })
-        .catch(() => {
-          if (canApplyAsyncResult(fileId, asyncResultEpoch)) {
-            setRedactionReport(null);
-          }
-        });
-
-      loadAsyncResult<{ versions?: VersionHistoryEntry[] }>(`/api/v1/redaction/${fileId}/versions`)
-        .then((data) => {
-          if (canApplyAsyncResult(fileId, asyncResultEpoch)) {
-            setVersionHistory(data.versions || []);
-          }
-        })
-        .catch(() => {
-          if (canApplyAsyncResult(fileId, asyncResultEpoch)) {
-            setVersionHistory([]);
-          }
-        });
-
-      showToast(
-        t('playground.toast.redactDone').replace('{count}', String(completedCount)),
-        'success',
-      );
+      // passive 提示（不遮挡）：打码在后台进行，用户可离开本页
+      showToast(t('playground.taskRedacting'), 'info');
     } catch (err) {
-      if (signal.aborted) return;
-      showToast(localizeErrorMessage(err, 'playground.redactFailed'), 'error');
-    } finally {
-      if (redactionAbortRef.current === controller) {
-        redactionAbortRef.current = null;
-      }
       redactionInFlightRef.current = false;
-      if (!signal.aborted) {
-        fileCtx.setIsLoading(false);
-        fileCtx.setLoadingMessage('');
+      setPendingRedact(null);
+      // Issue#194 验收反馈（sulan 场景）：打码可能已在别处/上一会话完成（完成后
+      // 回到确认页又点了一次打码，后端 400 not awaiting_review）。此时不弹失败——
+      // 查一次文件：成品在就直接恢复结果页并提示，只有查无成品才走失败文案。
+      if (await recoverCompletedRedact(fileId)) {
+        showToast(t('playground.redactAlreadyDone'), 'info');
+        return;
       }
+      // 409（同账号其他任务在跑）等提交失败：toast 后端文案，停留 preview 不切 stage
+      showToast(localizeErrorMessage(err, 'playground.redactFailed'), 'error');
     }
   }, [
-    canApplyAsyncResult,
     entityCtx.entities,
     fileCtx,
     imageCtx.boundingBoxes,
-    recognition.replacementMode,
     recognition.processingMode,
+    recognition.watermarkText,
     pseudonymMap,
     replaceUnready,
+    textPdfMaskMode,
+    recoverCompletedRedact,
   ]);
+
+  // --- Issue#194：打码任务收尾订阅——provider 报 done/failed 时推进/退出 ---
+  // 识别段任务在 awaiting_review 停稳后 taskRecognition 已清空，这里按「本会话
+  // 提交过的打码 job」守门：只有当前文件 + 匹配 job 的迁移才驱动结果页。
+  const currentFileId = fileCtx.fileInfo?.file_id ?? null;
+  const { setStage: setFileStage } = fileCtx;
+  useEffect(() => {
+    if (!currentFileId) return;
+    const pending = pendingRedact;
+    if (!pending || pending.fileId !== currentFileId) return;
+    const task = getSingleTask(currentFileId);
+    if (!task || task.jobId !== pending.jobId) return;
+
+    if (task.phase === 'failed') {
+      setPendingRedact(null);
+      redactionInFlightRef.current = false;
+      if (redactAbandonedJobsRef.current.has(task.jobId)) return; // 用户已放弃会话，静默
+      showToast(task.error || t('playground.redactFailed'), 'error');
+      return;
+    }
+    if (task.phase !== 'done') return;
+
+    // 打码完成（provider 已发完成通知）：快照 + report/versions → 结果页
+    setPendingRedact(null);
+    redactionInFlightRef.current = false;
+    latestFileIdRef.current = currentFileId;
+    const asyncResultEpoch = asyncResultEpochRef.current + 1;
+    asyncResultEpochRef.current = asyncResultEpoch;
+    setRedactionVersion((version) => version + 1); // 触发 result 阶段脱敏预览重取（同旧流）
+    setFileStage('result');
+
+    const loadAsyncResult = async <T,>(url: string): Promise<T> => {
+      const response = await authFetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to load ${url}`);
+      }
+      return safeJson<T>(response);
+    };
+
+    // entity_map / redacted_count 数据源 = GET /files/{id} 快照：打码工人落库的
+    // 真实结果（execute_redaction 写 file_store 的 entity_map/redacted_count），
+    // 等价于旧同步 execute 响应的对应字段；快照不可用则回落提交时的点名数。
+    loadAsyncResult<Record<string, unknown>>(`/api/v1/files/${currentFileId}`)
+      .then((snapshot) => {
+        if (!canApplyAsyncResult(currentFileId, asyncResultEpoch)) return;
+        const map = (snapshot.entity_map ?? {}) as Record<string, string>;
+        setEntityMap(map);
+        const count = snapshot.redacted_count;
+        setRedactedCount(
+          typeof count === 'number' ? count : pending.requestedCount,
+        );
+      })
+      .catch(() => {
+        if (!canApplyAsyncResult(currentFileId, asyncResultEpoch)) return;
+        setEntityMap({});
+        setRedactedCount(pending.requestedCount);
+      });
+
+    loadAsyncResult<Record<string, unknown>>(`/api/v1/redaction/${currentFileId}/report`)
+      .then((data) => {
+        if (canApplyAsyncResult(currentFileId, asyncResultEpoch)) {
+          setRedactionReport(data);
+        }
+      })
+      .catch(() => {
+        if (canApplyAsyncResult(currentFileId, asyncResultEpoch)) {
+          setRedactionReport(null);
+        }
+      });
+
+    loadAsyncResult<{ versions?: VersionHistoryEntry[] }>(
+      `/api/v1/redaction/${currentFileId}/versions`,
+    )
+      .then((data) => {
+        if (canApplyAsyncResult(currentFileId, asyncResultEpoch)) {
+          setVersionHistory(data.versions || []);
+        }
+      })
+      .catch(() => {
+        if (canApplyAsyncResult(currentFileId, asyncResultEpoch)) {
+          setVersionHistory([]);
+        }
+      });
+  }, [
+    canApplyAsyncResult,
+    currentFileId,
+    getSingleTask,
+    pendingRedact,
+    setFileStage,
+  ]);
+
+  // Issue#194 验收反馈：打码已完成的单文件从任务中心/历史回场——镜像 done 订阅的
+  // 结果组装（快照 entity_map/redacted_count + report + versions），直接恢复结果页。
+  // 由 loadExistingFile 在 file 记录带 output_path 时调用（info 复用其已取快照）。
+  useEffect(() => {
+    resumeCompletedResultRef.current = async (fileId: string, info: Record<string, unknown>) => {
+      if (!info.output_path) return false;
+      latestFileIdRef.current = fileId;
+      asyncResultEpochRef.current += 1;
+      const epoch = asyncResultEpochRef.current;
+      setRedactionVersion((version) => version + 1); // 触发 result 阶段脱敏预览重取
+      fileCtx.setStage('result');
+      const map = (info.entity_map ?? {}) as Record<string, string>;
+      setEntityMap(map);
+      const count = info.redacted_count;
+      setRedactedCount(typeof count === 'number' ? count : 0);
+      const load = async <T,>(url: string): Promise<T | null> => {
+        try {
+          const response = await authFetch(url);
+          if (!response.ok) return null;
+          return await safeJson<T>(response);
+        } catch {
+          return null;
+        }
+      };
+      void load<Record<string, unknown>>(`/api/v1/redaction/${fileId}/report`).then((data) => {
+        if (canApplyAsyncResult(fileId, epoch)) setRedactionReport(data);
+      });
+      void load<{ versions?: VersionHistoryEntry[] }>(
+        `/api/v1/redaction/${fileId}/versions`,
+      ).then((data) => {
+        if (canApplyAsyncResult(fileId, epoch)) setVersionHistory(data?.versions ?? []);
+      });
+      return true;
+    };
+  });
 
   const cancelProcessing = useCallback(() => {
     asyncResultEpochRef.current += 1;
-    redactionAbortRef.current?.abort();
-    redactionAbortRef.current = null;
+    // 在途打码同会话放弃：登记 job（provider 报 failed 时静默收尾）
+    if (pendingRedact) {
+      redactAbandonedJobsRef.current.add(pendingRedact.jobId);
+      setPendingRedact(null);
+    }
     redactionInFlightRef.current = false;
     fileCtx.cancelProcessing(false);
     entityCtx.cancelRerunNerText();
@@ -607,7 +765,7 @@ export function usePlayground() {
     fileCtx.setIsLoading(false);
     fileCtx.setLoadingMessage('');
     showToast(t('playground.cancelled'), 'info');
-  }, [entityCtx, fileCtx, imageCtx]);
+  }, [entityCtx, fileCtx, imageCtx, pendingRedact]);
 
   const hasResetRisk = useMemo(
     () =>
@@ -637,8 +795,11 @@ export function usePlayground() {
     asyncResultEpochRef.current += 1;
     pseudonymEpochRef.current += 1;
     latestFileIdRef.current = null;
-    redactionAbortRef.current?.abort();
-    redactionAbortRef.current = null;
+    // 在途打码同会话放弃：登记 job（provider 报 failed 时静默收尾）
+    if (pendingRedact) {
+      redactAbandonedJobsRef.current.add(pendingRedact.jobId);
+      setPendingRedact(null);
+    }
     redactionInFlightRef.current = false;
     // 与 applyDraftSnapshot 同享防护：取消在途识别，防止 R2（重置后重跑）
     // 与手动重置路径被旧文件识别回调污染。
@@ -669,7 +830,7 @@ export function usePlayground() {
     setVersionHistory([]);
     setVersionHistoryOpen(false);
     removeStorageItem(scopedStorageKey(STORAGE_KEYS.PLAYGROUND_DRAFT, ownerKey));
-  }, [entityCtx, fileCtx, imageCtx, ownerKey, setRecognitionProcessingMode]);
+  }, [entityCtx, fileCtx, imageCtx, ownerKey, pendingRedact, setRecognitionProcessingMode]);
 
   // 会话草稿（Issue #33）：有活动文件时防抖落盘；显式重置时清除。
   // 上传新文件后本 effect 随 fileInfo 变化自然覆盖旧草稿。
@@ -692,6 +853,12 @@ export function usePlayground() {
         redactedCount,
         currentPage: imageCtx.currentPage,
         visionStream: fileCtx.visionStream,
+        taskJobId: fileCtx.taskRecognition?.jobId,
+        // Issue#194 终审 C：打码在途时落盘凭据——刷新后据此重挂收尾订阅（结果页可达）
+        pendingRedactJobId:
+          pendingRedact && pendingRedact.fileId === fileCtx.fileInfo!.file_id
+            ? pendingRedact.jobId
+            : undefined,
       });
       const json = serializeDraft(snapshot);
       if (json === null) return; // 超限：放弃持久化，内存会话不受影响
@@ -703,6 +870,7 @@ export function usePlayground() {
     fileCtx.stage,
     fileCtx.visionStream,
     fileCtx.content,
+    fileCtx.taskRecognition,
     entityCtx.entities,
     imageCtx.boundingBoxes,
     imageCtx.currentPage,
@@ -713,6 +881,7 @@ export function usePlayground() {
     confirmedPseudonymMap,
     entityMap,
     redactedCount,
+    pendingRedact,
     ownerKey,
   ]);
 
@@ -722,7 +891,6 @@ export function usePlayground() {
     (snapshot: PlaygroundDraftSnapshot) => {
       asyncResultEpochRef.current += 1;
       latestFileIdRef.current = snapshot.fileInfo.file_id;
-      redactionAbortRef.current?.abort();
       redactionInFlightRef.current = false;
       // 取消在途识别（Provider 全局化后可跨页在途）：否则旧文件的
       // pendingFile 识别/重跑/图片检测完成后会无条件 setEntities+setStage，
@@ -752,6 +920,36 @@ export function usePlayground() {
       recognition.setReplacementMode(snapshot.replacementMode);
       recognition.setProcessingMode(snapshot.processingMode);
       recognition.setWatermarkText(snapshot.watermarkText);
+      // Issue#194：草稿里带在途识别任务 → 重挂 provider（watch 幂等；任务若已终态，
+      // 订阅 effect 的 redacting/done/failed 分支会兜底退出识别中视图）。
+      // 注意放在最后：上面的 cancelProcessing(false) 会清掉旧任务态。
+      if (snapshot.taskJobId && snapshot.fileInfo?.file_id) {
+        fileCtx.reattachTask(
+          snapshot.taskJobId,
+          snapshot.fileInfo.file_id,
+          snapshot.fileInfo.filename,
+        );
+      }
+      // Issue#194 终审 C（AC1）：打码在途的草稿——收尾守门是纯内存，刷新后必须重挂：
+      // pendingRedact 登记回订阅守门 + watch 重挂 provider 账本。任务在刷新期间已
+      // completed ⇒ provider 轮询报 done ⇒ 订阅 effect 照常拉快照+report 收尾进结果页；
+      // failed ⇒ 报错退出；仍在打码 ⇒ 继续等（点完打码即可离开的语义不受影响）。
+      if (
+        snapshot.pendingRedactJobId &&
+        snapshot.fileInfo?.file_id &&
+        snapshot.stage !== 'result'
+      ) {
+        setPendingRedact({
+          fileId: snapshot.fileInfo.file_id,
+          jobId: snapshot.pendingRedactJobId,
+          requestedCount: snapshot.redactedCount,
+        });
+        watchSingleTaskRef.current(
+          snapshot.pendingRedactJobId,
+          snapshot.fileInfo.file_id,
+          snapshot.fileInfo.filename,
+        );
+      }
       setResetConfirmOpen(false);
       setReportOpen(false);
       setVersionHistoryOpen(false);
@@ -894,6 +1092,9 @@ export function usePlayground() {
     isLoading: fileCtx.isLoading,
     loadingMessage: fileCtx.loadingMessage,
     visionStream: fileCtx.visionStream,
+    taskRecognition: fileCtx.taskRecognition,
+    taskPerformance: fileCtx.taskPerformance,
+    taskStageLabel: fileCtx.taskStageLabel,
     uploadIssue: fileCtx.uploadIssue,
     recognitionIssue: fileCtx.recognitionIssue,
     entityMap,

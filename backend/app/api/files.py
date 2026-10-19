@@ -33,6 +33,7 @@ from fastapi.responses import FileResponse, Response
 import app.services.export_service as _export
 import app.services.file_management_service as _fms
 import app.services.job_management_service as _jms
+import app.services.single_task_service as _sts
 from app.api.jobs import get_job_store
 from app.core.audit import audit_log
 from app.core.auth import require_auth
@@ -40,6 +41,7 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.core.idempotency import check_idempotency, save_idempotency
 from app.core.rate_limit import RateLimiter, make_user_throttle
+from app.models.errors import NotFoundError
 from app.models.schemas import (
     APIResponse,
     BatchDownloadRequest,
@@ -55,7 +57,12 @@ from app.models.schemas import (
     SftpPullRequest,
     SftpSourceRequest,
 )
-from app.services.file_parser import PdfEncryptedError, decrypt_pdf_with_password
+from app.models.single_task_schemas import RecognitionTaskBody, SingleTaskRef
+from app.services.file_parser import (
+    PdfEncryptedError,
+    decrypt_pdf_with_password,
+    ensure_pdf_accessible,
+)
 from app.services.job_store import JobStore
 
 router = APIRouter()
@@ -871,6 +878,65 @@ async def restore_trashed_file(file_id: str, owner_id: str = Depends(require_aut
         raise HTTPException(status_code=404, detail="文件不在回收站")
     audit_log("restore", "file", file_id, user=owner_id)
     return APIResponse(message="文件已还原")
+
+
+async def _precheck_pdf_not_encrypted(info: dict) -> None:
+    """Issue#194 AC8：提交识别前毫秒级加密探测。
+
+    仅 PDF（含扫描件）需要：ensure_pdf_accessible 属同步 IO，放线程池跑；
+    打开密码态抛结构化 400（前端弹密码框），仅权限密码态自动解密放行。
+    非 PDF（docx/图片等）原样返回。
+    """
+    file_path = info.get("file_path")
+    if not file_path or str(info.get("file_type", "")).lower() not in ("pdf", "pdf_scanned"):
+        return
+    try:
+        await asyncio.to_thread(ensure_pdf_accessible, str(file_path))
+    except PdfEncryptedError as exc:
+        raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
+
+
+@router.post("/files/{file_id}/recognition-task", response_model=SingleTaskRef)
+async def submit_recognition_task(
+    file_id: str,
+    body: RecognitionTaskBody,
+    x_idempotency_key: str | None = Header(None, alias="X-Idempotency-Key"),
+    owner_id: str = Depends(require_auth),
+):
+    """Issue#194: 单文件识别转后台任务。守门只在任务化端点，老端点不动。"""
+    scoped = f"{owner_id}:{x_idempotency_key}" if x_idempotency_key else None
+    cached = check_idempotency(scoped)
+    if cached is not None:
+        return cached
+    info = await _fms.get_file_info(file_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    try:
+        # 文件已确认存在，此处 NotFoundError 只能是归属不符 → 403
+        _fms.assert_file_owner(file_id, owner_id)
+    except NotFoundError:
+        raise HTTPException(status_code=403, detail="无权操作该文件")
+    await _precheck_pdf_not_encrypted(info)  # 提交前毫秒级加密探测（AC8）
+    try:
+        ref = await _sts.submit_single_recognition(
+            get_job_store(),
+            file_id=file_id,
+            entity_type_ids=body.entity_type_ids,
+            ocr_has_types=body.ocr_has_types,
+            visual_feature_types=body.visual_feature_types,
+            owner_id=owner_id,
+            title=str(info.get("original_filename") or ""),
+        )
+    except _sts.SingleTaskConflictError as exc:
+        raise HTTPException(status_code=409, detail=f"有文件正在处理：{exc.running_filename}，请等它完成")
+    except KeyError:
+        # TOCTOU：预检与提交之间文件被并发删除 → 守门层查无此文件
+        raise HTTPException(status_code=404, detail="文件不存在")
+    except PermissionError:
+        # TOCTOU：预检与提交之间归属变化 → 守门层归属不符
+        raise HTTPException(status_code=403, detail="无权操作该文件")
+    save_idempotency(scoped, ref)
+    return ref
 
 
 # 断点续传分块上传：拆到 files_resumable.py（路径不变），在此并入本文件路由。

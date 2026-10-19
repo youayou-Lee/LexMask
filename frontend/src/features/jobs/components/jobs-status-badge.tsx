@@ -40,13 +40,20 @@ export function JobStatusBadge({ status }: { status: string }) {
 
 export function JobTypeBadge({ jobType }: { jobType: JobTypeApi }) {
   const t = useT();
+  // Issue#194 T12：single 独立文案（单文件），不再混落「批量任务」。
+  const label =
+    jobType === 'structured_batch'
+      ? t('jobs.structuredTask')
+      : jobType === 'single'
+        ? t('jobs.type.single')
+        : t('jobs.batchTask');
   return (
     <Badge
       variant="secondary"
       className="shrink-0 whitespace-nowrap text-2xs font-semibold"
       data-testid="job-type-badge"
     >
-      {jobType === 'structured_batch' ? t('jobs.structuredTask') : t('jobs.batchTask')}
+      {label}
     </Badge>
   );
 }
