@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from app.core.config import settings
 from app.models.schemas import Entity
@@ -211,8 +212,8 @@ def commit_agent_md_item(file_info: dict[str, Any], decisions: list[dict] | None
     草稿缺失（识别段被跳过/库行被清）抛 ValueError，由调用方把 item 打回
     AWAITING_REVIEW 并带错误信息；decisions 为空/None = 全部按默认占位符替换。
     """
-    from app.services.agent_md_replace import apply_decisions, render_outputs
     from app.services.agent_md_pipeline_service import _friendly_stem
+    from app.services.agent_md_replace import apply_decisions, render_outputs
 
     draft = load_draft(file_info)
     if draft is None:

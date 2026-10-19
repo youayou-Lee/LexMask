@@ -16,15 +16,14 @@ from pathlib import Path
 import pytest
 
 from app.models.schemas import Entity
-from app.services import job_management_service as jms
 from app.services import file_management_service as fms
+from app.services import job_management_service as jms
 from app.services.agent_md_batch import (
     AGENT_MD_DRAFT_KEY,
     build_text_segments,
     commit_agent_md_item,
     is_mineru_carrier,
     load_draft,
-    run_agent_md_stage1,
     serialize_draft,
 )
 from app.services.agent_md_types import MappingItem, Seg
@@ -275,7 +274,7 @@ def test_worker_failure_isolates_items(tmp_path, monkeypatch):
         lambda: FakeNER([[("PERSON", "", 0, 2)]]),
     )
     q = _queue_with_store(store)
-    for i, fid in zip(item_ids, ("file-0", "file-1")):
+    for i, fid in zip(item_ids, ("file-0", "file-1"), strict=True):
         _run_item(q, jid, i, fid)
 
     assert store.get_item(item_ids[0])["status"] == "awaiting_review"
@@ -384,14 +383,16 @@ def test_commit_review_without_decisions_defaults_full_replace(tmp_path, monkeyp
     assert "孙七" not in md and "[占位0]" in md  # 无草稿决策 = 按草稿默认占位符全替换
 
 
-def test_commit_review_missing_draft_raises_and_keeps_awaiting(tmp_path):
+def test_commit_review_missing_draft_raises_and_keeps_awaiting(tmp_path, monkeypatch):
     store = _store(tmp_path)
-    fs = FileStoreDB(str(tmp_path / "fs.sqlite3"))
+    fs = _fake_file_store(tmp_path, monkeypatch)
     jid, item_ids = _make_agent_job(store, items=1)
     doc = tmp_path / "f.txt"
     doc.write_text("x", encoding="utf-8")
     _register_file(fs, "file-0", doc)  # 无草稿
-    with pytest.raises(Exception):
+    from app.models.errors import ValidationError
+
+    with pytest.raises(ValidationError):
         asyncio.run(jms.commit_review(
             store=store, job_id=jid, item_id=item_ids[0],
             entities=[], bounding_boxes=[], payload={},
@@ -498,8 +499,8 @@ def test_same_stem_artifacts_do_not_collide(tmp_path):
 
 
 def test_duplicate_filenames_in_zip_get_unique_arcnames(tmp_path, monkeypatch):
-    from app.services.file_management_service import collect_batch_zip_entries
     from app.models.file_schemas import BatchDownloadRequest
+    from app.services.file_management_service import collect_batch_zip_entries
 
     fs = _fake_file_store(tmp_path, monkeypatch)
     for i, fid in enumerate(("fa", "fb")):
@@ -523,8 +524,8 @@ def test_duplicate_filenames_in_zip_get_unique_arcnames(tmp_path, monkeypatch):
 
 
 def test_export_without_vl_md_meta_unchanged(tmp_path, monkeypatch):
-    from app.services.file_management_service import collect_batch_zip_entries
     from app.models.file_schemas import BatchDownloadRequest
+    from app.services.file_management_service import collect_batch_zip_entries
 
     fs = _fake_file_store(tmp_path, monkeypatch)
     p = tmp_path / "normal.pdf"
