@@ -155,6 +155,12 @@ export function usePlayground() {
     [health, healthChecking, latestSelectedTypesRef],
   );
 
+  // Issue#194 验收反馈：completed 单文件回场恢复结果页——实现在 fileCtx 之后
+  // 赋值（latest-ref 模式），options 字面量先引用 trampoline。
+  const resumeCompletedResultRef = useRef<
+    (fileId: string, info: Record<string, unknown>) => Promise<boolean>
+  >(async () => false);
+
   const fileCtx = usePlaygroundFile({
     latestOcrHasTypesRef,
     latestVisualFeatureTypesRef,
@@ -165,6 +171,7 @@ export function usePlayground() {
     setSelectedTypes: recognition.setSelectedTypes,
     setBoundingBoxes: (val) => imageCtx.setBoundingBoxes(val),
     getRecognitionBlocker,
+    resumeCompletedResult: (fileId, info) => resumeCompletedResultRef.current(fileId, info),
   });
 
   // Issue #83：预览范式由文件形态决定——文本型 PDF（不分打码/替换）都走页
@@ -685,6 +692,42 @@ export function usePlayground() {
     pendingRedact,
     setFileStage,
   ]);
+
+  // Issue#194 验收反馈：打码已完成的单文件从任务中心/历史回场——镜像 done 订阅的
+  // 结果组装（快照 entity_map/redacted_count + report + versions），直接恢复结果页。
+  // 由 loadExistingFile 在 file 记录带 output_path 时调用（info 复用其已取快照）。
+  useEffect(() => {
+    resumeCompletedResultRef.current = async (fileId: string, info: Record<string, unknown>) => {
+      if (!info.output_path) return false;
+      latestFileIdRef.current = fileId;
+      asyncResultEpochRef.current += 1;
+      const epoch = asyncResultEpochRef.current;
+      setRedactionVersion((version) => version + 1); // 触发 result 阶段脱敏预览重取
+      fileCtx.setStage('result');
+      const map = (info.entity_map ?? {}) as Record<string, string>;
+      setEntityMap(map);
+      const count = info.redacted_count;
+      setRedactedCount(typeof count === 'number' ? count : 0);
+      const load = async <T,>(url: string): Promise<T | null> => {
+        try {
+          const response = await authFetch(url);
+          if (!response.ok) return null;
+          return await safeJson<T>(response);
+        } catch {
+          return null;
+        }
+      };
+      void load<Record<string, unknown>>(`/api/v1/redaction/${fileId}/report`).then((data) => {
+        if (canApplyAsyncResult(fileId, epoch)) setRedactionReport(data);
+      });
+      void load<{ versions?: VersionHistoryEntry[] }>(
+        `/api/v1/redaction/${fileId}/versions`,
+      ).then((data) => {
+        if (canApplyAsyncResult(fileId, epoch)) setVersionHistory(data?.versions ?? []);
+      });
+      return true;
+    };
+  });
 
   const cancelProcessing = useCallback(() => {
     asyncResultEpochRef.current += 1;

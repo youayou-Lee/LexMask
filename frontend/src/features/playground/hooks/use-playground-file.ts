@@ -103,6 +103,12 @@ export interface UsePlaygroundFileOptions {
   setBoundingBoxes: React.Dispatch<React.SetStateAction<BoundingBox[]>>;
   /** Return a user-facing reason when automatic recognition should not run yet */
   getRecognitionBlocker?: (file: PendingFile) => string | null;
+  /**
+   * Issue#194 验收反馈：已完成打码的单文件（file 记录 output_path 在）回场时，
+   * 直接恢复结果页（镜像打码完成订阅的数据组装）。返回 false 则继续旧路径。
+   * 不提供时维持旧行为（会落 rerun 自动重跑识别——扫描件无实体被误判未识别）。
+   */
+  resumeCompletedResult?: (fileId: string, info: Record<string, unknown>) => Promise<boolean>;
 }
 
 export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
@@ -489,6 +495,19 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         setContent(parsedContent);
         opts.setBoundingBoxes([]);
         opts.resetImageHistory();
+
+        // Issue#194 验收反馈：已完成打码的单文件（output_path 在）回场直接恢复
+        // 结果页，绝不落 rerun 自动重跑识别——扫描件无实体会被 cached 分支误判
+        // 成未识别，成品反而看不到（用户误以为匿名化失败）。
+        if (info.output_path && opts.resumeCompletedResult) {
+          const restored = await opts.resumeCompletedResult(fileId, info);
+          if (signal.aborted) return;
+          if (restored) {
+            setIsLoading(false);
+            setLoadingMessage('');
+            return;
+          }
+        }
 
         const cached = planServerCachedResume(info);
         if (cached.mode === 'cached') {

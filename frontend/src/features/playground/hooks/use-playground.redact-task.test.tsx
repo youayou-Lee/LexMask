@@ -664,4 +664,49 @@ describe('Issue#194 终审 C：打码在途刷新后结果页恢复', () => {
     );
     expect(raw).toContain('"pendingRedactJobId":"j1"');
   });
+
+  it('(k) 已完成打码的单文件回场：直接恢复结果页，不重提识别', async () => {
+    // 用户验收②根源场景：账号打码成功后从任务中心/历史再进文件，旧行为落
+    // rerun 自动重跑识别（扫描件无实体被 cached 分支误判未识别），成品反而
+    // 看不到 ⇒ 用户误以为匿名化失败。改后 output_path 在 ⇒ 直接恢复结果页。
+    renderHarness();
+    const fetchMock = vi.mocked(authFetch);
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/files/f1/parse')) {
+        return jsonResponse({ content: '', file_type: 'pdf', is_scanned: true, page_count: 3 });
+      }
+      if (url.endsWith('/files/f1')) {
+        return jsonResponse({
+          original_filename: 'a.pdf',
+          entities: [],
+          bounding_boxes: {
+            '1': [{ id: 'b1', x: 0, y: 0, width: 1, height: 1, type: 'NAME' }],
+          },
+          output_path: '/data/out.pdf',
+          entity_map: { 张三: '张某某' },
+          redacted_count: 5,
+        });
+      }
+      if (url.endsWith('/redaction/f1/report')) {
+        return jsonResponse({ total_entities: 5, redacted_entities: 5 });
+      }
+      if (url.endsWith('/redaction/f1/versions')) {
+        return jsonResponse({ versions: [] });
+      }
+      return jsonResponse({});
+    });
+
+    await act(async () => {
+      await harness.pg!.resumeFromFile('f1');
+    });
+
+    await waitFor(() => expect(screen.getByTestId('stage').textContent).toBe('result'));
+    expect(submitRecognitionTask).not.toHaveBeenCalled();
+    expect(screen.getByTestId('entity-map').textContent).toContain('张三=张某某');
+    expect(screen.getByTestId('redacted-count').textContent).toBe('5');
+    const fetchUrls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/report'))).toBe(true);
+    expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/versions'))).toBe(true);
+  });
 });
