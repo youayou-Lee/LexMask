@@ -30,6 +30,8 @@ export function isMaskModeSupportedFileType(fileType: FileType): boolean {
 
 export function isBatchFileAllowedForMode(mode: BatchWizardMode, fileType: FileType): boolean {
   if (mode === 'smart') return true;
+  // 供料模式（Issue#196）：与 smart 同口径全放行——MinerU 件走解析、文本件直取。
+  if (mode === 'agent') return true;
   if (mode === 'text') return fileType !== FileType.IMAGE;
   return (
     fileType === FileType.IMAGE ||

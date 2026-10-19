@@ -956,6 +956,15 @@ const zhOverrides: Record<string, string> = {
   'batchHub.mode.smart.desc': '日常批量的默认入口，适合同一批次包含文档、扫描件、PDF 和图片。',
   'batchHub.mode.smart.tag1': '混合文件',
   'batchHub.mode.smart.summaryValue': '一条队列，一套复核流程',
+  'batchHub.mode.agent.title': '供料模式',
+  'batchHub.mode.agent.desc': '上传 PDF、Word、文本与扫描件，逐份转成脱敏 Markdown，确认映射表后整批导出，附还原映射表。',
+  'batchHub.mode.agent.tag1': '供云端 AI',
+  'batchHub.mode.agent.summaryValue': '脱敏 MD + 映射表 + 保留清单',
+  'batchHub.mode.agent.journeyNote': '要喂 AI 的材料从这里进',
+  'batchWizard.step1Agent.modeLabel': '占位符替换',
+  'batchWizard.step1Agent.placeholderNote': '敏感信息将替换为 [类型_N] / [姓某] 占位符，并随成品附映射表与保留清单，可在还原工具中回溯。',
+  'batchWizard.step4Agent.hint': '逐份确认映射表：可保留原文、自定义替换值；缺省按占位符替换。确认后生成脱敏 Markdown。',
+  'batchWizard.step4Agent.confirmGenerate': '确认生成',
   'jobs.filters.kicker': '操作',
   'jobs.filters.title': '任务控制台',
   'jobs.filters.desc': '把队列进度、复核积压和已完成任务放在一个地方查看。',
@@ -1084,7 +1093,7 @@ const zhOverrides: Record<string, string> = {
   'playground.reconfigTypes': '调整识别项',
   'playground.reconfigHint': '回到上传页，重新选择配置清单或勾选识别项，再上传文件识别',
   'playground.feedAgent': '投喂云端 AI（生成脱敏 MD）',
-  'playground.feedAgentHint': '切换到喂 Agent 模式：MinerU 解析 → 映射确认 → 脱敏 Markdown（无需重新上传）',
+  'playground.feedAgentHint': '切换到供料模式：MinerU 解析 → 映射确认 → 脱敏 Markdown（无需重新上传）',
   'playground.recognitionSection': '识别',
   'playground.recognitionSectionDesc':
     '修改配置清单或识别项设置后，可以重新刷新当前文件的识别结果。',
@@ -2557,9 +2566,9 @@ Object.assign(zhOverrides, {
 
 // Issue#75 喂 Agent（/agent-md 四步动线）；useT 无插值，进度类文案用拼接
 Object.assign(zhOverrides, {
-  'nav.agentMd': '喂 Agent',
-  'nav.agentMd.sub': '脱敏 MD 投喂云端 AI',
-  'agentMd.title': '喂 Agent — 案卷转脱敏 Markdown',
+  'nav.agentMd': '供料模式',
+  'nav.agentMd.sub': '案卷转脱敏 Markdown，安全供给云端 AI',
+  'agentMd.title': '供料模式 — 案卷转脱敏 Markdown',
   'agentMd.uploadHint': '上传一份 PDF 案卷，产出可直接投喂云端法律 AI 的脱敏 Markdown 与映射表',
   'agentMd.uploadFailed': '上传失败',
   'agentMd.statusFailed': '进度查询失败',

@@ -112,7 +112,7 @@ def build_job_embed_map(page_items: list[FileListItem], store: Any) -> dict[str,
         if not row:
             continue
         jt = row.get("job_type")
-        if jt not in ("text_batch", "image_batch", "smart_batch"):
+        if jt not in ("text_batch", "image_batch", "smart_batch", "agent_batch"):
             continue
         raw_items = store.list_items(jid)
         mini = [JobItemMini(id=str(x["id"]), status=str(x["status"])) for x in raw_items]

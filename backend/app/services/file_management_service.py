@@ -667,6 +667,38 @@ def collect_batch_zip_entries(
             "size_bytes": size,
         })
 
+        # 供料产物（Issue#196）：成品行的 vl_md_meta 带映射表/保留清单，一并入包；
+        # 缺失只记 skipped 不回滚主成品（MD 本体已收）。非供料成品无该键，行为不变。
+        meta = info.get("vl_md_meta") if request.redacted else None
+        if isinstance(meta, dict):
+            for kind in ("mapping_path", "retained_path"):
+                extra_path = meta.get(kind)
+                reason = f"missing_agent_artifact_{kind}"
+                if not extra_path or not safe_path_in_dir(str(extra_path), settings.OUTPUT_DIR):
+                    skipped.append({"file_id": fid, "reason": reason})
+                    continue
+                if not os.path.isfile(extra_path):
+                    skipped.append({"file_id": fid, "reason": reason})
+                    continue
+                esafe = os.path.basename(extra_path) or "file"
+                en = used_names.get(esafe, 0)
+                used_names[esafe] = en + 1
+                earcname = esafe if en == 0 else f"{en}_{esafe}"
+                try:
+                    esize = os.path.getsize(extra_path)
+                except OSError:
+                    skipped.append({"file_id": fid, "reason": reason})
+                    used_names[esafe] = en  # 回滚占名
+                    continue
+                pairs.append((extra_path, earcname, esize))
+                included.append({
+                    "file_id": fid,
+                    "filename": original_filename,
+                    "archive_name": earcname,
+                    "size_bytes": esize,
+                    "agent_artifact": kind,
+                })
+
     manifest = {
         "generated_at": datetime.now(UTC).isoformat(),
         "redacted": bool(request.redacted),

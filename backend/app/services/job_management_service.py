@@ -1039,6 +1039,53 @@ def get_review_draft(store: JobStore, job_id: str, item_id: str) -> dict[str, An
         raise NotFoundError("item not found")
 
 
+def get_agent_md_mapping(store: JobStore, job_id: str, item_id: str) -> dict[str, Any]:
+    """供料批量（Issue#196）：item 的映射表草稿 + 已存决策就地套用。
+
+    映射表本体在 file_store（agent_md_draft.mapping）；决策在 review draft
+    （agent_md_decisions）。响应形状与单文件供料 mapping 端点同构（{items:[...]}），
+    前端映射确认表两线共用同一数据契约。
+    """
+    from app.services.agent_md_batch import load_draft
+    from app.services.file_management_service import file_store
+
+    job, item = get_job_and_item(store, job_id, item_id)
+    if str(job.get("job_type") or "") != JobType.AGENT_BATCH.value:
+        raise NotFoundError("not an agent_batch job")
+    info = file_store.get(str(item["file_id"]))
+    draft = load_draft(info)
+    if draft is None:
+        raise ConflictError("mapping not ready: recognition still running or failed")
+    mapping = [
+        {
+            "id": str(m.get("id") or ""),
+            "original_text": str(m.get("original_text") or ""),
+            "entity_type": str(m.get("entity_type") or ""),
+            "replacement": str(m.get("replacement") or ""),
+            "excluded": bool(m.get("excluded")),
+        }
+        for m in draft.get("mapping") or []
+    ]
+    try:
+        saved = store.get_item_review_draft(item_id) or {}
+    except Exception:
+        saved = {}
+    by_id = {str(m["id"]): m for m in mapping}
+    for d in saved.get("agent_md_decisions") or []:
+        target = by_id.get(str(d.get("id")))
+        if target is None:
+            continue
+        action = d.get("action")
+        if action == "exclude":
+            target["excluded"] = True
+        elif action == "keep":
+            target["excluded"] = False
+        elif action == "custom":
+            target["replacement"] = str(d.get("replacement") or target["replacement"])
+            target["excluded"] = False
+    return {"items": mapping}
+
+
 def save_review_draft(store: JobStore, job_id: str, item_id: str, payload: dict) -> dict[str, Any]:
     get_job_and_item(store, job_id, item_id)
     store.save_item_review_draft(item_id, payload)
@@ -1065,7 +1112,10 @@ def approve_review(store: JobStore, job_id: str, item_id: str, reviewer: str = "
 
 def reject_review(store: JobStore, job_id: str, item_id: str, reviewer: str = "local") -> dict[str, Any]:
     """Reject an item review and re-enqueue recognition. Raises ValueError on errors."""
-    get_job_and_item(store, job_id, item_id)
+    from app.services.agent_md_batch import AGENT_MD_DRAFT_KEY
+    from app.services.file_management_service import file_store
+
+    job, _item = get_job_and_item(store, job_id, item_id)
     try:
         store.reject_item_review(item_id, reviewer=reviewer)
     except ValueError:
@@ -1073,6 +1123,13 @@ def reject_review(store: JobStore, job_id: str, item_id: str, reviewer: str = "l
     ir = store.get_item(item_id)
     if not ir:
         raise RuntimeError("internal invariant: ir is unexpectedly missing")
+    # 供料件（Issue#196）：reject 语义 = 重识别——清掉映射草稿，否则工人幂等短路
+    # 会原样送回 AWAITING_REVIEW，reject 成为空转。
+    if str(job.get("job_type") or "") == JobType.AGENT_BATCH.value:
+        info = file_store.get(str(ir["file_id"]))
+        if isinstance(info, dict) and info.get(AGENT_MD_DRAFT_KEY):
+            info.pop(AGENT_MD_DRAFT_KEY, None)
+            file_store.set(str(ir["file_id"]), info)
     store.touch_job_updated(job_id)
     refresh_job_status(store, job_id)
     enqueue_task("recognition", job_id, item_id, ir["file_id"])
@@ -1126,6 +1183,10 @@ async def commit_all_reviews(
     if not job:
         raise NotFoundError("job not found")
 
+    # 供料批量（Issue#196）：一键确认走映射表渲染路径（同步串行、无 redaction 入队）。
+    if str(job.get("job_type") or "") == JobType.AGENT_BATCH.value:
+        return await commit_all_agent_md_reviews(store, job_id, reviewer=reviewer)
+
     awaiting = [
         it
         for it in store.list_items(job_id)
@@ -1170,6 +1231,123 @@ async def commit_all_reviews(
     }
 
 
+async def commit_agent_md_review(
+    store: JobStore,
+    job: dict[str, Any],
+    item: dict[str, Any],
+    decisions: list,
+    *,
+    reviewer: str = "local",
+) -> dict[str, Any]:
+    """供料批量确认（Issue#196）：应用映射决策 → 渲染三产物 → file_store 登记 → COMPLETED。
+
+    失败打回 AWAITING_REVIEW 带 error_message（可改后重提），与 Redactor 路径语义对齐；
+    草稿缺失（如识别段未跑完）同样打回，由用户重跑识别修复。
+    """
+    from app.services.agent_md_batch import commit_agent_md_item
+    from app.services.file_management_service import _file_store_lock, file_store
+
+    file_id = str(item["file_id"])
+    async with _file_store_lock:
+        file_info = file_store.get(file_id)
+    if not file_info:
+        store.update_item_status(item["id"], JobItemStatus.AWAITING_REVIEW, error_message="file not found")
+        refresh_job_status(store, str(job["id"]))
+        raise NotFoundError("file not found")
+
+    try:
+        patch = commit_agent_md_item(file_info, decisions)
+    except Exception as exc:
+        logger.error("agent_md commit failed for item %s: %s", item["id"][:8], exc)
+        store.update_item_status(item["id"], JobItemStatus.AWAITING_REVIEW, error_message=str(exc)[:500])
+        refresh_job_status(store, str(job["id"]))
+        raise ValidationError(f"agent_md commit failed: {exc}") from exc
+
+    async with _file_store_lock:
+        info = file_store.get(file_id) or dict(file_info)
+        info.update(patch)
+        # 决策留痕：audit 需要时可在 review_draft 查（complete_item_review 会清草稿，
+        # 故把决策摘要落 file_store；不含原文，只含 id/action 计数）
+        info["agent_md_commit_meta"] = {
+            "decisions_count": len(decisions or []),
+            "excluded": sum(1 for d in (decisions or []) if d.get("action") == "exclude"),
+            "custom": sum(1 for d in (decisions or []) if d.get("action") == "custom"),
+        }
+        file_store.set(file_id, info)
+
+    store.complete_item_review(item["id"], reviewer=reviewer)
+    store.touch_job_updated(str(job["id"]))
+    refresh_job_status(store, str(job["id"]))
+    item_done = store.get_item(item["id"])
+    if not item_done:
+        raise RuntimeError("internal invariant: item_done is unexpectedly missing")
+    return item_to_out(item_done)
+
+
+async def commit_all_agent_md_reviews(
+    store: JobStore, job_id: str, reviewer: str = "local"
+) -> dict[str, Any]:
+    """供料批量一键确认（Issue#196）：逐份按草稿决策渲染产物；响应形状与通用路径一致。
+
+    渲染是 CPU 毫秒级，直接同步串行（万级供料批不受 JOB_CONCURRENCY 影响——
+    供料批次天然是文档级，几千份的渲染仍在秒级）；单份失败记入 failed 不中断。
+    重复调用幂等：已 COMPLETED 的件不在 awaiting 列表里，不会被二次渲染。
+    """
+    from app.services.agent_md_batch import commit_agent_md_item
+    from app.services.file_management_service import _file_store_lock, file_store
+
+    job = store.get_job(job_id)
+    if not job:
+        raise NotFoundError("job not found")
+    awaiting = [
+        it for it in store.list_items(job_id)
+        if it["status"] == JobItemStatus.AWAITING_REVIEW.value
+    ]
+    if not awaiting:
+        return {"job_id": job_id, "total_awaiting": 0, "confirmed": 0, "failed": []}
+
+    try:
+        drafts = store.list_item_review_drafts(job_id)
+    except Exception:
+        logger.exception("commit_all_agent_md_reviews: draft prefetch failed for job %s", job_id[:8])
+        drafts = {}
+
+    confirmed = 0
+    failed: list[dict[str, Any]] = []
+    for item in awaiting:
+        item_id = str(item["id"])
+        try:
+            _file_id, draft = drafts.get(item_id, (item.get("file_id"), {}))
+            decisions = (draft or {}).get("agent_md_decisions") or []
+            async with _file_store_lock:
+                file_info = file_store.get(str(item["file_id"]))
+            if not file_info:
+                raise ValueError("file not found")
+            patch = commit_agent_md_item(file_info, decisions)
+            async with _file_store_lock:
+                info = file_store.get(str(item["file_id"])) or dict(file_info)
+                info.update(patch)
+                file_store.set(str(item["file_id"]), info)
+            store.complete_item_review(item_id, reviewer=reviewer)
+            confirmed += 1
+        except Exception as exc:
+            logger.warning("commit_all_agent_md_reviews: item %s failed: %s", item_id[:8], exc)
+            try:
+                store.update_item_status(item_id, JobItemStatus.AWAITING_REVIEW, error_message=str(exc)[:500])
+            except (KeyError, ValueError):
+                pass
+            failed.append({"item_id": item_id, "error": str(exc)[:200]})
+
+    store.touch_job_updated(job_id)
+    refresh_job_status(store, job_id)
+    return {
+        "job_id": job_id,
+        "total_awaiting": len(awaiting),
+        "confirmed": confirmed,
+        "failed": failed,
+    }
+
+
 async def commit_review(
     store: JobStore,
     job_id: str,
@@ -1193,6 +1371,16 @@ async def commit_review(
         return item_to_out(item)
 
     store.save_item_review_draft(item_id, payload)
+    if item["status"] == JobItemStatus.PENDING.value:
+        store.update_item_status(item_id, JobItemStatus.AWAITING_REVIEW)
+
+    # 供料批量（Issue#196）：确认对象是映射表，渲染三产物替代 Redactor；
+    # 渲染为 CPU 毫秒级同步完成，不经 redacting 态、不入队 redaction。
+    if str(job.get("job_type") or "") == JobType.AGENT_BATCH.value:
+        return await commit_agent_md_review(
+            store, job, item, payload.get("agent_md_decisions") or [], reviewer=reviewer,
+        )
+
     if item["status"] == JobItemStatus.PENDING.value:
         store.update_item_status(item_id, JobItemStatus.AWAITING_REVIEW)
     store.mark_item_redacting(item_id)

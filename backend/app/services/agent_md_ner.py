@@ -7,6 +7,8 @@
 """
 import logging
 
+from typing import Callable
+
 from app.core.config import settings
 from app.models.schemas import Entity
 from app.services.agent_md_types import Chunk, MappingItem, Seg
@@ -14,7 +16,6 @@ from app.services.redaction.replacement_strategy import (
     WRAPPING_QUOTE_CHARS,
     trim_quoted_span,
 )
-
 _SEP = "\n\n"
 # 占位符中文短名；缺省回退 type id。（EntityTypeConfig.name 是全名如「银行卡号」，
 # 与映射表口径不同，故此处用短名字典而非读配置。）
@@ -56,15 +57,18 @@ async def run_ner(
     chunks: list[Chunk],
     entity_types: list,
     ner,
+    on_chunk: Callable[[int, int], None] | None = None,
 ) -> tuple[list[Entity], list[Chunk]]:
     """逐块顺序 HybridNER；Entity.start/end 平移到全局偏移，page=块首页+1。
 
     Issue#88：NER 偶尔把包裹性引号并进实体 span（「“李四”」），不剥则映射表
     原文带引号、姓氏派生取到引号退化「[“某]」，确认后替换整 span 吞引号。
     在此收口剥引号并同步修正全局偏移。
+    on_chunk(done, total)：每块完成后回调（供料批量进度条用，Issue#196；缺省无）。
     """
     entities: list[Entity] = []
-    for chunk in chunks:
+    total = len(chunks)
+    for done, chunk in enumerate(chunks, start=1):
         ents = await ner.extract(chunk.text, entity_types)
         for ent in ents:
             span = trim_quoted_span(chunk.text, ent.start, ent.end)
@@ -79,6 +83,8 @@ async def run_ner(
             ent.text = chunk.text[span[0]:span[1]]
             ent.page = chunk.page_idx + 1
             entities.append(ent)
+        if on_chunk:
+            on_chunk(done, total)
     return entities, chunks
 
 

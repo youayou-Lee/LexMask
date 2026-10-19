@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-10-19
+
+### 新增（Issue#196）供料模式（原「喂Agent」）加入批量 + 全站更名
+
+- **更名（D1 拍板）**：模式定名**供料模式**——只改用户可见文案（zh/en i18n、README、接口基线标题），接口路径 `/agent-md`、内部标识 `agent_md_*`/`agentMd.*` key、占位符枚举 `placeholder` 零变化（改名判据进 CI：zh「喂Agent」/en「Feed Agent」旧词清零，可删即红）。
+- **批量第四通道（`agent_batch`）**：批量入口新增供料卡；五步向导按需裁剪——step1 只选文本识别项（替换方式锁定占位符，隐藏图像打码/水印）；step2 全格式放行（pdf/扫描/图片走 MinerU 解析，docx/doc/txt/md/rtf/html 文本直取，D3 拍板）；step3 队列逐份解析+NER（阶段进度 parsing/ner）；**step4 为逐份映射表确认**（保留原文/自定义替换值/缺省占位符，D2 拍板不做页面级预览；一键确认沿用 bulk_confirm 权限门控）；step5 导出 ZIP 含每份 脱敏MD+映射表+保留清单。
+- **后端**：新增 `JobType.AGENT_BATCH`（DDL CHECK 探针迁移至 `agent_batch`，旧库启动自动重建、幂等）；识别工人新增供料分支（草稿落 file_store `agent_md_draft`，watchdog 重入队幂等短路）；`commit_review`/`commit_all_reviews` 供料分支（渲染三产物替代 Redactor，同步完成不入队 redaction）；`reject` 语义=清草稿重识别；新增 `GET /jobs/{id}/items/{item_id}/agent-md-mapping`（与单文件 mapping 契约同构）；导出 `vl_md_meta` 附加入包。化名门控三入口对供料批同样生效。
+- **边界**：单文件供料动线零改动（仅文案更名）；既有三条批量通道与 `vl_md` 直通分支零改动。
+
 ## 2026-10-18
 
 ### 修正（Issue#153）`D1.corpus_premise` 改按「权威视图」判定——推定形态不再误报 FAIL

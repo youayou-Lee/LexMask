@@ -47,7 +47,7 @@ export interface JobItemMini {
 
 export interface JobEmbedSummary {
   status: string;
-  job_type: 'text_batch' | 'image_batch' | 'smart_batch' | 'structured_batch';
+  job_type: 'text_batch' | 'image_batch' | 'smart_batch' | 'structured_batch' | 'agent_batch';
   items: JobItemMini[];
 
   first_awaiting_review_item_id?: string | null;

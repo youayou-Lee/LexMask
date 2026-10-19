@@ -65,10 +65,12 @@ class JobStore(RepairMixin):
                 conn.execute("ALTER TABLE jobs ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'local_user'")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_owner ON jobs(owner_id)")
             # Migrate CHECK constraint to include all current job types.
+            # 探针插入最新加入的 job_type（Issue#196：agent_batch）——旧 CHECK 库会
+            # IntegrityError 触发表重建；已含该值的库插入成功即跳过（幂等）。
             try:
                 conn.execute(
                     "INSERT INTO jobs (id, job_type, status, created_at, updated_at) "
-                    "VALUES ('__test_structured', 'single', 'draft', '', '')"
+                    "VALUES ('__test_structured', 'agent_batch', 'draft', '', '')"
                 )
                 conn.execute("DELETE FROM jobs WHERE id = '__test_structured'")
             except sqlite3.IntegrityError:
@@ -81,7 +83,7 @@ class JobStore(RepairMixin):
                     conn.execute("""
                         CREATE TABLE jobs (
                             id TEXT PRIMARY KEY,
-                            job_type TEXT NOT NULL CHECK(job_type IN ('text_batch','image_batch','smart_batch','structured_batch','single')),
+                            job_type TEXT NOT NULL CHECK(job_type IN ('text_batch','image_batch','smart_batch','structured_batch','agent_batch','single')),
                             title TEXT NOT NULL DEFAULT '',
                             status TEXT NOT NULL,
                             skip_item_review INTEGER NOT NULL DEFAULT 0,
