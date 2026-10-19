@@ -1,6 +1,7 @@
 // Copyright 2026 LexMask Contributors
 
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import { useParams } from 'react-router-dom';
 import { localizeErrorMessage } from '@/utils/localizeError';
 import {
   batchGetFileRaw,
@@ -94,6 +95,7 @@ export function useReviewDraft(deps: ReviewDraftDeps): {
 
   const reviewLoadSeqRef = useRef(0);
   const autoLoadedReviewKeyRef = useRef('');
+  const { batchMode } = useParams<{ batchMode: string }>();
   const loadDataAbortRef = useRef<AbortController | null>(null);
   const reviewFileId = reviewFile?.file_id ?? '';
   const reviewFileIsImageMode = reviewFile?.isImageMode === true;
@@ -354,7 +356,9 @@ export function useReviewDraft(deps: ReviewDraftDeps): {
   );
 
   useEffect(() => {
-    if (step !== 4 || !reviewFileId) {
+    // 供料模式（Issue#196）：审阅对象是映射表（batch-step4-agent-review 自取数据），
+    // 实体/页面审阅的自动加载在此短路，避免打到不存在的实体接口。
+    if (batchMode === 'agent' || step !== 4 || !reviewFileId) {
       autoLoadedReviewKeyRef.current = '';
       return;
     }
@@ -364,7 +368,7 @@ export function useReviewDraft(deps: ReviewDraftDeps): {
     if (autoLoadedReviewKeyRef.current === key) return;
     autoLoadedReviewKeyRef.current = key;
     void loadReviewData(reviewFileId, reviewFileIsImageMode);
-  }, [step, reviewFileId, reviewFileIsImageMode, reviewItemId, loadReviewData]);
+  }, [batchMode, step, reviewFileId, reviewFileIsImageMode, reviewItemId, loadReviewData]);
 
   useEffect(() => {
     if (isPreviewMode) return;

@@ -417,6 +417,31 @@ async def get_item_review_draft(
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@router.get("/{job_id}/items/{item_id}/agent-md-mapping")
+async def get_item_agent_md_mapping(
+    job_id: str,
+    item_id: str,
+    store: JobStore = Depends(get_job_store),
+    owner_id: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """供料批量（Issue#196）：读该 item 的映射表草稿，供第 4 步映射确认。
+
+    响应与单文件供料 ``GET /agent-md/{task_id}/mapping`` 同构：
+    ``{items: [{id, original_text, entity_type, replacement, excluded}]}``；
+    已保存的 review 草稿决策（agent_md_decisions）就地套用，前端看到的是
+    「上次保存到哪」的状态。识别未完成（草稿缺失）返回 409。
+    """
+    try:
+        _jms.assert_job_owner(store.get_job(job_id), owner_id)
+        return _jms.get_agent_md_mapping(store, job_id, item_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 @router.put("/{job_id}/items/{item_id}/review-draft", response_model=ReviewDraftResponse)
 async def put_item_review_draft(
     job_id: str,

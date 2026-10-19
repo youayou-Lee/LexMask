@@ -1037,6 +1037,18 @@ const enOverrides: Record<string, string> = {
     'Default path for real batches with documents, scans, PDFs, and images together.',
   'batchHub.mode.smart.tag1': 'Mixed files',
   'batchHub.mode.smart.summaryValue': 'One queue and one review path',
+  'batchHub.mode.agent.title': 'AI feed mode',
+  'batchHub.mode.agent.desc':
+    'Upload PDF, Word, text and scanned files. Each becomes sanitized Markdown plus a mapping table for cloud AI.',
+  'batchHub.mode.agent.tag1': 'For cloud AI',
+  'batchHub.mode.agent.summaryValue': 'Sanitized MD + mapping + retained list',
+  'batchHub.mode.agent.journeyNote': 'Feed material for AI starts here',
+  'batchWizard.step1Agent.modeLabel': 'Placeholder replacement',
+  'batchWizard.step1Agent.placeholderNote':
+    'Sensitive entities become [TYPE_N] placeholders; a mapping table and retained list ship with the deliverable for round-trip restore.',
+  'batchWizard.step4Agent.hint':
+    'Confirm the mapping per file: keep original text or set custom replacements; unset rows use placeholders. Confirming generates sanitized Markdown.',
+  'batchWizard.step4Agent.confirmGenerate': 'Confirm & generate',
   'jobs.filters.kicker': 'Operations',
   'jobs.filters.title': 'Jobs Console',
   'jobs.filters.desc': 'Keep queue progress, review backlog, and completed runs in one place.',
@@ -1175,7 +1187,7 @@ const enOverrides: Record<string, string> = {
   'playground.reconfigTypes': 'Adjust recognition items',
   'playground.reconfigHint': 'Go back to the upload page to pick a preset or tick recognition items, then upload the file to recognize.',
   'playground.feedAgent': 'Feed cloud AI (generate redacted MD)',
-  'playground.feedAgentHint': 'Switch to Feed Agent mode: MinerU parsing → mapping review → redacted Markdown (no re-upload needed)',
+  'playground.feedAgentHint': 'Switch to AI feed mode: MinerU parsing → mapping review → redacted Markdown (no re-upload needed)',
   'playground.recognitionSection': 'Recognition',
   'playground.recognitionSectionDesc':
     'Refresh detection after updating the recognition list or item settings.',
@@ -2614,9 +2626,9 @@ Object.assign(enOverrides, {
 
 // Issue#75 Feed Agent (/agent-md four-step flow); useT has no interpolation, progress copy is concatenated
 Object.assign(enOverrides, {
-  'nav.agentMd': 'Feed Agent',
-  'nav.agentMd.sub': 'Redacted MD for cloud AI',
-  'agentMd.title': 'Feed Agent — Case File to Redacted Markdown',
+  'nav.agentMd': 'AI feed mode',
+  'nav.agentMd.sub': 'Case files to sanitized Markdown, safely supplied to cloud AI',
+  'agentMd.title': 'AI feed mode — Case File to Redacted Markdown',
   'agentMd.uploadHint': 'Upload a PDF case file to produce redacted Markdown and a mapping table ready to feed cloud legal AI',
   'agentMd.uploadFailed': 'Upload failed',
   'agentMd.statusFailed': 'Failed to fetch progress',

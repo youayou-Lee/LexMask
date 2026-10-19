@@ -20,14 +20,15 @@ import type { BatchRow, PipelineCfg, ReviewEntity, Step, TextEntityType } from '
 // ── Pure helpers ──
 
 export function isBatchWizardMode(value: string | null | undefined): value is BatchWizardMode {
-  return value === 'text' || value === 'image' || value === 'smart';
+  return value === 'text' || value === 'image' || value === 'smart' || value === 'agent';
 }
 
-export function toBatchJobType(
-  mode: BatchWizardMode,
-): 'text_batch' | 'image_batch' | 'smart_batch' {
+export type BatchJobType = 'text_batch' | 'image_batch' | 'smart_batch' | 'agent_batch';
+
+export function toBatchJobType(mode: BatchWizardMode): BatchJobType {
   if (mode === 'text') return 'text_batch';
   if (mode === 'image') return 'image_batch';
+  if (mode === 'agent') return 'agent_batch';
   return 'smart_batch';
 }
 
@@ -140,6 +141,17 @@ export function buildJobConfigForWorker(
   wizardMode: BatchWizardMode,
   wizardFurthestStep: Step,
 ): Record<string, unknown> {
+  // 供料模式（Issue#196）：替换方式固化为占位符（placeholder），不带图像打码/水印配置——
+  // 交付物是脱敏 MD+映射表+保留清单，无打码渲染段。
+  if (wizardMode === 'agent') {
+    return {
+      entity_type_ids: c.selectedEntityTypeIds,
+      replacement_mode: 'placeholder',
+      batch_wizard_mode: wizardMode,
+      preferred_execution: c.executionDefault === 'local' ? 'local' : 'queue',
+      wizard_furthest_step: wizardFurthestStep,
+    };
+  }
   return {
     entity_type_ids: c.selectedEntityTypeIds,
     ocr_has_types: c.ocrHasTypes,

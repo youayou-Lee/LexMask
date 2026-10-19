@@ -44,6 +44,17 @@ const PRIMARY_MODE: ModeCard = {
   testId: 'batch-launch-smart',
 };
 
+// 供料模式（Issue#196）：第四条批量通道——产出脱敏 MD+映射表+保留清单，喂云端 AI。
+const AGENT_MODE: ModeCard = {
+  mode: 'agent',
+  icon: ListChecks,
+  titleKey: 'batchHub.mode.agent.title',
+  descKey: 'batchHub.mode.agent.desc',
+  tagKeys: ['batchHub.mode.agent.tag1'],
+  summaryKey: 'batchHub.mode.agent.summaryValue',
+  testId: 'batch-launch-agent',
+};
+
 function getLocalCopy(
   t: (key: string) => string,
   locale: Locale,
@@ -164,6 +175,12 @@ export function BatchHub() {
               onOpenLive={() => openBatch('smart')}
               onOpenPreview={() => openPreview('smart')}
             />
+            <AgentBatchEntry
+              liveBlocked={batchEntryBlocked}
+              liveBlockedReason={getBlockedReason('agent')}
+              onOpenLive={() => openBatch('agent')}
+              onOpenPreview={() => openPreview('agent')}
+            />
             <BatchHubJobList
               jobs={activeJobs}
               loading={loading}
@@ -174,6 +191,41 @@ export function BatchHub() {
         </div>
       </div>
     </div>
+  );
+}
+
+function AgentBatchEntry({
+  liveBlocked,
+  liveBlockedReason,
+  onOpenLive,
+  onOpenPreview,
+}: {
+  liveBlocked: boolean;
+  liveBlockedReason?: string;
+  onOpenLive: () => void;
+  onOpenPreview: () => void;
+}) {
+  const t = useT();
+  const locale = useI18n((state) => state.locale);
+  const title = getLocalCopy(t, locale, 'batchHub.mode.agent.title', {
+    en: 'AI feed mode (batch)',
+    zh: '\u4f9b\u6599\u6a21\u5f0f',
+  });
+  const desc = getLocalCopy(t, locale, 'batchHub.mode.agent.desc', {
+    en: 'Upload PDF, Word, text and scanned files. Each file becomes sanitized Markdown plus a restoration mapping table for cloud AI.',
+    zh: '\u4e0a\u4f20 PDF\u3001Word\u3001\u6587\u672c\u4e0e\u626b\u63cf\u4ef6\uff0c\u9010\u4efd\u8f6c\u6210\u8131\u654f Markdown\uff0c\u786e\u8ba4\u6620\u5c04\u8868\u540e\u6574\u6279\u5bfc\u51fa\uff0c\u9644\u8fd8\u539f\u6620\u5c04\u8868\u3002',
+  });
+  return (
+    <PrimaryBatchEntry
+      item={AGENT_MODE}
+      title={title}
+      desc={desc}
+      journeyNote={t('batchHub.mode.agent.journeyNote')}
+      liveBlocked={liveBlocked}
+      liveBlockedReason={liveBlockedReason}
+      onOpenLive={onOpenLive}
+      onOpenPreview={onOpenPreview}
+    />
   );
 }
 

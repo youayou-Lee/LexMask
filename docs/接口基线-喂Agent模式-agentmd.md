@@ -1,8 +1,8 @@
-# 接口基线：喂 Agent 模式（agent-md，五端点 + MinerU sidecar 16581）
+# 接口基线：供料模式（agent-md，五端点 + MinerU sidecar 16581；原名「喂Agent」，2026-10 起 Issue#196 全站更名）
 
 > 对应 Issue：#75（喂Agent并行模式——MinerU+NER→脱敏MD+映射表，可直接投喂云端 AI）
 > 服务位置：LexMask backend `/api/v1/agent-md/*`（`backend/app/api/agent_md.py`，业务逻辑在 `app/services/agent_md_pipeline_service.py`）；外部依赖 MinerU 3.4 sidecar（实例内 `127.0.0.1:16581`，独立 venv 常驻）。
-> 本文档是 **喂 Agent 模式的接口基线**：前端独立页（路由 `/agent-md`）与第三方调用方按此对接，schema 变更须同步更新本文并走评审。
+> 本文档是 **供料模式（原「喂Agent」）的接口基线**：前端独立页（路由 `/agent-md`）与第三方调用方按此对接，schema 变更须同步更新本文并走评审。
 > 设计约束：**并行新模式，现有管线零改**——`main.py` 仅 import + `include_router` 两行注册，playground/批量链路不受影响。
 
 ## 1. 服务概要
@@ -156,7 +156,7 @@ ssh <实例> 'pkill -f "mineru-api --host 127.0.0.1 --port 16581"'
 `start_all_dcu.sh` 待加段落（照抄该脚本现有 5 服务段风格，**验收阶段执行**；自检行同步扩为 6 端口 +16581 `/docs`）：
 
 ```bash
-echo "==> 6/6 MinerU sidecar (16581, 喂Agent模式 Issue#75)"
+echo "==> 6/6 MinerU sidecar (16581, 供料模式 Issue#75)"
 spawn mineru-api "source /opt/dtk/env.sh && export MINERU_MODEL_SOURCE=local http_proxy= https_proxy= && /root/.venvs/mineru/bin/mineru-api --host 127.0.0.1 --port 16581"
 wait_health http://127.0.0.1:16581/docs "MinerU-API" 120
 ```

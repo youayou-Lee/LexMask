@@ -76,7 +76,31 @@ class RecognitionPipelineMixin:
             store.update_item_status(task.item_id, JobItemStatus.PROCESSING)
             self._try_update_job_status(store, task.job_id, JobStatus.PROCESSING)
 
-            # 1) 解析
+            # 1) 供料批量（Issue#196）：自带解析（MinerU/文本直取），不走标准 parse——
+            #    解析重复劳动且扫描件会白跑一次 OCR 预析。解析/直取 → NER → 映射草稿
+            #    落 file_store，进 AWAITING_REVIEW 等人工确认映射表；无打码段，
+            #    skip_item_review 不适用（审阅是产品语义），绝不入队 redaction。
+            if str(job.get("job_type") or "") == "agent_batch":
+                stage_started = time.perf_counter()
+                carrier = await self._run_agent_md(task, cfg)
+                self._record_item_performance(
+                    store, task.item_id,
+                    {
+                        "recognition": {
+                            "model_ms": _elapsed_ms(stage_started),
+                            "mode": "agent_md",
+                            "carrier": carrier,
+                        }
+                    },
+                )
+                store.update_item_progress(
+                    task.item_id, stage="agent_md", current=1, total=1, message="mapping_ready",
+                )
+                store.update_item_status(task.item_id, JobItemStatus.AWAITING_REVIEW)
+                logger.info("[queue] item=%s agent_md mapping_ready, awaiting_review", task.item_id[:8])
+                return
+
+            # 2) 解析
             parse_started = time.perf_counter()
             await self._parse_file(task)
             parse_ms = _elapsed_ms(parse_started)
@@ -87,7 +111,7 @@ class RecognitionPipelineMixin:
                 parse_ms / 1000,
             )
 
-            # 2) VL-MD 管线(Issue #66/#50):识别+替换+产物一步完成,不走审阅/回写链路
+            # 3) VL-MD 管线(Issue #66/#50):识别+替换+产物一步完成,不走审阅/回写链路
             if str(cfg.get("pipeline_mode") or "") == "vl_md":
                 stage_started = time.perf_counter()
                 await self._run_vl_md(task, cfg)
@@ -97,7 +121,7 @@ class RecognitionPipelineMixin:
                 )
                 return
 
-            # 2) NER/Vision
+            # 4) NER/Vision
             stage_started = time.perf_counter()
             await self._run_ner_or_vision(task, cfg)
             recognition_stage_ms = _elapsed_ms(stage_started)
@@ -576,6 +600,61 @@ class RecognitionPipelineMixin:
             "[queue] item=%s vl-md done entities=%d rounds=%d %s",
             task.item_id[:8], summary["entity_count"], summary["rounds"], summary["verdict"],
         )
+
+    async def _run_agent_md(self, task: TaskItem, cfg: dict) -> str:
+        """供料批量识别段（Issue#196）：段落构建 → NER → 映射草稿落 file_store。
+
+        幂等：file_store 已有合法 ``agent_md_draft``（watchdog 重入队/失败重试）
+        则短路复用，不重跑 MinerU。返回 carrier（"mineru"|"text"）供性能记录。
+        草稿里含真实姓名，与单文件线同等待遇：不出现在任何日志/进度消息里。
+        """
+        from app.services.agent_md_batch import load_draft, run_agent_md_stage1
+        from app.services.file_management_service import _file_store_lock, file_store
+        from app.services.file_operations import get_file_info
+
+        store = self._get_store()
+        fi = get_file_info(task.file_id)
+        if not fi:
+            raise ValueError(f"file_id={task.file_id} not in file_store")
+
+        async with _file_store_lock:
+            existing = file_store.get(task.file_id)
+        if load_draft(existing) is not None:
+            logger.info(
+                "[queue] item=%s agent_md draft exists, skip stage1", task.item_id[:8],
+            )
+            return str((existing or {}).get("agent_md_draft", {}).get("carrier") or "text")
+
+        def _on_parse(done: int, total: int) -> None:
+            store.update_item_progress(
+                task.item_id, stage="parsing", current=done, total=total,
+                message="agent_md_parsing",
+            )
+
+        def _on_ner(done: int, total: int) -> None:
+            store.update_item_progress(
+                task.item_id, stage="ner", current=done, total=total,
+                message="agent_md_ner_running",
+            )
+
+        draft = await run_agent_md_stage1(
+            fi,
+            cfg,
+            owner_id=str(fi.get("owner_id") or "local_user"),
+            on_parse_progress=_on_parse,
+            on_ner_progress=_on_ner,
+        )
+        async with _file_store_lock:
+            info = file_store.get(task.file_id)
+            if info is None:
+                info = dict(fi)
+            info["agent_md_draft"] = draft
+            file_store.set(task.file_id, info)
+        logger.info(
+            "[queue] item=%s agent_md stage1 done carrier=%s mapping=%d",
+            task.item_id[:8], draft.get("carrier"), len(draft.get("mapping") or []),
+        )
+        return str(draft.get("carrier") or "text")
 
     def _mark_recognition_complete(self, task: TaskItem, job: dict, store: JobStore) -> None:
         """Mark recognition complete and optionally enqueue redaction."""
