@@ -6,8 +6,7 @@
   汉字序号「[姓某一]/[姓某二]」，其余类型 [类型_N] 占位符，N 按该类型内首次出现顺序从 1 递增。
 """
 import logging
-
-from typing import Callable
+from collections.abc import Callable
 
 from app.core.config import settings
 from app.models.schemas import Entity
@@ -16,6 +15,7 @@ from app.services.redaction.replacement_strategy import (
     WRAPPING_QUOTE_CHARS,
     trim_quoted_span,
 )
+
 _SEP = "\n\n"
 # 占位符中文短名；缺省回退 type id。（EntityTypeConfig.name 是全名如「银行卡号」，
 # 与映射表口径不同，故此处用短名字典而非读配置。）
