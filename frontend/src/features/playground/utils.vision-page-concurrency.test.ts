@@ -143,3 +143,91 @@ describe('Issue#106 D2：勾选视觉特征后页间不再被强制串行', () =
     }
   });
 });
+
+describe('Issue#175 首屏优先：第 1 页独占首发', () => {
+  const pageOf = (call: { url: string }) =>
+    Number(new URL(call.url, 'http://localhost').searchParams.get('page'));
+
+  async function startRunner(over: { totalPages: number } & Record<string, unknown>) {
+    inFlight.current = 0;
+    inFlight.peak = 0;
+    waiters = [];
+    calls = [];
+    const { runVisionDetectionPages } = await import('./utils');
+    // 注意：必须包在对象里返回 —— async 函数会 await 直接返回的 promise，
+    // 那样调用方在放行请求前就永远拿不到控制权（曾因此把两条用例跑成 5s 超时）。
+    return {
+      runner: runVisionDetectionPages({
+        fileId: 'canary-issue175',
+        ocrHasTypes: [],
+        label: '测试',
+        ...over,
+      }),
+    };
+  }
+
+  it('10 页 / k=8（页数 > 槽位）：首发窗口里只有第 1 页一条在飞', async () => {
+    const { runner } = await startRunner({ totalPages: 10, visualFeatureTypes: ['official_seal'] });
+    // 首发窗口：不给任何请求放行，只让 microtask/宏任务推进几轮
+    for (let i = 0; i < 5; i += 1) await flush();
+    expect(calls.map(pageOf)).toEqual([1]);
+    expect(inFlight.current).toBe(1);
+
+    await drain();
+    await runner;
+    // 第 1 页之后其余页仍按 k 并发吃满
+    expect(calls.map(pageOf).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(inFlight.peak).toBe(PLAYGROUND_VISION_PAGE_CONCURRENCY);
+  });
+
+  it('卷页数 ≤ 2 时不启用独占（2 页卷保住 #106 的 peak=2 契约）', async () => {
+    const peak = await measurePeak({
+      totalPages: 2,
+      visualFeatureTypes: ['official_seal'],
+      concurrency: 2,
+    });
+    expect(peak).toBe(2);
+  });
+
+  it('卷页数 == 并发槽位（N=k，碰撞最坏区）也启用独占：首发窗口只有第 1 页', async () => {
+    // 门①.5 反例：旧守卫「页数 > 槽位」在 N=k 时不触发 —— 10 页/k=10 首发窗口 10 条同飞。
+    const { runner } = await startRunner({
+      totalPages: 10,
+      visualFeatureTypes: ['official_seal'],
+      concurrency: 10,
+    });
+    for (let i = 0; i < 5; i += 1) await flush();
+    expect(calls.map(pageOf)).toEqual([1]);
+    expect(inFlight.current).toBe(1);
+    await drain();
+    await runner;
+    // 第 1 页独占后，剩余 9 页按 k=10 并发（peak 上限受剩余页数限制）
+    expect(inFlight.peak).toBe(9);
+  });
+
+  it('卷页数 == 并发槽位为 8 时，第 1 页独占为首发窗口，随后 7 页并发（峰值 honest 记录）', async () => {
+    const { runner } = await startRunner({
+      totalPages: 8,
+      visualFeatureTypes: ['official_seal'],
+      concurrency: 8,
+    });
+    for (let i = 0; i < 5; i += 1) await flush();
+    expect(calls.map(pageOf)).toEqual([1]);
+    await drain();
+    await runner;
+    // 剩余 7 页 ≤ k=8 ⇒ 第二窗口 peak=7（比不独占少 1，属独占的代价，已记入方案边界）
+    expect(inFlight.peak).toBe(7);
+  });
+
+  it('显式关闭 firstPagePriority 退回纯 k 并发（开关本身有判据）', async () => {
+    const { runner } = await startRunner({
+      totalPages: 10,
+      visualFeatureTypes: ['official_seal'],
+      firstPagePriority: false,
+    });
+    for (let i = 0; i < 5; i += 1) await flush();
+    expect(calls.length).toBe(PLAYGROUND_VISION_PAGE_CONCURRENCY); // 无独占窗口，直接吃满
+    await drain();
+    await runner;
+  });
+});

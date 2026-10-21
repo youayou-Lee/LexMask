@@ -1,7 +1,10 @@
 // Copyright 2026 LexMask Contributors
 
 import { t } from '@/i18n';
-import { PLAYGROUND_VISION_PAGE_CONCURRENCY } from '@/constants/timing';
+import {
+  PLAYGROUND_VISION_FIRST_PAGE_PRIORITY,
+  PLAYGROUND_VISION_PAGE_CONCURRENCY,
+} from '@/constants/timing';
 import { authFetch, VISION_TIMEOUT } from '@/services/api-client';
 import {
   getSelectionMarkStyle,
@@ -297,6 +300,8 @@ interface RunVisionDetectionPagesOptions {
   concurrency?: number;
   force?: boolean;
   label: string;
+  /** Issue#175：第 1 页是否独占首发（默认取 `PLAYGROUND_VISION_FIRST_PAGE_PRIORITY`）。 */
+  firstPagePriority?: boolean;
   setLoadingMessage?: (message: string) => void;
   onPageComplete?: (payload: VisionPageCompletePayload) => void;
 }
@@ -308,6 +313,7 @@ export async function runVisionDetectionPages({
   totalPages,
   signal,
   concurrency = PLAYGROUND_VISION_PAGE_CONCURRENCY,
+  firstPagePriority = PLAYGROUND_VISION_FIRST_PAGE_PRIORITY,
   force = false,
   label,
   setLoadingMessage,
@@ -321,7 +327,6 @@ export async function runVisionDetectionPages({
   const effectiveConcurrency = concurrency;
   const maxWorkers = Math.max(1, Math.min(effectiveConcurrency, pages.length));
   const boxesByPage = new Map<number, BoundingBox[]>();
-  let nextIndex = 0;
   let completedPages = 0;
   let totalBoxes = 0;
   // Issue#106：页并发由 1 放开到 3 之后，某个 worker 抛错不再自动让兄弟 worker 停下
@@ -369,9 +374,27 @@ export async function runVisionDetectionPages({
     });
   };
 
+  // Issue#175 首屏优先：k>1 且卷页数 > 2 时，第 1 页先**独占**跑完再放其余页。
+  // 实测（门④ 浏览器臂，同一 10 页 canary）：k=1 首屏 7.62s / k=3 14.6s / k=8 中位 23.81s ——
+  // k 条请求同抢单卡会把最先发出的第 1 页挤后；独占首发把首屏拉回单页量级，整卷墙钟只多一个独跑窗口。
+  const queue = pages.slice();
+  // 触发面＝**卷页数 > 2**（不是「页数 > 并发槽位」）：碰撞最坏区恰是 N ≤ k（N=k 时 N 条全同飞，
+  // 门①.5 实测 10 页/k=10 首发窗口 10 条同飞），只按 N > k 会整类漏掉；而 N ≤ 2 时第 1 页本来就在
+  // 首发窗口里，独占没有收益、只会牺牲 #106 的并发峰值契约（2 页卷 peak 必须仍是 2）。
+  const firstPage = firstPagePriority && maxWorkers > 1 && pages.length > 2 ? queue.shift() : undefined;
+  if (firstPage !== undefined) {
+    try {
+      await runPage(firstPage);
+    } catch (error) {
+      stopRequested = true;
+      throw error;
+    }
+  }
+  let nextIndex = 0;
+
   async function worker() {
-    while (nextIndex < pages.length && !stopRequested) {
-      const page = pages[nextIndex];
+    while (nextIndex < queue.length && !stopRequested) {
+      const page = queue[nextIndex];
       nextIndex += 1;
       try {
         await runPage(page);
