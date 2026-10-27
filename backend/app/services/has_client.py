@@ -1093,6 +1093,10 @@ If nothing matches, return {{}}.
             parse_mode, result = self._try_parse_json_object(response)
             if result is None:
                 logger.warning("HaS NER response could not be parsed as JSON: %.200s", response)
+                # Issue#200（#198 同源边界）：本递归同样把外层温度原样传给子批。
+                # 不可解析 ≠ 截断复读（当前无实证复发案例），且按类型分批本身
+                # 缩减了单次输出规模，属天然缓解；采样逃逸策略随 #200 决策，
+                # 本期不动（特征化测试钉住现状行为）。
                 if type_guidance is None and len(types) > _NER_REBATCH_TYPE_THRESHOLD:
                     from app.core.config import settings
                     target = max(_NER_TYPE_BATCH_TARGET_TOKENS_FLOOR, int(settings.HAS_NER_TYPE_BATCH_TARGET_TOKENS))
@@ -1177,15 +1181,37 @@ If nothing matches, return {{}}.
                             item for item in (type_guidance or [])
                             if str(item.get("type") or "") in missing_set
                         ] or None
-                        retry_result, retry_confirmed = self.ner_checked(
-                            text,
-                            missing,
-                            retry_guidance,
-                            temperature=temperature,
-                            sample_index=sample_index,
-                            _allow_truncation_retry=False,
-                            raise_on_error=raise_on_error,
-                            context_tokens=context_tokens,
+                        # Issue#198：补查温度只升不降（max 语义）。temp=0 种子趟
+                        # 复读截断后，同温度补查=同贪心轨迹必然复发（真实案卷
+                        # 134 页卷第 34 页实测 84s+76s 双循环烧满两次 max_tokens）；
+                        # 换采样轨迹才能逃逸。调用方已传 >=重查温度的自洽趟不被
+                        # 拉低。
+                        retry_temperature = max(
+                            _MODEL_TEMPERATURE if temperature is None else float(temperature),
+                            settings.HAS_NER_TRUNCATION_RETRY_TEMPERATURE,
+                        )
+                        # 嵌套观测面：只收本次补查自身的 finish_reason/计数。
+                        # 门④判据口径：finish_reason=stop 且 confirmed=True 且
+                        # recovered 闭合才算「补查逃逸复读」；补查再次截断时
+                        # finish_reason=length（drain 折叠口径）+ confirmed=False。
+                        with ner_metrics_scope() as retry_scope:
+                            retry_result, retry_confirmed = self.ner_checked(
+                                text,
+                                missing,
+                                retry_guidance,
+                                temperature=retry_temperature,
+                                sample_index=sample_index,
+                                _allow_truncation_retry=False,
+                                raise_on_error=raise_on_error,
+                                context_tokens=context_tokens,
+                            )
+                        retry_metrics = drain_ner_metrics(retry_scope)
+                        logger.warning(
+                            "HaS NER re-query finished: finish_reason=%s confirmed=%s recovered=%d/%d types",
+                            retry_metrics.get("has_text_ner_finish_reason") or "unknown",
+                            retry_confirmed,
+                            len([t for t in missing if retry_result.get(t)]),
+                            len(missing),
                         )
                         for key, values in (retry_result or {}).items():
                             if not isinstance(values, list):

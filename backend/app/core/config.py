@@ -479,6 +479,11 @@ class Settings(BaseSettings):
     # 验证 temp>0 是否提升召回 / 是否 2-3 趟饱和 / 是否触发 EngineDead 后再灰度。
     HAS_NER_SELF_CONSIST_SAMPLES: int = 1
     HAS_NER_SELF_CONSIST_TEMPERATURE: float = 0.7
+    # 截断补查（truncation re-query）采样温度下限，只升不降（max 语义，消费侧
+    # has_client.ner_checked）。Issue#198：temp=0 贪心复读截断后，同温度补查=
+    # 同贪心轨迹必然复发（真实案卷 134 页卷第 34 页实测 84s+76s 双循环烧满两次
+    # max_tokens）；换采样轨迹才能逃逸。与自洽采样温度同默认值。
+    HAS_NER_TRUNCATION_RETRY_TEMPERATURE: float = 0.7
 
     # --- 批量异步导出（万级文件：分卷落盘，见 services/export_service.py） ---
     EXPORT_VOLUME_MAX_BYTES: int = 2 * 1024**3   # 每卷 zip ≤2GB
@@ -872,6 +877,11 @@ class Settings(BaseSettings):
     @field_validator("HAS_NER_SELF_CONSIST_TEMPERATURE")
     @classmethod
     def _validate_has_ner_self_consist_temperature(cls, v: float) -> float:
+        return max(0.0, min(2.0, v))
+
+    @field_validator("HAS_NER_TRUNCATION_RETRY_TEMPERATURE")
+    @classmethod
+    def _validate_has_ner_truncation_retry_temperature(cls, v: float) -> float:
         return max(0.0, min(2.0, v))
 
     @field_validator("HAS_NER_CUSTOM_MAX_TYPES_PER_REQUEST")
