@@ -489,6 +489,10 @@ class Settings(BaseSettings):
     # 同贪心轨迹必然复发（真实案卷 134 页卷第 34 页实测 84s+76s 双循环烧满两次
     # max_tokens）；换采样轨迹才能逃逸。与自洽采样温度同默认值。
     HAS_NER_TRUNCATION_RETRY_TEMPERATURE: float = 0.7
+    # 流式复读掐断（Issue#202 生成侧止损）：流式增量解码 + 复读签名实时检测，
+    # 命中即断开（复读 ~66s 烧满 → ~5-10s 掐断），finish_reason 按 length 收口
+    # 接截断恢复链路（json_repair→分块补查）。通道异常自动回落非流式。
+    HAS_STREAM_LOOP_ABORT: bool = True
 
     # --- 批量异步导出（万级文件：分卷落盘，见 services/export_service.py） ---
     EXPORT_VOLUME_MAX_BYTES: int = 2 * 1024**3   # 每卷 zip ≤2GB

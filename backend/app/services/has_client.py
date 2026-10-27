@@ -93,6 +93,10 @@ _NER_REBATCH_TYPE_THRESHOLD = 24
 # 缩短单次生成；<=threshold 原样单次补查）
 _REQUERY_CHUNK_THRESHOLD = 600
 _REQUERY_CHUNK_TARGET = 450
+# 流式复读掐断（Issue#202）：检测间隔字符数 / 检测窗口 / 最短累计（过短不判）
+_STREAM_ABORT_CHECK_INTERVAL = 256
+_STREAM_ABORT_WINDOW = 1024
+_STREAM_ABORT_MIN_CHARS = 200
 # 类型引导 description 最大字符数
 _TYPE_GUIDANCE_DESC_MAX_CHARS = 96
 # 健康检查结果缓存秒数
@@ -177,6 +181,21 @@ def drain_ner_metrics(scope: NerMetricsScope) -> dict[str, Any]:
     if scope.rebatch_batches > 0:
         metrics["has_text_ner_rebatch_batches"] = scope.rebatch_batches
     return metrics
+
+
+class _StreamChatResponse:
+    """流式装配的伪 Response：只暴露调用方使用的 .json() 面（Issue#202）。
+
+    stream_aborted=True 表示复读签名命中、主动断开（finish_reason 已按
+    length 收口，下游截断恢复链路无需感知来源差异）。
+    """
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data
+        self.stream_aborted = bool(data.get("stream_aborted"))
+
+    def json(self) -> dict[str, Any]:
+        return self._data
 
 
 @dataclass
@@ -342,11 +361,112 @@ class HaSClient:
 
     def _do_chat_request(self, base: str, payload: dict[str, Any]) -> httpx.Response:
         """Execute a single chat completions HTTP request (retryable, uses pooled client)."""
+        from app.core.config import settings
+
         def _request():
+            # Issue#202 生成侧止损：流式增量解码 + 复读签名实时掐断。合法回答的
+            # 长度上限=预算帽，复读也烧满帽子——时间上不可分，内容上可分（事故
+            # 日志实锤 24 字符周期循环签名）。掐断复用 length 语义 ⇒ repair→
+            # 分块补查链路自动接手；通道任何异常回落非流式（= #198 现状）。
+            if settings.HAS_STREAM_LOOP_ABORT:
+                try:
+                    return self._do_chat_request_stream(base, payload)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "HaS 流式复读掐断通道异常(%s: %.80s)，回落非流式",
+                        type(exc).__name__,
+                        str(exc),
+                    )
             resp = self._http_client.post(f"{base}/chat/completions", json=payload)
             resp.raise_for_status()
             return resp
         return ner_breaker.call_sync(_request)
+
+    def _do_chat_request_stream(self, base: str, payload: dict[str, Any]):
+        """流式执行单次 chat 请求，复读签名命中即断开（Issue#202）。
+
+        返回 duck-typed Response（仅 .json() 面），stream_aborted 标记掐断。
+        断开连接即令 vLLM 中止该次生成；finish_reason 按 length 收口，下游
+        截断恢复链路（json_repair→分块补查）无需感知掐断来源。
+        """
+        sp = dict(payload)
+        sp["stream"] = True
+        sp["stream_options"] = {"include_usage": True}
+        content_parts: list[str] = []
+        finish_reason: str | None = None
+        usage: dict[str, Any] | None = None
+        aborted = False
+        last_checked = 0
+        with self._http_client.stream(
+            "POST", f"{base}/chat/completions", json=sp
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except ValueError:
+                    continue
+                for choice in obj.get("choices") or []:
+                    delta = (choice.get("delta") or {}).get("content")
+                    if delta:
+                        content_parts.append(delta)
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+                if obj.get("usage"):
+                    usage = obj["usage"]
+                joined = "".join(content_parts)
+                if len(joined) - last_checked >= _STREAM_ABORT_CHECK_INTERVAL:
+                    last_checked = len(joined)
+                    if self._looks_like_loop(joined):
+                        aborted = True
+                        logger.warning(
+                            "HaS stream loop-abort: repetition signature detected at ~%d chars",
+                            len(joined),
+                        )
+                        break
+        if aborted:
+            finish_reason = "length"
+        data: dict[str, Any] = {
+            "choices": [
+                {
+                    "finish_reason": finish_reason or "stop",
+                    "message": {"role": "assistant", "content": "".join(content_parts)},
+                }
+            ],
+            "stream_aborted": aborted,
+        }
+        if usage:
+            data["usage"] = usage
+        return _StreamChatResponse(data)
+
+    @staticmethod
+    def _looks_like_loop(
+        text: str,
+        *,
+        window: int = _STREAM_ABORT_WINDOW,
+        min_period: int = 24,
+        repeats: int = 3,
+    ) -> bool:
+        """复读签名：尾部 window 内某 ≥min_period 字符片段出现 ≥repeats 次。
+
+        事故日志实证（#198）：病理复读以 24 字符周期原地打转。片段取自尾部
+        （循环在尾部最纯）；文本过短不判，防早期误掐。
+        """
+        if len(text) < _STREAM_ABORT_MIN_CHARS:
+            return False
+        seg = text[-window:]
+        for period in (192, 128, 96, 64, 48, 32, 24):
+            if period < min_period:
+                continue
+            piece = seg[-period:]
+            if len(piece) >= min_period and seg.count(piece) >= repeats:
+                return True
+        return False
 
     def _call_model(
         self,
@@ -390,7 +510,13 @@ class HaSClient:
         choice = choices[0]
         finish_reason = choice.get("finish_reason")
         LAST_FINISH_REASON.set(finish_reason or "none")
-        if finish_reason == "length":
+        if data.get("stream_aborted"):
+            # Issue#202：掐断先于截断日志，避免误读为「真跑到预算帽」
+            logger.warning(
+                "HaS stream loop-abort: generation cut at ~%d chars (recovery via repair + chunked re-query)",
+                len(choice.get("message", {}).get("content") or ""),
+            )
+        elif finish_reason == "length":
             logger.warning(
                 "HaS model response was truncated by max_tokens=%s",
                 payload.get("max_tokens"),
