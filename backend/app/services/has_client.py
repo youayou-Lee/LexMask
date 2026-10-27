@@ -367,10 +367,14 @@ class HaSClient:
             # Issue#202 生成侧止损：流式增量解码 + 复读签名实时掐断。合法回答的
             # 长度上限=预算帽，复读也烧满帽子——时间上不可分，内容上可分（事故
             # 日志实锤 24 字符周期循环签名）。掐断复用 length 语义 ⇒ repair→
-            # 分块补查链路自动接手；通道任何异常回落非流式（= #198 现状）。
+            # 分块补查链路自动接手。
+            # HTTP 状态/传输错误原样上抛（与非流式同语义，交给 retry_sync/断
+            # 路器）；仅流处理自身缺陷回落非流式（= #198 现状）。
             if settings.HAS_STREAM_LOOP_ABORT:
                 try:
                     return self._do_chat_request_stream(base, payload)
+                except (httpx.HTTPStatusError, httpx.TransportError):
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "HaS 流式复读掐断通道异常(%s: %.80s)，回落非流式",
@@ -397,13 +401,19 @@ class HaSClient:
         usage: dict[str, Any] | None = None
         aborted = False
         last_checked = 0
+        saw_data_line = False
         with self._http_client.stream(
             "POST", f"{base}/chat/completions", json=sp
         ) as resp:
             resp.raise_for_status()
             for line in resp.iter_lines():
-                if not line or not line.startswith("data:"):
+                if not line:
                     continue
+                if not line.startswith("data:"):
+                    # 非 SSE 应答（MockTransport/网关剥流）：body 本身就是完整
+                    # 非流式 JSON，直接采纳，不重发请求（#148 B 组判据依赖）。
+                    return _StreamChatResponse(json.loads(resp.read().decode("utf-8", errors="replace")))
+                saw_data_line = True
                 data = line[5:].strip()
                 if data == "[DONE]":
                     break
@@ -429,6 +439,9 @@ class HaSClient:
                             len(joined),
                         )
                         break
+        if not saw_data_line:
+            # 空响应体且无任何 SSE 行：流处理通道缺陷，抛错交回落非流式
+            raise RuntimeError("stream response carried no SSE data lines")
         if aborted:
             finish_reason = "length"
         data: dict[str, Any] = {

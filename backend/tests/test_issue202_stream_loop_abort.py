@@ -15,7 +15,6 @@ import json
 import logging
 from contextlib import contextmanager
 
-from app.core.config import settings
 from app.services.has_client import HaSClient
 
 LOOP_UNIT = ',"21199912255270","2HA0110'  # 事故日志同款 24 字符周期签名
@@ -135,29 +134,19 @@ def test_stream_loop_detected_aborts_with_length_semantics(caplog):
 
 
 def test_fallback_to_non_stream_on_stream_exception():
-    class _Broken:
-        def stream(self, method, url, json=None):
-            raise RuntimeError("stream channel broken")
-
-    client = HaSClient()
-    client._http_client = _Broken()
+    # 流处理自身缺陷（非状态/传输错误）：回落非流式，post 恰好接管一次
     body = {"choices": [{"finish_reason": "stop", "message": {"content": "{}"}}]}
-    post_script = body
-    from app.core.config import settings
 
-    assert settings.HAS_STREAM_LOOP_ABORT is True
-    client2 = make_client(post_script=[body])
-    # 用可控 Fake 验证回落计数：stream 抛异常 → post 接管
     class FakeHttpStreamRaises(FakeHttp):
         def stream(self, method, url, json=None):
             self.stream_calls += 1
             raise RuntimeError("broken")
 
-    c3 = FakeHttpStreamRaises(post_script=[body])
-    client3 = HaSClient()
-    client3._http_client = c3
-    resp = client3._do_chat_request("http://x/v1", {"messages": []})
-    assert c3.stream_calls == 1 and c3.post_calls == 1
+    client = HaSClient()
+    client._http_client = FakeHttpStreamRaises(post_script=[body])
+    resp = client._do_chat_request("http://x/v1", {"messages": []})
+    assert client._http_client.stream_calls == 1
+    assert client._http_client.post_calls == 1
     assert resp.json() == body
 
 

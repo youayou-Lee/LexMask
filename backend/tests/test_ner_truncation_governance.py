@@ -202,6 +202,9 @@ def test_finish_reason_stop_recorded_via_real_call_model(monkeypatch):
         return _Resp()
 
     client._http_client.post = fake_post
+    # Issue#202：本例钉「非流式路径」的 finish_reason 记录口径；流式通道
+    # 由 test_issue202_* 专测覆盖。
+    monkeypatch.setattr(settings, "HAS_STREAM_LOOP_ABORT", False)
     with ner_metrics_scope() as scope:
         client.ner("无敏感内容文本", ["姓名"])
     metrics = drain_ner_metrics(scope)
