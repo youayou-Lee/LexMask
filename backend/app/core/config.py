@@ -323,7 +323,12 @@ class Settings(BaseSettings):
     OCR_MAX_NEW_TOKENS: int = 2048
     # 主后端探测 OCR /health 的超时（秒）；首次加载模型较慢，过短会被显示「离线」
     OCR_HEALTH_PROBE_TIMEOUT: float = 5.0
-    BATCH_RECOGNITION_PAGE_TIMEOUT: float = 180.0
+    # 单页视觉识别门限（秒）。#198：病理页（复读截断→补查逃逸）全链 =
+    # OCR + 种子循环烧满 max_tokens（实测 ~84s，保确定性不可免）+ 逃逸补查
+    # + 同页其余类型批 + 核验，实测 ~140-200s；180 无尾部余量会贴线误杀
+    # （真实案卷第 34 页 179.99s vs 180.0s 差 72ms 整卷作废）。300 = 门④
+    # 实测病理链耗时 ×1.5 余量；#199 落地后超时不再致命，本值仅剩止血意义。
+    BATCH_RECOGNITION_PAGE_TIMEOUT: float = 300.0
     # Per-file page-level concurrency for vision recognition. This is not batch
     # item concurrency; JOB_CONCURRENCY controls how many job items the worker
     # consumes at once. The runtime caps this value to the current file's page
@@ -479,6 +484,15 @@ class Settings(BaseSettings):
     # 验证 temp>0 是否提升召回 / 是否 2-3 趟饱和 / 是否触发 EngineDead 后再灰度。
     HAS_NER_SELF_CONSIST_SAMPLES: int = 1
     HAS_NER_SELF_CONSIST_TEMPERATURE: float = 0.7
+    # 截断补查（truncation re-query）采样温度下限，只升不降（max 语义，消费侧
+    # has_client.ner_checked）。Issue#198：temp=0 贪心复读截断后，同温度补查=
+    # 同贪心轨迹必然复发（真实案卷 134 页卷第 34 页实测 84s+76s 双循环烧满两次
+    # max_tokens）；换采样轨迹才能逃逸。与自洽采样温度同默认值。
+    HAS_NER_TRUNCATION_RETRY_TEMPERATURE: float = 0.7
+    # 流式复读掐断（Issue#202 生成侧止损）：流式增量解码 + 复读签名实时检测，
+    # 命中即断开（复读 ~66s 烧满 → ~5-10s 掐断），finish_reason 按 length 收口
+    # 接截断恢复链路（json_repair→分块补查）。通道异常自动回落非流式。
+    HAS_STREAM_LOOP_ABORT: bool = True
 
     # --- 批量异步导出（万级文件：分卷落盘，见 services/export_service.py） ---
     EXPORT_VOLUME_MAX_BYTES: int = 2 * 1024**3   # 每卷 zip ≤2GB
@@ -872,6 +886,11 @@ class Settings(BaseSettings):
     @field_validator("HAS_NER_SELF_CONSIST_TEMPERATURE")
     @classmethod
     def _validate_has_ner_self_consist_temperature(cls, v: float) -> float:
+        return max(0.0, min(2.0, v))
+
+    @field_validator("HAS_NER_TRUNCATION_RETRY_TEMPERATURE")
+    @classmethod
+    def _validate_has_ner_truncation_retry_temperature(cls, v: float) -> float:
         return max(0.0, min(2.0, v))
 
     @field_validator("HAS_NER_CUSTOM_MAX_TYPES_PER_REQUEST")

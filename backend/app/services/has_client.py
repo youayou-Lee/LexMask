@@ -89,6 +89,14 @@ _NER_COMPLETION_CONTEXT_RATIO = 0.65
 _NER_MAX_TOKENS_FLOOR = 64
 # 触发分批回退的类型数阈值
 _NER_REBATCH_TYPE_THRESHOLD = 24
+# 截断补查切块阈值/目标块大小（Issue#198：长程重复文本换温度仍复读，切块
+# 缩短单次生成；<=threshold 原样单次补查）
+_REQUERY_CHUNK_THRESHOLD = 600
+_REQUERY_CHUNK_TARGET = 450
+# 流式复读掐断（Issue#202）：检测间隔字符数 / 检测窗口 / 最短累计（过短不判）
+_STREAM_ABORT_CHECK_INTERVAL = 256
+_STREAM_ABORT_WINDOW = 1024
+_STREAM_ABORT_MIN_CHARS = 200
 # 类型引导 description 最大字符数
 _TYPE_GUIDANCE_DESC_MAX_CHARS = 96
 # 健康检查结果缓存秒数
@@ -173,6 +181,21 @@ def drain_ner_metrics(scope: NerMetricsScope) -> dict[str, Any]:
     if scope.rebatch_batches > 0:
         metrics["has_text_ner_rebatch_batches"] = scope.rebatch_batches
     return metrics
+
+
+class _StreamChatResponse:
+    """流式装配的伪 Response：只暴露调用方使用的 .json() 面（Issue#202）。
+
+    stream_aborted=True 表示复读签名命中、主动断开（finish_reason 已按
+    length 收口，下游截断恢复链路无需感知来源差异）。
+    """
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data
+        self.stream_aborted = bool(data.get("stream_aborted"))
+
+    def json(self) -> dict[str, Any]:
+        return self._data
 
 
 @dataclass
@@ -338,11 +361,125 @@ class HaSClient:
 
     def _do_chat_request(self, base: str, payload: dict[str, Any]) -> httpx.Response:
         """Execute a single chat completions HTTP request (retryable, uses pooled client)."""
+        from app.core.config import settings
+
         def _request():
+            # Issue#202 生成侧止损：流式增量解码 + 复读签名实时掐断。合法回答的
+            # 长度上限=预算帽，复读也烧满帽子——时间上不可分，内容上可分（事故
+            # 日志实锤 24 字符周期循环签名）。掐断复用 length 语义 ⇒ repair→
+            # 分块补查链路自动接手。
+            # HTTP 状态/传输错误原样上抛（与非流式同语义，交给 retry_sync/断
+            # 路器）；仅流处理自身缺陷回落非流式（= #198 现状）。
+            if settings.HAS_STREAM_LOOP_ABORT:
+                try:
+                    return self._do_chat_request_stream(base, payload)
+                except (httpx.HTTPStatusError, httpx.TransportError):
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "HaS 流式复读掐断通道异常(%s: %.80s)，回落非流式",
+                        type(exc).__name__,
+                        str(exc),
+                    )
             resp = self._http_client.post(f"{base}/chat/completions", json=payload)
             resp.raise_for_status()
             return resp
         return ner_breaker.call_sync(_request)
+
+    def _do_chat_request_stream(self, base: str, payload: dict[str, Any]):
+        """流式执行单次 chat 请求，复读签名命中即断开（Issue#202）。
+
+        返回 duck-typed Response（仅 .json() 面），stream_aborted 标记掐断。
+        断开连接即令 vLLM 中止该次生成；finish_reason 按 length 收口，下游
+        截断恢复链路（json_repair→分块补查）无需感知掐断来源。
+        """
+        sp = dict(payload)
+        sp["stream"] = True
+        sp["stream_options"] = {"include_usage": True}
+        content_parts: list[str] = []
+        finish_reason: str | None = None
+        usage: dict[str, Any] | None = None
+        aborted = False
+        last_checked = 0
+        saw_data_line = False
+        with self._http_client.stream(
+            "POST", f"{base}/chat/completions", json=sp
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                if not line.startswith("data:"):
+                    # 非 SSE 应答（MockTransport/网关剥流）：body 本身就是完整
+                    # 非流式 JSON，直接采纳，不重发请求（#148 B 组判据依赖）。
+                    return _StreamChatResponse(json.loads(resp.read().decode("utf-8", errors="replace")))
+                saw_data_line = True
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except ValueError:
+                    continue
+                for choice in obj.get("choices") or []:
+                    delta = (choice.get("delta") or {}).get("content")
+                    if delta:
+                        content_parts.append(delta)
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+                if obj.get("usage"):
+                    usage = obj["usage"]
+                joined = "".join(content_parts)
+                if len(joined) - last_checked >= _STREAM_ABORT_CHECK_INTERVAL:
+                    last_checked = len(joined)
+                    if self._looks_like_loop(joined):
+                        aborted = True
+                        logger.warning(
+                            "HaS stream loop-abort: repetition signature detected at ~%d chars",
+                            len(joined),
+                        )
+                        break
+        if not saw_data_line:
+            # 空响应体且无任何 SSE 行：流处理通道缺陷，抛错交回落非流式
+            raise RuntimeError("stream response carried no SSE data lines")
+        if aborted:
+            finish_reason = "length"
+        data: dict[str, Any] = {
+            "choices": [
+                {
+                    "finish_reason": finish_reason or "stop",
+                    "message": {"role": "assistant", "content": "".join(content_parts)},
+                }
+            ],
+            "stream_aborted": aborted,
+        }
+        if usage:
+            data["usage"] = usage
+        return _StreamChatResponse(data)
+
+    @staticmethod
+    def _looks_like_loop(
+        text: str,
+        *,
+        window: int = _STREAM_ABORT_WINDOW,
+        min_period: int = 24,
+        repeats: int = 3,
+    ) -> bool:
+        """复读签名：尾部 window 内某 ≥min_period 字符片段出现 ≥repeats 次。
+
+        事故日志实证（#198）：病理复读以 24 字符周期原地打转。片段取自尾部
+        （循环在尾部最纯）；文本过短不判，防早期误掐。
+        """
+        if len(text) < _STREAM_ABORT_MIN_CHARS:
+            return False
+        seg = text[-window:]
+        for period in (192, 128, 96, 64, 48, 32, 24):
+            if period < min_period:
+                continue
+            piece = seg[-period:]
+            if len(piece) >= min_period and seg.count(piece) >= repeats:
+                return True
+        return False
 
     def _call_model(
         self,
@@ -386,7 +523,13 @@ class HaSClient:
         choice = choices[0]
         finish_reason = choice.get("finish_reason")
         LAST_FINISH_REASON.set(finish_reason or "none")
-        if finish_reason == "length":
+        if data.get("stream_aborted"):
+            # Issue#202：掐断先于截断日志，避免误读为「真跑到预算帽」
+            logger.warning(
+                "HaS stream loop-abort: generation cut at ~%d chars (recovery via repair + chunked re-query)",
+                len(choice.get("message", {}).get("content") or ""),
+            )
+        elif finish_reason == "length":
             logger.warning(
                 "HaS model response was truncated by max_tokens=%s",
                 payload.get("max_tokens"),
@@ -473,6 +616,43 @@ class HaSClient:
             result = dict(result)
             result[last_key] = values[:-1]
         return result
+
+    @staticmethod
+    def _split_requery_chunks(
+        text: str,
+        threshold: int = _REQUERY_CHUNK_THRESHOLD,
+        target: int = _REQUERY_CHUNK_TARGET,
+    ) -> list[str]:
+        """把补查文本按行边界切成 <=target 字符的块（Issue#198）。
+
+        复读诱饵是长程重复文本：门④实测 temp=0.7 补查同一文本仍复读，切块让
+        单次生成变短。行边界优先（OCR 组文本按 \\n 连行，实体值极少跨行）；
+        无换行的超长文本按字符硬切。短文本原样返回（单次补查，行为不变）。
+        """
+        if len(text) <= threshold:
+            return [text]
+        chunks: list[str] = []
+        buf: list[str] = []
+        buf_len = 0
+
+        def _flush() -> None:
+            nonlocal buf, buf_len
+            if buf:
+                chunks.append("\n".join(buf))
+                buf, buf_len = [], 0
+
+        for line in text.split("\n"):
+            if len(line) > target:
+                _flush()
+                for i in range(0, len(line), target):
+                    chunks.append(line[i : i + target])
+                continue
+            if buf_len + len(line) > target and buf:
+                _flush()
+            buf.append(line)
+            buf_len += len(line)
+        _flush()
+        return chunks or [text]
 
     @staticmethod
     def _normalize_ner_type_name(type_name: str) -> str:
@@ -1093,6 +1273,10 @@ If nothing matches, return {{}}.
             parse_mode, result = self._try_parse_json_object(response)
             if result is None:
                 logger.warning("HaS NER response could not be parsed as JSON: %.200s", response)
+                # Issue#200（#198 同源边界）：本递归同样把外层温度原样传给子批。
+                # 不可解析 ≠ 截断复读（当前无实证复发案例），且按类型分批本身
+                # 缩减了单次输出规模，属天然缓解；采样逃逸策略随 #200 决策，
+                # 本期不动（特征化测试钉住现状行为）。
                 if type_guidance is None and len(types) > _NER_REBATCH_TYPE_THRESHOLD:
                     from app.core.config import settings
                     target = max(_NER_TYPE_BATCH_TARGET_TOKENS_FLOOR, int(settings.HAS_NER_TYPE_BATCH_TARGET_TOKENS))
@@ -1177,15 +1361,72 @@ If nothing matches, return {{}}.
                             item for item in (type_guidance or [])
                             if str(item.get("type") or "") in missing_set
                         ] or None
-                        retry_result, retry_confirmed = self.ner_checked(
-                            text,
-                            missing,
-                            retry_guidance,
-                            temperature=temperature,
-                            sample_index=sample_index,
-                            _allow_truncation_retry=False,
-                            raise_on_error=raise_on_error,
-                            context_tokens=context_tokens,
+                        # Issue#198：补查温度只升不降（max 语义）。temp=0 种子趟
+                        # 复读截断后，同温度补查=同贪心轨迹必然复发（真实案卷
+                        # 134 页卷第 34 页实测 84s+76s 双循环烧满两次 max_tokens）。
+                        # 调用方已传 >=重查温度的自洽趟不被拉低。
+                        retry_temperature = max(
+                            _MODEL_TEMPERATURE if temperature is None else float(temperature),
+                            settings.HAS_NER_TRUNCATION_RETRY_TEMPERATURE,
+                        )
+                        # Issue#198：门④实测温度逃逸不充分——temp=0.7 补查对同一
+                        # 段长程重复表格文本仍复读（2026-10-27 第 34 页绿跑抓到
+                        # finish_reason=length confirmed=False recovered=1/7）。复读
+                        # 诱饵是**长文本本身**：按行边界把补查文本切块，单次生成
+                        # 变短，循环既难触发也烧不满预算（#60「改循环粒度」的既定
+                        # 策略）。短文本维持单次补查，行为不变。
+                        retry_chunks = self._split_requery_chunks(text)
+                        # 嵌套观测面：只收本次补查自身的 finish_reason/计数。
+                        # 门④判据口径：finish_reason=stop 且 confirmed=True 且
+                        # recovered 闭合才算「补查逃逸复读」；补查再次截断时
+                        # finish_reason=length（drain 折叠口径）+ confirmed=False。
+                        with ner_metrics_scope() as retry_scope:
+                            if len(retry_chunks) <= 1:
+                                retry_result, retry_confirmed = self.ner_checked(
+                                    text,
+                                    missing,
+                                    retry_guidance,
+                                    temperature=retry_temperature,
+                                    sample_index=sample_index,
+                                    _allow_truncation_retry=False,
+                                    raise_on_error=raise_on_error,
+                                    context_tokens=context_tokens,
+                                )
+                            else:
+                                logger.warning(
+                                    "HaS NER re-query split into %d line-boundary chunks (text_chars=%d)",
+                                    len(retry_chunks),
+                                    len(text),
+                                )
+                                merged_retry: dict[str, list[str]] = {}
+                                retry_confirmed = True
+                                for chunk in retry_chunks:
+                                    part, part_confirmed = self.ner_checked(
+                                        chunk,
+                                        missing,
+                                        retry_guidance,
+                                        temperature=retry_temperature,
+                                        sample_index=sample_index,
+                                        _allow_truncation_retry=False,
+                                        raise_on_error=raise_on_error,
+                                        context_tokens=context_tokens,
+                                    )
+                                    for key, values in (part or {}).items():
+                                        if not isinstance(values, list):
+                                            continue
+                                        bucket = merged_retry.setdefault(key, [])
+                                        for value in values:
+                                            if value and value not in bucket:
+                                                bucket.append(value)
+                                    retry_confirmed = retry_confirmed and part_confirmed
+                                retry_result = merged_retry
+                        retry_metrics = drain_ner_metrics(retry_scope)
+                        logger.warning(
+                            "HaS NER re-query finished: finish_reason=%s confirmed=%s recovered=%d/%d types",
+                            retry_metrics.get("has_text_ner_finish_reason") or "unknown",
+                            retry_confirmed,
+                            len([t for t in missing if retry_result.get(t)]),
+                            len(missing),
                         )
                         for key, values in (retry_result or {}).items():
                             if not isinstance(values, list):

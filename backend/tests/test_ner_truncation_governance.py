@@ -202,6 +202,9 @@ def test_finish_reason_stop_recorded_via_real_call_model(monkeypatch):
         return _Resp()
 
     client._http_client.post = fake_post
+    # Issue#202：本例钉「非流式路径」的 finish_reason 记录口径；流式通道
+    # 由 test_issue202_* 专测覆盖。
+    monkeypatch.setattr(settings, "HAS_STREAM_LOOP_ABORT", False)
     with ner_metrics_scope() as scope:
         client.ner("无敏感内容文本", ["姓名"])
     metrics = drain_ner_metrics(scope)
@@ -417,6 +420,12 @@ def test_batch_path_requery_capped_once(monkeypatch):
     def counting(messages, *, max_tokens=None, temperature=None):
         calls.append(_prompt_types(messages[0]["content"]))
         return respond(messages, max_tokens=max_tokens, temperature=temperature)
+
+    # Issue#198 分块补查由专测覆盖（test_issue198_*）；此处钉「封顶 1 次/批」
+    # 语义，禁用分块以保持「每批 1 主 + 1 补查」的调用口径。
+    monkeypatch.setattr(
+        HaSClient, "_split_requery_chunks", staticmethod(lambda text, **kw: [text])
+    )
 
     client._call_model = counting
     with ner_metrics_scope() as scope:

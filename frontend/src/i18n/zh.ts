@@ -836,7 +836,7 @@ const zhBase: Record<string, string> = {
   'batchWizard.previewJobLabel': '预览任务',
 
   'error.visionTimeout':
-    '图像识别超时（超过 3 分钟）。可换更小图片，或检查视觉特征服务（GLM-4.6V/vLLM）是否正常、显存是否充足。',
+    '图像识别超时（超过 5 分钟）。可换更小图片，或检查视觉特征服务（GLM-4.6V/vLLM）是否正常、显存是否充足。',
   'error.visionDetectionFailed': '图像识别失败',
   'error.reRecognizeFailed': '重新识别失败',
 
