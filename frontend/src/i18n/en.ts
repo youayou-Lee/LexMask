@@ -913,7 +913,7 @@ const enBase: Record<string, string> = {
   'safety.cleanup.failed': 'Cleanup failed',
 
   'error.visionTimeout':
-    'Vision detection timed out (over 3 min). Try a smaller image, or check that the vision service (GLM-4.6V/vLLM) is healthy and has enough free GPU memory.',
+    'Vision detection timed out (over 5 min). Try a smaller image, or check that the vision service (GLM-4.6V/vLLM) is healthy and has enough free GPU memory.',
   'error.visionDetectionFailed': 'Vision detection failed',
   'error.reRecognizeFailed': 'Re-recognition failed',
 

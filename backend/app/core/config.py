@@ -323,7 +323,12 @@ class Settings(BaseSettings):
     OCR_MAX_NEW_TOKENS: int = 2048
     # 主后端探测 OCR /health 的超时（秒）；首次加载模型较慢，过短会被显示「离线」
     OCR_HEALTH_PROBE_TIMEOUT: float = 5.0
-    BATCH_RECOGNITION_PAGE_TIMEOUT: float = 180.0
+    # 单页视觉识别门限（秒）。#198：病理页（复读截断→补查逃逸）全链 =
+    # OCR + 种子循环烧满 max_tokens（实测 ~84s，保确定性不可免）+ 逃逸补查
+    # + 同页其余类型批 + 核验，实测 ~140-200s；180 无尾部余量会贴线误杀
+    # （真实案卷第 34 页 179.99s vs 180.0s 差 72ms 整卷作废）。300 = 门④
+    # 实测病理链耗时 ×1.5 余量；#199 落地后超时不再致命，本值仅剩止血意义。
+    BATCH_RECOGNITION_PAGE_TIMEOUT: float = 300.0
     # Per-file page-level concurrency for vision recognition. This is not batch
     # item concurrency; JOB_CONCURRENCY controls how many job items the worker
     # consumes at once. The runtime caps this value to the current file's page
