@@ -418,6 +418,12 @@ def test_batch_path_requery_capped_once(monkeypatch):
         calls.append(_prompt_types(messages[0]["content"]))
         return respond(messages, max_tokens=max_tokens, temperature=temperature)
 
+    # Issue#198 分块补查由专测覆盖（test_issue198_*）；此处钉「封顶 1 次/批」
+    # 语义，禁用分块以保持「每批 1 主 + 1 补查」的调用口径。
+    monkeypatch.setattr(
+        HaSClient, "_split_requery_chunks", staticmethod(lambda text, **kw: [text])
+    )
+
     client._call_model = counting
     with ner_metrics_scope() as scope:
         result = client.ner(_LONG_TEXT + " batchcap", _TYPES_38[:20], type_guidance=[])

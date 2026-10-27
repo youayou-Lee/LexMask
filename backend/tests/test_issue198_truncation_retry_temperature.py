@@ -137,3 +137,54 @@ def test_rebatch_recursion_inherits_caller_temperature_characterization():
     assert calls[2]["temperature"] == 0.0
     assert merged.get("类型0") == ["甲"]
     assert merged.get("类型24") == ["乙"]
+
+
+# ---- Issue#198 追加：补查分块（温度逃逸被门④证伪后的第二层） ----
+
+
+def _long_multiline_text(lines: int = 9, chars_per_line: int = 100) -> str:
+    body = "购货记录 行内容 数字 1234567890 姓名 林辉 证件号码 452428198706122537"
+    # 行带序号：内容互不相同 ⇒ 各块文本互异，不触发 NER 缓存去重（缓存命中
+    # 会让同文本块不发模型调用，调用计数断言会失真）。
+    return "\n".join(f"行{i} " + (body * 3)[: chars_per_line - 4] for i in range(lines))
+
+
+def test_split_requery_chunks_unit():
+    fn = HaSClient._split_requery_chunks
+    short = "短文本"
+    assert fn(short) == [short]
+    long_text = _long_multiline_text()
+    chunks = fn(long_text)
+    assert len(chunks) >= 2, "900+ 字符必须切块"
+    assert all(len(c) <= 450 + 120 for c in chunks), "每块不超过目标+单行余量"
+    assert "".join(chunks).replace("\n", "") == long_text.replace("\n", ""), "切分不丢字符"
+    no_newline = "A" * 1000
+    assert fn(no_newline) == [no_newline[i : i + 450] for i in range(0, 1000, 450)]
+
+
+def test_truncated_requery_long_text_chunked_and_merged(caplog):
+    text = _long_multiline_text()
+    clean = json.dumps({"薪酬": ["10K-15K/月"], "年龄（岁）": ["36岁"]}, ensure_ascii=False)
+    client, calls = make_client(
+        [(FLOOD_TRUNCATED, "length"), (clean, "stop"), (clean, "stop")]
+    )
+    with caplog.at_level(logging.WARNING, logger="app.services.has_client"):
+        result = client.ner(text, TYPES, type_guidance=[], temperature=0.0)
+
+    assert len(calls) == 4, f"主查 1 次 + 3 块补查（100 字符行按 450 目标打包成 3 块），got {len(calls)}"
+    assert all(c["temperature"] == 0.7 for c in calls[1:]), "每块补查都带升温"
+    assert "re-query split into 3" in caplog.text
+    assert "re-query finished: finish_reason=stop confirmed=True" in caplog.text
+    assert result.get("薪酬") == ["10K-15K/月"]
+    assert result.get("年龄（岁）") == ["36岁"]
+
+
+def test_chunk_retruncated_confirmed_false():
+    text = _long_multiline_text()
+    client, calls = make_client(
+        [(FLOOD_TRUNCATED, "length"), (CLEAN_TAIL, "stop"), (TRUNCATED_AGAIN, "length")]
+    )
+    _, confirmed = client.ner_checked(text, TYPES, type_guidance=[])
+
+    assert len(calls) == 4, "主查 1 次 + 3 块补查"
+    assert confirmed is False, "任一块再截断 ⇒ 整体 confirmed=False（不写缓存）"
