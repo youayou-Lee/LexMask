@@ -104,6 +104,15 @@ _STREAM_LINE_DIGIT_RE = re.compile(r"\d")
 _STREAM_LINE_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 # 截断输出里「顶层桶开口」`"<类型>": [`（Issue#209 C2）：定位被 max_tokens 切断时
 # 正在填充的那个桶，好把它并进补查集合（否则它的尾值静默丢失、confirmed 仍 True）。
+class NerDeadlineExceeded(RuntimeError):
+    """页级 NER 死线已过（Issue#209 C）。
+
+    只用于**拒绝发出新请求**（主查/补查链的每一段前检查）：已经在飞的单次请求
+    不会被中断（底层是线程里的同步 HTTP），但补查链不会再往下走。调用方
+    （has_text_analysis）把它折叠成预算跳过语义。
+    """
+
+
 _NER_OBJECT_KEY_OPEN_RE = re.compile(r'"([^"\\]{1,64})"\s*:\s*\[')
 # 类型引导 description 最大字符数
 _TYPE_GUIDANCE_DESC_MAX_CHARS = 96
@@ -1174,6 +1183,7 @@ If nothing matches, return {{}}.
         _allow_truncation_retry: bool = True,
         raise_on_error: bool = False,
         context_tokens: int | None = None,
+        deadline: float | None = None,
     ) -> dict[str, list[str]]:
         """
         使用NER能力进行敏感实体识别
@@ -1208,6 +1218,7 @@ If nothing matches, return {{}}.
             _allow_truncation_retry=_allow_truncation_retry,
             raise_on_error=raise_on_error,
             context_tokens=context_tokens,
+            deadline=deadline,
         )[0]
 
     def ner_checked(
@@ -1221,6 +1232,7 @@ If nothing matches, return {{}}.
         _allow_truncation_retry: bool = True,
         raise_on_error: bool = False,
         context_tokens: int | None = None,
+        deadline: float | None = None,
     ) -> tuple[dict[str, list[str]], bool]:
         """`ner()` + **显式解析成功标志**（Issue#108 ⑥ 评审 C1/C2）。
 
@@ -1248,6 +1260,13 @@ If nothing matches, return {{}}.
             # 一旦落键，下一次同键请求就从这里被洗成 ok=True，服务层的写回门随即
             # 失效——零模型调用即可把部分并集提升成全类型键）。
             return cached, True
+
+        # Issue#209 C：页级死线已过就不开口子——否则补查链每段都要再等一次
+        # 单请求（实测补查块 6~14s，9~12 段能把 300s 页墙吃光）。
+        if deadline is not None and time.monotonic() >= deadline:
+            raise NerDeadlineExceeded(
+                "page NER deadline passed; refusing to start a new NER request"
+            )
 
         from app.core.config import settings
 
@@ -1287,6 +1306,7 @@ If nothing matches, return {{}}.
                         sample_index=sample_index,
                         raise_on_error=raise_on_error,
                         context_tokens=context_tokens,
+                        deadline=deadline,
                     )
                     all_confirmed = all_confirmed and part_confirmed
                     for key, values in (part or {}).items():
@@ -1547,6 +1567,7 @@ If nothing matches, return {{}}.
                                     _allow_truncation_retry=False,
                                     raise_on_error=raise_on_error,
                                     context_tokens=context_tokens,
+                                    deadline=deadline,
                                 )
                             else:
                                 logger.warning(
@@ -1566,6 +1587,7 @@ If nothing matches, return {{}}.
                                         _allow_truncation_retry=False,
                                         raise_on_error=raise_on_error,
                                         context_tokens=context_tokens,
+                                        deadline=deadline,
                                     )
                                     for key, values in (part or {}).items():
                                         if not isinstance(values, list):

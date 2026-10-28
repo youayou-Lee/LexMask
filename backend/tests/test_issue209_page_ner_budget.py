@@ -242,6 +242,7 @@ def test_page_budget_strict_fails_the_page_with_dedicated_exception(monkeypatch,
     monkeypatch.setattr(settings, "HAS_NER_PAGE_BUDGET_SEC", 5.0, raising=False)
     monkeypatch.setattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True, raising=False)
     monkeypatch.setattr("app.services.vision.has_text_analysis.time", clock)
+    monkeypatch.setattr("app.services.has_client.time", clock)
     monkeypatch.setattr(settings, "HAS_VISION_MAX_GROUPS_INFLIGHT", 1, raising=False)
     client = _ModelFake(clock=clock)
 
@@ -265,6 +266,7 @@ def test_page_budget_non_strict_keeps_partial_and_is_a_strict_subset(monkeypatch
 
     clock = _FakeClock(step_sec=10.0)
     monkeypatch.setattr("app.services.vision.has_text_analysis.time", clock)
+    monkeypatch.setattr("app.services.has_client.time", clock)
     monkeypatch.setattr(settings, "HAS_VISION_MAX_GROUPS_INFLIGHT", 1, raising=False)
     client = _ModelFake(reply=_mark_reply, clock=clock)
 
@@ -278,7 +280,9 @@ def test_page_budget_non_strict_keeps_partial_and_is_a_strict_subset(monkeypatch
     assert {e["text"] for e in page} == {_MARK_HEAD}, "只跑了的组的值才可采纳（尾组未跑）"
 
     # 全量参照（关闭预算 + 全新时钟/客户端）：部分结果必须严格小
-    monkeypatch.setattr("app.services.vision.has_text_analysis.time", _FakeClock(step_sec=0.0))
+    _clock_ref = _FakeClock(step_sec=0.0)
+    monkeypatch.setattr("app.services.vision.has_text_analysis.time", _clock_ref)
+    monkeypatch.setattr("app.services.has_client.time", _clock_ref)
     full = _run_page(blocks, _ModelFake(reply=_mark_reply))
     assert {e["text"] for e in full} == {_MARK_HEAD, _MARK_TAIL}
     assert {e["text"] for e in page} < {e["text"] for e in full}
@@ -345,12 +349,18 @@ def test_default_budget_fast_page_is_byte_identical_to_wall_disabled(monkeypatch
 
     monkeypatch.setattr(settings, "HAS_NER_PAGE_BUDGET_SEC", 150.0, raising=False)
     monkeypatch.setattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True, raising=False)
-    monkeypatch.setattr("app.services.vision.has_text_analysis.time", _FakeClock(step_sec=10.0))
+    # 快页：每次模型调用只推进 2s（本页含主查/残差/自证共十几次调用），
+    # 整页远在 150s 预算内 ⇒ 预算不得触发。
+    _clock_on = _FakeClock(step_sec=2.0)
+    monkeypatch.setattr("app.services.vision.has_text_analysis.time", _clock_on)
+    monkeypatch.setattr("app.services.has_client.time", _clock_on)
     stage_on: dict = {}
     page_with_wall = _run_page(blocks, _ModelFake(reply=_mark_reply), stage=stage_on)
 
     monkeypatch.setattr(settings, "HAS_NER_PAGE_BUDGET_SEC", 0.0, raising=False)
-    monkeypatch.setattr("app.services.vision.has_text_analysis.time", _FakeClock(step_sec=10.0))
+    _clock_off = _FakeClock(step_sec=2.0)
+    monkeypatch.setattr("app.services.vision.has_text_analysis.time", _clock_off)
+    monkeypatch.setattr("app.services.has_client.time", _clock_off)
     stage_off: dict = {}
     page_without_wall = _run_page(blocks, _ModelFake(reply=_mark_reply), stage=stage_off)
 

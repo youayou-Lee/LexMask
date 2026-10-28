@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import Any
 
 from app.core.config import settings
+from app.services.has_client import NerDeadlineExceeded
 from app.services.ocr_has_vision_service import OCRTextBlock
 from app.services.vision.has_text_payload import (
     _build_has_text_payload,
@@ -240,6 +241,7 @@ async def _run_has_text_ner_groups(
                                     sample_index=pass_index,
                                     raise_on_error=True,
                                     context_tokens=context_tokens,
+                                    deadline=deadline,
                                 )
 
                             # Issue#209 C：预算必须是**硬墙**。上面两处复检只在
@@ -264,13 +266,32 @@ async def _run_has_text_ner_groups(
                                             aggregate_ner_samples, _ner_sample, k_samples
                                         )
                                     else:
-                                        result, passes_run = await asyncio.wait_for(
+                                        # 硬墙要点：`asyncio.to_thread` 里的模型调用
+                                        # 在同步 HTTP 里跑，取消不了；`wait_for` 会
+                                        # **等它自然结束**再抛 TimeoutError（实测 2s
+                                        # 预算量出 3.05s），等于没有墙。用 asyncio.wait
+                                        # 超时就直接放手（线程在后台跑完，其结果无人
+                                        # 消费；页不再被它拖住）。
+                                        task = asyncio.ensure_future(
                                             asyncio.to_thread(
                                                 aggregate_ner_samples, _ner_sample, k_samples
-                                            ),
-                                            timeout=remaining,
+                                            )
                                         )
+                                        done, _pending = await asyncio.wait(
+                                            {task}, timeout=remaining
+                                        )
+                                        if task not in done:
+                                            task.add_done_callback(
+                                                lambda t: t.cancelled() or t.exception()
+                                            )
+                                            raise TimeoutError
+                                        result, passes_run = task.result()
                                 except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041
+                                    _budget_skip()
+                                    budget_skipped = True
+                                except NerDeadlineExceeded:
+                                    # 补查链在死线处拒绝继续发请求 ⇒ 该组只拿到部分
+                                    # 结论，按预算跳过语义处理（不当作组失败）。
                                     _budget_skip()
                                     budget_skipped = True
                                 else:
