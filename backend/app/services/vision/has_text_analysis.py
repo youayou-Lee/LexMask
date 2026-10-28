@@ -494,6 +494,13 @@ def _block_residual_ink(block_compact: str, consumed_values: list[str]) -> str |
     return leftover if has_value_sized_run else None
 
 
+def has_text_page_deadline() -> float | None:
+    """页级 HaS NER 死线（Issue#209）。页内可能多次调用 NER，调用方应在**页的
+    NER 开始处**取一次，后续所有调用共用，避免各自从"现在"起算把总时长拼爆。"""
+    budget = float(getattr(settings, "HAS_NER_PAGE_BUDGET_SEC", 0.0) or 0.0)
+    return time.monotonic() + budget if budget > 0 else None
+
+
 class HasTextNerPageBudgetExceeded(RuntimeError):
     """页级 HaS NER 预算耗尽（Issue#209）。
 
@@ -508,6 +515,7 @@ async def run_has_text_analysis(
     has_client: Any,
     vision_types: list | None = None,
     stage_status: dict[str, Any] | None = None,
+    page_deadline: float | None = None,
 ) -> list[dict[str, str]]:
     """
     Analyse OCR text with HaS local NER model to identify sensitive entities.
@@ -517,6 +525,10 @@ async def run_has_text_analysis(
         ocr_blocks: OCR text blocks.
         has_client: HaSClient instance (may be None).
         vision_types: User-enabled vision type configs.
+        page_deadline: 调用方给的**页级**死线（``time.monotonic()`` 口径）。页内会
+            多次调用本函数（语义组、文本块组…），各自从"现在"起算预算会把这些
+            调用拼成远超页门限的总时长——门④ 实测 2 页夹具里页 133 正是这样跑满
+            300s 而预算一次没触发。传了死线就以它为准（预算秒数仍用于记账文案）。
 
     Returns:
         [{type: "PERSON", text: "张三"}, ...]
@@ -528,9 +540,12 @@ async def run_has_text_analysis(
     # strict=True 时把「只扫了一部分」落成页级失败（语气与页超时一致：进
     # failed_pages ⇒ 交付面拦截 + 界面可查），而不是伪装成完成的整页结果。
     page_budget_sec = float(getattr(settings, "HAS_NER_PAGE_BUDGET_SEC", 0.0) or 0.0)
-    page_deadline = (
-        time.monotonic() + page_budget_sec if page_budget_sec > 0 else None
-    )
+    if page_budget_sec > 0:
+        own_deadline: float | None = time.monotonic() + page_budget_sec
+    else:
+        own_deadline = None
+    # 调用方（页级 stage）给的死线优先：同一页的多次 NER 调用共用一条墙。
+    page_deadline = page_deadline if page_deadline is not None else own_deadline
     budget_strict = bool(getattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True))
 
     def _budget_exhausted() -> bool:
