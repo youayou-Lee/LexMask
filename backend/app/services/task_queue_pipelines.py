@@ -369,7 +369,7 @@ class RecognitionPipelineMixin:
                         timeout=page_timeout,
                     )
                 # Issue#139：见 _run_recognition 处的同类说明（3.10 两类分立 + 必须重排到 OSError 之前）。
-                except (TimeoutError, asyncio.TimeoutError) as exc:  # noqa: UP041
+                except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041
                     page_ms = _elapsed_ms(page_started)
                     active_pages = max(0, active_pages - 1)
                     self._record_item_performance(
