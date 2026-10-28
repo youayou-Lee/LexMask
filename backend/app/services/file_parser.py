@@ -2,6 +2,7 @@
 文件解析服务
 支持 Word/PDF/图片 文件的内容提取
 """
+import asyncio
 import logging
 import os
 import sys
@@ -180,6 +181,12 @@ class FileParser:
     _pdf_page_text_blocks_cache_lock = Lock()
     _pdf_page_scan_cache: OrderedDict[tuple[str, int, int, int, int], bool] = OrderedDict()
     _pdf_page_scan_cache_lock = Lock()
+    # Issue#207 同键单飞：在飞渲染任务表（键与页图缓存同键）。客户端 abort 不会
+    # 终止已进线程池的渲染，单飞把连点风暴的服务端成本钉在每唯一页一次。
+    _pdf_page_render_inflight: dict[
+        tuple[str, int, int, int, int], "asyncio.Task[bytes]"
+    ] = {}
+    _pdf_page_render_inflight_lock = Lock()
 
     def __init__(self) -> None:
         self.last_pdf_page_image_cache_hit: bool | None = None
@@ -616,7 +623,13 @@ class FileParser:
 
 
     async def get_pdf_page_image(self, file_path: str, page: int, dpi: int = 150) -> bytes:
-        """获取 PDF 指定页的图片"""
+        """获取 PDF 指定页的图片。
+
+        Issue#207：fitz 渲染是同步 CPU 活，历史上在事件循环内联执行——每次
+        未命中缓存的预览翻页把整个循环冻结渲染时长，识别期间放大为全局卡顿。
+        现移入 worker 线程；fitz 线程约束：每次渲染独立打开/关闭 Document，
+        跨线程不共享 Document 对象（与仓库既有 to_thread 先例同构）。
+        """
         _validate_path(file_path)
         self.last_pdf_page_image_cache_hit = False
         cache_key = self._pdf_page_cache_key(file_path, page, dpi)
@@ -636,19 +649,54 @@ class FileParser:
                     self.last_pdf_page_image_cache_hit = True
                     return cached
 
-        doc = open_pdf_checked(resolved)
+        task = self._singleflight_render_task(cache_key, resolved, page, dpi)
+        # shield：单个请求方被取消（如客户端 abort 断连）不得连带取消共享渲染
+        return await asyncio.shield(task)
 
-        if page < 1 or page > len(doc):
-            doc.close()
-            raise ValueError(f"页码超出范围: {page}")
+    def _singleflight_render_task(
+        self,
+        cache_key: tuple[str, int, int, int, int],
+        resolved: str,
+        page: int,
+        dpi: int,
+    ) -> "asyncio.Task[bytes]":
+        with self._pdf_page_render_inflight_lock:
+            existing = self._pdf_page_render_inflight.get(cache_key)
+            if existing is not None:
+                return existing
+            task = asyncio.get_running_loop().create_task(
+                self._render_pdf_page_image(cache_key, resolved, page, dpi)
+            )
+            self._pdf_page_render_inflight[cache_key] = task
+            # 完成时才出表：请求方提前断连时，后续同页请求仍能搭上在飞渲染
+            task.add_done_callback(
+                lambda _t, key=cache_key: self._pdf_page_render_inflight.pop(key, None)
+            )
+            return task
 
-        pdf_page = doc.load_page(page - 1)
-        zoom = dpi / 72
-        matrix = fitz.Matrix(zoom, zoom)
-        pix = pdf_page.get_pixmap(matrix=matrix)
-        img_data = pix.tobytes("png")
+    async def _render_pdf_page_image(
+        self,
+        cache_key: tuple[str, int, int, int, int],
+        resolved: str,
+        page: int,
+        dpi: int,
+    ) -> bytes:
+        def _render() -> bytes:
+            doc = open_pdf_checked(resolved)
+            try:
+                if page < 1 or page > len(doc):
+                    raise ValueError(f"页码超出范围: {page}")
+                pdf_page = doc.load_page(page - 1)
+                zoom = dpi / 72
+                matrix = fitz.Matrix(zoom, zoom)
+                pix = pdf_page.get_pixmap(matrix=matrix)
+                return pix.tobytes("png")
+            finally:
+                doc.close()
 
-        doc.close()
+        img_data = await asyncio.to_thread(_render)
+
+        cache_limit = int(settings.PDF_PAGE_IMAGE_CACHE_PAGES)
         if cache_limit > 0:
             with self._pdf_page_image_cache_lock:
                 self._pdf_page_image_cache[cache_key] = img_data

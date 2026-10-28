@@ -1169,6 +1169,7 @@ export function usePlayground() {
     clearEncryptedPrompt: fileCtx.clearEncryptedPrompt,
     imageUrl: imageCtx.imageUrl,
     staticPageUrl: imageCtx.staticPageUrl,
+    previewPageLoading: imageCtx.previewPageLoading,
     redactedImageUrl: imageCtx.redactedImageUrl,
     redactedImageError: imageCtx.redactedImageError,
     currentPage: imageCtx.currentPage,

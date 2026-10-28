@@ -53,6 +53,8 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
   const [staticPageUrl, setStaticPageUrl] = useState('');
   const [redactedImageUrl, setRedactedImageUrl] = useState('');
   const [redactedImageError, setRedactedImageError] = useState<string | null>(null);
+  // Issue#207：当前页内容在飞且缓存未命中——画布叠加式加载指示的依据。
+  const [previewPageLoading, setPreviewPageLoading] = useState(false);
   const imageHistory = useUndoRedo<BoundingBox[]>();
 
   const imageObjectUrlRef = useRef<string | null>(null);
@@ -60,14 +62,21 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
   const popoutChannelRef = useRef<BroadcastChannel | null>(null);
   const popoutTimerRef = useRef<number | null>(null);
   const visionAbortRef = useRef<AbortController | null>(null);
+  // Issue#207：预览页代（generation）控制器——换页/卸载即掐掉上一代在飞
+  // 预览请求（含预取与 redacted），大 base64 响应不再跨页堆积争带宽/主线程。
+  const previewAbortRef = useRef<AbortController | null>(null);
   const currentPageRef = useRef(currentPage);
   const boundingBoxesRef = useRef<BoundingBox[]>([]);
   // Per-page cached original image (data URL). Switches pages instantly and
   // avoids the blank-flash while the POST /preview-image is in flight.
   const pageImageCacheRef = useRef<Map<string, string>>(new Map());
-  const pageImageRequestRef = useRef<Map<string, Promise<string>>>(new Map());
+  const pageImageRequestRef = useRef<Map<string, { promise: Promise<string>; signal?: AbortSignal }>>(
+    new Map(),
+  );
   const redactedPageImageCacheRef = useRef<Map<string, string>>(new Map());
-  const redactedPageImageRequestRef = useRef<Map<string, Promise<string>>>(new Map());
+  const redactedPageImageRequestRef = useRef<
+    Map<string, { promise: Promise<string>; signal?: AbortSignal }>
+  >(new Map());
 
   const totalPages = Math.max(1, Number(fileInfo?.page_count || 1));
   const isScannedPdfMode =
@@ -100,41 +109,60 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
   // --- Image URL resolution ---
   const imageUrlRaw = fileInfo ? `/api/v1/files/${fileInfo.file_id}/download` : '';
 
-  const loadOriginalPreviewPage = useCallback((fileId: string, page: number) => {
-    const key = `${fileId}:${page}`;
-    const cached = pageImageCacheRef.current.get(key);
-    if (cached) return Promise.resolve(cached);
+  // Issue#207：页代控制器。声明在各加载 effect 之前，保证同一次提交里
+  // 「掐旧代 → 建新代」先于加载 effect 的 body 执行。
+  useEffect(() => {
+    const controller = new AbortController();
+    previewAbortRef.current = controller;
+    return () => {
+      controller.abort();
+      if (previewAbortRef.current === controller) previewAbortRef.current = null;
+    };
+  }, [fileInfo?.file_id, currentPage]);
 
-    const pending = pageImageRequestRef.current.get(key);
-    if (pending) return pending;
+  const loadOriginalPreviewPage = useCallback(
+    (fileId: string, page: number, signal?: AbortSignal) => {
+      const key = `${fileId}:${page}`;
+      const cached = pageImageCacheRef.current.get(key);
+      if (cached) return Promise.resolve(cached);
 
-    const request = authFetch(`/api/v1/redaction/${fileId}/preview-image?page=${page}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        bounding_boxes: [],
-        config: {
-          replacement_mode: 'structured',
-          entity_types: [],
-          custom_replacements: {},
-        },
-      }),
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await safeJson<PreviewImageResponse>(res);
-        const resolved = asPngDataUrl(data.image_base64);
-        if (!resolved) throw new Error('Missing image_base64');
-        setCacheWithLimit(pageImageCacheRef.current, key, resolved);
-        return resolved;
+      const pending = pageImageRequestRef.current.get(key);
+      // 在飞但信号已被掐（上一代遗留）：不搭死车，起本次新请求
+      if (pending && !pending.signal?.aborted) return pending.promise;
+      if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+
+      const request = authFetch(`/api/v1/redaction/${fileId}/preview-image?page=${page}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          bounding_boxes: [],
+          config: {
+            replacement_mode: 'structured',
+            entity_types: [],
+            custom_replacements: {},
+          },
+        }),
+        signal,
       })
-      .finally(() => {
-        pageImageRequestRef.current.delete(key);
-      });
+        .then(async (res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await safeJson<PreviewImageResponse>(res);
+          const resolved = asPngDataUrl(data.image_base64);
+          if (!resolved) throw new Error('Missing image_base64');
+          setCacheWithLimit(pageImageCacheRef.current, key, resolved);
+          return resolved;
+        })
+        .finally(() => {
+          // 只清理仍指向本请求的表项：被新请求覆盖后不得误删
+          const current = pageImageRequestRef.current.get(key);
+          if (current && current.promise === request) pageImageRequestRef.current.delete(key);
+        });
 
-    pageImageRequestRef.current.set(key, request);
-    return request;
-  }, []);
+      pageImageRequestRef.current.set(key, { promise: request, signal });
+      return request;
+    },
+    [],
+  );
 
   // Issue #66：文本型 PDF 打码模式——页面图直接渲染（不跑 vision/OCR），
   // 复用 loadOriginalPreviewPage 的缓存，翻页即时
@@ -145,14 +173,31 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
       return;
     }
     let alive = true;
-    loadOriginalPreviewPage(fileId, currentPage)
+    const signal = previewAbortRef.current?.signal;
+
+    const cacheKey = `${fileId}:${currentPage}`;
+    const cached = pageImageCacheRef.current.get(cacheKey);
+    if (cached) {
+      setStaticPageUrl(cached);
+      setPreviewPageLoading(false);
+      // 与扫描件流一致：空闲时预取相邻页，翻页零等待
+      scheduleNeighborPrefetch(fileId, currentPage, signal);
+      return () => {
+        alive = false;
+      };
+    }
+
+    setPreviewPageLoading(true);
+    loadOriginalPreviewPage(fileId, currentPage, signal)
       .then((url) => {
         if (!alive) return;
         setStaticPageUrl(url);
-        // 与扫描件流一致：空闲时预取相邻页，翻页零等待
-        scheduleNeighborPrefetch(fileId, currentPage);
+        setPreviewPageLoading(false);
+        scheduleNeighborPrefetch(fileId, currentPage, signal);
       })
       .catch(() => {
+        if (!alive) return;
+        setPreviewPageLoading(false);
         // 失败保留上一张图（与扫描件 imageUrl 路径同语义），不闪空白
       });
     return () => {
@@ -168,6 +213,7 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
       page: number,
       selectedPageBoxes: BoundingBox[],
       version: number,
+      signal?: AbortSignal,
     ): Promise<string> => {
       const boxSignature = selectedPageBoxes
         .map((box) =>
@@ -187,7 +233,8 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
       if (cached) return Promise.resolve(cached);
 
       const pending = redactedPageImageRequestRef.current.get(key);
-      if (pending) return pending;
+      if (pending && !pending.signal?.aborted) return pending.promise;
+      if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
 
       const request = authFetch(`/api/v1/redaction/${fileId}/preview-image?page=${page}`, {
         method: 'POST',
@@ -200,6 +247,7 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
             custom_replacements: {},
           },
         }),
+        signal,
       })
         .then(async (res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -210,22 +258,26 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
           return resolved;
         })
         .finally(() => {
-          redactedPageImageRequestRef.current.delete(key);
+          const current = redactedPageImageRequestRef.current.get(key);
+          if (current && current.promise === request) {
+            redactedPageImageRequestRef.current.delete(key);
+          }
         });
 
-      redactedPageImageRequestRef.current.set(key, request);
+      redactedPageImageRequestRef.current.set(key, { promise: request, signal });
       return request;
     },
     [],
   );
 
   const prefetchPage = useCallback(
-    (fileId: string, page: number) => {
+    (fileId: string, page: number, signal?: AbortSignal) => {
       if (page < 1 || page > totalPages) return;
+      if (signal?.aborted) return;
       const key = `${fileId}:${page}`;
       if (pageImageCacheRef.current.has(key)) return;
       if (pageImageRequestRef.current.has(key)) return;
-      loadOriginalPreviewPage(fileId, page).catch(() => {
+      loadOriginalPreviewPage(fileId, page, signal).catch(() => {
         /* silent prefetch failure */
       });
     },
@@ -233,13 +285,13 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
   );
 
   const scheduleNeighborPrefetch = useCallback(
-    (fileId: string, page: number) => {
+    (fileId: string, page: number, signal?: AbortSignal) => {
       // Defer to idle time so the active page's fetch/render isn't contended.
       const defer =
         (window as unknown as { requestIdleCallback?: (cb: () => void) => number })
           .requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 300));
-      defer(() => prefetchPage(fileId, page - 1));
-      defer(() => prefetchPage(fileId, page + 1));
+      defer(() => prefetchPage(fileId, page - 1, signal));
+      defer(() => prefetchPage(fileId, page + 1, signal));
     },
     [prefetchPage],
   );
@@ -277,26 +329,34 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
     }
 
     if (needsBrowserSafeImagePreview && fileInfo) {
+      const signal = previewAbortRef.current?.signal;
       const cacheKey = `${fileInfo.file_id}:${currentPage}`;
       const cached = pageImageCacheRef.current.get(cacheKey);
       if (cached) {
         revokeObjectUrl(imageObjectUrlRef.current);
         imageObjectUrlRef.current = null;
         setImageUrl(cached);
+        setPreviewPageLoading(false);
         // Kick off neighbor prefetch without blocking the UI.
-        scheduleNeighborPrefetch(fileInfo.file_id, currentPage);
-        return;
+        scheduleNeighborPrefetch(fileInfo.file_id, currentPage, signal);
+        return () => {
+          cancelled = true;
+        };
       }
 
-      loadOriginalPreviewPage(fileInfo.file_id, currentPage)
+      setPreviewPageLoading(true);
+      loadOriginalPreviewPage(fileInfo.file_id, currentPage, signal)
         .then((resolved) => {
           if (cancelled) return;
           revokeObjectUrl(imageObjectUrlRef.current);
           imageObjectUrlRef.current = null;
           setImageUrl(resolved);
-          scheduleNeighborPrefetch(fileInfo.file_id, currentPage);
+          setPreviewPageLoading(false);
+          scheduleNeighborPrefetch(fileInfo.file_id, currentPage, signal);
         })
         .catch(() => {
+          if (cancelled) return;
+          setPreviewPageLoading(false);
           // PDF page renders and TIFF browser-safe previews are already the
           // fallback path. Keep the previous image instead of showing a broken
           // image icon when preview rendering fails.
@@ -355,7 +415,13 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
           page: Number(box.page || currentPage),
         }));
 
-      loadRedactedPreviewPage(fileInfo.file_id, currentPage, selectedPageBoxes, redactionVersion)
+      loadRedactedPreviewPage(
+        fileInfo.file_id,
+        currentPage,
+        selectedPageBoxes,
+        redactionVersion,
+        previewAbortRef.current?.signal,
+      )
         .then((resolved) => {
           if (!cancelled) {
             setRedactedImageUrl(resolved);
@@ -660,6 +726,7 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
     totalPages,
     imageUrl,
     staticPageUrl,
+    previewPageLoading,
     redactedImageUrl,
     redactedImageError,
     imageHistory,

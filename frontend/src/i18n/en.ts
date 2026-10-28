@@ -1315,6 +1315,7 @@ const enOverrides: Record<string, string> = {
   'playground.locateFailed': 'Entity location failed; draw boxes manually or retry later.',
   'playground.previewHint.text':
     'Review highlights, select text, and refine annotations before export.',
+  'playground.previewPageLoading': 'Loading page…',
   'playground.updateAnnotation': 'Update annotation',
   'playground.addAnnotation': 'Add annotation',
   'playground.customType': 'Custom',
