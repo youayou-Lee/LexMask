@@ -1630,6 +1630,10 @@ class VisionService:
         page: int,
         pipeline_types: list = None,
     ) -> tuple[list[BoundingBox], str | None]:
+        # Issue#209：文本层页也走同一套页级 NER 死线。
+        from app.services.vision.has_text_analysis import reset_page_ner_deadline
+
+        reset_page_ner_deadline()
         text_layer_start = time.perf_counter()
         blocks, width, height = await self.file_parser.get_pdf_page_text_blocks(file_path, page)
         text_chars = sum(len(str(block.text or "").strip()) for block in blocks)
@@ -1703,6 +1707,10 @@ class VisionService:
         draw_result: bool = True,
     ) -> tuple[list[BoundingBox], str | None]:
         page_blocks: list = []
+        # Issue#209：本页 NER 死线从页入口起算，页内多次 NER 调用共用一条墙。
+        from app.services.vision.has_text_analysis import reset_page_ner_deadline
+
+        reset_page_ner_deadline()
         regions, result_image_base64 = await self.ocr_has_service.detect_and_draw(
             image_data,
             vision_types=pipeline_types,

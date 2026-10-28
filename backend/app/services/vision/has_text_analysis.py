@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextvars import ContextVar
 from collections import Counter
 from collections.abc import Callable
 from typing import Any
@@ -494,11 +495,32 @@ def _block_residual_ink(block_compact: str, consumed_values: list[str]) -> str |
     return leftover if has_value_sized_run else None
 
 
+# Issue#209：页级 HaS NER 死线。同一页会多次调用 NER（语义组、文本块组…），
+# 每次各自从"现在"起算预算会把总时长拼爆（门④ 实测：单页 280s 的 NER 分若干
+# 次调用，没有一次超过预算，页门限 300s 照旧杀页）。用 ContextVar 把死线钉在
+# **页的上下文**上：页级入口 reset 一次，之后本页所有 NER 调用共用同一条墙；
+# asyncio 每个页任务有独立上下文，并发页之间互不串味。
+_PAGE_NER_DEADLINE: ContextVar[float | None] = ContextVar(
+    "has_text_page_ner_deadline", default=None
+)
+
+
+def reset_page_ner_deadline() -> None:
+    """页级入口调用：清掉上一页留下的死线，让本页重新起算。"""
+    _PAGE_NER_DEADLINE.set(None)
+
+
 def has_text_page_deadline() -> float | None:
-    """页级 HaS NER 死线（Issue#209）。页内可能多次调用 NER，调用方应在**页的
-    NER 开始处**取一次，后续所有调用共用，避免各自从"现在"起算把总时长拼爆。"""
+    """本页的 HaS NER 死线（首次调用时建立，后续复用）。"""
+    deadline = _PAGE_NER_DEADLINE.get()
+    if deadline is not None:
+        return deadline
     budget = float(getattr(settings, "HAS_NER_PAGE_BUDGET_SEC", 0.0) or 0.0)
-    return time.monotonic() + budget if budget > 0 else None
+    if budget <= 0:
+        return None
+    deadline = time.monotonic() + budget
+    _PAGE_NER_DEADLINE.set(deadline)
+    return deadline
 
 
 class HasTextNerPageBudgetExceeded(RuntimeError):
