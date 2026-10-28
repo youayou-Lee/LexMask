@@ -97,6 +97,14 @@ _REQUERY_CHUNK_TARGET = 450
 _STREAM_ABORT_CHECK_INTERVAL = 256
 _STREAM_ABORT_WINDOW = 1024
 _STREAM_ABORT_MIN_CHARS = 200
+# 归一化行复读判据（Issue#209 生成侧止损②）：把完整行里的数字统一成 # 后计数，
+# 抓「同一行骨架、只差编号」的枚举式复读（#202 的字节周期签名必漏此形态）。
+# 预编译正则：每行只归一化一次，复杂度 O(行数)/O(单行字符数)，不重扫全文。
+_STREAM_LINE_DIGIT_RE = re.compile(r"\d")
+_STREAM_LINE_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+# 截断输出里「顶层桶开口」`"<类型>": [`（Issue#209 C2）：定位被 max_tokens 切断时
+# 正在填充的那个桶，好把它并进补查集合（否则它的尾值静默丢失、confirmed 仍 True）。
+_NER_OBJECT_KEY_OPEN_RE = re.compile(r'"([^"\\]{1,64})"\s*:\s*\[')
 # 类型引导 description 最大字符数
 _TYPE_GUIDANCE_DESC_MAX_CHARS = 96
 # 健康检查结果缓存秒数
@@ -181,6 +189,67 @@ def drain_ner_metrics(scope: NerMetricsScope) -> dict[str, Any]:
     if scope.rebatch_batches > 0:
         metrics["has_text_ner_rebatch_batches"] = scope.rebatch_batches
     return metrics
+
+
+class _NormalizedLineRepeatGuard:
+    """归一化行复读计数（Issue#209 生成侧止损②，流式路径上的第二条独立判据）。
+
+    #202 的复读签名（``_looks_like_loop``）判定的是**逐字节周期**；#209 真实案卷
+    页 133 的病理形态是「同一行骨架、只差编号」的枚举式复读（水印碎片
+    ``映峰1450120141`` / ``映峰1450120147`` …）——不存在字节周期，签名必然漏，
+    只能烧满 max_tokens（实测 83.4s / 65.5s）。本判据把完整行中的数字统一替换成
+    ``#`` 得到「归一化键」，同一键在**本次输出内**累计出现 min_occurrences 次即
+    判定为枚举复读。
+
+    只统计**完整行**：增量文本按 ``\\n`` 切分，末尾未换行的半行留在 ``_pending``
+    等下一次增量补齐（半行不计一次出现，防「同一长行只推进了几个字符」被重复
+    计数）。``raw.strip()`` 顺带吃掉 CRLF 的 ``\\r``。
+
+    计数结构 O(行数)：每行只做一次 ``sub`` + 一次字典累加，不做全文重扫。
+    """
+
+    def __init__(
+        self,
+        *,
+        min_occurrences: int = 4,
+        max_line_chars: int = 48,
+        min_cjk_chars: int = 1,
+    ) -> None:
+        self._min_occurrences = int(min_occurrences)
+        self._max_line_chars = int(max_line_chars)
+        self._min_cjk_chars = int(min_cjk_chars)
+        self._pending = ""
+        # 键 = 数字归一化后的整行；值 = 本次输出内的累计出现次数
+        self._counts: dict[str, int] = {}
+
+    def feed(self, chunk: str) -> tuple[str, int] | None:
+        """喂一段增量文本。
+
+        命中阈值时返回 ``(归一化行前缀, 累计出现次数)``，否则返回 None。
+        只在**完整行**（以 ``\\n`` 收尾）上计数。
+        """
+        if not chunk:
+            return None
+        parts = (self._pending + chunk).split("\n")
+        self._pending = parts.pop()  # 末尾未换行 = 半行，等下一次增量
+        for raw in parts:
+            hit = self._account(raw)
+            if hit is not None:
+                return hit
+        return None
+
+    def _account(self, raw: str) -> tuple[str, int] | None:
+        line = raw.strip()
+        if not line or len(line) > self._max_line_chars:
+            return None
+        if len(_STREAM_LINE_CJK_RE.findall(line)) < self._min_cjk_chars:
+            return None
+        key = _STREAM_LINE_DIGIT_RE.sub("#", line)
+        count = self._counts.get(key, 0) + 1
+        self._counts[key] = count
+        if count >= self._min_occurrences:
+            return key, count
+        return None
 
 
 class _StreamChatResponse:
@@ -387,12 +456,20 @@ class HaSClient:
         return ner_breaker.call_sync(_request)
 
     def _do_chat_request_stream(self, base: str, payload: dict[str, Any]):
-        """流式执行单次 chat 请求，复读签名命中即断开（Issue#202）。
+        """流式执行单次 chat 请求，复读命中即断开（Issue#202 / Issue#209）。
 
         返回 duck-typed Response（仅 .json() 面），stream_aborted 标记掐断。
         断开连接即令 vLLM 中止该次生成；finish_reason 按 length 收口，下游
         截断恢复链路（json_repair→分块补查）无需感知掐断来源。
+
+        同一路径上有两条**互相独立**的判据（谁先命中谁断开，收口完全相同）：
+
+        1. ``_looks_like_loop``：逐字节周期签名（#202，每 256 字符检一次）；
+        2. ``_NormalizedLineRepeatGuard``：归一化行复读（#209，每个增量事件检一次，
+           抓「同一行骨架、只差编号」的枚举式复读）。
         """
+        from app.core.config import settings
+
         sp = dict(payload)
         sp["stream"] = True
         sp["stream_options"] = {"include_usage": True}
@@ -402,6 +479,19 @@ class HaSClient:
         aborted = False
         last_checked = 0
         saw_data_line = False
+        emitted_chars = 0
+        line_guard: _NormalizedLineRepeatGuard | None = None
+        # 「≤0/关闭」= 退回现状（config.py 注释口径）；关闭时本判据连对象都不建，
+        # 通路与 #202 现状逐字节相同。
+        if (
+            settings.HAS_STREAM_LINE_REPEAT_ABORT
+            and settings.HAS_STREAM_LINE_REPEAT_MIN_OCCURRENCES > 0
+        ):
+            line_guard = _NormalizedLineRepeatGuard(
+                min_occurrences=settings.HAS_STREAM_LINE_REPEAT_MIN_OCCURRENCES,
+                max_line_chars=settings.HAS_STREAM_LINE_REPEAT_MAX_LINE_CHARS,
+                min_cjk_chars=settings.HAS_STREAM_LINE_REPEAT_MIN_CJK_CHARS,
+            )
         with self._http_client.stream(
             "POST", f"{base}/chat/completions", json=sp
         ) as resp:
@@ -421,14 +511,30 @@ class HaSClient:
                     obj = json.loads(data)
                 except ValueError:
                     continue
+                event_text_parts: list[str] = []
                 for choice in obj.get("choices") or []:
                     delta = (choice.get("delta") or {}).get("content")
                     if delta:
                         content_parts.append(delta)
+                        if line_guard is not None:
+                            event_text_parts.append(delta)
                     if choice.get("finish_reason"):
                         finish_reason = choice["finish_reason"]
                 if obj.get("usage"):
                     usage = obj["usage"]
+                if line_guard is not None and event_text_parts:
+                    emitted_chars += sum(len(part) for part in event_text_parts)
+                    hit = line_guard.feed("".join(event_text_parts))
+                    if hit is not None:
+                        key, occurrences = hit
+                        aborted = True
+                        logger.warning(
+                            "HaS stream loop-abort: normalized line repetition detected at ~%d chars (occurrences=%d, line_prefix=%r)",
+                            emitted_chars,
+                            occurrences,
+                            key[:20],
+                        )
+                        break
                 joined = "".join(content_parts)
                 if len(joined) - last_checked >= _STREAM_ABORT_CHECK_INTERVAL:
                     last_checked = len(joined)
@@ -592,6 +698,34 @@ class HaSClient:
                 return f"json_repair:{mode}", parsed
 
         return "failed", None
+
+    @staticmethod
+    def _truncated_tail_bucket(raw: str, types: list[str]) -> str | None:
+        """Issue#209：找出**被 max_tokens 切断时正在填充的那个桶**。
+
+        截断输出形如 ``{"日期": ["..."], "编号": ["...", "…切断``——json_repair
+        能把前面修好，但最后那个桶只剩切点之前的部分值：它**仍然"存在"**，所以
+        `missing = [t for t in types if t not in result]` 永远不含它，于是它被
+        静默当成完整结论（confirmed 还能是 True）。密集页上这就是"少打码"。
+
+        判据只看原文：取**最后一个**顶层桶开口 ``"<类型>": [``，并且只有当它
+        ①仍是本次请求的类型之一、②在它之后**没有**闭合的 ``]``（桶还开着 ⇒ 确实
+        被切在桶里）时才返回；否则返回 None（不猜）。
+        """
+        if not raw:
+            return None
+        last_match = None
+        for match in _NER_OBJECT_KEY_OPEN_RE.finditer(raw):
+            last_match = match
+        if last_match is None:
+            return None
+        name = last_match.group(1)
+        if name not in set(types or []):
+            return None
+        # 桶已闭合 ⇒ 截断发生在桶与桶之间（或无截断），没有"被切断的桶"
+        if "]" in raw[last_match.end():]:
+            return None
+        return name
 
     @staticmethod
     def _trim_truncated_tail_value(result: dict[str, Any]) -> dict[str, Any]:
@@ -1330,8 +1464,30 @@ If nothing matches, return {{}}.
                     # 补查层（调用方正在补查）自己也被腰斩：修复出的残缺结果不可信。
                     confirmed = False
                 else:
-                    missing = [t for t in types if t not in result]
-                    if len(missing) == len(types):
+                    # ①「整桶丢失」的补查集合：与改前逐字一致，死锁规避判据也只用它
+                    parse_missing = [t for t in types if t not in result]
+                    missing = list(parse_missing)
+                    # Issue#209 C2：被切断的那个桶"存在"（只是尾值被砍），所以
+                    # 不算 missing、永远补不上——密集页（真实页 133：编号 83 个值
+                    # 只落 4 个）就此静默少打码，且 confirmed 还能是 True。实测把
+                    # 它并进补查集合后，分块补查（按行边界切文本 + 温度下限）
+                    # 能在各块内枚举完整、与既有结果去重合并 ⇒ 召回补齐。
+                    cut_bucket = self._truncated_tail_bucket(response, types)
+                    # 只在「补查集合仍是全类型的真子集」时才并入：若并入后正好
+                    # 等于全类型，补查 = 同 payload 同预算整段重发（必然同结局），
+                    # 且补查 key 与本次 inflight 相同 ⇒ 自连接死锁白等（实测
+                    # 复现 3×120s 挂起）。此时宁可留着尾值缺失，也不做无望重发。
+                    if (
+                        cut_bucket
+                        and cut_bucket not in parse_missing
+                        and len(parse_missing) < len(types) - 1
+                    ):
+                        missing = [cut_bucket, *missing]
+                        logger.warning(
+                            "HaS NER output truncated while enumerating %r; including it in re-query (Issue#209 C2)",
+                            cut_bucket,
+                        )
+                    if len(parse_missing) == len(types):
                         # 修复后的结果不含任何请求类型：重查 = 同 payload 同预算
                         # 原样重发（必然同结局），且补查 key 与本调用相同——会
                         # 自连接本调用尚未释放的 inflight 事件、白等满超时

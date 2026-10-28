@@ -493,6 +493,59 @@ class Settings(BaseSettings):
     # 命中即断开（复读 ~66s 烧满 → ~5-10s 掐断），finish_reason 按 length 收口
     # 接截断恢复链路（json_repair→分块补查）。通道异常自动回落非流式。
     HAS_STREAM_LOOP_ABORT: bool = True
+    # 归一化行复读掐断（Issue#209 生成侧止损②，复用 HAS_STREAM_LOOP_ABORT 之外的
+    # 独立判据）：#202 的复读签名抓不到"同一行结构、只差数字"的枚举式复读——真实
+    # 案卷 133 页在水印碎片（姓名碎片+17 位编号，每段编号不同）上正是这种形态：
+    # 模型一行一行枚举近似重复行，签名匹配不到，只能烧满 max_tokens=2048（实测单
+    # 请求 83.4s / 65.5s）。本判据按「数字归一化后的行」计数，同一族出现
+    # ≥HAS_STREAM_LINE_REPEAT_MIN_OCCURRENCES 次即断开，finish_reason 按 length
+    # 收口（接截断恢复链路）。≤0/关闭时行为与现状一致。
+    #
+    # **默认关（Issue#209 门④实测）**：模型输出的是 JSON 行
+    # `{"text": "*721720240174000394", "type": "编号"}`（≈45 字符，含 CJK「编号」）
+    # ⇒ 同一归一化键会重复 74 次，本判据在第 4 行就断开。而该枚举是**真实报关单号
+    # 列**（页 133 真值 编号 83 个值、车牌号 29 个），断开后截断恢复只补查"完全缺失
+    # 的类型"，正在枚举的类型只留切点前的 ~4 个值 ⇒ 直接砍召回。只有在确认某类卷
+    # 的枚举确为水印碎片（而非真实业务值）时才打开；打开前必须复测召回。
+    HAS_STREAM_LINE_REPEAT_ABORT: bool = False
+    HAS_STREAM_LINE_REPEAT_MIN_OCCURRENCES: int = 4
+    HAS_STREAM_LINE_REPEAT_MAX_LINE_CHARS: int = 48
+    # 参与归一化行计数的行至少含几个 CJK 字符（默认 1）：纯数字枚举（身份证号列、
+    # 卡号列、流水号列）**不**掐断，避免误伤真实的长枚举；水印碎片是「中文碎片+
+    # 编号」故必然命中。
+    HAS_STREAM_LINE_REPEAT_MIN_CJK_CHARS: int = 1
+
+    # 页级 HaS NER 预算（Issue#209 服务侧止损）：页 133 实测在主查复读（83.4s/次）
+    # + 9~12 段补查 + 外层整页重发上烧掉 >420s，撞 300s 页墙后整页清零。给页级
+    # NER 一条自己的墙：超预算时**停发剩余阶段**（剩余组/复查/残差），用已聚合的
+    # 部分结果收尾并显式记账（stage_status/metrics + WARNING），而不是死在页门限上。
+    # 0 = 关闭（退回"只受页门限看管"）。
+    # 默认 240s 的来历（门④实测）：C2 生效后同一病态页（OCR 20s + NER 159.7s、
+    # ok=True、222 个实体值）**能收敛**，故预算必须高于它的真实耗时，否则会把这
+    # 类页从"能跑完"重新判成"失败"。240 = 该页 NER 160s 的真实耗时 + 50% 余量，
+    # 且仍给 300s 页墙留出 OCR/视觉/匹配的 60s 空间。
+    HAS_NER_PAGE_BUDGET_SEC: float = 240.0
+
+    # 预算耗尽后是否把该页判为**失败**（Issue#209）。True（默认）=抛
+    # HasTextNerPageBudgetExceeded ⇒ 页级 stage 记入 recognition.failed_pages
+    # （与页超时同一条交付拦截链：界面可查 + 有失败页时导出 ZIP 拒绝）；
+    # False = 用已聚合的部分结果收尾（仍记 metrics + WARNING），不判失败。
+    HAS_NER_PAGE_BUDGET_STRICT_FAIL: bool = True
+
+    # HaS 提示词近似重复折叠（Issue#209 提示词侧止损）：页 133 的 HaS 提示词 323 行
+    # 里 293 行（≈90%）是"只差数字"的近似重复行（水印碎片：映峰1450120 /
+    # 映峰1450120141 / 术映峰1450120141…）——精确去重杀不掉（每段编号独立），
+    # 模型在其上枚举复读。本闸把**短行**（≤MAX_LINE_CHARS）且**归一化后同族
+    # ≥FAMILY_MIN_MEMBERS 行**的族折成一行（保留首个），并把丢弃数计入 payload
+    # 统计 + WARNING 日志（可审计）。只在提示词行数 ≥MIN_PAYLOAD_LINES 时启用
+    # （正常页字节不变；页 133=323 行、页 134=147 行命中，页 132=67 行不命中）。
+    # 保守面：要求归一化前含 ≥MIN_CJK_CHARS 个 CJK 字符，纯数字列（身份证号列、
+    # 卡号列等）不折叠；长行（真实表格行）不折叠。
+    HAS_NER_NEAR_DUP_COLLAPSE: bool = True
+    HAS_NER_NEAR_DUP_MIN_PAYLOAD_LINES: int = 120
+    HAS_NER_NEAR_DUP_FAMILY_MIN_MEMBERS: int = 3
+    HAS_NER_NEAR_DUP_MAX_LINE_CHARS: int = 40
+    HAS_NER_NEAR_DUP_MIN_CJK_CHARS: int = 2
 
     # --- 批量异步导出（万级文件：分卷落盘，见 services/export_service.py） ---
     EXPORT_VOLUME_MAX_BYTES: int = 2 * 1024**3   # 每卷 zip ≤2GB

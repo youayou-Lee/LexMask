@@ -7,6 +7,7 @@ import logging
 import re
 from dataclasses import dataclass
 
+from app.core.config import settings
 from app.core.visual_feature_categories import VISUAL_ONLY_ENTITY_TYPES
 from app.models.type_mapping import canonical_type_id
 from app.services.ocr_has_vision_service import OCRTextBlock
@@ -66,6 +67,9 @@ class HaSTextPayload:
     omitted_chars: int
     max_chars: int
     truncated: bool
+    # Issue#209 短行近似重复折叠记账（默认 0：既有构造点不用改，行为不变）。
+    near_duplicate_collapsed_lines: int = 0
+    near_duplicate_families: int = 0
 
 
 def _canonical_image_text_type(entity_type: str | None) -> str:
@@ -188,6 +192,77 @@ def _iter_payload_texts(text: str | None) -> list[str]:
     return [raw]
 
 
+# ---------------------------------------------------------------------------
+# Issue#209：HaS 提示词「短行近似重复折叠」
+# ---------------------------------------------------------------------------
+# 真实案卷「第四卷.pdf」页 133 的扫描件上叠着可见平铺文本水印，每段是
+# 「姓名碎片 + 17 位编号」（映峰1450120 / 映峰1450120141 / 术映峰14501201410363…）。
+# 渲染后送 OCR 出 687 个文本块，精确重复去掉 364 块后提示词仍有 323 行，其中
+# 293 行（≈90%）是「只差数字」的近似重复行——每段编号独立，精确去重杀不掉；
+# 模型在其上枚举式复读烧满 max_tokens=2048（单请求 83.4s）。本闸在精确去重之后、
+# max_chars 截断之前把这类短行族折成首次出现的那一行（只整行丢弃，绝不改写保留
+# 行的文本、保序），并把丢弃数/族数计入 payload 统计 + 一条 WARNING。
+#
+# 保守面（缺一不折叠）：
+#   * 行数闸：候选行数 < HAS_NER_NEAR_DUP_MIN_PAYLOAD_LINES 时整段跳过 —— 正常页
+#     （67 行/147 行的邻居页也按各自规模判）行为与现状逐字节相同；
+#   * 短行闸：compact 后长度 > HAS_NER_NEAR_DUP_MAX_LINE_CHARS 不参与 —— 真实表格行
+#     通常是长行，不折叠；
+#   * CJK 闸：compact 里 CJK 字符数 < HAS_NER_NEAR_DUP_MIN_CJK_CHARS 不参与 ——
+#     纯数字列（身份证号列、卡号列、流水号列）不折叠；
+#   * 族闸：同一归一化键的成员数 ≥ HAS_NER_NEAR_DUP_FAMILY_MIN_MEMBERS 才折叠 ——
+#     两者相差的数字行（如两笔金额）不算近似重复；
+#   * 总闸：HAS_NER_NEAR_DUP_COLLAPSE=False 时整体关闭。
+_DIGIT_RE = re.compile(r"\d")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _near_duplicate_key(text: str) -> str:
+    """归一化键：压缩空白后把数字一律替换成 #（同结构、只差数字的行落进同族）。"""
+    return _DIGIT_RE.sub("#", _compact_text(text))
+
+
+def _collapse_near_duplicate_lines(
+    candidate_texts: list[str],
+    *,
+    max_line_chars: int,
+    min_cjk_chars: int,
+    family_min_members: int,
+) -> tuple[list[str], int, int]:
+    """把短行近似重复族折成首次出现的那一行（Issue#209，纯函数）。
+
+    返回 ``(kept_texts, dropped_line_count, family_count)``：
+    - ``kept_texts`` 保持输入相对顺序，被保留行逐字节不变；
+    - 只丢弃每族的第 2..n 行（保留首次出现）；族成员数小于阈值不动；
+    - 只有整族一条都没丢时返回 ``(输入副本, 0, 0)``。
+
+    单成员族天然无可折叠（``indices[1:]`` 为空），但族计数只统计真正丢了行的
+    族，故阈值下限按 2 收口（配置写 1 时等价于 2，不会把唯一行记成「族」）。
+    """
+    threshold = max(2, int(family_min_members))
+    families: dict[str, list[int]] = {}
+    for index, text in enumerate(candidate_texts):
+        compact = _compact_text(text)
+        if len(compact) > max_line_chars:
+            continue
+        if len(_CJK_RE.findall(compact)) < min_cjk_chars:
+            continue
+        families.setdefault(_near_duplicate_key(text), []).append(index)
+
+    dropped: set[int] = set()
+    family_count = 0
+    for indices in families.values():
+        if len(indices) < threshold:
+            continue
+        dropped.update(indices[1:])
+        family_count += 1
+
+    if not dropped:
+        return list(candidate_texts), 0, 0
+    kept = [text for index, text in enumerate(candidate_texts) if index not in dropped]
+    return kept, len(dropped), family_count
+
+
 
 def _build_has_text_payload(
     ocr_blocks: list[OCRTextBlock],
@@ -195,7 +270,13 @@ def _build_has_text_payload(
     max_chars: int,
     max_block_chars: int | None = None,
 ) -> HaSTextPayload:
-    """Build HaS prompt text and stats while dropping duplicate OCR block text."""
+    """Build HaS prompt text and stats while dropping duplicate OCR block text.
+
+    Passes, in order: exact-duplicate drop (and block-char clipping) → Issue#209
+    short-line near-duplicate collapse → `max_chars` cap. The collapse pass is
+    gated (see the module comment above `_collapse_near_duplicate_lines`); when a
+    gate says no, the output is byte-identical to the pre-#209 behaviour.
+    """
     candidate_texts: list[str] = []
     seen: set[str] = set()
     input_chars = 0
@@ -203,6 +284,8 @@ def _build_has_text_payload(
     duplicate_block_count = 0
     clipped_block_count = 0
     truncated = False
+    near_duplicate_collapsed_lines = 0
+    near_duplicate_families = 0
     max_chars = max(0, int(max_chars))
     block_char_cap = max(0, int(max_block_chars or 0))
 
@@ -231,6 +314,33 @@ def _build_has_text_payload(
 
             seen.add(compact)
             candidate_texts.append(text)
+
+    # Issue#209：精确去重之后 / max_chars 截断之前折叠短行近似重复族。任一闸
+    # （总开关、行数闸、短行闸、CJK 闸、族闸）不满足都不折叠，candidate_texts
+    # 原样进入下面的截断（字节不变）。
+    if (
+        settings.HAS_NER_NEAR_DUP_COLLAPSE
+        and len(candidate_texts) >= int(settings.HAS_NER_NEAR_DUP_MIN_PAYLOAD_LINES)
+    ):
+        chars_before_collapse = len("\n".join(candidate_texts))
+        candidate_texts, near_duplicate_collapsed_lines, near_duplicate_families = (
+            _collapse_near_duplicate_lines(
+                candidate_texts,
+                max_line_chars=int(settings.HAS_NER_NEAR_DUP_MAX_LINE_CHARS),
+                min_cjk_chars=int(settings.HAS_NER_NEAR_DUP_MIN_CJK_CHARS),
+                family_min_members=int(settings.HAS_NER_NEAR_DUP_FAMILY_MIN_MEMBERS),
+            )
+        )
+        if near_duplicate_collapsed_lines:
+            # 一条 WARNING，只报计数与折叠前后字符数（不打印行内容：日志体积/敏感面）。
+            logger.warning(
+                "HaS payload near-duplicate collapse: dropped %d line(s) in %d "
+                "family(ies) (%d -> %d chars)",
+                near_duplicate_collapsed_lines,
+                near_duplicate_families,
+                chars_before_collapse,
+                len("\n".join(candidate_texts)),
+            )
 
     texts: list[str] = []
     total_chars = 0
@@ -262,6 +372,8 @@ def _build_has_text_payload(
         omitted_chars=max(0, input_chars - emitted_text_chars),
         max_chars=max_chars,
         truncated=truncated,
+        near_duplicate_collapsed_lines=near_duplicate_collapsed_lines,
+        near_duplicate_families=near_duplicate_families,
     )
 
 
