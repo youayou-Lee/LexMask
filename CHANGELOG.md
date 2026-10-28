@@ -1,5 +1,52 @@
 # CHANGELOG
 
+## 2026-10-29
+
+### 修复（Issue#203/#199）门⑥ 二段独立复核（APPROVE with fixes，Critical=0）发现项处置
+
+- **复核对象**：门⑥ 第二段（只读 diff/源码与自跑判据，不看会话历史）所评 head `07ce1fa`；留痕 PR#205 评论 [6475545797](https://github.com/youayou-Lee/LexMask/pull/205#issuecomment-6475545797)。两轮变异在旧测下 SURVIVED（`>`↔`>=` 边界、去分母守卫）⇒ 判据缺口坐实，本条目即其处置。
+- **F1 判据口径失真**（Important）：`measure_repeated_fragment_coverage` 的覆盖分子原含**全部** `qualifying` 长词、`spanning` 只用于判空，与 docstring 及 PR 文案「≥k 次 **且** 跨 ≥m 页」不符；实测页内高频长 token 可把 coverage 放大 **7.5×**（0.0311→0.2325），出厂阈值 0.15 下会把正常卷误拒。**改法**：分子只标 `spanning` 长词（`text_layer_docline_service.py`），新增 2 枚判据（单页不跨页 = 不可见；页内高频长词只能稀释分母、不得放大分子——回到 `qualifying` 口径即判红：0.1944 > 0.15）。**AC0 名义值不变（推导，非重测）**：真实第四卷 6 种长 token 全部横跨 149 页，分子集合不变、分母不变 ⇒ coverage 仍为 0.3827；旁证 = 云侧逐页 reason 码只读取证（`fragment_kinds=6`、`max_fragment_pages=149`）。真卷不在本地，未再跑一遍完整 AC0。
+- **F2 边界钉名不副实**（Important）：`test_near_threshold_volume_passes_gate` 实测 coverage 0.1232、测试阈值 0.30（差 2.44×）且不断言数值。**改法**：夹具降为 `stamp_repeats=5`（实测 0.1466）、阈值改用冻结默认 0.15、显式断言 `0.65×阈值 < coverage < 阈值`，并新增「coverage == 阈值放行」判据（封死 `>`↔`>=`）。
+- **F3 新配置键无文档**（Important）：4 个 `TEXT_LAYER_REPEATED_*` 键未登记 `.env.example`。**改法**：补 4 键 + 判据口径（≥min_token_chars 的长词出现 ≥min_repeats 次 **且** 跨 ≥min_pages 页，覆盖占比 > max 即拒绝）+「0=关闸（不推荐）」+ 已知边界（只认 ≥10 字整词、约有 1 分片漏判、召回侧代价）。
+- **F4 交付裁定与展示面脱节**（Important）：带失败页的条目仍报 `ready_for_delivery=True` / `action_required=False` / `blocking=False`，失败页会随 ZIP 出厂。**改法**：新增 `_is_ready_for_delivery()` 单一真源（含 `recognition_failed_pages`），`_delivery_blocking_reasons()` 增 `recognition_failed_pages` 阻塞原因，`build_export_report` 与 `iter_report_file_rows` 两处共用（旧实现各复制一份条件、易漂移）。3 枚新测（含交付摘要由 `ready` → `action_required` 的端到端翻转）；变异：摘掉失败页条件 ⇒ 3 例判红。
+- **F7 假阳性警示**（Minor）：AWAITING_REVIEW 迁移原样回写既有 `error_message` ⇒ 陈旧摘要会带到干净条目。**改法**：摘要只从权威清单派生（`_failed_pages_error_summary`），空清单显式写 `None`；并让 `_FakeStore.update_item_performance` 建模真实深合并列语义（否则「写 performance → 回读 item 行」的接线在测试里断裂）。2 枚新测；变异 2 例判红。
+- **F8 护栏 fail-open**（Minor）：打码前失败页知情确认在 `getJob` 失败时静默放行（一次网络抖动即可绕过最后一道人工确认）。**改法**：查询失败 **fail-closed**（中止本次提交 + 提示重试，新 key `playground.redactPagesUnknownRetry` zh/en）。3 枚新测（查询失败中止 / 有失败页弹确认且取消不提交 / 无失败页不弹确认）。
+- **F9 终态无钉**（Minor）：全失败卷条目终态无断言。**改法**：新测钉「全失败卷停在 AWAITING_REVIEW + `recognition.failed_pages` 清单 + 摘要 `all N page(s)` 措辞 + skip_review 抑制」。
+- **F6 证据链补齐**（Important，云侧只读取证）：①逐页 `fallback_reason_code` 清单——148 页全为 `repeated_fragment_coverage`（页 133 无该块，因 `status=timeout`），与日志唯一 WARNING（coverage 0.383 > 0.15）及 `text_layer_docline built`=0 三方互证；②区域数记录项——`file_store.data_json` 的 `bounding_boxes` 共 **7560**（148 页，与日志逐页 `Vision detect stored` 求和一致；注意 `performance_json.pipeline_status.*.region_count` 求和 41/0 **与它不同源**，不可混用）；③**显式豁免**两项——3 页人工核对（本轮止于识别、打码未执行，无可观测面）与「页 133 补查复核请求笔数」（逐页线无 docline 补查概念，N/A）。取证全程只读（未写云、未重启/停止服务、未动 `.env`）；证据文本随 PR 评论留痕。
+- **F5 状态档偏差留痕**（Important）：`completed_with_failures` → `AWAITING_REVIEW` 的口径偏差在 PR 描述与 Issue 评论留痕；不新增状态档的理由 = 免 DDL CHECK 迁移 + 前端枚举 + 导出消费者三面扩散，且安全性等价或更强（AWAITING_REVIEW 强制人停 + skip_review 抑制 + 卡片/弹窗/导出三面可见）。
+- **F13 已知边界**（Minor）：判据只认 ≥10 字整词 ⇒ 5~9 字水印碎片维度不可见，已在 `.env.example` 与 Issue#203 留痕（水印专用维度登记为后续项）。
+- **F14 边界写明**（Minor）：`agent_md_pipeline_service.py`（#196 供料通道）不共享 `run_page`、无单页门限，故不适用 #199 的失败页记账——已在 PR 描述写明。
+- **F12 数字绑 head**（Minor）：PR 描述按 `07ce1fa` 复跑数字重写（旧描述三处互不一致且仍是 #203-only 口径）。
+- **AC2 措辞纠正**：真实第四卷实测为 **148 completed + 1 timeout（页 133）**，即 #199 的设计意图，非「149 页全 completed」；口径改为「无整卷作废 + 失败页经 `recognition.failed_pages` 显式记账」。
+
+## 2026-10-28
+
+### 修复（Issue#199）页级失败隔离——单页超时/失败不再作废整卷
+
+- **根因**（真实第四卷门④实证）：页 133 密集表格页单页耗尽 300s（单笔主查烧帽 72s + 补查/复核 211 笔请求）→ run_page TimeoutError 上抛 → 全部兄弟页被取消 → 整 item failed、149 页成果清零。单页失败=整卷作废是 #199 立案的韧性缺口，被 #203 的 docline 接管长期掩盖。
+- **改法**（`task_queue_pipelines.py`、`job_store.py`、`job_management_service.py`、前端 playground，2 commits）：
+  1. **页级隔离**：run_page 只捕 Exception 系就地记失败（timeout/failed + 原因），不再上抛取消兄弟页；`asyncio.CancelledError`/`KeyboardInterrupt`/`SystemExit` 照常穿透（t6 契约钉保持绿）；`MemoryError` 显式上抛（OOM 不放大，冷审 I2）；
+  2. **失败清单无条件写**：`recognition.failed_pages` 深合并在重跑全成功后清空旧键（冷审 I1）；新增 `JobStore.set_item_error_message`（同状态迁移是 no-op 不能带错误，冷审 I4 核实）挂 AWAITING_REVIEW 条目的失败摘要；
+  3. **两阶段调度**：视觉特征合并阶段跳过一阶段失败页（页账保留第一阶段结论，reason 带阶段标签，冷审 I3）；
+  4. **skip_review 守卫**（冷审 C1a）：带失败页的条目不 honor skip_item_review，强制停审阅——封死「无人在环直通打码、失败页当干净页出厂」路径；
+  5. **导出报告**（冷审 C1b）：per-file `recognition_failed_pages` + 警示文案（error_message 会活不过打码完成，结构化 performance 才是权威载体）；
+  6. **前端**：任务详情卡失败页警示行（amber）+ 打码提交确认弹窗明示「这些页不会被脱敏」（zh/en）。
+- **有效性**：22 例新测/重写全绿（12 隔离 + 1 导出 + 4 个 139 契约钉反转重写 + 5 前端）；变异：摘除隔离判据 6 例判红、还原回绿；139 的 t6（CancelledError 穿透）/t3（基础设施超时上抛）保持绿。
+- **门④真实第四卷实测（隔离臂 a88745c，AC2-r2）**：docline 水印闸拒绝 1 次（coverage 0.383>0.15、permanent memo 生效、零建链）→ 逐页线接管 → **条目终态 awaiting_review、148/149 页 completed、页 133 显式标记 timeout**、`recognition.failed_pages={'133': 'OCR+HaS识别 page timeout after 300s'}` 落库（无条件清单 ✓、reason 带阶段标签 ✓）；全程 3814s，无卡死、无整卷作废。实测另抓出并修复一处覆盖洗白：AWAITING_REVIEW 迁移会整列覆盖 error_message（洗掉失败摘要）——已改为显式保留并加回归钉。
+- **诚实边界**：①失败页=零识别区域，打码后该页无脱敏——可见性由任务卡/确认弹窗/导出报告承载，**成品 PDF 页内无印记**（水印/印记方案登记为开放项）；②页 133 的单页成本（复核风暴+帽子燃烧，#136 家族）未压缩——本 Issue 只保证它不再拖死整卷（该页会以 timeout 标记出现在失败清单，等待人工复核/单独重试）；③error_message 是短命展示面（打码完成即清），跨迁移权威 = performance.failed_pages。
+
+### 修复（Issue#203）水印打散字形支配的文本层卷被文档级链接管 → 整卷建链撞单页 300s 门限整卷作废
+
+- **根因**（真实案卷 149 页卷两次独立复现，页 1 分别存活 300.004s/300.007s）：该卷每页带内嵌文本层且大量为防泄漏水印的打散碎片词（同一 17 位工号长词逐页重复上千次；真实正文极薄——卷封页图像 OCR 仅 252 字符）。文档级链（#115/#129）预建链闸（墨迹对齐+文本质量五指标+页数预算）**无重复串维度**放行 → 整卷 9 万字符切 51 块跑 NER（204 笔请求、累计模型时间 1180s、docline 并发 4）→ 建链 await 被 `run_page` 的单页 300s `wait_for` 看管 → 页 1 到点取消整卷 → 149 页成果清零；且建链被 CancelledError 打断不落 memo，重试从零再建（必然复现）。
+- **改法**（`text_layer_docline_service.py`、`text_layer_doc_source.py`、`core/config.py`）：
+  1. **新度量** `measure_repeated_fragment_coverage`：字符数 ≥`TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS`(10) 的**长词**出现 ≥8 次且跨越 ≥5 个不同页，其覆盖字符占文档流比例。判据用**长词**而非跨词 n-gram——红测实证真实卷模板样板（「讯问笔录第X页…」行行共享前后缀）会把跨词精确重复率推到 ~0.99 淹没水印信号，而模板词因数字变化各不相同，长词级重复只属于水印/印章类高熵 token；
+  2. **预建链闸**：覆盖率 > `TEXT_LAYER_MAX_REPEATED_FRAGMENT_COVERAGE`（默认 0.15）在 **`run_document_ner` 之前**拒绝（冷审 Minor-2：卷级质量门在建链后才跑，门在后杀在前），机读原因码 `repeated_fragment_coverage`、**permanent 负缓存**（重试不重建、不再撞墙，AC4）；**PII 最小化**：reason/detail 只带计数与占比，不带命中片段字面量（水印串含真实姓名+编号）；
+  3. 阈值语义向「宁可错拒」偏置：错拒代价=回落逐页线（慢、召回不降），漏拒代价=整卷作废。
+- **AC0 测量（真实数据，AST 逐字同源抽取的度量实现）**：水印卷 coverage=**0.3827**（6 种长 token 横跨全部 149 页）；真实干净文本层卷（eval37-real 有层两份）coverage=**0.0**；判别间隔 ≫5×。权威块数 51（修正 Issue 正文 "~117 块"——117 笔 types=6 主查行是主查+残差全标签复调的叠加形态）。
+- **有效性**：9 例新测全绿（拒绝支路：零 NER 调用断言 + permanent 负缓存 + PII 无字面量；放行支路：页眉/模板样板卷、贴阈值卷、混合卷 `covered_pages` 语义不受影响）。
+- **诚实边界**：①本修复只修路由与预算，**不提升水印文本本身的识别与脱敏覆盖**（逐页线对水印串的处理是既有行为且未经验证，现场观测逐页 OCR 仅读出约 8 处水印实例）——已知限制登记于 #203/#204；②#204（O(整卷) 建链受 O(单页) 门限 + 取消不落负缓存，不依赖水印）仍开放，干净的大页数文本层卷同处风险区；③AC0 干净侧样本量有限（真实干净文本层卷 2 份 + 单元级模板样板夹具），阈值 0.15 基于实测 0.3827 下方 2.5× 余量冻结，后续新形态卷若误伤/漏杀以 AC0 同款测量复核。
+- **零回归与评审**：全量 pytest `comm -3` 与 preview 基线对比（见 PR 证据评论）；验收方案经门①.5 冷审 r1 REVISE（9 条发现全采纳）→ r2 APPROVE 后开工。
+
 ## 2026-10-27
 
 ### 修复（Issue#198/#202）高重复表格页触发模型复读 → 单页 180s 超时整卷作废

@@ -207,6 +207,39 @@ async def _build(
             permanent=True,
         )
 
+    # **跨页高频重复片段闸**（Issue#203）：文本层被防泄漏水印的打散碎片词支配的卷
+    # （同一水印词组逐页重复上千次、真实正文极薄）不得接管文档级链——整卷 NER 的
+    # 建链耗时是 O(整卷)，却受 run_page 的单页页超时看管，任一页到点即整卷作废
+    # （2026-10-28 第四卷两次真实复现）。闸必须在 run_document_ner **之前**：
+    # 卷级质量门（映射失败率/截断率/覆盖率）在建链完成后才跑——门在后、杀在前。
+    # 错拒代价=回落逐页线（慢、召回不降）；漏拒代价=整卷作废。阈值偏「宁可错拒」。
+    repeat = docline.measure_repeated_fragment_coverage(pages)
+    max_repeat_coverage = float(settings.TEXT_LAYER_MAX_REPEATED_FRAGMENT_COVERAGE)
+    if max_repeat_coverage > 0 and float(repeat["coverage"]) > max_repeat_coverage:
+        logger.warning(
+            "text_layer_docline skipped: repeated-fragment coverage %.3f > %.2f "
+            "(fragment_kinds=%d, max_fragment_pages=%d) file=%s",
+            float(repeat["coverage"]),
+            max_repeat_coverage,
+            int(repeat["fragment_kinds"]),
+            int(repeat["max_fragment_pages"]),
+            file_id[:8],
+        )
+        # PII 最小化（#203 AC4）：水印串含真实姓名+编号，reason/detail 只带计数
+        # 与占比，不带命中片段字面量。permanent：层内容是文件快照的函数，重试
+        # 不会变好——落永久负缓存，重试不重建、不再撞墙（回落逐页线照常工作）。
+        raise _TransientIneligible(
+            f"repeated_fragment_coverage:{float(repeat['coverage']):.3f}",
+            code="repeated_fragment_coverage",
+            detail={
+                "coverage": round(float(repeat["coverage"]), 4),
+                "max": max_repeat_coverage,
+                "fragment_kinds": int(repeat["fragment_kinds"]),
+                "max_fragment_pages": int(repeat["max_fragment_pages"]),
+            },
+            permanent=True,
+        )
+
     result = await docline.run_document_ner(
         pages, labels, has_client=has_client, regex_types=regex_types
     )

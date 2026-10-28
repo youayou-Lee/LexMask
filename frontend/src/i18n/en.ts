@@ -1215,6 +1215,8 @@ const enOverrides: Record<string, string> = {
   'playground.recognitionPausedModelServices':
     'Recognition is paused because required model services are unavailable: {services}. Start the services, then run recognition again.',
   'playground.redactFailed': 'Redaction failed.',
+  'playground.redactFailedPagesConfirm': 'Page(s) {pages} failed recognition: they will NOT be redacted (not recognized ≠ no sensitive content). Continue anyway? Cancel to retry the failed pages first.',
+  'playground.redactPagesUnknownRetry': 'Could not verify whether any pages failed recognition (lookup failed). Redaction was stopped to avoid treating un-redacted pages as clean; please retry.',
   'playground.redactAlreadyDone': 'Already redacted — opened the result view for you.',
   'playground.restored': 'Last single-file session restored',
   'playground.restoredFromServer': 'Restored last recognition from server',
@@ -2160,6 +2162,7 @@ Object.assign(enOverrides, {
   'processingDetails.redaction': 'Redaction rendering',
   'processingDetails.failedChunks': '{n} page(s) failed recognition and fell back automatically',
   'processingDetails.textDirect': 'Direct text input — no OCR needed',
+  'processingDetails.failedPages': 'Page(s) {pages} failed recognition: they were NOT scanned for sensitive data and will not be redacted. Retry them separately or review manually.',
   'processingDetails.pages': '{n} pages',
   'processingDetails.perPage': '{s}/page',
   'processingDetails.entityCount': '{n} entities',

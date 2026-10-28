@@ -493,6 +493,40 @@ def _count_by_status(items: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _failed_pages_export_warning(failed_pages: list[int]) -> str:
+    """失败页的导出侧警示文案（中性英文，前端/报告按需本地化；冷审 C1b）。"""
+    if not failed_pages:
+        return ""
+    ids = ", ".join(str(p) for p in failed_pages[:20])
+    suffix = "" if len(failed_pages) <= 20 else " …"
+    return (
+        f"{len(failed_pages)} page(s) failed recognition (pages {ids}{suffix}); "
+        "these pages were NOT scanned for sensitive data"
+    )
+
+
+def _recognition_failed_page_ids(item: dict[str, Any]) -> list[int]:
+    """识别失败页号（升序）。来源 = performance_json.recognition.failed_pages（Issue#199）。
+
+    error_message 会活不过打码完成迁移，导出报告的「失败页」信号必须走结构化
+    performance（冷审 C1b：成品/交付侧对失败页的可见性）。
+    """
+    try:
+        performance = json.loads(item.get("performance_json") or "{}")
+        pages = (performance.get("recognition") or {}).get("failed_pages") or {}
+        if not isinstance(pages, dict):
+            return []
+        out: list[int] = []
+        for key in pages:
+            try:
+                out.append(int(key))
+            except (TypeError, ValueError):
+                continue
+        return sorted(out)
+    except (ValueError, TypeError):
+        return []
+
+
 def _review_confirmed(item: dict[str, Any], has_output: bool, skip_item_review: bool) -> bool:
     if skip_item_review and has_output:
         return True
@@ -502,6 +536,26 @@ def _review_confirmed(item: dict[str, Any], has_output: bool, skip_item_review: 
     return status in (JobItemStatus.REVIEW_APPROVED.value, JobItemStatus.REDACTING.value)
 
 
+def _is_ready_for_delivery(
+    item: dict[str, Any],
+    has_output: bool,
+    review_confirmed: bool,
+    redacted_skip_reason: str | None,
+    recognition_failed_pages: list[int],
+) -> bool:
+    """交付裁定单一真源（build_export_report 与 iter_report_file_rows 共用）。
+
+    除 item 级失败/缺成品/未确认/跳过打码外，**页级识别失败**同样不可交付——失败页
+    「未被扫过敏感数据」，结构化清单已落 performance，展示面不得再报 ready_for_delivery
+    （门⑥ 二段 F4：旧实现只把失败页写进 error 文案，交付裁定与展示面脱节）。
+    """
+    return (
+        _status_value(item.get("status")) != JobItemStatus.FAILED.value
+        and has_output
+        and review_confirmed
+        and redacted_skip_reason is None
+        and not recognition_failed_pages
+    )
 
 
 def _delivery_blocking_reasons(
@@ -509,10 +563,13 @@ def _delivery_blocking_reasons(
     has_output: bool,
     review_confirmed: bool,
     redacted_skip_reason: str | None,
+    recognition_failed_pages: list[int],
 ) -> list[str]:
     reasons: list[str] = []
     if str(item.get("status")) == JobItemStatus.FAILED.value:
         reasons.append("failed")
+    if recognition_failed_pages:
+        reasons.append("recognition_failed_pages")
     if not has_output:
         reasons.append("missing_redacted_output")
     elif redacted_skip_reason is not None:
@@ -575,17 +632,20 @@ def build_export_report(
         is_selected = file_id in selected
         has_output, redacted_skip_reason = _redacted_output_state(info)
         review_confirmed = _review_confirmed(item, has_output, skip_item_review)
-        ready_for_delivery = (
-            _status_value(item.get("status")) != JobItemStatus.FAILED.value
-            and has_output
-            and review_confirmed
-            and redacted_skip_reason is None
+        recognition_failed_pages = _recognition_failed_page_ids(item)
+        ready_for_delivery = _is_ready_for_delivery(
+            item,
+            has_output,
+            review_confirmed,
+            redacted_skip_reason,
+            recognition_failed_pages,
         )
         blocking_reasons = _delivery_blocking_reasons(
             item,
             has_output,
             review_confirmed,
             redacted_skip_reason,
+            recognition_failed_pages,
         )
         delivery_status = _file_delivery_status(is_selected, ready_for_delivery)
         detected_entities = _safe_entity_count(info)
@@ -632,7 +692,10 @@ def build_export_report(
                 "page_count": _safe_int((info or {}).get("page_count")) or None,
                 "selected_for_export": is_selected,
                 "delivery_status": delivery_status,
-                "error": item.get("error_message") or metadata_warning,
+                "error": item.get("error_message") or metadata_warning or (
+                    _failed_pages_export_warning(recognition_failed_pages)
+                ),
+                "recognition_failed_pages": recognition_failed_pages,
                 "metadata_warning": metadata_warning,
                 "ready_for_delivery": ready_for_delivery,
                 "action_required": not ready_for_delivery,
@@ -727,14 +790,20 @@ def iter_report_file_rows(
         info, metadata_warning = _safe_file_info(file_id)
         has_output, redacted_skip_reason = _redacted_output_state(info)
         review_confirmed = _review_confirmed(item, has_output, skip_item_review)
-        ready_for_delivery = (
-            _status_value(item.get("status")) != JobItemStatus.FAILED.value
-            and has_output
-            and review_confirmed
-            and redacted_skip_reason is None
+        recognition_failed_pages = _recognition_failed_page_ids(item)
+        ready_for_delivery = _is_ready_for_delivery(
+            item,
+            has_output,
+            review_confirmed,
+            redacted_skip_reason,
+            recognition_failed_pages,
         )
         blocking_reasons = _delivery_blocking_reasons(
-            item, has_output, review_confirmed, redacted_skip_reason
+            item,
+            has_output,
+            review_confirmed,
+            redacted_skip_reason,
+            recognition_failed_pages,
         )
         raw_file_type = info.get("file_type") if info else None
         yield {

@@ -31,6 +31,7 @@ T7/T12 钉多页批量的页账隔离与首错取消语义，T8 钉页数归一�
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -70,6 +71,7 @@ class _FakeStore:
         self.status_calls: list[dict[str, Any]] = []
         self.performance: list[dict[str, Any]] = []
         self.progress_calls: list[dict[str, Any]] = []
+        self.error_message_calls: list[dict[str, Any]] = []
         self.progress_exc = progress_exc
 
     # --- 读 ---
@@ -86,8 +88,24 @@ class _FakeStore:
     def update_item_status(self, item_id: str, status: str, error_message: str | None = None) -> None:
         self.status_calls.append({"item_id": item_id, "status": status, "error_message": error_message})
 
+    def set_item_error_message(self, item_id: str, error_message: str | None) -> None:
+        """Issue#199：独立 error_message 写入口（不动状态）的替身记录。
+
+        与真库同语义：写入 item 行的 error_message 列（后续 update_item_status
+        的整列覆盖读的就是这里）。
+        """
+        self.error_message_calls.append({"item_id": item_id, "error_message": error_message})
+        self.item["error_message"] = error_message
+
     def update_item_performance(self, item_id: str, patch: dict[str, Any]) -> None:
+        # 真实 JobStore 把补丁**深合并**进 job_items.performance_json（因此 get_item
+        # 回读可见，见 job_store.py:585-607）；替身必须同样建模，否则「写 performance
+        # → 从 item 行回读」的接线在测试里断裂——门⑥ 二段 F7 的摘要正是这样读的。
         self.performance.append(patch)
+        from app.services.job_models import _coerce_performance, _deep_merge_dict
+
+        data = _deep_merge_dict(_coerce_performance(self.item.get("performance_json")), patch)
+        self.item["performance_json"] = json.dumps(data, ensure_ascii=False, sort_keys=True)
 
     def update_item_progress(self, *args: Any, **kwargs: Any) -> None:
         self.progress_calls.append({"args": args, "kwargs": kwargs})
@@ -300,6 +318,7 @@ def test_t6_cancelled_error_is_not_swallowed(monkeypatch: pytest.MonkeyPatch) ->
 def test_t2_page_level_asyncio_timeout_is_recorded_as_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Issue#199 反转：页超时不再上抛作废整卷——就地记 timeout 并汇入 failed_pages。
     _patch_asyncio_timeout(monkeypatch)
     store = _FakeStore()
     queue = _queue(store)
@@ -310,17 +329,22 @@ def test_t2_page_level_asyncio_timeout_is_recorded_as_timeout(
     _vision_stubs(monkeypatch, pages=1, detect=_detect)
 
     async def scenario() -> None:
-        with pytest.raises(TimeoutError) as excinfo:
-            await queue._run_vision(_item(), dict(_VISION_CFG))
-        assert "timed out after" in str(excinfo.value), str(excinfo.value)
+        await queue._run_vision(_item(), dict(_VISION_CFG))
 
     _run(scenario)
     assert store.page_entry(1).get("status") == "timeout", store.performance
+    merged: dict[str, Any] = {}
+    for patch in store.performance:
+        if "failed_pages" in (patch.get("recognition") or {}):
+            merged = patch["recognition"]["failed_pages"]
+    assert merged == {"1": merged.get("1")}, merged  # 失败清单落地且键=失败页
+    assert "timeout" in str(merged.get("1")), merged
 
 
 def test_t10a_page_level_non_timeout_failure_stays_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Issue#199 反转：页级异常同样隔离（记 failed、不上抛）。
     _patch_asyncio_timeout(monkeypatch)
     store = _FakeStore()
     queue = _queue(store)
@@ -331,8 +355,7 @@ def test_t10a_page_level_non_timeout_failure_stays_failed(
     _vision_stubs(monkeypatch, pages=1, detect=_detect)
 
     async def scenario() -> None:
-        with pytest.raises(ValueError):
-            await queue._run_vision(_item(), dict(_VISION_CFG))
+        await queue._run_vision(_item(), dict(_VISION_CFG))
 
     _run(scenario)
     assert store.page_entry(1).get("status") == "failed", store.performance
@@ -403,8 +426,8 @@ def test_t7_multi_page_batch_records_pages_independently(
     _vision_stubs(monkeypatch, pages=3, detect=_detect)
 
     async def scenario() -> None:
-        with pytest.raises(TimeoutError):
-            await queue._run_vision(_item(), dict(_VISION_CFG))
+        # Issue#199 反转：页 2 超时不再整卷作废。
+        await queue._run_vision(_item(), dict(_VISION_CFG))
 
     _run(scenario)
     statuses = store.page_statuses()
@@ -460,9 +483,15 @@ def test_t8_page_count_normalisation(
 #      （`AssertionError: [False, False]`，非确定性），且 3.10 的 `wait_for` 会多包一层 task
 #      使断言主语随版本漂移。本版取消投递用 `gather(..., return_exceptions=True)` 确定性等待。
 # ---------------------------------------------------------------------------
-def test_t12_first_error_cancels_siblings_without_recording_failed(
+def test_t12_first_error_no_longer_cancels_siblings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Issue#199 反转：页失败不再取消在飞兄弟页——兄弟页照常完成，整卷继续。
+
+    旧语义（首错 cancel 全部）已被页级隔离取代；cancel+raise 处理器只保留给
+    基础设施异常。t6（CancelledError 穿透）与 t3（基础设施超时上抛）继续钉住
+    「不误吞」的边界。
+    """
     from app.core.config import settings
 
     _patch_asyncio_timeout(monkeypatch)
@@ -470,46 +499,29 @@ def test_t12_first_error_cancels_siblings_without_recording_failed(
     store = _FakeStore()
     queue = _queue(store)
     started: list[int] = []
-    siblings: list[asyncio.Task[Any]] = []
-    cancelled: list[int] = []
+    finished: list[int] = []
 
     async def _detect(file_id: str, page: int, **kwargs: Any) -> dict[str, Any]:
         started.append(page)
         if page == 1:
-            # 给事件循环足够时间把 2/3 号页一并启动（保证它们是「在飞」兄弟页），再抛超时。
+            # 让 2/3 号页一并启动（保证它们是「在飞」兄弟页），页 1 再超时。
             await asyncio.sleep(0.2)
             raise _Fake310AsyncTimeoutError()
-        # 取消动作的**唯一**判别点在协程**内部**：`task.cancel()` 最终以 `CancelledError`
-        # 送达本协程（3.10 上 `wait_for` 还会再包一层 task，3.11+ inline ⇒ 只有在这里
-        # 观测才与版本无关）。删掉 `page_task.cancel()` 时本协程会自然返回、`cancelled`
-        # 保持为空 ⇒ T12 判红（变异 M6'）。
-        current = asyncio.current_task()
-        assert current is not None
-        siblings.append(current)
-        try:
-            await asyncio.sleep(1.0)
-        except asyncio.CancelledError:
-            cancelled.append(page)
-            raise
+        await asyncio.sleep(0.05)
+        finished.append(page)
         return {"boxes": []}
 
     _vision_stubs(monkeypatch, pages=3, detect=_detect)
 
     async def scenario() -> None:
-        with pytest.raises(TimeoutError):
-            await queue._run_vision(_item(), dict(_VISION_CFG))
-        # 确定性等待兄弟页归位（无墙钟竞态）：gather 返回时取消必然已投递；若
-        # `page_task.cancel()` 被删，兄弟页自然返回、`cancelled` 仍为空 ⇒ 下面判红。
-        assert len(siblings) == 2, siblings
-        await asyncio.gather(*siblings, return_exceptions=True)
-        assert sorted(cancelled) == [2, 3], cancelled
+        await queue._run_vision(_item(), dict(_VISION_CFG))
 
     _run(scenario)
 
     statuses = store.page_statuses()
     assert sorted(started) == [1, 2, 3], started
+    assert sorted(finished) == [2, 3], finished
     assert statuses.get("1") == "timeout", statuses
-    # 承重断言：被取消的在飞兄弟页不得被记成 failed（也不会被记成 completed，因为从未返回）。
-    assert "failed" not in statuses.values(), statuses
+    # 承重断言：兄弟页**完成**而非被取消（旧语义下它们收不到 completed 页账）。
     for page in ("2", "3"):
-        assert statuses.get(page) in (None, "completed"), statuses
+        assert statuses.get(page) == "completed", statuses
