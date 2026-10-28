@@ -240,6 +240,75 @@ def build_stream(pages: list[TextLayerPage]) -> tuple[str, list[_WordSpan]]:
     return "".join(parts), spans
 
 
+def measure_repeated_fragment_coverage(
+    pages: list[TextLayerPage],
+    *,
+    min_token_chars: int | None = None,
+    min_repeats: int | None = None,
+    min_pages: int | None = None,
+) -> dict[str, float | int]:
+    """跨页高频重复**长词**覆盖占比（Issue#203 预建链闸的度量）。
+
+    事故形态：文本层被防泄漏水印的打散碎片词支配（同一高熵长 token——水印工号
+    串——逐页重复上千次），真实正文极薄。度量 = 字符数 ≥min_token_chars 的词出现
+    ≥min_repeats 次且跨越 ≥min_pages 个不同页，这些词覆盖的字符占文档流
+    （build_stream 产物）比例。
+
+    为什么是「长词」不是跨词 n-gram：真实卷模板样板（「讯问笔录第X页…」每行共享
+    前后缀）会让跨词精确 n-gram 重复率高到 ~0.99，淹没水印信号（红测实证）；
+    而模板词因数字变化各不相同，**长词级重复只属于水印/印章类高熵 token**。
+
+    **载荷只有计数与占比**（PII 最小化，#203 AC4）：水印串含真实姓名+编号，
+    一切对外观测面不得携带命中片段字面量——调用方写机读原因时只能引用本函数的
+    数值字段。纯函数，不触模型。
+    """
+    t = int(min_token_chars if min_token_chars is not None else settings.TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS)
+    k = int(min_repeats if min_repeats is not None else settings.TEXT_LAYER_REPEATED_FRAGMENT_MIN_REPEATS)
+    m = int(min_pages if min_pages is not None else settings.TEXT_LAYER_REPEATED_FRAGMENT_MIN_PAGES)
+
+    empty: dict[str, float | int] = {"coverage": 0.0, "fragment_kinds": 0, "max_fragment_pages": 0}
+    if t <= 0 or k <= 0 or m <= 0 or not pages:
+        return empty
+
+    stream, spans = build_stream(pages)
+    total = len(stream)
+    if total <= 0 or not spans:
+        return empty
+
+    # 长词出现计数（词文本原样作键；模板词带页号/序号数字，天然各不相同）。
+    counts: dict[str, int] = {}
+    for span in spans:
+        token = span.word.text
+        if len(token) >= t:
+            counts[token] = counts.get(token, 0) + 1
+
+    qualifying = {token for token, cnt in counts.items() if cnt >= k}
+    if not qualifying:
+        return empty
+
+    # 达标长词：标覆盖区间（词本身字符，不含分隔符）并数跨页。
+    marked = bytearray(total)
+    pages_per_token: dict[str, set[int]] = {}
+    for span in spans:
+        token = span.word.text
+        if token not in qualifying:
+            continue
+        for j in range(span.start, span.end):
+            marked[j] = 1
+        pages_per_token.setdefault(token, set()).add(span.page)
+
+    spanning = [p for p in pages_per_token.values() if len(p) >= m]
+    if not spanning:
+        return empty
+
+    covered = sum(marked)
+    return {
+        "coverage": covered / total,
+        "fragment_kinds": len(spanning),
+        "max_fragment_pages": max(len(p) for p in spanning),
+    }
+
+
 def iter_chunks(
     stream: str,
     *,

@@ -580,6 +580,21 @@ class Settings(BaseSettings):
     # **回映失败率上限**：模型给出的值在文本层里定位不到（或跨页拼接）的比例，
     # 超过它就整卷放弃 —— 否则「模型复读/文本层不同源」会被当成正常结果。
     TEXT_LAYER_MAX_MAP_FAILURE_RATIO: float = 0.30
+    # --- 跨页高频重复长词闸（Issue#203）---
+    # 事故形态：扫描件内嵌文本层被防泄漏水印的打散碎片词支配（真实正文极薄），
+    # 文档级链照常接管 → 整卷十几万字符切成上百块 NER → 建链撞单页页超时整卷作废。
+    # 判据 = 字符数 ≥TOKEN_MIN_CHARS 的长词（高熵 token，如水印工号串）出现
+    # ≥MIN_REPEATS 次且跨越 ≥MIN_PAGES 个不同页，其覆盖字符占文档流比例超
+    # MAX_COVERAGE ⇒ 在 **run_document_ner 之前** 拒绝并回落逐页线。
+    # 为什么是「长词」不是跨词 n-gram：真实卷模板样板（讯问笔录第X页…每行共享
+    # 前后缀）会让跨词精确重复率高到 0.99，淹没水印信号；而模板词因数字变化
+    # 各不相同，长词级重复只属于水印/盖章类高熵 token（r1 评审「夹具须按实测
+    # 碎片形态构造」的红测实证）。阈值语义向「宁可错拒」偏置：错拒代价=回落
+    # 逐页线（慢、召回不降），漏拒代价=整卷作废。默认值为 AC0 测量冻结前占位。
+    TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS: int = 10
+    TEXT_LAYER_REPEATED_FRAGMENT_MIN_REPEATS: int = 8
+    TEXT_LAYER_REPEATED_FRAGMENT_MIN_PAGES: int = 5
+    TEXT_LAYER_MAX_REPEATED_FRAGMENT_COVERAGE: float = 0.15
     # （门⑥ 三轮 Minor#4：原 `TEXT_LAYER_EMPTY_PAGE_FALLBACK` 开关已删除。
     # 原因：置 False 会把「覆盖页 0 框」当成「这页已由文档级链处理」⇒ 整页丢检，
     # 一行配置就能把上一轮修掉的 C-1 重新打开。现在 0 框页**无条件**回落旧路径。）
@@ -784,6 +799,28 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_text_layer_max_map_failure_ratio(cls, v: float) -> float:
         return max(0.0, min(1.0, v))
+
+    @field_validator("TEXT_LAYER_MAX_REPEATED_FRAGMENT_COVERAGE")
+    @classmethod
+    def _validate_text_layer_max_repeated_fragment_coverage(cls, v: float) -> float:
+        # 0 = 关闸（不推荐：#203 事故形态回到无防护）；上限 1.0 等于永不该越。
+        return max(0.0, min(1.0, v))
+
+    @field_validator("TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS")
+    @classmethod
+    def _validate_text_layer_repeated_token_min_chars(cls, v: int) -> int:
+        # <8 会把「恰好同名的正常短语/短编号」也算进来；>64 对水印长 token 太钝。
+        return max(8, min(128, v))
+
+    @field_validator("TEXT_LAYER_REPEATED_FRAGMENT_MIN_REPEATS")
+    @classmethod
+    def _validate_text_layer_repeated_fragment_min_repeats(cls, v: int) -> int:
+        return max(2, min(10_000, v))
+
+    @field_validator("TEXT_LAYER_REPEATED_FRAGMENT_MIN_PAGES")
+    @classmethod
+    def _validate_text_layer_repeated_fragment_min_pages(cls, v: int) -> int:
+        return max(2, min(10_000, v))
 
     @field_validator("TEXT_LAYER_MAX_WORD_CHARS")
     @classmethod
