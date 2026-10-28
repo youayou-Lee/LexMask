@@ -2,6 +2,13 @@
 
 ## 2026-10-29
 
+### 性能（Issue#207）预览翻页响应滞后——前端翻页 abort+加载态 + 后端渲染链移出事件循环
+
+- **现象**：单次处理识别进行中/完成后，预览台快速连点上下页，页码即时跳变但画面滞后且无反馈；识别期间更明显（用户实测反馈）。
+- **根因**（本地 canary 实测三重证实）：①前端翻页不取消在飞预览请求、加载期间旧图驻留且无加载态、连点跑赢空闲预取；②后端预览渲染链（`file_parser.get_pdf_page_image` 的 PyMuPDF 150dpi 渲染 + `vision_service.preview_redaction` 的 PIL 编码）在 async def 内裸跑同步 CPU 活——渲染跑在事件循环线程上、渲染期间循环对一切请求无响应（`call_soon` 探针 + `asyncio.run(debug=True)` 实测 5 页连渲染单步 0.259s），每次未命中缓存的翻页冻结整个后端，识别期间叠加放大。
+- **改法**：前端 `use-playground-image` 新增页代 AbortController（换页/卸载掐掉上一代在飞预览请求，含预取与 redacted）+ `previewPageLoading` 加载态（`ImageBBoxEditor` 画布角落叠加指示，保留旧图不清空、防闪白语义不变）+ i18n 中英键；后端渲染/编码移入 `asyncio.to_thread`（fitz 每调用独立 Document，与仓库既有 to_thread 先例同构）+ 同键单飞（并发同页只渲染一次，连点风暴服务端成本钉在每唯一页一次；客户端 abort 不终止已进线程池的渲染）。不改任何识别产出（响应字节与改前逐字节一致，pytest 参考序列比对钉住）。
+- **测试**：后端 +5 例（事件循环不阻塞 call_soon 探针改前红/改后绿、字节一致、缓存幂等、singleflight 并发单渲染）；前端 +8 例（连点 abort、卸载 abort、redacted 同掐、加载态出现/清除/失败保留旧图、abort 竞窗晚到不生效、预取晚到只进缓存、预取回归、共享页状态力学）。门④：云实例改前基线探针 + 部署后识别中/空闲两态连点取证（详见 PR）。
+
 ### 修复（Issue#203/#199）门⑥ 二段独立复核（APPROVE with fixes，Critical=0）发现项处置
 
 - **复核对象**：门⑥ 第二段（只读 diff/源码与自跑判据，不看会话历史）所评 head `07ce1fa`；留痕 PR#205 评论 [6475545797](https://github.com/youayou-Lee/LexMask/pull/205#issuecomment-6475545797)。两轮变异在旧测下 SURVIVED（`>`↔`>=` 边界、去分母守卫）⇒ 判据缺口坐实，本条目即其处置。

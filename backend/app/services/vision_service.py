@@ -2161,26 +2161,27 @@ class VisionService:
         else:
             image_data = await self.file_parser.get_pdf_page_image(file_path, page)
 
-        image = Image.open(io.BytesIO(image_data)).convert("RGB")
-        width, height = image.size
-
         page_boxes = [b for b in bounding_boxes if b.page == page and b.selected]
 
-        for bbox in page_boxes:
-            _apply_box_effect(
-                image,
-                bbox,
-                width,
-                height,
-                image_method,
-                max(1, min(_REDACTION_STRENGTH_MAX, strength)),
-                fill_color,
-            )
+        def _compose() -> bytes:
+            # Issue#207：PIL 打开/打框/PNG 编码是同步 CPU 活，移入 worker 线程
+            # 避免阻塞事件循环（与 get_pdf_page_image 的 to_thread 同理）。
+            image = Image.open(io.BytesIO(image_data)).convert("RGB")
+            width, height = image.size
+            for bbox in page_boxes:
+                _apply_box_effect(
+                    image,
+                    bbox,
+                    width,
+                    height,
+                    image_method,
+                    max(1, min(_REDACTION_STRENGTH_MAX, strength)),
+                    fill_color,
+                )
+            output = io.BytesIO()
+            image.save(output, format="PNG")
+            return output.getvalue()
 
-        output = io.BytesIO()
-        image.save(output, format="PNG")
-        output.seek(0)
-
-        return output.getvalue()
+        return await asyncio.to_thread(_compose)
 
 

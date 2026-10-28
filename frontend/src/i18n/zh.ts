@@ -1214,6 +1214,7 @@ const zhOverrides: Record<string, string> = {
   'playground.locateMissed': '{n} 个实体未能自动定位（跨行断开等），可在页面上手动拉框兜底。',
   'playground.locateFailed': '实体定位失败，可手动拉框兜底或稍后重试。',
   'playground.previewHint.text': '查看高亮、选取文本并修正标注后再导出。',
+  'playground.previewPageLoading': '页面加载中…',
   'playground.updateAnnotation': '更新标注',
   'playground.addAnnotation': '添加标注',
   'playground.customType': '自定义',
