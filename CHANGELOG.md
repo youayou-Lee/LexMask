@@ -2,6 +2,19 @@
 
 ## 2026-10-28
 
+### 修复（Issue#199）页级失败隔离——单页超时/失败不再作废整卷
+
+- **根因**（真实第四卷门④实证）：页 133 密集表格页单页耗尽 300s（单笔主查烧帽 72s + 补查/复核 211 笔请求）→ run_page TimeoutError 上抛 → 全部兄弟页被取消 → 整 item failed、149 页成果清零。单页失败=整卷作废是 #199 立案的韧性缺口，被 #203 的 docline 接管长期掩盖。
+- **改法**（`task_queue_pipelines.py`、`job_store.py`、`job_management_service.py`、前端 playground，2 commits）：
+  1. **页级隔离**：run_page 只捕 Exception 系就地记失败（timeout/failed + 原因），不再上抛取消兄弟页；`asyncio.CancelledError`/`KeyboardInterrupt`/`SystemExit` 照常穿透（t6 契约钉保持绿）；`MemoryError` 显式上抛（OOM 不放大，冷审 I2）；
+  2. **失败清单无条件写**：`recognition.failed_pages` 深合并在重跑全成功后清空旧键（冷审 I1）；新增 `JobStore.set_item_error_message`（同状态迁移是 no-op 不能带错误，冷审 I4 核实）挂 AWAITING_REVIEW 条目的失败摘要；
+  3. **两阶段调度**：视觉特征合并阶段跳过一阶段失败页（页账保留第一阶段结论，reason 带阶段标签，冷审 I3）；
+  4. **skip_review 守卫**（冷审 C1a）：带失败页的条目不 honor skip_item_review，强制停审阅——封死「无人在环直通打码、失败页当干净页出厂」路径；
+  5. **导出报告**（冷审 C1b）：per-file `recognition_failed_pages` + 警示文案（error_message 会活不过打码完成，结构化 performance 才是权威载体）；
+  6. **前端**：任务详情卡失败页警示行（amber）+ 打码提交确认弹窗明示「这些页不会被脱敏」（zh/en）。
+- **有效性**：21 例新测/重写全绿（11 隔离 + 1 导出 + 4 个 139 契约钉反转重写 + 5 前端）；变异：摘除隔离判据 6 例判红、还原回绿；139 的 t6（CancelledError 穿透）/t3（基础设施超时上抛）保持绿。
+- **诚实边界**：①失败页=零识别区域，打码后该页无脱敏——可见性由任务卡/确认弹窗/导出报告承载，**成品 PDF 页内无印记**（水印/印记方案登记为开放项）；②页 133 的单页成本（复核风暴+帽子燃烧，#136 家族）未压缩——本 Issue 只保证它不再拖死整卷（该页会以 timeout 标记出现在失败清单，等待人工复核/单独重试）；③error_message 是短命展示面（打码完成即清），跨迁移权威 = performance.failed_pages。
+
 ### 修复（Issue#203）水印打散字形支配的文本层卷被文档级链接管 → 整卷建链撞单页 300s 门限整卷作废
 
 - **根因**（真实案卷 149 页卷两次独立复现，页 1 分别存活 300.004s/300.007s）：该卷每页带内嵌文本层且大量为防泄漏水印的打散碎片词（同一 17 位工号长词逐页重复上千次；真实正文极薄——卷封页图像 OCR 仅 252 字符）。文档级链（#115/#129）预建链闸（墨迹对齐+文本质量五指标+页数预算）**无重复串维度**放行 → 整卷 9 万字符切 51 块跑 NER（204 笔请求、累计模型时间 1180s、docline 并发 4）→ 建链 await 被 `run_page` 的单页 300s `wait_for` 看管 → 页 1 到点取消整卷 → 149 页成果清零；且建链被 CancelledError 打断不落 memo，重试从零再建（必然复现）。
