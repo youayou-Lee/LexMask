@@ -266,6 +266,11 @@ def test_u8_item_reaches_awaiting_review_not_failed(monkeypatch: pytest.MonkeyPa
     assert not failed_calls, failed_calls
     errors = [c["error_message"] for c in store.error_message_calls]
     assert errors and "2" in str(errors), errors
+    # AC2-r2 实测回归钉：AWAITING_REVIEW 迁移不得洗掉失败摘要
+    # （update_item_status 用传入值整列覆盖，须显式带上既有 error_message）
+    assert review_calls[-1]["error_message"] and "2" in str(
+        review_calls[-1]["error_message"]
+    ), review_calls[-1]
 
 
 # ---------------------------------------------------------------------------

@@ -88,8 +88,13 @@ class _FakeStore:
         self.status_calls.append({"item_id": item_id, "status": status, "error_message": error_message})
 
     def set_item_error_message(self, item_id: str, error_message: str | None) -> None:
-        """Issue#199：独立 error_message 写入口（不动状态）的替身记录。"""
+        """Issue#199：独立 error_message 写入口（不动状态）的替身记录。
+
+        与真库同语义：写入 item 行的 error_message 列（后续 update_item_status
+        的整列覆盖读的就是这里）。
+        """
         self.error_message_calls.append({"item_id": item_id, "error_message": error_message})
+        self.item["error_message"] = error_message
 
     def update_item_performance(self, item_id: str, patch: dict[str, Any]) -> None:
         self.performance.append(patch)

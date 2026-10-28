@@ -682,7 +682,15 @@ class RecognitionPipelineMixin:
                 )
                 skip_review = False
 
-        store.update_item_status(task.item_id, JobItemStatus.AWAITING_REVIEW)
+        # Issue#199：AWAITING_REVIEW 迁移必须保留既有 error_message——
+        # update_item_status 用传入值整列覆盖（不传=None），会把 _run_vision
+        # 刚写的失败页摘要洗掉（AC2-r2 实测）。
+        current_error = (store.get_item(task.item_id) or {}).get("error_message")
+        store.update_item_status(
+            task.item_id,
+            JobItemStatus.AWAITING_REVIEW,
+            error_message=current_error,
+        )
 
         if skip_review:
             # skip_item_review=true: 直接入队匿名化，不等人工审阅
