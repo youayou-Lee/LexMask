@@ -50,8 +50,13 @@ def _watermark_pages(page_count: int, *, stamp_repeats: int, content_words: int)
     return pages
 
 
-def _clean_pages(page_count: int, *, header: str = "某人民法院某审某号", content_words: int = 60) -> list:
-    """干净卷：每页一枚页眉（跨页重复，但占流长个位数百分比）+ 大量互异内容词。"""
+def _clean_pages(page_count: int, *, header: str = "某省某市人民法院某审某号", content_words: int = 60) -> list:
+    """干净卷：每页一枚页眉（跨页重复，但占流长个位数百分比）+ 大量互异内容词。
+
+    页眉长度**必须 ≥ `TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS`(10)**，否则它根本不进
+    counts，防误伤钉就成了假防护（门⑥ r2 F10：旧夹具页眉 9 字从未被检验）。
+    """
+    assert len(header) >= settings.TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS, "夹具页眉必须够长"
     pages = []
     for no in range(1, page_count + 1):
         words = [header, f"王五{no}", *[f"讯问笔录第{no}页第{i}段问答内容记录" for i in range(content_words)]]
@@ -159,21 +164,108 @@ def test_rejection_reason_detail_carries_no_fragment_literal(monkeypatch, tmp_pa
 
 
 def test_clean_volume_with_repeated_headers_still_reaches_ner(monkeypatch, tmp_path):
-    """防误伤钉：页眉类跨页重复（真实卷常态）不得触发闸，NER 照常到达。"""
+    """防误伤钉：页眉类跨页重复（真实卷常态）不得触发闸，NER 照常到达。
+
+    夹具页眉按 F10 修为 ≥10 字（旧夹具 9 字不进 counts=假防护）。
+    """
     _gate_settings(monkeypatch, max_coverage=0.30)
     client = _RecordingClient()
-    result = _run_build(monkeypatch, tmp_path, _clean_pages(12), client)
+    pages = _clean_pages(12)
+    cov = docline.measure_repeated_fragment_coverage(pages)["coverage"]
+    assert len(pages[0].words[0].text) >= settings.TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS
+    assert cov < 0.05, f"跨页页眉占比须远低于阈值（实测 {cov:.4f}）"
+    result = _run_build(monkeypatch, tmp_path, pages, client)
     assert client.ner_calls >= 1, "干净卷必须照常进入 NER"
     assert result is not None and "covered_pages" in result
 
 
 def test_near_threshold_volume_passes_gate(monkeypatch, tmp_path):
-    """贴阈值内侧：覆盖率略低于阈值的卷放行（防「略低即误杀」边界回归，冷审 Minor-4）。"""
-    _gate_settings(monkeypatch, max_coverage=0.30)
+    """贴阈值内侧（门⑥ r2 F2 重做）：夹具覆盖率**实测**略低于**冻结默认阈值** 0.15，
+    并显式断言数值——旧版用宽泛测试阈值 0.30 + 不断言数值，名不副实、无边界保护。
+    """
+    frozen = 0.15
+    _gate_settings(monkeypatch, max_coverage=frozen)
+    pages = _watermark_pages(12, stamp_repeats=5, content_words=40)
+    cov = docline.measure_repeated_fragment_coverage(pages)["coverage"]
+    assert frozen * 0.65 < cov < frozen, f"夹具必须真贴阈值内侧（实测 {cov:.4f} vs 阈值 {frozen}）"
     client = _RecordingClient()
-    result = _run_build(monkeypatch, tmp_path, _watermark_pages(12, stamp_repeats=4, content_words=40), client)
+    result = _run_build(monkeypatch, tmp_path, pages, client)
     assert client.ner_calls >= 1
     assert result is not None and "covered_pages" in result
+
+
+def test_gate_uses_strict_greater_than_threshold(monkeypatch, tmp_path):
+    """等号归属钉（门⑥ r2 F2：`>`↔`>=` 变异在旧测里 SURVIVED）：覆盖率 == 阈值时放行。"""
+    _gate_settings(monkeypatch, max_coverage=0.15)
+    monkeypatch.setattr(
+        source.docline,
+        "measure_repeated_fragment_coverage",
+        lambda *_a, **_k: {"coverage": 0.15, "fragment_kinds": 1, "max_fragment_pages": 12},
+    )
+    client = _RecordingClient()
+    result = _run_build(monkeypatch, tmp_path, _clean_pages(12), client)
+    assert client.ner_calls >= 1, "coverage == 阈值不得拒绝（判据是严格大于）"
+    assert result is not None
+
+
+def test_issue203_factory_defaults_frozen():
+    """AC5：四键出厂默认值冻结（判据名值经 AC0 冻结后进 config，带默认值）。"""
+    assert settings.TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS == 10
+    assert settings.TEXT_LAYER_REPEATED_FRAGMENT_MIN_REPEATS == 8
+    assert settings.TEXT_LAYER_REPEATED_FRAGMENT_MIN_PAGES == 5
+    assert settings.TEXT_LAYER_MAX_REPEATED_FRAGMENT_COVERAGE == 0.15
+
+
+def test_single_page_repeats_without_spanning_are_not_counted():
+    """F1 回归钉：≥k 次但**不跨 m 页**的长词不得进覆盖分子（旧实现会把它计入）。"""
+    single = [_page(1, ["0" * 17] * 20 + ["证据材料内容词"] * 5)]
+    ignored = docline.measure_repeated_fragment_coverage(single, min_token_chars=10, min_repeats=4, min_pages=3)
+    assert ignored == {"coverage": 0.0, "fragment_kinds": 0, "max_fragment_pages": 0}
+    counted = docline.measure_repeated_fragment_coverage(single, min_token_chars=10, min_repeats=4, min_pages=1)
+    assert counted["coverage"] > 0.5, "放开跨页条件后同一夹具必须可见 ⇒ 差异只来自跨页条件"
+
+
+def test_nonspanning_high_frequency_tokens_do_not_inflate_coverage():
+    """F1 定量钉：页内高频长 token（不跨页）不得放大 coverage。
+
+    评审实测旧实现把它放大 7.5×（0.0311→0.2325），在出厂阈值 0.15 下会误拒正常卷。
+    """
+    header = "某省某市人民法院刑事审判庭讯问笔录材料"
+
+    def _volume(with_per_page_stamps: bool) -> list:
+        pages = []
+        for no in range(1, 13):
+            words = [header]
+            if with_per_page_stamps:
+                words.extend([f"{no:02d}号证据材料清单编号甲乙丙丁戊"] * 8)
+            words.extend(f"证据{no}页第{i}项材料内容记录" for i in range(40))
+            pages.append(_page(no, words))
+        return pages
+
+    with_stamps = docline.measure_repeated_fragment_coverage(_volume(True))
+    without = docline.measure_repeated_fragment_coverage(_volume(False))
+    assert with_stamps["fragment_kinds"] == 1, "只有跨页页眉算达标长词"
+    assert with_stamps["coverage"] < 0.15, (
+        f"页内高频长 token 不得把 coverage 推过出厂阈值（实测 {with_stamps['coverage']:.4f}）"
+    )
+    assert with_stamps["coverage"] < without["coverage"], "不跨页长词只能稀释分母，绝不允许放大分子"
+
+
+def test_measure_degenerate_inputs_return_empty_payload():
+    """F11/F13：退化输入（无页/纯短碎片/单页）不得抛错，一律零载荷。
+
+    「纯 <10 字碎片卷」这条同时把 #203 的已知盲区（F13）写成判据：短碎片不可见。
+    """
+    empty = {"coverage": 0.0, "fragment_kinds": 0, "max_fragment_pages": 0}
+    assert docline.measure_repeated_fragment_coverage([], min_token_chars=10, min_repeats=4, min_pages=3) == empty
+    short_only = [_page(no, ["某院"] * 30) for no in range(1, 9)]
+    assert (
+        docline.measure_repeated_fragment_coverage(short_only, min_token_chars=10, min_repeats=4, min_pages=3) == empty
+    )
+    one_page = [_page(1, ["证据材料内容词"] * 10)]
+    assert (
+        docline.measure_repeated_fragment_coverage(one_page, min_token_chars=10, min_repeats=4, min_pages=3) == empty
+    )
 
 
 def test_mixed_volume_covered_pages_semantics_unchanged(monkeypatch, tmp_path):

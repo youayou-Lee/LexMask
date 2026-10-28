@@ -543,8 +543,11 @@ export function usePlayground() {
       }
 
       // Issue#199（泄漏安全）：识别存在失败页时，打码前必须知情确认——失败页
-      // 零区域 = 零脱敏，不得被默读为「该页无敏感内容」。查询失败不阻塞主流程
-      // （守卫是加严面）；用户取消则中止本次提交。
+      // 零区域 = 零脱敏，不得被默读为「该页无敏感内容」。
+      // 门⑥ 二段 F8：查询失败 ⇒ 无从判定失败页 ⇒ **fail-closed**（中止本次提交并
+      // 提示重试）。旧实现静默放行，等于「最后一道知情确认」可被一次网络抖动绕过；
+      // 后端 skip_review 抑制只覆盖免审通道，人工审阅后的打码请求不经过它。
+      // 用户取消亦中止本次提交。
       try {
         const detail = await getJob(jobId, { performance: true });
         const item =
@@ -560,7 +563,8 @@ export function usePlayground() {
           }
         }
       } catch {
-        // 性能查询失败 ⇒ 无从判定失败页 ⇒ 放行主流程（后端守卫仍在：skip_review 抑制）
+        redactionInFlightRef.current = false;
+        throw new Error(t('playground.redactPagesUnknownRetry'));
       }
 
       // Issue #66：mask 模式下实体的选中状态由它的 ner 框代表（框即实体的

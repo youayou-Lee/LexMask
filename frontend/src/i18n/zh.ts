@@ -1123,6 +1123,7 @@ const zhOverrides: Record<string, string> = {
   'playground.recognizeFailed': '识别失败。',
   'playground.redactFailed': '匿名化失败。',
   'playground.redactFailedPagesConfirm': '第 {pages} 页识别失败：这些页不会被脱敏（未识别 ≠ 无敏感内容）。确定继续吗？可先取消并单独重试失败页。',
+  'playground.redactPagesUnknownRetry': '未能确认是否有识别失败的页（查询失败）。为避免把未脱敏页当干净页提交，本次打码已停止；请稍后重试。',
   'playground.redactAlreadyDone': '该文件已完成匿名化，已为你打开结果。',
   'playground.restored': '已恢复上次单文件处理现场',
   'playground.restoredFromServer': '已从服务端恢复上次识别结果',

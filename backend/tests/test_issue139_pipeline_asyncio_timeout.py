@@ -31,6 +31,7 @@ T7/T12 钉多页批量的页账隔离与首错取消语义，T8 钉页数归一�
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -97,7 +98,14 @@ class _FakeStore:
         self.item["error_message"] = error_message
 
     def update_item_performance(self, item_id: str, patch: dict[str, Any]) -> None:
+        # 真实 JobStore 把补丁**深合并**进 job_items.performance_json（因此 get_item
+        # 回读可见，见 job_store.py:585-607）；替身必须同样建模，否则「写 performance
+        # → 从 item 行回读」的接线在测试里断裂——门⑥ 二段 F7 的摘要正是这样读的。
         self.performance.append(patch)
+        from app.services.job_models import _coerce_performance, _deep_merge_dict
+
+        data = _deep_merge_dict(_coerce_performance(self.item.get("performance_json")), patch)
+        self.item["performance_json"] = json.dumps(data, ensure_ascii=False, sort_keys=True)
 
     def update_item_progress(self, *args: Any, **kwargs: Any) -> None:
         self.progress_calls.append({"args": args, "kwargs": kwargs})

@@ -126,3 +126,90 @@ def test_write_csv_parts_single_part_has_no_suffix_pressure(tmp_path):
     parts = export_service.write_csv_parts(rows, str(tmp_path), "entities", ["a"], rows_per_part=100)
     assert len(parts) == 1
     assert parts[0]["name"] == "entities-part001.csv"
+
+
+# ---------------------------------------------------------------- Issue#199 交付裁定钉（门⑥ 二段 F4）
+
+@pytest.fixture()
+def deliverable_job_env(tmp_path, monkeypatch):
+    """一条**完全可交付**的 job：成品真实存在 + `skip_item_review`（评审前置自动满足）。
+
+    默认 `job_env` 的 output_path 不在 OUTPUT_DIR 内、评审也未确认 ⇒ ready_for_delivery
+    恒为 False，交付裁定的翻转不可观测；F4 判据必须在可交付基线上测。
+    """
+    from app.services import job_metadata
+
+    store = JobStore(str(tmp_path / "jobs.sqlite3"))
+    job_id = store.create_job(
+        job_type=JobType.SMART_BATCH, owner_id="tenant_a", skip_item_review=True
+    )
+    out_dir = tmp_path / "outputs"
+    out_dir.mkdir()
+    file_ids = [f"file_{i:04d}" for i in range(3)]
+    infos: dict[str, dict] = {}
+    for fid in file_ids:
+        store.add_item(job_id, fid)
+        target = out_dir / f"{fid}.pdf"
+        target.write_bytes(b"%PDF-1.4 redacted")
+        infos[fid] = {**_fake_info(fid), "output_path": str(target)}
+    monkeypatch.setattr(job_metadata.settings, "OUTPUT_DIR", str(out_dir))
+    monkeypatch.setattr(jms, "_safe_file_info", lambda fid: (infos.get(fid), None))
+    return store, job_id, file_ids
+
+
+def test_recognition_failed_pages_block_delivery(deliverable_job_env):
+    """门⑥ 二段 F4：页级识别失败必须进交付裁定，不能只写 error 文案。
+
+    失败页「未被扫过敏感数据」（#199 冷审 C1b 语义）；旧实现把失败页写进 `error`
+    展示串，而 ready_for_delivery/action_required/blocking_reasons 三处裁定完全看不见它。
+    """
+    store, job_id, file_ids = deliverable_job_env
+    before = jms.build_export_report(store, job_id)
+    assert before["summary"]["delivery_status"] == "ready_for_delivery"
+    entry_before = next(f for f in before["files"] if f["file_id"] == file_ids[0])
+    assert entry_before["ready_for_delivery"] is True
+    assert entry_before["blocking_reasons"] == []
+    assert entry_before["recognition_failed_pages"] == []
+
+    item_id = next(it["id"] for it in store.list_items(job_id) if it["file_id"] == file_ids[0])
+    store.update_item_performance(item_id, {"recognition": {"failed_pages": {"133": "timeout"}}})
+
+    report = jms.build_export_report(store, job_id)
+    entry = next(f for f in report["files"] if f["file_id"] == file_ids[0])
+    assert entry["recognition_failed_pages"] == [133]
+    assert entry["ready_for_delivery"] is False
+    assert entry["action_required"] is True and entry["blocking"] is True
+    assert entry["delivery_status"] == "action_required"
+    assert entry["blocking_reasons"] == ["recognition_failed_pages"]
+    assert "failed recognition" in str(entry["error"])  # 展示面文案不回归
+    assert report["summary"]["delivery_status"] == "action_required"
+    assert report["summary"]["action_required"] is True
+    assert report["summary"]["action_required_files"] == 1
+    # 干净条目零连坐
+    clean = next(f for f in report["files"] if f["file_id"] == file_ids[1])
+    assert clean["ready_for_delivery"] is True and clean["blocking_reasons"] == []
+
+
+def test_iter_report_file_rows_agrees_with_report_on_failed_pages(deliverable_job_env):
+    """裁定单一真源：CSV 明细行与 JSON 报告逐文件一致（旧实现两处各复制一份条件）。"""
+    store, job_id, file_ids = deliverable_job_env
+    item_id = next(it["id"] for it in store.list_items(job_id) if it["file_id"] == file_ids[0])
+    store.update_item_performance(item_id, {"recognition": {"failed_pages": {"7": "timeout"}}})
+
+    rows = {r["file_id"]: r for r in jms.iter_report_file_rows(store, job_id)}
+    files = {f["file_id"]: f for f in jms.build_export_report(store, job_id)["files"]}
+    assert rows[file_ids[0]]["ready_for_delivery"] is False
+    assert "recognition_failed_pages" in rows[file_ids[0]]["blocking_reasons"]
+    for fid in file_ids:
+        assert rows[fid]["ready_for_delivery"] == files[fid]["ready_for_delivery"], fid
+
+
+def test_delivery_adjudication_single_source_helper():
+    """裁定条件只有一份实现：helper 与阻塞原因清单同源（防两处复制漂移）。"""
+    item = {"status": jms.JobItemStatus.REVIEW_APPROVED.value}
+    assert jms._is_ready_for_delivery(item, True, True, None, []) is True
+    assert jms._is_ready_for_delivery(item, True, True, None, [133]) is False
+    assert jms._delivery_blocking_reasons(item, True, True, None, [133]) == [
+        "recognition_failed_pages"
+    ]
+    assert jms._delivery_blocking_reasons(item, True, True, None, []) == []

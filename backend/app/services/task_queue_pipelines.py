@@ -35,19 +35,44 @@ logger = logging.getLogger(__name__)
 _ERROR_MSG_MAX_LEN = 500
 
 
+def _recognition_failure_state(store: Any, item_id: str) -> tuple[dict[str, str], int]:
+    """读条目 performance 的 (页级失败清单, 逐页账目页数)（Issue#199）。
+
+    逐页账目页数用于区分「部分页失败」与「整卷全失败」的摘要措辞（门⑥ 二段 F9）。
+    """
+    try:
+        item = store.get_item(item_id) or {}
+        performance = json.loads(item.get("performance_json") or "{}")
+        recognition = performance.get("recognition") or {}
+        pages = recognition.get("failed_pages") or {}
+        failed = {str(k): str(v) for k, v in pages.items()} if isinstance(pages, dict) else {}
+        seen = recognition.get("pages")
+        return failed, len(seen) if isinstance(seen, dict) else 0
+    except (ValueError, TypeError, AttributeError):
+        return {}, 0
+
+
 def _recognition_failed_pages(store: Any, item_id: str) -> dict[str, str]:
     """读条目 performance_json 里的 `recognition.failed_pages`（Issue#199）。
 
     供 skip_review 守卫等下游消费；缺失/坏 JSON 一律按「无失败页」处理——
     守卫只做加严（多停一次审阅无害），不做加严失败（别把好条目打成异常）。
     """
-    try:
-        item = store.get_item(item_id) or {}
-        performance = json.loads(item.get("performance_json") or "{}")
-        pages = (performance.get("recognition") or {}).get("failed_pages") or {}
-        return {str(k): str(v) for k, v in pages.items()} if isinstance(pages, dict) else {}
-    except (ValueError, TypeError, AttributeError):
-        return {}
+    return _recognition_failure_state(store, item_id)[0]
+
+
+def _failed_pages_error_summary(failed_pages: dict[str, str], total_pages: int = 0) -> str | None:
+    """页级失败的可读摘要：空清单返回 None（显式清空，不携带陈旧摘要）。
+
+    门⑥ 二段 F7：展示面文案只从权威清单（performance.recognition.failed_pages）派生，
+    不再无差别沿用既有 error_message——同状态迁移是 no-op，陈旧摘要会被带到干净条目。
+    """
+    if not failed_pages:
+        return None
+    ordered = sorted(failed_pages, key=lambda p: (not p.isdigit(), int(p) if p.isdigit() else 0))
+    listed = ", ".join(ordered[:20]) + (" …" if len(ordered) > 20 else "")
+    scope = f"all {total_pages} page(s)" if total_pages and len(ordered) >= total_pages else f"{len(ordered)} page(s)"
+    return f"{scope} failed recognition (pages {listed}); not scanned for sensitive data"
 
 
 class RecognitionPipelineMixin:
@@ -667,12 +692,16 @@ class RecognitionPipelineMixin:
         from app.services.job_store import JobItemStatus
         from app.services.task_queue import TaskItem
 
+        # Issue#199（门⑥ 二段 F7）：展示面摘要**只从权威清单派生**——旧实现把
+        # update_item_status 的整列覆盖语义用「回读既有 error_message」绕过，同状态
+        # 迁移是 no-op 时会把上一次的陈旧摘要带到干净条目（假阳性警示）。这里显式
+        # 重算：有失败页 ⇒ 明确摘要；无失败页 ⇒ None（清空）。
+        failed_pages, total_pages = _recognition_failure_state(store, task.item_id)
         skip_review = bool(job.get("skip_item_review"))
         if skip_review:
             # Issue#199 守卫（冷审 C1a）：识别存在失败页的条目**不 honor**
             # skip_item_review——「无人在环直通打码」会把失败页当干净页出厂
             # （失败页零区域 = 零脱敏）。强制停审阅，由用户在知情后决策。
-            failed_pages = _recognition_failed_pages(store, task.item_id)
             if failed_pages:
                 logger.warning(
                     "[queue] item=%s skip review suppressed: %d page(s) failed recognition (%s)",
@@ -682,14 +711,10 @@ class RecognitionPipelineMixin:
                 )
                 skip_review = False
 
-        # Issue#199：AWAITING_REVIEW 迁移必须保留既有 error_message——
-        # update_item_status 用传入值整列覆盖（不传=None），会把 _run_vision
-        # 刚写的失败页摘要洗掉（AC2-r2 实测）。
-        current_error = (store.get_item(task.item_id) or {}).get("error_message")
         store.update_item_status(
             task.item_id,
             JobItemStatus.AWAITING_REVIEW,
-            error_message=current_error,
+            error_message=_failed_pages_error_summary(failed_pages, total_pages),
         )
 
         if skip_review:

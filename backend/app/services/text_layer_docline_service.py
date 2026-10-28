@@ -286,26 +286,31 @@ def measure_repeated_fragment_coverage(
     if not qualifying:
         return empty
 
-    # 达标长词：标覆盖区间（词本身字符，不含分隔符）并数跨页。
-    marked = bytearray(total)
+    # 达标长词：先按「出现 ≥k 次」筛 qualifying，再按「跨 ≥m 个不同页」筛 spanning；
+    # **两个条件共同**决定覆盖率分子（门⑥ r2 F1：早先只按 qualifying 标覆盖，会把仅
+    # 单页/少页高频的长词一并计入——实测把 coverage 放大 7.5×，既与本文口径不符，
+    # 又扩大误拒面）。fragment_kinds/max_fragment_pages 与覆盖分子同源。
     pages_per_token: dict[str, set[int]] = {}
     for span in spans:
-        token = span.word.text
-        if token not in qualifying:
+        if span.word.text in qualifying:
+            pages_per_token.setdefault(span.word.text, set()).add(span.page)
+
+    spanning = {token for token, seen in pages_per_token.items() if len(seen) >= m}
+    if not spanning:
+        return empty
+
+    marked = bytearray(total)
+    for span in spans:
+        if span.word.text not in spanning:
             continue
         for j in range(span.start, span.end):
             marked[j] = 1
-        pages_per_token.setdefault(token, set()).add(span.page)
-
-    spanning = [p for p in pages_per_token.values() if len(p) >= m]
-    if not spanning:
-        return empty
 
     covered = sum(marked)
     return {
         "coverage": covered / total,
         "fragment_kinds": len(spanning),
-        "max_fragment_pages": max(len(p) for p in spanning),
+        "max_fragment_pages": max(len(pages_per_token[t]) for t in spanning),
     }
 
 

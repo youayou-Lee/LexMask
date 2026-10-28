@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## 2026-10-29
+
+### 修复（Issue#203/#199）门⑥ 二段独立复核（APPROVE with fixes，Critical=0）发现项处置
+
+- **复核对象**：门⑥ 第二段（只读 diff/源码与自跑判据，不看会话历史）所评 head `07ce1fa`；留痕 PR#205 评论 [6475545797](https://github.com/youayou-Lee/LexMask/pull/205#issuecomment-6475545797)。两轮变异在旧测下 SURVIVED（`>`↔`>=` 边界、去分母守卫）⇒ 判据缺口坐实，本条目即其处置。
+- **F1 判据口径失真**（Important）：`measure_repeated_fragment_coverage` 的覆盖分子原含**全部** `qualifying` 长词、`spanning` 只用于判空，与 docstring 及 PR 文案「≥k 次 **且** 跨 ≥m 页」不符；实测页内高频长 token 可把 coverage 放大 **7.5×**（0.0311→0.2325），出厂阈值 0.15 下会把正常卷误拒。**改法**：分子只标 `spanning` 长词（`text_layer_docline_service.py`），新增 2 枚判据（单页不跨页 = 不可见；页内高频长词只能稀释分母、不得放大分子——回到 `qualifying` 口径即判红：0.1944 > 0.15）。**AC0 名义值不变（推导，非重测）**：真实第四卷 6 种长 token 全部横跨 149 页，分子集合不变、分母不变 ⇒ coverage 仍为 0.3827；旁证 = 云侧逐页 reason 码只读取证（`fragment_kinds=6`、`max_fragment_pages=149`）。真卷不在本地，未再跑一遍完整 AC0。
+- **F2 边界钉名不副实**（Important）：`test_near_threshold_volume_passes_gate` 实测 coverage 0.1232、测试阈值 0.30（差 2.44×）且不断言数值。**改法**：夹具降为 `stamp_repeats=5`（实测 0.1466）、阈值改用冻结默认 0.15、显式断言 `0.65×阈值 < coverage < 阈值`，并新增「coverage == 阈值放行」判据（封死 `>`↔`>=`）。
+- **F3 新配置键无文档**（Important）：4 个 `TEXT_LAYER_REPEATED_*` 键未登记 `.env.example`。**改法**：补 4 键 + 判据口径（≥min_token_chars 的长词出现 ≥min_repeats 次 **且** 跨 ≥min_pages 页，覆盖占比 > max 即拒绝）+「0=关闸（不推荐）」+ 已知边界（只认 ≥10 字整词、约有 1 分片漏判、召回侧代价）。
+- **F4 交付裁定与展示面脱节**（Important）：带失败页的条目仍报 `ready_for_delivery=True` / `action_required=False` / `blocking=False`，失败页会随 ZIP 出厂。**改法**：新增 `_is_ready_for_delivery()` 单一真源（含 `recognition_failed_pages`），`_delivery_blocking_reasons()` 增 `recognition_failed_pages` 阻塞原因，`build_export_report` 与 `iter_report_file_rows` 两处共用（旧实现各复制一份条件、易漂移）。3 枚新测（含交付摘要由 `ready` → `action_required` 的端到端翻转）；变异：摘掉失败页条件 ⇒ 3 例判红。
+- **F7 假阳性警示**（Minor）：AWAITING_REVIEW 迁移原样回写既有 `error_message` ⇒ 陈旧摘要会带到干净条目。**改法**：摘要只从权威清单派生（`_failed_pages_error_summary`），空清单显式写 `None`；并让 `_FakeStore.update_item_performance` 建模真实深合并列语义（否则「写 performance → 回读 item 行」的接线在测试里断裂）。2 枚新测；变异 2 例判红。
+- **F8 护栏 fail-open**（Minor）：打码前失败页知情确认在 `getJob` 失败时静默放行（一次网络抖动即可绕过最后一道人工确认）。**改法**：查询失败 **fail-closed**（中止本次提交 + 提示重试，新 key `playground.redactPagesUnknownRetry` zh/en）。3 枚新测（查询失败中止 / 有失败页弹确认且取消不提交 / 无失败页不弹确认）。
+- **F9 终态无钉**（Minor）：全失败卷条目终态无断言。**改法**：新测钉「全失败卷停在 AWAITING_REVIEW + `recognition.failed_pages` 清单 + 摘要 `all N page(s)` 措辞 + skip_review 抑制」。
+- **F6 证据链补齐**（Important，云侧只读取证）：①逐页 `fallback_reason_code` 清单——148 页全为 `repeated_fragment_coverage`（页 133 无该块，因 `status=timeout`），与日志唯一 WARNING（coverage 0.383 > 0.15）及 `text_layer_docline built`=0 三方互证；②区域数记录项——`file_store.data_json` 的 `bounding_boxes` 共 **7560**（148 页，与日志逐页 `Vision detect stored` 求和一致；注意 `performance_json.pipeline_status.*.region_count` 求和 41/0 **与它不同源**，不可混用）；③**显式豁免**两项——3 页人工核对（本轮止于识别、打码未执行，无可观测面）与「页 133 补查复核请求笔数」（逐页线无 docline 补查概念，N/A）。取证全程只读（未写云、未重启/停止服务、未动 `.env`）；证据文本随 PR 评论留痕。
+- **F5 状态档偏差留痕**（Important）：`completed_with_failures` → `AWAITING_REVIEW` 的口径偏差在 PR 描述与 Issue 评论留痕；不新增状态档的理由 = 免 DDL CHECK 迁移 + 前端枚举 + 导出消费者三面扩散，且安全性等价或更强（AWAITING_REVIEW 强制人停 + skip_review 抑制 + 卡片/弹窗/导出三面可见）。
+- **F13 已知边界**（Minor）：判据只认 ≥10 字整词 ⇒ 5~9 字水印碎片维度不可见，已在 `.env.example` 与 Issue#203 留痕（水印专用维度登记为后续项）。
+- **F14 边界写明**（Minor）：`agent_md_pipeline_service.py`（#196 供料通道）不共享 `run_page`、无单页门限，故不适用 #199 的失败页记账——已在 PR 描述写明。
+- **F12 数字绑 head**（Minor）：PR 描述按 `07ce1fa` 复跑数字重写（旧描述三处互不一致且仍是 #203-only 口径）。
+- **AC2 措辞纠正**：真实第四卷实测为 **148 completed + 1 timeout（页 133）**，即 #199 的设计意图，非「149 页全 completed」；口径改为「无整卷作废 + 失败页经 `recognition.failed_pages` 显式记账」。
+
 ## 2026-10-28
 
 ### 修复（Issue#199）页级失败隔离——单页超时/失败不再作废整卷

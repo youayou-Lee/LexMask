@@ -333,3 +333,53 @@ def test_u10b_clean_item_still_honors_skip_review(monkeypatch: pytest.MonkeyPatc
 
     queue._mark_recognition_complete(_item(), {"skip_item_review": True}, store)
     assert len(enqueued) == 1 and enqueued[0].task_type == "redaction"
+
+
+# ---------------------------------------------------------------------------
+# U11：全失败卷（含 pages=1）条目终态 + 清单 + 摘要（门⑥ 二段 F9）
+# ---------------------------------------------------------------------------
+def test_u11_all_pages_failed_item_state_and_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """全失败卷的**条目终态**此前无断言：它停在 AWAITING_REVIEW、与成功条目在列表同形。
+
+    唯一状态级信号是这枚摘要，因此这里同时钉：终态、清单（权威 payload）、摘要文案
+    （整卷全失败须显式写明）、以及 skip_review 守卫（不得直通打码）。
+    """
+    store = _FakeStore()
+    store.item["performance_json"] = json.dumps(
+        {
+            "recognition": {
+                "pages": {"1": {"page": 1, "status": "timeout"}},
+                "failed_pages": {"1": "OCR+HaS识别 page timeout after 300s"},
+            }
+        }
+    )
+    queue = _queue(store)
+    enqueued: list[tq.TaskItem] = []
+    monkeypatch.setattr(queue, "enqueue", lambda task: enqueued.append(task))
+
+    queue._mark_recognition_complete(_item(), {"skip_item_review": True}, store)
+
+    assert [c["status"] for c in store.status_calls] == [JobItemStatus.AWAITING_REVIEW.value], (
+        store.status_calls
+    )
+    assert not enqueued, "全失败卷不得直通打码"
+    summary = store.status_calls[-1]["error_message"]
+    assert summary and "all 1 page(s)" in summary, summary
+    assert "pages 1" in summary and "not scanned for sensitive data" in summary, summary
+
+
+def test_u11b_clean_item_does_not_carry_stale_error_summary() -> None:
+    """门⑥ 二段 F7：干净条目迁移 AWAITING_REVIEW 必须清空陈旧摘要。
+
+    旧实现「回读既有 error_message 再写回」——同状态迁移是 no-op，会把上一轮的
+    失败摘要带到干净条目（假阳性警示）；摘要只允许从权威清单派生。
+    """
+    store = _FakeStore()
+    store.item["performance_json"] = json.dumps({"recognition": {"failed_pages": {}}})
+    store.item["error_message"] = "stale summary from a previous run"
+    queue = _queue(store)
+
+    queue._mark_recognition_complete(_item(), {"skip_item_review": True}, store)
+
+    assert store.status_calls[-1]["error_message"] is None, store.status_calls[-1]
+    assert store.status_calls[-1]["status"] == JobItemStatus.AWAITING_REVIEW.value
