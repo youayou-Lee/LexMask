@@ -669,10 +669,16 @@ class FileParser:
             )
             self._pdf_page_render_inflight[cache_key] = task
             # 完成时才出表：请求方提前断连时，后续同页请求仍能搭上在飞渲染
-            task.add_done_callback(
-                lambda _t, key=cache_key: self._pdf_page_render_inflight.pop(key, None)
-            )
+            task.add_done_callback(lambda _t, key=cache_key: self._finish_render(key))
             return task
+
+    def _finish_render(self, key: tuple[str, int, int, int, int]) -> None:
+        """单飞渲染任务收尾：显式取回异常（唯一请求方已断连时无人 await，
+        不取回会刷「Task exception was never retrieved」告警）并出表。"""
+        task = self._pdf_page_render_inflight.get(key)
+        if task is not None and not task.cancelled():
+            task.exception()
+        self._pdf_page_render_inflight.pop(key, None)
 
     async def _render_pdf_page_image(
         self,

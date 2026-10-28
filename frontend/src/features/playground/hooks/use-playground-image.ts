@@ -170,6 +170,7 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
     const fileId = fileInfo?.file_id;
     if (!staticPagePreview || !fileId) {
       setStaticPageUrl('');
+      setPreviewPageLoading(false);
       return;
     }
     let alive = true;
@@ -325,6 +326,7 @@ export function usePlaygroundImage(options: UsePlaygroundImageOptions) {
       revokeObjectUrl(imageObjectUrlRef.current);
       imageObjectUrlRef.current = null;
       setImageUrl('');
+      setPreviewPageLoading(false);
       return;
     }
 

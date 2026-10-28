@@ -12,8 +12,8 @@
 // 判别性锚点：
 // - AC1 改前（无 abort）：翻页后在飞 signal.aborted 恒 false ⇒ 红；
 // - AC2 改前（无 loading 态）：previewPageLoading 不存在 ⇒ 红；
-// - AC3 改后仍可证伪：晚到来源是「abort 竞窗内已在途的响应」与「预取晚到」，
-//   不依赖被 abort 消灭的「慢响应后到」场景（①.5 r1 意见）。
+// - AC3 判别性主判据=abort 竞窗真晚到（豁免名单构造，晚到响应可写缓存可触发
+//   effect 级 .then）；预取晚到一例为行为钉（预取路径构造上不触显示），如实标注。
 
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -82,19 +82,25 @@ async function flushMicrotasks() {
   });
 }
 
-function resolvedCount(): number {
+function previewImageCallCount(): number {
   return calls.filter((c) => c.url.includes('/preview-image')).length;
 }
 
+let abortExemptPatterns: string[] = [];
+
 beforeEach(() => {
   calls = [];
+  abortExemptPatterns = [];
   vi.mocked(authFetch).mockImplementation((input, init) => {
     const d = deferred<Response>();
     // 对齐真实 fetch：abort 即 reject（否则 StrictMode 双跑产生的上一代请求
-    // 会永挂 pending，污染时序——真实浏览器不存在这种僵尸请求）
+    // 会永挂 pending，污染时序——真实浏览器不存在这种僵尸请求）。
+    // 豁免名单例外：AC3 用它构造「响应已在网络上完成、abort 竞窗内送达」的
+    // 真晚到（不豁免的话 deferred 已被 abort 拒绝，resolve 是空操作、测试恒真）。
     const signal = init?.signal ?? null;
+    const exempt = abortExemptPatterns.some((pat) => String(input).includes(pat));
     const onAbort = () => d.reject(new DOMException('Aborted', 'AbortError'));
-    if (signal) {
+    if (signal && !exempt) {
       if (signal.aborted) onAbort();
       else signal.addEventListener('abort', onAbort, { once: true });
     }
@@ -145,11 +151,29 @@ describe('Issue#207 翻页 abort（AC1）', () => {
     expect(callForPage(2)!.signal?.aborted).toBe(true);
   });
 
+  it('翻页时在飞邻居预取请求一并 abort（AC1 预取判据）', async () => {
+    const { result } = renderHook(() => usePlaygroundImage({ fileInfo: SCAN_FILE }));
+    await waitFor(() => expect(callForPage(1)).toBeDefined());
+    callForPage(1)!.deferred.resolve(pageResponse(1));
+    await waitFor(() => expect(result.current.imageUrl).toBe('data:image/png;base64,P1'));
+    await waitFor(() => expect(callForPage(2)).toBeDefined(), { timeout: 2000 });
+    expect(callForPage(2)!.signal?.aborted).toBe(false); // 预取在飞
+
+    await act(async () => {
+      result.current.setCurrentPage(3);
+    });
+    expect(callForPage(2)!.signal?.aborted).toBe(true); // 翻页即掐
+    callForPage(3)!.deferred.resolve(pageResponse(3));
+    await waitFor(() =>
+      expect(result.current.imageUrl).toBe('data:image/png;base64,P3'),
+    );
+  });
+
   it('翻页时 redacted 预览请求一并 abort', async () => {
     const { result, unmount } = renderHook(() =>
       usePlaygroundImage({ fileInfo: SCAN_FILE, showRedactedPreview: true, redactionVersion: 1 }),
     );
-    await waitFor(() => expect(resolvedCount() >= 2).toBe(true)); // 原图 + redacted 各一发
+    await waitFor(() => expect(previewImageCallCount() >= 2).toBe(true)); // 原图 + redacted 各一发
     await act(async () => {
       result.current.setCurrentPage(2);
     });
@@ -185,13 +209,13 @@ describe('Issue#207 加载态（AC2）', () => {
     expect(result.current.previewPageLoading).toBe(false);
 
     // 缓存命中回翻：不出现 loading、不发请求
-    const before = resolvedCount();
+    const before = previewImageCallCount();
     await act(async () => {
       result.current.setCurrentPage(1);
     });
     expect(result.current.previewPageLoading).toBe(false);
     expect(result.current.imageUrl).toBe('data:image/png;base64,P1');
-    expect(resolvedCount()).toBe(before);
+    expect(previewImageCallCount()).toBe(before);
 
     // 失败：loading 清除、旧图保留
     await act(async () => {
@@ -205,23 +229,33 @@ describe('Issue#207 加载态（AC2）', () => {
   });
 });
 
-describe('Issue#207 晚到响应永不覆盖当前页（AC3，改后仍可证伪）', () => {
-  it('abort 竞窗内已在途的响应晚到：不生效', async () => {
+describe('Issue#207 晚到响应永不覆盖当前页（AC3）', () => {
+  it('abort 竞窗内已在途的响应晚到：不覆盖显示（判别性主判据）', async () => {
+    // 可证伪机理：页 2 的响应经豁免名单真正晚到（deferred 未被 abort 拒绝，
+    // resolve 生效、cache 会写入、effect 级 .then 会执行）——若「cancelled 守卫
+    // + abort」任一被拆掉，imageUrl 会被晚到的 P2 覆盖，下方断言即红。
     const { result } = renderHook(() => usePlaygroundImage({ fileInfo: SCAN_FILE }));
     await waitFor(() => expect(callForPage(1)).toBeDefined());
+    callForPage(1)!.deferred.resolve(pageResponse(1));
+    await waitFor(() => expect(result.current.imageUrl).toBe('data:image/png;base64,P1'));
+
+    // 页 2 的 fetch 模拟「响应已在网络上完成」：豁免 abort 拒绝
+    abortExemptPatterns = ['page=2'];
     await act(async () => {
       result.current.setCurrentPage(2);
     });
     await waitFor(() => expect(callForPage(2)).toBeDefined());
+    abortExemptPatterns = [];
+
     await act(async () => {
       result.current.setCurrentPage(3);
     });
     await waitFor(() => expect(callForPage(3)).toBeDefined());
 
-    // 页 2 的响应在翻到页 3 之后才抵达（真实 fetch 会因 abort 拒绝；
-    // 这里模拟响应已在线上、abort 竞窗内完成的缝隙）
+    // 页 2 的响应此刻才抵达（晚到）
     callForPage(2)!.deferred.resolve(pageResponse(2));
-    expect(result.current.imageUrl).not.toBe('data:image/png;base64,P2');
+    await flushMicrotasks();
+    expect(result.current.imageUrl).toBe('data:image/png;base64,P1');
 
     callForPage(3)!.deferred.resolve(pageResponse(3));
     await waitFor(() =>
@@ -229,20 +263,26 @@ describe('Issue#207 晚到响应永不覆盖当前页（AC3，改后仍可证伪
     );
   });
 
-  it('预取响应晚于翻页抵达：只进缓存，不改显示', async () => {
+  it('预取响应晚于翻页抵达：只进缓存，不改显示（行为钉，非判别性——预取路径构造上不触显示 state，判别性由上一例承担）', async () => {
     const { result } = renderHook(() => usePlaygroundImage({ fileInfo: SCAN_FILE }));
     await waitFor(() => expect(callForPage(1)).toBeDefined());
     callForPage(1)!.deferred.resolve(pageResponse(1));
     await waitFor(() => expect(result.current.imageUrl).toBe('data:image/png;base64,P1'));
 
-    // 空闲预取相邻页（jsdom 无 requestIdleCallback，走 300ms 兜底）
+    // 空闲预取相邻页（jsdom 无 requestIdleCallback，走 300ms 兜底）；豁免 abort
+    // 构造「预取响应晚于翻页抵达」
+    abortExemptPatterns = ['page=2'];
     await waitFor(() => expect(callForPage(2)).toBeDefined(), { timeout: 2000 });
+    abortExemptPatterns = [];
 
     await act(async () => {
       result.current.setCurrentPage(3);
     });
     await waitFor(() => expect(callForPage(3)).toBeDefined());
     callForPage(2)!.deferred.resolve(pageResponse(2)); // 预取晚到
+    await flushMicrotasks();
+    expect(result.current.imageUrl).not.toBe('data:image/png;base64,P2');
+
     callForPage(3)!.deferred.resolve(pageResponse(3));
     await waitFor(() =>
       expect(result.current.imageUrl).toBe('data:image/png;base64,P3'),
