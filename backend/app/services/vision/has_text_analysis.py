@@ -241,20 +241,51 @@ async def _run_has_text_ner_groups(
                                     context_tokens=context_tokens,
                                 )
 
-                            result, passes_run = await asyncio.to_thread(
-                                aggregate_ner_samples, _ner_sample, k_samples
+                            # Issue#209 C：预算必须是**硬墙**。上面两处复检只在
+                            # 阶段边界，而单次 ner() 内部还可能走「截断→按缺失类型
+                            # 切 9~12 段补查→残差重发」的长链（页 133 实测 160s+，
+                            # 病态组合 300s+），门④ 实测该页因此仍然撞 300s 页墙、
+                            # 预算一次都没触发。这里用剩余预算 wait_for 兜住整条链，
+                            # 超时即丢该组（partial 语义与跳过一致，strict 时由
+                            # 调用方抛 HasTextNerPageBudgetExceeded）。
+                            remaining = (
+                                None
+                                if deadline is None
+                                else deadline - time.monotonic()
                             )
-                            _record_has_text_metric(stage_status, "has_text_cache_status", "model_call")
-                            _add_has_text_duration(
-                                stage_status,
-                                "has_text_self_consist_passes",
-                                passes_run,
-                            )
-                            _add_has_text_duration(
-                                stage_status,
-                                "has_text_model_ms",
-                                round((time.perf_counter() - model_start) * 1000),
-                            )
+                            if remaining is not None and remaining <= 0:
+                                _budget_skip()
+                                budget_skipped = True
+                            else:
+                                try:
+                                    if remaining is None:
+                                        result, passes_run = await asyncio.to_thread(
+                                            aggregate_ner_samples, _ner_sample, k_samples
+                                        )
+                                    else:
+                                        result, passes_run = await asyncio.wait_for(
+                                            asyncio.to_thread(
+                                                aggregate_ner_samples, _ner_sample, k_samples
+                                            ),
+                                            timeout=remaining,
+                                        )
+                                except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041
+                                    _budget_skip()
+                                    budget_skipped = True
+                                else:
+                                    _record_has_text_metric(
+                                        stage_status, "has_text_cache_status", "model_call"
+                                    )
+                                    _add_has_text_duration(
+                                        stage_status,
+                                        "has_text_self_consist_passes",
+                                        passes_run,
+                                    )
+                                    _add_has_text_duration(
+                                        stage_status,
+                                        "has_text_model_ms",
+                                        round((time.perf_counter() - model_start) * 1000),
+                                    )
             if budget_skipped:
                 # 不填 {}（那会被当成"该组答无实体"），填 None 让等待方同样判跳过。
                 _finish_has_text_ner_inflight(inflight_key, inflight_future, None)
@@ -511,7 +542,7 @@ async def run_has_text_analysis(
         elapsed_ms = round((time.perf_counter() - total_start) * 1000)
         _record_has_text_metric(stage_status, "has_text_ner_budget_elapsed_ms", elapsed_ms)
         logger.warning(
-            "HaS page NER budget exceeded after %.1fs (budget=%.0fs): %s",
+            "HaS page NER budget exceeded after %.1fs (budget=%.1fs): %s",
             elapsed_ms / 1000,
             page_budget_sec,
             reason,

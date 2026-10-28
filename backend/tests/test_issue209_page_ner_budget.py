@@ -284,6 +284,45 @@ def test_page_budget_non_strict_keeps_partial_and_is_a_strict_subset(monkeypatch
     assert {e["text"] for e in page} < {e["text"] for e in full}
 
 
+def test_page_budget_is_a_hard_wall_around_one_long_call(monkeypatch, caplog):
+    """预算必须能截断**单次** ner() 内部的长链（真实时间，非受控钟）。
+
+    门④ 实测（门禁④ 云实例第二轮，2026-10-29 06:01）：预算是 240s，但页 133 仍然
+    跑满 300s 被页墙杀掉、预算一次都没触发——因为一次 ``has_client.ner()`` 内部会走
+    「主查撞完成帽 → 按缺失类型切 9~12 段补查 → 残差重发」的级联，阶段边界的复检
+    进不去。这里用一个**真睡**的模型验证：wait_for 用剩余预算兜住整条链，页面在
+    预算处收尾，而不是等到模型自然结束。
+    """
+    group_texts, blocks, _head, _tail = _multi_group_page()
+    monkeypatch.setattr(settings, "HAS_NER_PAGE_BUDGET_SEC", 0.2, raising=False)
+    monkeypatch.setattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", False, raising=False)
+    monkeypatch.setattr(settings, "HAS_VISION_MAX_GROUPS_INFLIGHT", 1, raising=False)
+
+    class _SlowModel(_ModelFake):
+        def _call_model(self, messages, *, max_tokens=None, temperature=None):
+            time.sleep(1.5)  # 远长于预算：自然结束要到 1.5s
+            return super()._call_model(messages, max_tokens=max_tokens, temperature=temperature)
+
+    client = _SlowModel()
+    stage: dict = {}
+
+    async def _timed():
+        # 只量 await 本身的耗时：``asyncio.run`` 收尾会 join 默认线程池（to_thread
+        # 的 1.5s 睡线程），那部分不算页面阻塞——服务端不关事件循环，页面早已返回。
+        started = time.monotonic()
+        result = await run_has_text_analysis(
+            blocks, client, [_VT("ID_CARD", "身份证号"), _VT("PHONE", "电话")], stage
+        )
+        return result, time.monotonic() - started
+
+    with caplog.at_level(logging.WARNING, logger="app.services.vision.has_text_analysis"):
+        merged, elapsed = asyncio.run(_timed())
+    assert elapsed < 1.0, f"预算没兜住长请求（elapsed={elapsed:.2f}s）"
+    assert merged == [], "被硬墙截断的组不得当成功值合并"
+    assert stage.get("has_text_ner_budget_exceeded") == 1
+    assert any("budget exceeded" in r.getMessage() for r in caplog.records), caplog.text
+
+
 def test_page_budget_zero_disables_the_wall(monkeypatch):
     """``HAS_NER_PAGE_BUDGET_SEC=0`` ⇒ 关闭：不记账、不抛，全组照跑。"""
     group_texts, blocks, _head, _tail = _multi_group_page()
