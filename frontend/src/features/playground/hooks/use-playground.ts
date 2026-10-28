@@ -13,6 +13,7 @@ import {
   setScopedStorageItem,
 } from '@/lib/storage';
 import { authFetch, downloadFile } from '@/services/api-client';
+import { getJob } from '@/services/jobsApi';
 import { resolveAwaitingReviewTask, submitRedactionTask } from '@/services/singleTaskApi';
 import { useSingleTask } from '@/features/single-task/single-task-context';
 import type { VersionHistoryEntry } from '@/types';
@@ -34,6 +35,7 @@ import {
   mergeNerBoxes,
   syncEntitiesWithNerBoxes,
 } from '../utils';
+import { recognitionFailedPages } from '../lib/processing-details';
 import { usePlaygroundEntities } from './use-playground-entities';
 import { usePlaygroundFile } from './use-playground-file';
 import { usePlaygroundHistory } from './use-playground-history';
@@ -538,6 +540,27 @@ export function usePlayground() {
       }
       if (!jobId || !itemId) {
         throw new Error(t('playground.redactFailed'));
+      }
+
+      // Issue#199（泄漏安全）：识别存在失败页时，打码前必须知情确认——失败页
+      // 零区域 = 零脱敏，不得被默读为「该页无敏感内容」。查询失败不阻塞主流程
+      // （守卫是加严面）；用户取消则中止本次提交。
+      try {
+        const detail = await getJob(jobId, { performance: true });
+        const item =
+          detail.items.find((candidate) => candidate.file_id === fileId) ?? detail.items[0];
+        const failedPages = recognitionFailedPages(item?.performance ?? null);
+        if (failedPages.length > 0) {
+          const confirmed = window.confirm(
+            t('playground.redactFailedPagesConfirm').replace('{pages}', failedPages.join(', ')),
+          );
+          if (!confirmed) {
+            redactionInFlightRef.current = false;
+            return;
+          }
+        }
+      } catch {
+        // 性能查询失败 ⇒ 无从判定失败页 ⇒ 放行主流程（后端守卫仍在：skip_review 抑制）
       }
 
       // Issue #66：mask 模式下实体的选中状态由它的 ner 框代表（框即实体的

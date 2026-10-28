@@ -64,6 +64,27 @@ def test_iter_report_file_rows_matches_full_report(job_env):
         assert row["status"] == by_id[row["file_id"]]["status"]
 
 
+def test_export_report_surfaces_recognition_failed_pages(job_env):
+    """Issue#199 冷审 C1b：识别失败页必须在导出报告可见（error_message 活不过打码完成）。"""
+    store, job_id, file_ids = job_env
+    item_id = next(
+        it["id"] for it in store.list_items(job_id) if it["file_id"] == file_ids[0]
+    )
+    store.update_item_performance(
+        item_id, {"recognition": {"failed_pages": {"2": "timeout", "3": "ValueError: bad"}}}
+    )
+
+    report = jms.build_export_report(store, job_id)
+    entry = next(f for f in report["files"] if f["file_id"] == file_ids[0])
+    assert entry["recognition_failed_pages"] == [2, 3]
+    assert "failed recognition" in str(entry["error"]), entry["error"]
+    assert "2" in str(entry["error"]) and "3" in str(entry["error"])
+
+    # 干净条目：字段为空列表、error 不含警示
+    clean = next(f for f in report["files"] if f["file_id"] == file_ids[1])
+    assert clean["recognition_failed_pages"] == []
+
+
 def test_summary_only_report_keeps_aggregates_drops_files(job_env):
     store, job_id, _ = job_env
     full = jms.build_export_report(store, job_id)

@@ -493,6 +493,40 @@ def _count_by_status(items: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _failed_pages_export_warning(failed_pages: list[int]) -> str:
+    """失败页的导出侧警示文案（中性英文，前端/报告按需本地化；冷审 C1b）。"""
+    if not failed_pages:
+        return ""
+    ids = ", ".join(str(p) for p in failed_pages[:20])
+    suffix = "" if len(failed_pages) <= 20 else " …"
+    return (
+        f"{len(failed_pages)} page(s) failed recognition (pages {ids}{suffix}); "
+        "these pages were NOT scanned for sensitive data"
+    )
+
+
+def _recognition_failed_page_ids(item: dict[str, Any]) -> list[int]:
+    """识别失败页号（升序）。来源 = performance_json.recognition.failed_pages（Issue#199）。
+
+    error_message 会活不过打码完成迁移，导出报告的「失败页」信号必须走结构化
+    performance（冷审 C1b：成品/交付侧对失败页的可见性）。
+    """
+    try:
+        performance = json.loads(item.get("performance_json") or "{}")
+        pages = (performance.get("recognition") or {}).get("failed_pages") or {}
+        if not isinstance(pages, dict):
+            return []
+        out: list[int] = []
+        for key in pages:
+            try:
+                out.append(int(key))
+            except (TypeError, ValueError):
+                continue
+        return sorted(out)
+    except (ValueError, TypeError):
+        return []
+
+
 def _review_confirmed(item: dict[str, Any], has_output: bool, skip_item_review: bool) -> bool:
     if skip_item_review and has_output:
         return True
@@ -591,6 +625,7 @@ def build_export_report(
         detected_entities = _safe_entity_count(info)
         visual_quality = _visual_review_quality(info)
         visual_evidence = _visual_evidence_summary(info)
+        recognition_failed_pages = _recognition_failed_page_ids(item)
         if is_selected:
             selected_items.append(item)
             selected_detected_entities += detected_entities
@@ -632,7 +667,10 @@ def build_export_report(
                 "page_count": _safe_int((info or {}).get("page_count")) or None,
                 "selected_for_export": is_selected,
                 "delivery_status": delivery_status,
-                "error": item.get("error_message") or metadata_warning,
+                "error": item.get("error_message") or metadata_warning or (
+                    _failed_pages_export_warning(recognition_failed_pages)
+                ),
+                "recognition_failed_pages": recognition_failed_pages,
                 "metadata_warning": metadata_warning,
                 "ready_for_delivery": ready_for_delivery,
                 "action_required": not ready_for_delivery,

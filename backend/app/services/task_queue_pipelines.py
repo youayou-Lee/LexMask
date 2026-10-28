@@ -35,6 +35,21 @@ logger = logging.getLogger(__name__)
 _ERROR_MSG_MAX_LEN = 500
 
 
+def _recognition_failed_pages(store: Any, item_id: str) -> dict[str, str]:
+    """读条目 performance_json 里的 `recognition.failed_pages`（Issue#199）。
+
+    供 skip_review 守卫等下游消费；缺失/坏 JSON 一律按「无失败页」处理——
+    守卫只做加严（多停一次审阅无害），不做加严失败（别把好条目打成异常）。
+    """
+    try:
+        item = store.get_item(item_id) or {}
+        performance = json.loads(item.get("performance_json") or "{}")
+        pages = (performance.get("recognition") or {}).get("failed_pages") or {}
+        return {str(k): str(v) for k, v in pages.items()} if isinstance(pages, dict) else {}
+    except (ValueError, TypeError, AttributeError):
+        return {}
+
+
 class RecognitionPipelineMixin:
     """识别流水线：解析 -> NER/Vision -> 完成识别（可选入队匿名化）。"""
 
@@ -304,6 +319,7 @@ class RecognitionPipelineMixin:
             signature_ocr_types: list[str] | None = None,
             signature_visual_feature_types: list[str] | None = None,
             stage_label: str = "视觉识别",
+            stage_failed: dict[int, str] | None = None,
         ) -> None:
             nonlocal active_pages, max_active_pages
             async with page_sem:
@@ -372,10 +388,16 @@ class RecognitionPipelineMixin:
                             }
                         },
                     )
-                    raise TimeoutError(
-                        f"{stage_label} page {p}/{pages} timed out after {page_timeout:.0f}s"
-                    ) from exc
-                except Exception:
+                    # Issue#199 页级隔离：单页超时**不上抛**——记录后由本阶段收尾
+                    # 汇入 failed_pages，其余页照常完成（极端页不得作废整卷）。
+                    if stage_failed is not None:
+                        stage_failed[p] = (
+                            f"{stage_label} page timeout after {page_timeout:.0f}s"
+                        )
+                except MemoryError:
+                    # 冷审 I2：OOM 下继续跑其余页只会放大故障——显式上抛走 FAILED 路径。
+                    raise
+                except Exception as exc:  # noqa: BLE001
                     page_ms = _elapsed_ms(page_started)
                     active_pages = max(0, active_pages - 1)
                     self._record_item_performance(
@@ -394,7 +416,10 @@ class RecognitionPipelineMixin:
                             }
                         },
                     )
-                    raise
+                    # Issue#199 页级隔离：同上。CancelledError/KeyboardInterrupt/
+                    # SystemExit 是 BaseException，不在此捕获口径内，照常穿透。
+                    if stage_failed is not None:
+                        stage_failed[p] = f"{stage_label}: {type(exc).__name__}: {exc}"[:200]
                 else:
                     page_ms = _elapsed_ms(page_started)
                     active_pages = max(0, active_pages - 1)
@@ -441,7 +466,20 @@ class RecognitionPipelineMixin:
             signature_ocr_types: list[str] | None = None,
             signature_visual_feature_types: list[str] | None = None,
             stage_label: str = "视觉识别",
-        ) -> None:
+            page_filter: set[int] | None = None,
+        ) -> dict[int, str]:
+            """跑一阶段页任务，返回本阶段失败页 {page: reason}（Issue#199 页级隔离）。
+
+            页级失败在 run_page 内记录并就地返回，不再触发「首错取消全部兄弟页」；
+            cancel+raise 处理器只接基础设施异常（store/调度层）。`page_filter` 供
+            二阶段（视觉特征合并）跳过一阶段已失败的页。
+            """
+            stage_failed: dict[int, str] = {}
+            page_ids = (
+                [p for p in range(1, max(1, pages) + 1) if p in page_filter]
+                if page_filter is not None
+                else list(range(1, max(1, pages) + 1))
+            )
             page_tasks = {
                 asyncio.create_task(
                     run_page(
@@ -452,9 +490,10 @@ class RecognitionPipelineMixin:
                         signature_ocr_types=signature_ocr_types,
                         signature_visual_feature_types=signature_visual_feature_types,
                         stage_label=stage_label,
+                        stage_failed=stage_failed,
                     )
                 ): p
-                for p in range(1, max(1, pages) + 1)
+                for p in page_ids
             }
             try:
                 for page_task in asyncio.as_completed(page_tasks):
@@ -463,6 +502,7 @@ class RecognitionPipelineMixin:
                 for page_task in page_tasks:
                     page_task.cancel()
                 raise
+            return stage_failed
 
         try:
             if pages > 1 and visual_feature_types != []:
@@ -482,31 +522,74 @@ class RecognitionPipelineMixin:
                     page_concurrency,
                     visual_merge_concurrency,
                 )
-                await run_page_stage(
-                    selected_ocr_types=ocr_types,
-                    selected_visual_feature_types=[],
-                    stage_label="OCR+HaS识别",
+                failed_pages: dict[int, str] = {}
+                failed_pages.update(
+                    await run_page_stage(
+                        selected_ocr_types=ocr_types,
+                        selected_visual_feature_types=[],
+                        stage_label="OCR+HaS识别",
+                    )
                 )
                 page_sem = asyncio.Semaphore(visual_merge_concurrency)
-                await run_page_stage(
-                    selected_ocr_types=[],
-                    selected_visual_feature_types=visual_feature_types,
-                    merge_existing=True,
-                    signature_ocr_types=ocr_types,
-                    signature_visual_feature_types=visual_feature_types,
-                    stage_label="视觉特征识别",
+                # Issue#199：合并阶段跳过一阶段已失败的页——页账保留第一阶段结论，
+                # 失败原因带阶段标签（冷审 I3b）。
+                failed_pages.update(
+                    await run_page_stage(
+                        selected_ocr_types=[],
+                        selected_visual_feature_types=visual_feature_types,
+                        merge_existing=True,
+                        signature_ocr_types=ocr_types,
+                        signature_visual_feature_types=visual_feature_types,
+                        stage_label="视觉特征识别",
+                        page_filter=set(range(1, max(1, pages) + 1)) - set(failed_pages),
+                    )
                 )
             else:
-                await run_page_stage(
+                failed_pages = await run_page_stage(
                     selected_ocr_types=ocr_types,
                     selected_visual_feature_types=visual_feature_types,
                 )
+            # Issue#199：失败清单**无条件写**（含空 dict）——深合并语义下，重跑全成功
+            # 必须清掉上一次的失败键，否则 reject→重跑留下假警示（冷审 I1）。
+            self._record_item_performance(
+                store,
+                task.item_id,
+                {
+                    "recognition": {
+                        "failed_pages": {
+                            str(p): reason for p, reason in sorted(failed_pages.items())
+                        },
+                    }
+                },
+            )
+            if failed_pages:
+                failed_ids = ", ".join(str(p) for p in sorted(failed_pages))
+                summary = (
+                    f"{len(failed_pages)} page(s) failed recognition "
+                    f"(pages {failed_ids}); see recognition.failed_pages"
+                )
+                if len(summary) > 480:
+                    summary = summary[:480] + "…"
+                logger.warning(
+                    "[queue] item=%s vision completed with %d failed page(s): %s",
+                    task.item_id[:8],
+                    len(failed_pages),
+                    failed_ids,
+                )
+                # error_message 挂在 AWAITING_REVIEW 条目上是既有合法形态
+                # （job_management_service 同类先例）；它会活不过打码完成迁移，
+                # 跨迁移的权威载体是上面的 performance.failed_pages。
+                store.set_item_error_message(task.item_id, summary)
             store.update_item_progress(
                 task.item_id,
                 stage="vision",
                 current=pages,
                 total=pages,
-                message="vision_recognition_complete",
+                message=(
+                    "vision_recognition_complete_with_failures"
+                    if failed_pages
+                    else "vision_recognition_complete"
+                ),
             )
             self._record_item_performance(
                 store,
@@ -526,7 +609,9 @@ class RecognitionPipelineMixin:
                 page_concurrency,
                 max_active_pages,
             )
-        # Issue#139：见 _run_recognition 处的同类说明（3.10 两类分立 + 必须重排到 OSError 之前）。
+        # 页级隔离后本包装只剩基础设施超时（store/调度层）的防御语义——页超时
+        # 已在 run_page 内就地隔离（Issue#199），不再走到这里。Issue#139 的两类
+        # 分立说明仍适用于本捕获（3.10 上 asyncio.TimeoutError 需显式列出）。
         except (TimeoutError, asyncio.TimeoutError) as exc:  # noqa: UP041
             raise TimeoutError(
                 f"vision recognition timed out after {page_timeout:.0f}s per page"
@@ -583,6 +668,20 @@ class RecognitionPipelineMixin:
         from app.services.task_queue import TaskItem
 
         skip_review = bool(job.get("skip_item_review"))
+        if skip_review:
+            # Issue#199 守卫（冷审 C1a）：识别存在失败页的条目**不 honor**
+            # skip_item_review——「无人在环直通打码」会把失败页当干净页出厂
+            # （失败页零区域 = 零脱敏）。强制停审阅，由用户在知情后决策。
+            failed_pages = _recognition_failed_pages(store, task.item_id)
+            if failed_pages:
+                logger.warning(
+                    "[queue] item=%s skip review suppressed: %d page(s) failed recognition (%s)",
+                    task.item_id[:8],
+                    len(failed_pages),
+                    ",".join(sorted(failed_pages)),
+                )
+                skip_review = False
+
         store.update_item_status(task.item_id, JobItemStatus.AWAITING_REVIEW)
 
         if skip_review:

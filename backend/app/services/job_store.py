@@ -523,6 +523,22 @@ class JobStore(RepairMixin):
         if file_id_to_clean:
             self._clear_outputs_for_file_ids([file_id_to_clean])
 
+    def set_item_error_message(self, item_id: str, error_message: str | None) -> None:
+        """只改 error_message，不动状态（Issue#199 页级隔离）。
+
+        识别部分失败但条目继续流转（AWAITING_REVIEW/打码）时，失败摘要不能走
+        `update_item_status`——同状态迁移是 no-op（不落 error_message），伪造迁移
+        又会踩迁移校验。error_message 会活过 AWAITING_REVIEW、死于打码完成迁移
+        （complete_item_review/_run_redaction 显式清空）——跨迁移的权威载体是
+        performance.recognition.failed_pages（两者互补，本方法只是短命展示面）。
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE job_items SET error_message = ?, updated_at = ? WHERE id = ?",
+                (error_message, _utc_iso(), item_id),
+            )
+            conn.commit()
+
     def update_job_status(self, job_id: str, status: JobStatus, error_message: str | None = None) -> None:
         now = _utc_iso()
         with self._connect() as conn:
