@@ -400,7 +400,7 @@ filter_failed}` —— **五态必须可区分**（门⑥ 冷审 I3）：`no_wat
 | AC28 原件/产物边界 | 原件 `sha256` 与 `mtime` 过滤前后完全一致（只读打开，不写盘）；过滤只在内存里产出新列表、不落任何中间文件；不新增下载/导出/预览面 | 单测 + 脚本断言 | ②③ |
 | AC29 产品能力边界 | 前端无「去水印」设置项/无对应 API 参数/文档不宣称支持去水印；开关只在后端配置；PR 描述不含「支持去水印/可去水印」表述 | grep 断言 + 人工核对 | ②③ |
 | AC30 零回归口径（重写） | 基线 = **分支点 `686c4c0`**（preview HEAD，含 #210），不是 `89f51f9`；比较**归一化投影**（boxes 归一化坐标 + 类型 + 页号、`reason_code`、region 计数），显式排除 timestamp / job_id / duration / 临时路径；后端「FAILED 集合 `comm -3` = 0 行」并给两侧总数；前端给例数基线（当前 279） | 双跑 + 投影 diff | ②③④ |
-| AC31 变异测试 | **16 个变异全部 KILLED**：M3 knob key 拼接、M5 `page_chars` 来源、M7 空页回退、M8 旋转校正、M9/M9b/M9c probe 三闸、M10 倾斜阈值 0、M10b 不透明上限 255、M11 删字符集条件、M12 `no_geometry` 分支、M13 NER 吃未过滤页、M14 删 memo key knob 段、M17 `MIN_VISIBLE_SHARE` 默认值、C2 删未过滤口径上报、N1 删 keep-ratio 守护。变异纪律：先 `assert old in s` 再写（否则「SURVIVED」可能是没改到），复原用 `cp .bak` 而非 `git checkout`（未提交改动会被抹掉） | 变异记录表 | ②③ |
+| AC31 变异测试 | **18 个变异全部 KILLED**：M3 knob key 拼接、M5 `page_chars` 来源、M7 空页回退、M8 旋转校正、M9/M9b/M9c probe 三闸、M10 倾斜阈值 0、M10b 不透明上限 255、M11 删字符集条件、M12 `no_geometry` 分支、M13 NER 吃未过滤页、M14 删 memo key knob 段、M17 `MIN_VISIBLE_SHARE` 默认值、C2 删未过滤口径上报、N1 删 keep-ratio 守护、M18a 来源判据恒保留（`if under:`）、M18b 来源判据恒不保留（`if False:`）。变异纪律：先 `assert old in s` 再写（否则「SURVIVED」可能是没改到），复原用 `cp .bak` 而非 `git checkout`（未提交改动会被抹掉） | 变异记录表 | ②③ |
 | AC32 部署链路 | 本地 `docker compose --profile gpu` 冒烟（backend+ocr+ner+frontend）；云 DCU ④（docline NER 走 DCU vLLM）；docker nginx 链路断言无 504（`frontend/nginx.conf.template` `proxy_read_timeout=900s`，本 PR 不改超时）。`deploy/dual-5090` 若本地不可达，写明「本 PR 未改超时/端点/取图口以外的东西 ⇒ 跳过 + 理由」，不得沉默跳过 | 三处日志/截图 | ②④⑤ |
 | AC34 旋转页坐标一致性（C1） | 单测：3 页 `/Rotate 90` 的族 B 形态夹具 ⇒ `code=="applied"`、水印词被剥、**正文词逐字保留**；`words` 与 `get_texttrace()` 字形框必须落在**同一页面空间**（旋转页两者都乘 `page.rotation_matrix`）。变异=删字形框旋转校正 ⇒ 用例必红（已 KILLED）。真卷侧：docline 抽样里含 `/Rotate 90/270` 页的卷 | 单测 + 变异 + 真卷抽页 | ②③ |
 | AC35 页级保留下限与几何缺失（I2/I3/I6） | 单测三条：① keep-ratio 越界 ⇒ 整页原样且 `pages_skipped_would_wiped` 计数；② keep-ratio 允许薄页真正文被剥；③ profile 命中但几何为空 ⇒ `no_geometry`。真卷侧：[2] 29 页无正文层卷实测 `code=="would_wiped_page"`、0 丢弃（守护生效） | 单测 ×3 + 真卷 | ②③ |
@@ -506,4 +506,4 @@ filter_failed}` —— **五态必须可区分**（门⑥ 冷审 I3）：`no_wat
 
 **云上两臂复测（同族 31 页真卷，独立 data 目录，`SKIP_VL=1`）**：关臂 5,864 框 / 纯水印框 **4,612（78.6%）** / 非水印框 1,252 / 138.8s；开臂 1,143 框 / 纯水印框 **0（0.0%）** / 非水印框 1,143 / 85.3s。非水印框多重集差异（off_only 532 / on_only 423）与「同一份输入两次跑 LLM 的框抖动」同量级，不作等价性结论（AC36③ 仍以本地可复现口径为准）。
 
-- **AC40（来源判据的边界）**：正文层字形拼出的字串 ⊆ 水印字符集 ⇒ 该页该词不丢；拼出其它字 ⇒ 丢。
+- **AC40（来源判据的边界）**：正文层字形拼出的字串 ⊆ 水印字符集 ⇒ 该页该词不丢；拼出其它字 ⇒ 丢。变异双向取证（v1.7 定稿后复跑）：`if under:`（恒保留）⇒ `test_provenance_drops_when_body_text_is_other_characters` 红；`if False:`（恒不保留）⇒ `test_provenance_keeps_words_under_invisible_body_layer` 红 ⇒ 两个方向各自承重。
