@@ -292,3 +292,25 @@ def test_label_plus_distinct_digits_column_is_never_collapsed(monkeypatch):
     assert payload.texts == lines
     assert payload.near_duplicate_collapsed_lines == 0
     assert payload.near_duplicate_families == 0
+
+
+def test_hazard_no_separator_label_column_would_still_collapse(monkeypatch):
+    """**已知风险登记（门⑥ 增量复核 F1，未修，能力默认关）**。
+
+    `_SEPARATOR_RE` 只能挡住「标签 空格/冒号 + 数字」这种带分隔符的写法。若 OCR
+    把分隔符吞了（`身份证号370702199001000001`），形状判据 `^[^\\d#]+\\d+$` 与
+    水印碎片（`映峰1450120`）**同构**，无法区分 ⇒ 开启折叠后真实列会被折掉。
+
+    本条用例把现状钉死：它证明「这个能力只对带分隔符的形态安全」。因此在
+    目标页（折叠 0 行、零收益）之外**不得默认开启**；要真正启用，必须先有
+    「字段标签词典」或「列对齐」级别的判据，而不是靠数字归一化。
+    """
+    monkeypatch.setattr(settings, "HAS_NER_NEAR_DUP_COLLAPSE", True)
+    lines = [f"身份证号370702199001{index:06d}" for index in range(120)]
+
+    payload = _build(lines)
+
+    assert payload.near_duplicate_collapsed_lines > 0, (
+        "本用例**预期折叠发生**：这是已知风险面（无分隔符的标签列与水印碎片同构），"
+        "所以该能力只作为默认关的可选项保留，不得在流水线里默认启用"
+    )

@@ -537,7 +537,16 @@ class Settings(BaseSettings):
     # 240s 且贴住 300s 页墙（06:41 首测：预算应在 06:46:0x 触发，页墙 06:46:39，
     # 两者几乎同时，演示不出"先于页墙收尾"）。故取 250s（最初 200s，见下）
     # +25%，同时给页墙留 100s 余量，让"预算先收口、页面体面失败"真的可观测。
-    HAS_NER_PAGE_BUDGET_SEC: float = 250.0
+    HAS_NER_PAGE_BUDGET_SEC: float = 255.0
+    # 口径（2026-10-29 门⑥ I1 订正）：**从页入口起算的页总量**（含 OCR 与预处理），
+    # 不是「只给 NER 的额度」。真实 NER 可用额度 ≈ 255 − OCR(20–60s) ≈ 195–235s。
+    # 取 255 的来历：页墙 `BATCH_RECOGNITION_PAGE_TIMEOUT=300`（本文件 :331），
+    # 留 45s 给视觉通道（LA ~3.6s）+ 区域合并 + 落库，其余给 OCR+HaS NER。
+    # 门④实测该页 NER 真实耗时 163–216s，OCR ~20–25s ⇒ 最坏一轮 241s < 255 装得下；
+    # 再坏一档则该页**显式失败**（strict，见 HAS_NER_PAGE_BUDGET_STRICT_FAIL），
+    # 不会静默少扫。
+    # 运维口径（门⑥ I2）：失败是幂等的（同 budget 同结局），「必须过」的卷要么调高
+    # 本键、要么走 #208 的页级续跑/提额，不要靠重试。
 
     # 预算耗尽后是否把该页判为**失败**（Issue#209）。True（默认）=抛
     # HasTextNerPageBudgetExceeded ⇒ 页级 stage 记入 recognition.failed_pages

@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -106,7 +107,11 @@ def test_cut_bucket_on_chunked_text_is_requeried():
     assert sorted(main["types"]) == sorted(types), "主查是整页全类型"
     assert len(client._split_requery_chunks(_LONG)) > 1, "用例前提：文本会被切块"
     requeried = {t for call in requery for t in call["types"]}
-    assert "编号" in requeried, (
+    # 主查只回了 types[-1]，它正是「被切断的那个桶」（值被截断在 *721721）。
+    # 注意：不能断言 "编号" —— 它本就在 parse_missing 里，无论 C2 是否生效都会
+    # 出现在补查类型中（旧断言因此是假绿，门⑥ 增量复核 I3/F2 抓出）。
+    cut_bucket = types[-1]
+    assert cut_bucket in requeried, (
         "被切断的桶必须进补查集合（否则它永远补不上、静默少打码）："
         f"实际补查类型={sorted(requeried)}"
     )
@@ -194,10 +199,13 @@ def test_fill_invariant_holds_when_context_room_is_tiny():
 # ---------------------------------------------------------------------------
 
 def test_truncated_tail_bucket_ignores_brackets_inside_strings():
-    raw = '{"地址": ["北京市朝阳区 A[1] 号楼", "北京市朝阳区 A[2] 号楼"], "编号": ["721721'
-    assert HaSClient._truncated_tail_bucket(raw, ["地址", "编号"]) == "编号"
-    closed = '{"地址": ["北京市朝阳区 A[1] 号楼"], "编号": ["721721"]}'
-    assert HaSClient._truncated_tail_bucket(closed, ["地址", "编号"]) is None
+    # 门⑥ 增量复核 F9：`]` 必须出现在**被切断的那个桶内部**才构成假阴性
+    # （旧实现用 `"]" in raw[after:]` 会把「值里有 ]」误判成桶已闭合）。
+    raw = '{"编号": ["A[1] 号楼", "721721'
+    assert HaSClient._truncated_tail_bucket(raw, ["编号"]) == "编号"
+    # 桶真的闭合了 ⇒ None（`[`/`]` 深度归零）
+    closed = '{"编号": ["A[1] 号楼"], "甲": ["x"]}'
+    assert HaSClient._truncated_tail_bucket(closed, ["编号", "甲"]) is None
 
 
 # ---------------------------------------------------------------------------
@@ -216,3 +224,72 @@ def test_strict_budget_exception_is_page_fatal(monkeypatch):
 
     monkeypatch.setattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", False, raising=False)
     assert is_page_fatal_stage_error(HasTextNerPageBudgetExceeded("budget")) is False
+
+
+# ---------------------------------------------------------------------------
+# I3：页级接线判据——strict 预算失败必须**真的上抛到页级调用方**
+# ---------------------------------------------------------------------------
+
+def test_page_level_budget_failure_propagates_out_of_the_page_pipeline(monkeypatch):
+    """删掉 `raise page_fatal_error` 或两处 `is_page_fatal_stage_error` 判定都必须变红。
+
+    门⑥ 增量复核 I3 抓出的空档：此前只有谓词本身的用例，接线（真上抛）零判据。
+    """
+    import pytest as _pytest
+    from app.services.vision.has_text_analysis import HasTextNerPageBudgetExceeded
+    from app.services.vision_service import VisionService
+
+    monkeypatch.setattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True, raising=False)
+
+    svc = VisionService()
+
+    class _Parser:
+        async def read_image(self, path):  # noqa: D102
+            return b"fake-image"
+
+        async def get_pdf_page_image(self, path, page):  # noqa: D102
+            return b"fake-image"
+
+    svc.file_parser = _Parser()
+
+    async def _boom(*_args, **_kwargs):
+        raise HasTextNerPageBudgetExceeded(
+            "HaS NER budget exceeded after 1.0s (budget 1s): main NER phase stopped early"
+        )
+
+    monkeypatch.setattr(svc, "_detect_with_ocr_has", _boom)
+
+    from app.services.vision_service import FileType
+
+    with _pytest.raises(HasTextNerPageBudgetExceeded) as excinfo:
+        asyncio.run(
+            svc.detect_with_dual_pipeline("x.png", FileType.IMAGE, 1, ["身份证号"], [])
+        )
+    assert "budget exceeded" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# F5 接线钉：页入口必须 reset 页级死线（删掉两处接线 ⇒ 本用例变红）
+# ---------------------------------------------------------------------------
+
+def test_page_entry_resets_the_page_deadline(monkeypatch):
+    import inspect
+    import re as _re
+
+    from app.services import vision_service as vs
+    from app.services.vision import has_text_analysis as hta
+
+    monkeypatch.setattr(settings, "HAS_NER_PAGE_BUDGET_SEC", 123.0, raising=False)
+    hta.reset_page_ner_deadline()
+    deadline = hta.has_text_page_deadline()
+    assert deadline is not None, "reset 必须立即建立死线（不能等首次 NER 调用兜底）"
+    assert deadline > __import__("time").monotonic(), "死线应在未来"
+
+    # 接线钉：两个页入口（OCR 线 / 文本层线）都必须调用 reset
+    src = inspect.getsource(vs)
+    for marker in ("_detect_with_ocr_has", "_detect_with_pdf_text_layer"):
+        start = src.index(f"async def {marker}")
+        body = src[start : start + 4000]
+        assert _re.search(r"reset_page_ner_deadline\(\)", body), (
+            f"页入口 {marker} 必须 reset 页级死线（否则 OCR 耗时不进预算，F5 回归）"
+        )

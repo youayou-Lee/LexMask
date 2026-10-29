@@ -438,6 +438,14 @@ class VisionService:
                 logger.error("%s failed: %s", label, result)
                 status["failed"] = True
                 status["error"] = str(result)
+                # 门⑥ I4：失败页同样要留下耗时与阶段计数，否则
+                # `recognition.failed_pages` 只剩一句 error，预算/孤儿线程/跳过
+                # 组数这些恰恰是排查所需的面全部丢失。
+                _failed_stage_dur = dict(
+                    getattr(getattr(self, "ocr_has_service", None), "last_duration_ms", {}) or {}
+                )
+                if _failed_stage_dur:
+                    status["stage_duration_ms"] = _failed_stage_dur
                 self.last_warnings.append(f"{label} failed: {result}")
                 return
             boxes, _ = result
@@ -491,6 +499,19 @@ class VisionService:
             # 让页级调用方按 #199 的既有语义把它写进 recognition.failed_pages
             # （`task_queue_pipelines` 的 `except Exception` 会以
             # `stage_label: Type: message` 记账），交付闸/导出 409 随之生效。
+            # 门⑥ I4：把预算阶段计数并进 reason，否则失败页只剩「budget
+            # exceeded」，看不到跳过了几组、遗留几个孤儿线程。
+            _budget_metrics = dict(
+                getattr(getattr(self, "ocr_has_service", None), "last_duration_ms", {}) or {}
+            )
+            _pairs = ", ".join(
+                f"{k}={_budget_metrics[k]}"
+                for k in sorted(_budget_metrics)
+                if "budget" in k or "orphan" in k or "skipped" in k
+            )
+            if _pairs:
+                _head = page_fatal_error.args[0] if page_fatal_error.args else ""
+                page_fatal_error.args = (f"{_head} [{_pairs}]",)
             raise page_fatal_error
 
         # Specialized signature detector (conditional-detr) REPLACES the LA

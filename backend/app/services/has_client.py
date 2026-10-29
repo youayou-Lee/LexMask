@@ -1016,9 +1016,12 @@ If nothing matches, return {{}}.
         )
         # 门⑥ F6（2026-10-29）：`max(_NER_MAX_TOKENS_FLOOR, context_room)` 会在
         # context_room ∈ (0, 64] 时把 `estimate + max_tokens` 顶到装填上限之上
-        # 最多 64 token（绕过分组规划器的直调路径可命中）。这里只在 room 为正时
-        # 直接取 room；room <= 0（提示词本身已装不下）仍退回下限，由规划器/上层
-        # 负责分组——单条请求无法自救，但会留下可观测的 WARNING。
+        # 最多 64 token（绕过分组规划器的直调路径可命中）。这里 room > 0 就直取
+        # room——**装填不变式优先于「避免极小请求」**：room 很小时会发出一个注定
+        # 被 length 截断的小请求（门⑥ M1），但那是「白付一次」的成本问题，不是
+        # 漏检问题（截断 ⇒ C2 把被切断桶并入补查，召回仍靠补查兜住）；而超装填
+        # 会让请求被服务端拒绝/静默截断，属正确性问题。room <= 0（提示词本身已装
+        # 不下）才退回下限，并留下可观测的 WARNING。
         if context_room > 0:
             effective_room = context_room
         else:
