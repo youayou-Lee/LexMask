@@ -842,7 +842,8 @@ def test_provenance_keeps_words_under_invisible_body_layer():
     words = [TextLayerWord(x0=10, y0=10, x1=90, y1=40, text=_WM_WORD)] * 65
     page = TextLayerPage(no=1, width=400, height=400, words=words)
     visible = [fitz.Rect(rect)] * 65
-    body = [fitz.Rect(rect)]
+    # 正文层在该位置拼的**也是水印字符** ⇒ 来源不可辨 ⇒ 必须保留（门⑥ 冷审 C1）
+    body = [(fitz.Rect(rect), ch) for ch in _WM_WORD]
     drop, count, chars = vwm._watermark_word_drops(
         page,
         frozenset(_WM_WORD),
@@ -850,7 +851,27 @@ def test_provenance_keeps_words_under_invisible_body_layer():
         visible,
         0.35,
         vwm._grid_index(visible),
-        body_boxes=body,
-        body_grid=vwm._grid_index(body),
+        body_glyphs=body,
     )
     assert (drop, count, chars) == (set(), 0, 0)
+
+
+def test_provenance_drops_when_body_text_is_other_characters() -> None:
+    """正文层在该位置拼的是**别的字** ⇒ 那是真实正文，水印词是叠上去的另一层 ⇒ 该丢。"""
+    from app.services.text_layer_docline_service import TextLayerPage, TextLayerWord
+
+    rect = fitz.Rect(10, 10, 90, 40)
+    words = [TextLayerWord(x0=10, y0=10, x1=90, y1=40, text=_WM_WORD)] * 65
+    page = TextLayerPage(no=1, width=400, height=400, words=words)
+    visible = [fitz.Rect(rect)] * 65
+    body = [(fitz.Rect(rect), ch) for ch in "本院认为"]  # 正文真实文字，不含水印字符
+    drop, count, chars = vwm._watermark_word_drops(
+        page,
+        frozenset(_WM_WORD),
+        8,
+        visible,
+        0.35,
+        vwm._grid_index(visible),
+        body_glyphs=body,
+    )
+    assert (count, chars) == (65, 65 * len(_WM_WORD))
