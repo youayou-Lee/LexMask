@@ -344,7 +344,8 @@ def test_filter_respects_charset_of_profile():
     filtered, stats = vwm.filter_watermark_words(
         pages, _profile(), wm_rects=rects, min_keep_ratio=0.0
     )
-    assert stats["code"] == "no_watermark" and stats["chars_dropped"] == 0
+    # 门⑥ 第三段 I2：探测命中但零丢弃 ⇒ `no_candidates`（不再冒充「本卷没水印」）
+    assert stats["code"] == "no_candidates" and stats["chars_dropped"] == 0
     assert [w.text for w in filtered[0].words].count("本市其他院") == 65
 
 
@@ -875,3 +876,160 @@ def test_provenance_drops_when_body_text_is_other_characters() -> None:
         body_glyphs=body,
     )
     assert (count, chars) == (65, 65 * len(_WM_WORD))
+
+
+def _build_raises(monkeypatch, tmp_path, *, name, mutate=None):
+    """跑一次 `_build` 并返回它抛出的 `_TransientIneligible`（供 marker 语义用例共用）。"""
+    original_pages, _ = _pages_with_geometry([{"tiles": 65, "body": [_BODY_LINE]}] * 2)
+    filtered_pages, _ = _pages_with_geometry([{"tiles": 0, "body": [_BODY_LINE]}] * 2)
+    seen: dict[str, object] = {}
+    _install_build_stubs(monkeypatch, original_pages, filtered_pages, seen)
+    monkeypatch.setattr(settings, "VISIBLE_WATERMARK_WORD_FILTER_ENABLED", True)
+    if mutate is not None:
+        mutate(monkeypatch)
+    real_path = tmp_path / f"{name}.pdf"
+    real_path.write_bytes(b"%PDF-1.4\n")
+    snapshot = {"file_path": str(real_path), "file_type": "pdf_scanned", "is_scanned": True}
+    with pytest.raises(source._TransientIneligible) as info:
+        asyncio.run(source._build(f"fid-{name}", snapshot, ["姓名"], ["t1"], []))
+    return info.value
+
+
+def test_marker_not_run_for_pre_filter_gate(monkeypatch, tmp_path):
+    """门⑥ 第三段 I1：**过滤之前**就失败的卷 ⇒ marker 记 `not_run:<gate>`。
+
+    预算闸在过滤之前（它决定要不要建链），此时过滤器确实没跑。
+    """
+    def _shrink(monkeypatch):
+        monkeypatch.setattr(settings, "TEXT_LAYER_DOCLINE_MAX_BUILD_SEC", 1.0)
+
+    exc = _build_raises(monkeypatch, tmp_path, name="pre", mutate=_shrink)
+    assert exc.code == "build_budget"
+    assert exc.word_filter is None
+    marker = source._marker_word_filter(exc)
+    assert marker["code"] == "not_run:build_budget"
+    assert marker["rejected_by"] == "build_budget"
+
+
+def test_marker_ran_then_rejected_for_post_filter_gate(monkeypatch, tmp_path):
+    """门⑥ 第三段 I1：**过滤之后**才失败的卷 ⇒ 带真实统计 + `rejected_by`。
+
+    这里让 NER 的覆盖率掉到 0（模拟「过滤把分母缩小反而翻门」这类后置门失败），
+    marker 必须能区分「过滤器跑了（applied）而且被 coverage 拒」。
+    """
+    def _low_coverage(monkeypatch):
+        async def _ner(pages, labels, **_kwargs):
+            return docline.DocLineResult(
+                pages=len(pages), chunks=2, chunk_chars=100, stream_chars=200,
+                layer_chars=200, covered_chars=0, entities=[], ner_calls=1,
+                truncated_chunks=0, http_errors=0, residual_calls=0, seconds=0.1,
+            )
+
+        monkeypatch.setattr(docline, "run_document_ner", _ner)
+
+    exc = _build_raises(monkeypatch, tmp_path, name="post", mutate=_low_coverage)
+    assert exc.code == "coverage"
+    assert exc.word_filter is not None and exc.word_filter["code"] == "applied"
+    marker = source._marker_word_filter(exc)
+    assert marker["code"] == "applied"          # 过滤器确实跑了
+    assert marker["rejected_by"] == "coverage"  # 被哪道后置门拒
+    assert marker["chars_dropped"] > 0
+
+
+def test_post_filter_raise_sites_pass_word_filter_stats():
+    """静态断言（门⑥ 第三段 I3）：`maybe_filter_pages` 之后的 5 处 raise 必须带统计。
+
+    变异：删掉任一处 `word_filter=word_filter_stats` ⇒ 本用例红；
+    若新增后置门忘了带 ⇒ 也红。
+    """
+    import inspect
+    import pathlib
+
+    source_text = pathlib.Path(inspect.getfile(source)).read_text(encoding="utf-8")
+    tail = source_text[source_text.index("visible_text_watermark.maybe_filter_pages"):]
+    assert tail.count("raise _TransientIneligible(") == 5
+    assert tail.count("word_filter=word_filter_stats") == 5
+
+
+def test_stats_key_set_is_stable_across_paths(monkeypatch):
+    """AC20（门⑥ 第三段 I2）：直通/失败/真过滤三条路径的统计键集必须一致。"""
+    pages, rects = _pages_with_geometry([{"tiles": 65, "body": [_BODY_LINE]}] * 2)
+
+    monkeypatch.setattr(settings, "VISIBLE_WATERMARK_WORD_FILTER_ENABLED", False)
+    _out, disabled = vwm.maybe_filter_pages("/nonexistent.pdf", pages)
+
+    monkeypatch.setattr(settings, "VISIBLE_WATERMARK_WORD_FILTER_ENABLED", True)
+    monkeypatch.setattr(vwm, "probe_visible_watermark", lambda *_a, **_k: None)
+    _out, no_watermark = vwm.maybe_filter_pages("/nonexistent.pdf", pages)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("geometry failed")
+
+    monkeypatch.setattr(vwm, "probe_visible_watermark", lambda *_a, **_k: _profile())
+    monkeypatch.setattr(vwm, "collect_watermark_rects", _boom)
+    _out, failed = vwm.maybe_filter_pages("/nonexistent.pdf", pages)
+
+    _filtered, applied = vwm.filter_watermark_words(
+        pages, _profile(), wm_rects=rects, min_keep_ratio=0.0
+    )
+
+    base_keys = set(disabled)
+    assert base_keys == set(no_watermark) == set(applied)
+    assert set(failed) == base_keys | {"error"}
+    assert disabled["code"] == "disabled" and disabled["gate_basis_unfiltered_coverage"] is None
+    assert no_watermark["code"] == "no_watermark" and no_watermark["profile"] is None
+
+
+def test_geometry_code_requires_every_page():
+    """门⑥ 第三段 M1/M17：`no_geometry` 只在**整卷都没有几何**时成立。"""
+    pages, rects = _pages_with_geometry([{"tiles": 5, "body": []}] * 3)
+
+    partial = {no: boxes for no, boxes in rects.items() if no != 1}
+    _out, partial_stats = vwm.filter_watermark_words(
+        pages, _profile(), wm_rects=partial, min_keep_ratio=0.0
+    )
+    assert partial_stats["pages_skipped_no_geometry"] == 1
+    assert partial_stats["code"] == "no_candidates"  # 探测有、但零丢弃
+
+    _out, none_stats = vwm.filter_watermark_words(
+        pages, _profile(), wm_rects={}, min_keep_ratio=0.0
+    )
+    assert none_stats["pages_skipped_no_geometry"] == 3
+    assert none_stats["code"] == "no_geometry"
+
+
+def test_no_candidates_code_is_not_no_watermark():
+    """门⑥ 第三段 I2：探测命中但零丢弃 ⇒ `no_candidates`，不能冒充「本卷没水印」。"""
+    pages, rects = _pages_with_geometry([{"tiles": 5, "body": [_BODY_LINE]}] * 2)
+    _out, stats = vwm.filter_watermark_words(
+        pages, _profile(), wm_rects=rects, min_keep_ratio=0.0
+    )
+    assert stats["applied"] is False and stats["code"] == "no_candidates"
+    assert stats["profile"] is not None
+
+
+def test_horizontal_semi_transparent_glyphs_land_in_body_layer(tmp_path):
+    """门⑥ 第三段 I5：水平半透明 / 倾斜不透明的字形必须归**正文层**。
+
+    变异：把 `else` 分支改回 `continue` ⇒ 这类层既不是水印也不是正文，
+    该位置的正文实体失去来源保护（漏打码）。
+    """
+    path = tmp_path / "h50.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=400, height=600)
+    writer = fitz.TextWriter(page.rect)
+    writer.append((30.0, 200.0), _BODY_LINE, font=fitz.Font("china-s"), fontsize=12)
+    writer.write_text(page, opacity=0.5)  # 水平 + 半透明
+    writer2 = fitz.TextWriter(page.rect)
+    writer2.append((30.0, 400.0), _WM_WORD, font=fitz.Font("china-s"), fontsize=20)
+    writer2.write_text(page, opacity=1.0)  # 水平 + 不透明
+    doc.save(str(path))
+    doc.close()
+
+    with fitz.open(str(path)) as handle:
+        visible, body = vwm._page_char_rects(handle[0])
+
+    assert visible == []  # 两条层都不倾斜 ⇒ 都不是水印候选
+    chars = "".join(ch for _rect, ch in body)
+    assert _BODY_LINE[:5] in chars  # 半透明水平层进了正文层
+    assert _WM_WORD in chars         # 不透明水平层也进了正文层

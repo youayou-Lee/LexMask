@@ -124,7 +124,7 @@ def probe_visible_watermark(file_path: str, *, max_pages: int | None = None) -> 
         max_pages if max_pages is not None else getattr(settings, "VISIBLE_WATERMARK_PROBE_PAGES", 5)
     )
     min_hit_pages = int(getattr(settings, "VISIBLE_WATERMARK_MIN_PAGES", 3))
-    min_visible_share = float(getattr(settings, "VISIBLE_WATERMARK_MIN_VISIBLE_SHARE", 0.5))
+    min_visible_share = float(getattr(settings, "VISIBLE_WATERMARK_MIN_VISIBLE_SHARE", 0.35))
     min_top_sig_share = float(getattr(settings, "VISIBLE_WATERMARK_MIN_TOP_SIG_SHARE", 0.85))
     max_size_spread = float(getattr(settings, "VISIBLE_WATERMARK_MAX_SIZE_SPREAD", 2.0))
 
@@ -227,12 +227,15 @@ def _page_char_rects(page: fitz.Page) -> tuple[list[fitz.Rect], list[tuple[fitz.
         if is_visible:
             direction = entry.get("dir") or (1.0, 0.0)
             tilted = len(direction) >= 2 and abs(float(direction[1])) >= _TILT_MIN_ABS_Y
-        if not is_visible and not tilted:
-            target = body       # opacity==0 或全不透明 ⇒ 正文层
-        elif is_visible and tilted:
+        if is_visible and tilted:
             target = visible    # 倾斜 + 半透明 ⇒ 水印候选
         else:
-            continue            # 水平半透明 / 倾斜不透明：两头都不算（刻意不作为）
+            # 门⑥ 第三段 I5：**其它一切字形都归正文层**。曾经把「水平半透明」与
+            # 「倾斜不透明」两头排除（`continue`），结果这类层既不当水印也不当正文，
+            # 位置上的正文实体失去来源保护 ⇒ 被当成水印删掉（漏打码）。水印候选的
+            # 必要条件本来就含「倾斜」，所以把它们记成正文层不会让水印混进候选，
+            # 代价为零。
+            target = body  # opacity==0 / 全不透明 / 水平半透明 / 倾斜不透明
         for char in entry.get("chars") or ():
             if len(char) < 4:
                 continue
@@ -421,6 +424,7 @@ def _filter_code(
     pages_skipped_would_wiped: int,
     pages_skipped_no_geometry: int,
     pages_total: int,
+    has_profile: bool = False,
 ) -> str:
     """机读码：必须能区分「真剥了 / 探测有但几何缺失 / 假阳性挡下 / 预算越界 / 无水印」。
 
@@ -435,6 +439,11 @@ def _filter_code(
         return "filter_invariant_exceeded"
     if pages_total > 0 and pages_skipped_no_geometry >= pages_total:
         return "no_geometry"
+    if has_profile:
+        # 门⑥ 第三段 I2：探测**命中**了水印、但零丢弃（候选不足 8 份 / 全被来源判据
+        # 保留 / 本页几何缺失混合）。这跟「本卷没水印」是两件事，混成 `no_watermark`
+        # 会让 AC16 对真水印卷恒真。
+        return "no_candidates"
     return "no_watermark"
 
 
@@ -491,14 +500,21 @@ def filter_watermark_words(
         "pages_skipped_would_wiped": 0,
         "words_dropped": 0,
         "chars_dropped": 0,
+        "dropped_ratio": 0.0,
+        # 门⑥ 第三段 M4：键集固定 —— 未过滤口径覆盖率在「真过滤」时才有意义，
+        # 其余路径给 None 而不是整个键消失（消费方不必写 `in` 判断）。
+        "gate_basis_unfiltered_coverage": None,
+        "profile": None,
     }
     if profile is None or not profile.wm_charset or not pages:
         return pages, stats
 
     per_page = [n for n in profile.wm_chars_per_page.values() if n > 0]
     if not per_page:
-        # 没有每页水印字符数就无从给不变式定界 ⇒ 宁可不剥
-        stats["code"] = "filter_invariant_exceeded"
+        # 没有每页水印字符数就无从给不变式定界 ⇒ 宁可不剥。
+        # 门⑥ 第三段 M2：这里**一个词都没跳**（`pages_skipped_invariant==0`），
+        # 报 `filter_invariant_exceeded` 与计数不自洽 ⇒ 与「命中但零丢弃」同码。
+        stats["code"] = "no_candidates"
         return pages, stats
     drop_budget = int(round(float(max_ratio) * float(statistics.median(per_page))))
 
@@ -562,6 +578,7 @@ def filter_watermark_words(
                 pages_skipped_would_wiped=pages_skipped_would_wiped,
                 pages_skipped_no_geometry=pages_skipped_no_geometry,
                 pages_total=len(pages),
+                has_profile=True,
             ),
             "pages_filtered": pages_filtered,
             "pages_skipped_invariant": pages_skipped,
@@ -588,6 +605,28 @@ def filter_watermark_words(
     return out, stats
 
 
+def _pass_through_stats(pages_total: int, code: str) -> dict:
+    """未过滤直通路径的统计块：**键集与成功路径一致**（门⑥ 第三段 I2/AC20）。
+
+    之前三条直通路径分别只有 3/3/4 个键，消费方必须写 `in` 判断，AC20 的
+    「键集稳定」也就无从成立。这里保证同一形状，值说明「没跑」。
+    """
+    return {
+        "applied": False,
+        "code": code,
+        "pages_total": int(pages_total),
+        "pages_filtered": 0,
+        "pages_skipped_invariant": 0,
+        "pages_skipped_no_geometry": 0,
+        "pages_skipped_would_wiped": 0,
+        "words_dropped": 0,
+        "chars_dropped": 0,
+        "dropped_ratio": 0.0,
+        "gate_basis_unfiltered_coverage": None,
+        "profile": None,
+    }
+
+
 def maybe_filter_pages(file_path: str, pages: list[TextLayerPage]) -> tuple[list[TextLayerPage], dict]:
     """编排层入口：开关关 / 探测不中 / 任何异常 ⇒ 原样返回未过滤页。
 
@@ -596,15 +635,11 @@ def maybe_filter_pages(file_path: str, pages: list[TextLayerPage]) -> tuple[list
     from app.core.config import settings
 
     if not bool(getattr(settings, "VISIBLE_WATERMARK_WORD_FILTER_ENABLED", False)):
-        return pages, {"applied": False, "code": "disabled", "pages_total": len(pages)}
+        return pages, _pass_through_stats(len(pages), "disabled")
     try:
         profile = probe_visible_watermark(file_path)
         if profile is None:
-            return pages, {
-                "applied": False,
-                "code": "no_watermark",
-                "pages_total": len(pages),
-            }
+            return pages, _pass_through_stats(len(pages), "no_watermark")
         # 几何判据是承重条件（见 `_watermark_word_drops` 与 §7.1）：没有本页水印字形框
         # 就无法把「正文位置的同形词」与「水印位置的同形词」分开，宁可不剥。
         wm_rects, body_glyphs = collect_watermark_rects(file_path)
@@ -613,9 +648,6 @@ def maybe_filter_pages(file_path: str, pages: list[TextLayerPage]) -> tuple[list
         )
     except Exception as exc:  # noqa: BLE001 - 过滤失败绝不引入新失败
         logger.warning("visible_watermark word filter failed: %s", type(exc).__name__)
-        return pages, {
-            "applied": False,
-            "code": "filter_failed",
-            "pages_total": len(pages),
-            "error": type(exc).__name__,
-        }
+        stats = _pass_through_stats(len(pages), "filter_failed")
+        stats["error"] = type(exc).__name__
+        return pages, stats

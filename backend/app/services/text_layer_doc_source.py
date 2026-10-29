@@ -46,11 +46,16 @@ class _TransientIneligible(Exception):
     """
 
     def __init__(self, message: str, *, code: str = "ineligible",
-                 detail: dict | None = None, permanent: bool = False) -> None:
+                 detail: dict | None = None, permanent: bool = False,
+                 word_filter: dict | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.detail = dict(detail or {})
         self.permanent = bool(permanent)
+        # 门⑥ 第三段 I1：**过滤已经跑过之后**才失败的卷（后置五道卷级门），
+        # 不能把 `word_filter` 记成 `not_run`（那读起来像「没跑」）。这里把过滤统计
+        # 一路带到 marker：`word_filter` 非空 ⇒ 上层记 `ran_then_rejected:<gate>`。
+        self.word_filter = dict(word_filter) if word_filter else None
 
 SOURCE_DETAIL = "text_layer_docline"
 
@@ -286,8 +291,11 @@ async def _build(
     # **建链流词级过滤**（Issue#206 阶段 2'）：可见平铺水印的 4 字词在文本层里与正文
     # 同形、每页重复几十次，docline 会把它们当正文送 NER（门④ 实测：一卷 31 页
     # 77.7% 的框是纯水印字符框）。这里只把**送进 NER 的词流**洗一遍——上面三道闸
-    # （预算/质量/重复片段）仍然吃**未过滤**的页，所以「本卷是否接管 docline」与今天
-    # 完全一致：过滤只会让流更小，不会把今天被拒的卷放进来（族 A 类卷要等 #204）。
+    # （预算/质量/重复片段）仍然吃**未过滤**的页，前置判定与今天一致。
+    # **但后置五道卷级门吃过滤后的结果**：块数下降会让计数型门（`failed_chunks`/
+    # `http_errors`）变宽松、`coverage` 分母缩小 ⇒ 「今天被拒的卷今天通过」在机制上
+    # **可能发生**（门⑥ 第三段 I4 已合成复现）。所以对「族 A 类卷要等 #204」只能说
+    # **前置判定**不变；后置门的路由漂移属已登记残余风险（见 §7.1 诚实边界与 AC17b 口径）。
     ner_pages, word_filter_stats = await asyncio.to_thread(
         visible_text_watermark.maybe_filter_pages, path, pages
     )
@@ -311,6 +319,7 @@ async def _build(
             f"failed_chunks:{result.failed_chunks}/{result.chunks}",
             code="failed_chunks",
             detail={"failed_chunks": int(result.failed_chunks), "chunks": int(result.chunks)},
+            word_filter=word_filter_stats,
         )
     map_ratio = float(result.map_failure_ratio)
     if map_ratio > float(settings.TEXT_LAYER_MAX_MAP_FAILURE_RATIO):
@@ -321,6 +330,7 @@ async def _build(
             f"map_failure_ratio:{map_ratio:.3f}",
             code="map_failure_ratio",
             detail={"ratio": round(map_ratio, 4)},
+            word_filter=word_filter_stats,
         )
     max_errors = int(settings.TEXT_LAYER_MAX_BLOCK_ERRORS)
     if result.http_errors > max_errors:
@@ -335,6 +345,7 @@ async def _build(
             f"block_errors:{result.http_errors}/{result.chunks}",
             code="block_errors",
             detail={"http_errors": int(result.http_errors), "chunks": int(result.chunks)},
+            word_filter=word_filter_stats,
         )
     truncated_ratio = (
         float(result.truncated_chunks) / float(result.chunks) if result.chunks else 0.0
@@ -353,6 +364,7 @@ async def _build(
             code="truncated_chunks",
             detail={"truncated": int(result.truncated_chunks), "chunks": int(result.chunks),
                     "ratio": round(truncated_ratio, 4)},
+            word_filter=word_filter_stats,
         )
     coverage = float(result.coverage_ratio)
     # 门⑥ 冷审 I1（口径订正）：后置五道卷级门吃的是**过滤后**的 `result`。逐门方向如下，
@@ -395,6 +407,7 @@ async def _build(
             code="coverage",
             detail={"coverage": round(coverage, 4),
                     "min": round(float(settings.TEXT_LAYER_MIN_COVERAGE), 4)},
+            word_filter=word_filter_stats,
         )
     label_to_id = build_label_to_type_id(ocr_has_types)
     # **只有真正带词的页才算被覆盖**：`extract_text_layer_pages` 会把无文本层的页
@@ -483,6 +496,15 @@ async def _lookup_memo(key: str) -> dict | None:
         return memo
 
 
+def _marker_word_filter(exc: _TransientIneligible) -> dict:
+    """失败卷 marker 里的 `word_filter` 块（形状固定，键集与成功路径一致）。"""
+    if exc.word_filter:
+        block = dict(exc.word_filter)
+        block["rejected_by"] = str(exc.code)
+        return block
+    return {"code": f"not_run:{exc.code}", "rejected_by": str(exc.code)}
+
+
 async def boxes_for_page(
     *,
     file_id: str,
@@ -537,10 +559,13 @@ async def boxes_for_page(
                         "reason": str(exc),
                         "reason_code": exc.code,
                         "reason_detail": exc.detail,
-                        # 门⑥ 冷审 I2：这 8 条 raise 路径原本 marker 里没有 `word_filter`，
-                        # 消费者读到的就是 None，分不清「没跑」与「跑了没命中」。这里补一个
-                        # **固定形状**的码，且与成功路径的 `code` 命名空间区分（`not_run:`）。
-                        "word_filter": {"code": f"not_run:{exc.code}"},
+                        # 门⑥ 冷审 I2 / 第三段 I1：9 条 raise 路径原本 marker 里没有
+                        # `word_filter`，消费者读到 None，分不清「没跑」与「跑了没命中」。
+                        #  - 过滤**之前**就失败（前 4 道闸）⇒ `not_run:<gate>`；
+                        #  - 过滤**之后**才失败（后置 5 道卷级门）⇒ 带上真实统计，并指明
+                        #    `rejected_by=<gate>`（`code` 仍是 `applied`/`no_candidates`），
+                        #    这样「过滤缩小分母导致 coverage 翻门」这类路由变化可事后审计。
+                        "word_filter": _marker_word_filter(exc),
                     }
                 except Exception as exc:  # noqa: BLE001 - 本链任何故障都退回旧路径
                     logger.warning("text_layer_docline build failed file=%s: %s", file_id[:8], exc)
