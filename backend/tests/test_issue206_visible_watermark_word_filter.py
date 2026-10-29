@@ -1033,3 +1033,72 @@ def test_horizontal_semi_transparent_glyphs_land_in_body_layer(tmp_path):
     chars = "".join(ch for _rect, ch in body)
     assert _BODY_LINE[:5] in chars  # 半透明水平层进了正文层
     assert _WM_WORD in chars         # 不透明水平层也进了正文层
+
+
+def test_empty_wm_chars_per_page_reports_no_candidates_not_invariant() -> None:
+    """门⑥ 第四段 Important：`wm_chars_per_page` 为空 ⇒ `no_candidates`，不是 `filter_invariant_exceeded`。
+
+    修复前这两态互相冒充（「水印字符数为空」会让码变成预算越界，`pages_skipped_invariant` 却是 0）。
+    评审的变异 M25（改回 `filter_invariant_exceeded`）在缺这条用例时 57 例全绿。
+    """
+    pages, rects = _pages_with_geometry([{"tiles": 5, "body": [_BODY_LINE]}] * 2)
+    profile = _profile()
+    profile.wm_chars_per_page = {}  # 前 5 页没量到水印字符数 ⇒ 无预算可比
+    _filtered, stats = vwm.filter_watermark_words(
+        pages, profile, wm_rects=rects, min_keep_ratio=0.0
+    )
+    assert stats["code"] == "no_candidates"
+    assert stats["pages_skipped_invariant"] == 0
+    assert stats["chars_dropped"] == 0
+
+
+def test_generic_error_marker_is_not_not_run(monkeypatch, tmp_path):
+    """门⑥ 第四段 Minor：建链过程中**过滤之后**的未知异常，不能记成 `not_run`（会与语义冲突）。
+
+    通用 `except` 分支拿不到过滤统计，但至少要标明「这次是异常，不是「没跑过滤」」——
+    `code=error` + `rejected_by=error`；`not_run:<gate>` 只留给**过滤之前**就失败的闸。
+    """
+    from app.services.redaction_orchestrator import _text_layer_doc_status
+
+    real_path = tmp_path / "boom.pdf"
+    real_path.write_bytes(b"%PDF-1.4\n")
+    snapshot = {"file_path": str(real_path), "file_type": "pdf_scanned", "is_scanned": True}
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("boom")
+
+    # 先满足前置条件（标签非空 / 扫描件），否则 `boxes_for_page` 会在 `_build` 之前就返回 (None, None)
+    _install_build_stubs(monkeypatch, [], [], {})
+    monkeypatch.setattr(source, "_build", _boom)
+    source._MEMO.clear()
+    boxes, marker = asyncio.run(
+        source.boxes_for_page(
+            file_id="fid-boom", snapshot=snapshot, page=1, ocr_has_types=["t1"]
+        )
+    )
+    assert boxes is None and marker is not None
+    assert marker["word_filter"] == {"code": "error", "rejected_by": "error"}
+    assert _text_layer_doc_status(None, marker, 1)["word_filter"] == marker["word_filter"]
+
+
+def test_gate_basis_filled_before_every_post_filter_gate(monkeypatch, tmp_path):
+    """门⑥ 第四段 Minor：未过滤口径要在**第一道**后置门之前填好，不能只在 coverage 门有值。
+
+    修前 `gate_basis_unfiltered_coverage` 的赋值贴在 coverage 段 ⇒ 被更早的
+    `failed_chunks`/`map_failure_ratio`/`http_errors`/`truncated_chunks` 门拒时，键在值空，
+    恰好在「路由翻转」处审计断档。变异（把赋值挪回 coverage 段）⇒ 本用例红。
+    """
+    def _no_usable_chunk(monkeypatch):
+        async def _ner(pages, labels, **_kwargs):
+            res = _docline_result(len(pages))
+            res.failed_chunks = 1
+            return res
+
+        monkeypatch.setattr(docline, "run_document_ner", _ner)
+
+    exc = _build_raises(monkeypatch, tmp_path, name="gatebasis", mutate=_no_usable_chunk)
+    assert exc.code == "failed_chunks"
+    stats = exc.word_filter
+    assert stats is not None and stats["code"] == "applied"
+    assert stats["gate_basis_unfiltered_coverage"] is not None
+    assert 0.0 <= float(stats["gate_basis_unfiltered_coverage"]) <= 1.0

@@ -308,6 +308,22 @@ async def _build(
     result = await docline.run_document_ner(
         ner_pages, labels, has_client=has_client, regex_types=regex_types
     )
+    # 门⑥ 第四段 Minor：未过滤口径要在**第一道后置门之前**就填好，否则只有 coverage
+    # 门失败时能看到它，其余四道门失败时审计值断档（键在、值空）。
+    if word_filter_stats.get("applied") and unfiltered_stream_chars > 0:
+        word_filter_stats = dict(word_filter_stats)
+        word_filter_stats["gate_basis_unfiltered_coverage"] = round(
+            float(result.covered_chars) / float(unfiltered_stream_chars), 4
+        )
+        logger.info(
+            "text_layer_docline coverage: filtered=%.3f unfiltered_basis=%.3f "
+            "stream_chars %d->%d file=%s",
+            float(result.coverage_ratio),
+            word_filter_stats["gate_basis_unfiltered_coverage"],
+            unfiltered_stream_chars,
+            int(result.stream_chars),
+            file_id[:8],
+        )
     # **卷级合格门**（门⑥ 二轮 Important#5）：失败块/回映失败率/覆盖率任一越界即整卷
     # 放弃走文档级链、回落旧路径。这些门以前不存在，或只在**任何值**下都成立。
     if result.failed_chunks > 0:
@@ -380,23 +396,9 @@ async def _build(
     # 今天走 docline 的族 B 真卷打到约 0.6 ⇒ 全部回落 OCR、阶段 2' 收益归零（门④ 实测
     # 31 页卷仍走 docline）。因此：门仍按过滤后流判（语义=「剩下的内容认全了吗」），
     # 同时把未过滤口径与逐门计数写进 memo，让任何路由翻转在语料上可审计（AC17b）。
-    if word_filter_stats.get("applied") and unfiltered_stream_chars > 0:
-        # 门⑥ 冷审 C2：覆盖率分母是**送进 NER 的流长**，过滤把分母缩小 ⇒ 该数必然上升。
-        # 但「未过滤口径」**无法事后重建**：今天的分子里含大量水印噪声实体（它们正是
-        # 因为水印进了流才被认出来），过滤后这些实体不再产生；若拿 `covered/未过滤流长`
-        # 当门，族 B 真卷会从今天的 1.000 掉到约 0.6 ⇒ 今天走 docline 的卷全部回落 OCR，
-        # 阶段 2' 收益归零（门④ 实测：31 页卷过滤后 chunks 14→9 仍走 docline）。
-        # 所以门仍按**过滤后流**判（语义 =「剩下的内容认全了吗」），同时把未过滤口径的
-        # 覆盖率写进 memo/日志，供 AC17 在语料上冻结「路由变化清单」（可审计）。
-        unfiltered_basis = float(result.covered_chars) / float(unfiltered_stream_chars)
-        word_filter_stats = dict(word_filter_stats)
-        word_filter_stats["gate_basis_unfiltered_coverage"] = round(unfiltered_basis, 4)
-        logger.info(
-            "text_layer_docline coverage: filtered=%.3f unfiltered_basis=%.3f "
-            "stream_chars %d->%d file=%s",
-            coverage, unfiltered_basis, unfiltered_stream_chars, int(result.stream_chars),
-            file_id[:8],
-        )
+    # 门⑥ 冷审 C2（续）：未过滤口径只在**真过滤**时计算（默认关/探测不中/异常时不算，
+    # `build_stream` 是同步调用，150k 字符约 11ms 属纯浪费），且必须在上面的第一道后置门
+    # 之前就写进统计块，否则只有 coverage 门失败时审计值才在、其余四道门断档。
     if coverage < float(settings.TEXT_LAYER_MIN_COVERAGE):
         logger.warning(
             "text_layer_docline skipped: coverage %.3f < %.2f file=%s",
@@ -573,7 +575,7 @@ async def boxes_for_page(
                     marker = {"unusable": True, "retry_at": time.monotonic() + _NEGATIVE_TTL_SEC,
                               "reason": f"error:{type(exc).__name__}",
                               "reason_code": "error", "reason_detail": {},
-                              "word_filter": {"code": "not_run:error"}}
+                              "word_filter": {"code": "error", "rejected_by": "error"}}
                 else:
                     # `_build` 返回 None = **本卷不适用**（无路径 / 非扫描件），不是回落失败：
                     # 不能报成 fallback，否则每个文本型 PDF 的每一页都会多出一块假失败。

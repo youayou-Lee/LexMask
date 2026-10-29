@@ -403,7 +403,7 @@ filter_invariant_exceeded, filter_failed, not_run:<gate>}` —— **各态必须
 | AC28 原件/产物边界 | 原件 `sha256` 与 `mtime` 过滤前后完全一致（只读打开，不写盘）；过滤只在内存里产出新列表、不落任何中间文件；不新增下载/导出/预览面 | 单测 + 脚本断言 | ②③ |
 | AC29 产品能力边界 | 前端无「去水印」设置项/无对应 API 参数/文档不宣称支持去水印；开关只在后端配置；PR 描述不含「支持去水印/可去水印」表述 | grep 断言 + 人工核对 | ②③ |
 | AC30 零回归口径（重写） | 基线 = **分支点 `686c4c0`**（preview HEAD，含 #210），不是 `89f51f9`；比较**归一化投影**（boxes 归一化坐标 + 类型 + 页号、`reason_code`、region 计数），显式排除 timestamp / job_id / duration / 临时路径；后端「FAILED 集合 `comm -3` = 0 行」并给两侧总数；前端给例数基线（当前 279） | 双跑 + 投影 diff | ②③④ |
-| AC31 变异测试 | **24 个变异全部 KILLED**：M3 knob key 拼接、M5 `page_chars` 来源、M7 空页回退、M8 旋转校正、M9/M9b/M9c probe 三闸、M10 倾斜阈值 0、M10b 不透明上限 255、M11 删字符集条件、M12 `no_geometry` 分支、M13 NER 吃未过滤页、M14 删 memo key knob 段、M17 `MIN_VISIBLE_SHARE` 默认值、C2 删未过滤口径上报、N1 删 keep-ratio 守护、M18a 来源判据恒保留（`if under:`）、M18b 来源判据恒不保留（`if False:`）、**M19 水平半透明字形不分入正文层（`else: continue`）**、**M20 后置门 raise 丢 `word_filter=word_filter_stats`**、**M21 直通路径统计只留 3 键**、**M22 `has_profile` 恒 False（把 no_candidates 冒充 no_watermark）**、**M23 marker 前缀去掉 `not_run:`**、**M24 `no_geometry` 码条件放宽成 `>0`**。变异纪律：先 `assert old in s` 再写（否则「SURVIVED」可能是没改到），复原用 `cp .bak` 而非 `git checkout`（未提交改动会被抹掉） | 变异记录表 | ②③ |
+| AC31 变异测试 | **26 个变异全部 KILLED**：M3 knob key 拼接、M5 `page_chars` 来源、M7 空页回退、M8 旋转校正、M9/M9b/M9c probe 三闸、M10 倾斜阈值 0、M10b 不透明上限 255、M11 删字符集条件、M12 `no_geometry` 分支、M13 NER 吃未过滤页、M14 删 memo key knob 段、M17 `MIN_VISIBLE_SHARE` 默认值、C2 删未过滤口径上报、N1 删 keep-ratio 守护、M18a 来源判据恒保留（`if under:`）、M18b 来源判据恒不保留（`if False:`）、**M19 水平半透明字形不分入正文层（`else: continue`）**、**M20 后置门 raise 丢 `word_filter=word_filter_stats`**、**M21 直通路径统计只留 3 键**、**M22 `has_profile` 恒 False（把 no_candidates 冒充 no_watermark）**、**M23 marker 前缀去掉 `not_run:`**、**M24 `no_geometry` 码条件放宽成 `>0`**、**M25 空 `wm_chars_per_page` 回退 `filter_invariant_exceeded`**、**M26 通用异常 marker 回退 `not_run:error`**。变异纪律：先 `assert old in s` 再写（否则「SURVIVED」可能是没改到），复原用 `cp .bak` 而非 `git checkout`（未提交改动会被抹掉） | 变异记录表 | ②③ |
 | AC32 部署链路 | 本地 `docker compose --profile gpu` 冒烟（backend+ocr+ner+frontend）；云 DCU ④（docline NER 走 DCU vLLM）；docker nginx 链路断言无 504（`frontend/nginx.conf.template` `proxy_read_timeout=900s`，本 PR 不改超时）。`deploy/dual-5090` 若本地不可达，写明「本 PR 未改超时/端点/取图口以外的东西 ⇒ 跳过 + 理由」，不得沉默跳过 | 三处日志/截图 | ②④⑤ |
 | AC34 旋转页坐标一致性（C1） | 单测：3 页 `/Rotate 90` 的族 B 形态夹具 ⇒ `code=="applied"`、水印词被剥、**正文词逐字保留**；`words` 与 `get_texttrace()` 字形框必须落在**同一页面空间**（旋转页两者都乘 `page.rotation_matrix`）。变异=删字形框旋转校正 ⇒ 用例必红（已 KILLED）。真卷侧：docline 抽样里含 `/Rotate 90/270` 页的卷 | 单测 + 变异 + 真卷抽页 | ②③ |
 | AC35 页级保留下限与几何缺失（I2/I3/I6） | 单测三条：① keep-ratio 越界 ⇒ 整页原样且 `pages_skipped_would_wiped` 计数；② keep-ratio 允许薄页真正文被剥；③ profile 命中但几何为空 ⇒ `no_geometry`。真卷侧：[2] 29 页无正文层卷实测 `code=="would_wiped_page"`、0 丢弃（守护生效） | 单测 ×3 + 真卷 | ②③ |
@@ -453,7 +453,7 @@ filter_invariant_exceeded, filter_failed, not_run:<gate>}` —— **各态必须
 |---|---|---|
 | AC36 来源维度（C1，承重） | ① 单测：同形词被正文层（`opacity==0`）覆盖 ⇒ **0 丢弃**；仅被水印字形覆盖 ⇒ 丢弃。② 真卷：独立 GT 下 `body_missing_free == 0` **且** 水印字符丢弃率 ≥0.99（v1.7 定稿后族 B 三卷实测 `chars_dropped/GT = 1.000 / 0.998 / 0.000(无正文层卷走 keep-ratio 守护)`，正文缺失恒为 0）。③ 云上两臂：非水印框文本多重集差的每一项必须能归因（水印粘连/OCR 碎片），不得出现「整条正文实体消失」 | 单测 + GT 脚本 + ④ 两臂 diff |
 | AC37 并集覆盖（I4） | `_covered_ratio` 必须是真并集：完全重叠框 ⇒ 0.5；部分重叠 ⇒ 并集；禁用「逐框累加」变异必红 | 单测 + 变异 |
-| AC38 远端观测字段（I2/I1） | 所有回落/marker 路径（**9 条** `_TransientIneligible` + 通用异常）`pipeline_status.text_layer_doc.word_filter` 必须存在且形状固定：**过滤之前**失败的 4 道闸 ⇒ `code = not_run:<gate>`；**过滤之后**失败的 5 道后置门 ⇒ 带**真实过滤统计**（`code = applied`/`no_candidates` 等）外加 `rejected_by=<gate>`（`test_marker_ran_then_rejected_for_post_filter_gate`）；成功路径与直通路径键集一致（`test_stats_key_set_is_stable_across_paths`）；`maybe_filter_pages` 之后每处 raise 必须带 `word_filter=word_filter_stats`（静态断言 `test_post_filter_raise_sites_pass_word_filter_stats`） | 单测 ×5 + 静态断言 |
+| AC38 远端观测字段（I2/I1） | 所有回落/marker 路径（**9 条** `_TransientIneligible` + 通用异常）`pipeline_status.text_layer_doc.word_filter` 必须存在且形状固定：**过滤之前**失败的 4 道闸 ⇒ `code = not_run:<gate>`；**过滤之后**失败的 5 道后置门 ⇒ 带**真实过滤统计**（`code = applied`/`no_candidates` 等）外加 `rejected_by=<gate>`（`test_marker_ran_then_rejected_for_post_filter_gate`）；**通用异常**（非 `_TransientIneligible`）⇒ `code = error` + `rejected_by = error`（不得混入 `not_run:` 命名空间，`test_generic_error_marker_is_not_not_run`）；`gate_basis_unfiltered_coverage` 必须在**第一道后置门之前**就填值（`test_gate_basis_filled_before_every_post_filter_gate`）；成功路径与直通路径键集一致（`test_stats_key_set_is_stable_across_paths`）；`maybe_filter_pages` 之后每处 raise 必须带 `word_filter=word_filter_stats`（静态断言 `test_post_filter_raise_sites_pass_word_filter_stats`） | 单测 ×5 + 静态断言 |
 | AC39 默认值钉子（I3） | 10 个 `VISIBLE_WATERMARK_*` 默认值逐键断言；任一默认被改（含「默认开」）必须红；逐 knob memo key 参数化 10 键全覆盖 | 单测 |
 
 **诚实边界（阶段 2' 追加，v1.6）**：
@@ -461,6 +461,8 @@ filter_invariant_exceeded, filter_failed, not_run:<gate>}` —— **各态必须
 18. 五道后置卷级门吃过滤流（C2/I1）：`failed_chunks`/`http_errors` 这类**计数量**门在块数减少后触发机会变少（**可能更宽松**），`coverage` 两向可翻。本 PR 的证明手段是「语料上零路由漂移（AC17b，12 卷逐值相同）+ 未过滤口径上报」，**不是**形式化证明；同时 `visible_text_watermark` 顶部的「是否接管 docline 与今天完全一致」表述已按此订正。
 19. 来源维度（C1）把「正文层覆盖」当作保留理由：无正文层的卷（纯扫描 + 纯水印层，抽样 [2] 29 页）因此**整卷不剥**（`would_wiped_page`/`pages_skipped_invariant`），表现为「这类卷收益为零但行为完全等于今天」。这是刻意的保守：宁可少降噪，不改正文。
 20. 正文与水印字形**物理重叠**且两者字符集相同的形态，来源维度能救回「正文层有词」的那部分；若正文层没在这些位置出词（OCR 漏认），仍会按水印丢弃——该残余风险已在 PR 描述与 AC36③ 里点名，属已知、可解释、不静默。
+21. （v1.9）**混合渲染形态**：同一位置既有「倾斜可见水印字形」又有「同字符集的水平半透明字形」时，来源判据会判「不可辨」⇒ 整组保留（更保守/少删）。已知两族水印都是倾斜层，窗口很窄；但若将来出现该形态，本过滤器**不会**降噪（行为=今天的噪声水平，不会更差）。
+22. （v1.9）**通用异常**（非 `_TransientIneligible`）拿不到过滤统计，所以 marker 只能记 `code=error` + `rejected_by=error` —— 能说明「这次是异常」，不能说明过滤是否已生效。该分支生产上极难触发（异常会先被各闸的具体分支捕获），登记为已知观测缺口。
 
 ## §8 未采用的方案与理由（防后人重走）
 
@@ -521,5 +523,18 @@ filter_invariant_exceeded, filter_failed, not_run:<gate>}` —— **各态必须
   | Minor M1–M7 | 成立 | M1/M2 并入 `no_candidates`；M3 兜底默认值 0.5→0.35；M4 `gate_basis_unfiltered_coverage` 键常驻（未过滤时为 `null`）；M5/M6 9 条 raise 口径统一；M7 真卷耗时（31 页 0.11+0.18s、120 页 1.06s）写进 §7.1 |
 
   复验（本轮）：目标测试 **57 passed**；后端全量 **2462 passed / 18 failed / 54 skipped**，与基线 `686c4c0` 失败集合 `comm -3` = 0；独立 GT 三卷 `body_missing_free = 0/0/0`；反例规模层 **63 noop / 3 applied / 0 other**；变异 **24/24 KILLED**。
+
+- **v1.9：门⑥ 第四段复核（`31337c4..4cde053`）的逐条处置 —— 无 Critical，1 Important + 2 Minor**
+
+  复核方结论：5 条 Important 的**行为**逐条实跑通过（含 `boxes_for_page`→memo→`pipeline_status` 的端到端、AST 复核 5/5 raise 传统计、`opacity×倾斜` 8 组合分组表），但指出三处缺口：
+
+  | 复核条目 | 判定 | 处置 |
+  |---|---|---|
+  | I-1：仓库判据只钉了「几何零丢弃」，没钉「`wm_chars_per_page` 为空」⇒ 变异可存活（57 例全绿） | 成立 | 新增 `test_empty_wm_chars_per_page_reports_no_candidates_not_invariant`（该路径必须 `no_candidates` 且 `pages_skipped_invariant=0`）；变异 **M25**（改回 `filter_invariant_exceeded`）已 KILLED |
+  | Minor-1：`boxes_for_page` 通用 `except` 仍写 `not_run:error`（即便过滤已跑）⇒ 与「`not_run`=过滤前」语义冲突 | 成立 | 通用异常 marker 改 `{"code":"error","rejected_by":"error"}`；新增 `test_generic_error_marker_is_not_not_run`；变异 **M26** 已 KILLED |
+  | Minor-2：`visible_text_watermark.py` 模块头仍是旧绝对断言「不会把今天被拒的卷放进来」 | 成立 | 改写为「**前置**三道闸不变；**后置**五道门吃过滤后结果 ⇒ 机制上可能翻转」，指向 §7.1 与 AC17b |
+  | 观测：`gate_basis_unfiltered_coverage` 只在 coverage 段赋值 ⇒ 其余四道门拒时键在值空 | 成立 | 计算上移到 NER 返回后、**第一道后置门之前**；新增 `test_gate_basis_filled_before_every_post_filter_gate` |
+
+  复验（本轮）：目标测试 **60 passed**；后端全量 **18 failed / 2462 passed / 54 skipped**，与基线 `686c4c0` 失败集合 `comm -3` = 0；变异表 **26/26 KILLED**。
 
 - **AC40（来源判据的边界）**：正文层字形拼出的字串 ⊆ 水印字符集 ⇒ 该页该词不丢；拼出其它字 ⇒ 丢。变异双向取证（v1.7 定稿后复跑）：`if under:`（恒保留）⇒ `test_provenance_drops_when_body_text_is_other_characters` 红；`if False:`（恒不保留）⇒ `test_provenance_keeps_words_under_invisible_body_layer` 红 ⇒ 两个方向各自承重。
