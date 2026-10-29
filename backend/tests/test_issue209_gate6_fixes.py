@@ -198,3 +198,21 @@ def test_truncated_tail_bucket_ignores_brackets_inside_strings():
     assert HaSClient._truncated_tail_bucket(raw, ["地址", "编号"]) == "编号"
     closed = '{"地址": ["北京市朝阳区 A[1] 号楼"], "编号": ["721721"]}'
     assert HaSClient._truncated_tail_bucket(closed, ["地址", "编号"]) is None
+
+
+# ---------------------------------------------------------------------------
+# F8 加固：strict 预算失败必须**页级失败**（不得降级成 completed 的部分扫描）
+# ---------------------------------------------------------------------------
+
+def test_strict_budget_exception_is_page_fatal(monkeypatch):
+    from app.services.vision.has_text_analysis import HasTextNerPageBudgetExceeded
+    from app.services.vision_service import is_page_fatal_stage_error
+
+    monkeypatch.setattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True, raising=False)
+    assert is_page_fatal_stage_error(HasTextNerPageBudgetExceeded("budget")) is True
+    # 非预算类阶段异常维持既有「降级 + warning」语义
+    assert is_page_fatal_stage_error(RuntimeError("OCR service down")) is False
+    assert is_page_fatal_stage_error(None) is False
+
+    monkeypatch.setattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", False, raising=False)
+    assert is_page_fatal_stage_error(HasTextNerPageBudgetExceeded("budget")) is False

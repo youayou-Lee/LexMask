@@ -344,7 +344,7 @@ def test_page_budget_zero_disables_the_wall(monkeypatch):
 
 
 def test_default_budget_fast_page_is_byte_identical_to_wall_disabled(monkeypatch):
-    """默认 200s 预算 + 快页 ⇒ 与"关预算"逐字等价（零回归钉子）。"""
+    """默认 250s 预算 + 快页 ⇒ 与"关预算"逐字等价（零回归钉子）。"""
     _group_texts, blocks, _head, _tail = _multi_group_page()
 
     monkeypatch.setattr(settings, "HAS_NER_PAGE_BUDGET_SEC", 150.0, raising=False)

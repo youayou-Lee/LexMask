@@ -20,6 +20,27 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+
+def is_page_fatal_stage_error(result) -> bool:
+    """阶段异常是否应**升级为页级失败**（门⑥ F8 加固，2026-10-29）。
+
+    `record_pipeline_result` 对任何阶段异常都只记 `pipeline_status[label].failed`
+    + warning，页面照旧 completed、不进 `recognition.failed_pages`。页级 NER 预算
+    的本意是「宁可显式失败，不可静默少打码」；若被降级，页面上就出现「已完成但
+    只扫了一部分」的交付面（云实测 2026-10-29：页 133 撞预算 179.7s ⇒
+    status=completed、failed_pages={}、ocr_has 区域数 0）。
+
+    本函数只把「页级 NER 预算 strict 失败」这一种异常升级为页级失败：
+    `task_queue_pipelines` 的 `except Exception` 会把它写进
+    `recognition.failed_pages`，交付闸/导出 409 随之生效。其它阶段异常（OCR
+    服务抖动、视觉通道故障）维持既有「降级 + warning」语义不变。
+    """
+    from app.services.vision.has_text_analysis import HasTextNerPageBudgetExceeded
+
+    if not isinstance(result, HasTextNerPageBudgetExceeded):
+        return False
+    return bool(getattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True))
+
 from PIL import Image, ImageOps
 
 from app.core.config import settings
@@ -396,6 +417,8 @@ class VisionService:
         else:
             logger.info("Visual features skipped (no types enabled)")
 
+        page_fatal_error = None
+
         async def record_pipeline_result(label: str, result) -> None:
             status = pipeline_status.setdefault(
                 label,
@@ -452,6 +475,8 @@ class VisionService:
             )
             for (label, _factory), result in zip(jobs, outcomes, strict=False):
                 await record_pipeline_result(label, result)
+                if is_page_fatal_stage_error(result):
+                    page_fatal_error = result
         else:
             for label, factory in jobs:
                 try:
@@ -459,6 +484,14 @@ class VisionService:
                 except Exception as exc:
                     result = exc
                 await record_pipeline_result(label, result)
+                if is_page_fatal_stage_error(result):
+                    page_fatal_error = result
+
+        if page_fatal_error is not None:
+            # 让页级调用方按 #199 的既有语义把它写进 recognition.failed_pages
+            # （`task_queue_pipelines` 的 `except Exception` 会以
+            # `stage_label: Type: message` 记账），交付闸/导出 409 随之生效。
+            raise page_fatal_error
 
         # Specialized signature detector (conditional-detr) REPLACES the LA
         # signature grounding when configured — single-class, never fires on

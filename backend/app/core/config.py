@@ -535,9 +535,9 @@ class Settings(BaseSettings):
     # #202 签名掐断 → 按缺失类型切 12 段补查、每段仍塞 4 个类型（max_tokens≈860
     # 装不下，反复 finish_reason=length、confirmed=False）⇒ 单次 ner() 内就吃满
     # 240s 且贴住 300s 页墙（06:41 首测：预算应在 06:46:0x 触发，页墙 06:46:39，
-    # 两者几乎同时，演示不出"先于页墙收尾"）。故取 200s = 隔离态真实耗时 160s
+    # 两者几乎同时，演示不出"先于页墙收尾"）。故取 250s（最初 200s，见下）
     # +25%，同时给页墙留 100s 余量，让"预算先收口、页面体面失败"真的可观测。
-    HAS_NER_PAGE_BUDGET_SEC: float = 200.0
+    HAS_NER_PAGE_BUDGET_SEC: float = 250.0
 
     # 预算耗尽后是否把该页判为**失败**（Issue#209）。True（默认）=抛
     # HasTextNerPageBudgetExceeded ⇒ 页级 stage 记入 recognition.failed_pages
