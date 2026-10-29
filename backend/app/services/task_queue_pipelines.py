@@ -445,6 +445,37 @@ class RecognitionPipelineMixin:
                     # SystemExit 是 BaseException，不在此捕获口径内，照常穿透。
                     if stage_failed is not None:
                         stage_failed[p] = f"{stage_label}: {type(exc).__name__}: {exc}"[:200]
+                    # 门⑥ I4（增量复核 2）：失败页此前**不落 pipeline_status**，
+                    # 于是「预算/孤儿线程/跳过组数」这些排查面在失败页上全丢
+                    # （只有 completed 分支会写）。失败页就地补记一份阶段状态与
+                    # 耗时，与 completed 分支同构、同一张表、同一键路径。
+                    _last_duration: dict = {}
+                    try:
+                        from app.services.ocr_has_vision_service import (
+                            get_ocr_has_vision_service,
+                        )
+
+                        _last_duration = dict(
+                            getattr(get_ocr_has_vision_service(), "last_duration_ms", None) or {}
+                        )
+                    except Exception:  # noqa: BLE001
+                        _last_duration = {}
+                    if _last_duration:
+                        self._record_item_performance(
+                            store,
+                            task.item_id,
+                            {
+                                "recognition": {
+                                    "pages": {
+                                        str(p): {
+                                            "status": "failed",
+                                            "error": f"{type(exc).__name__}: {exc}"[:500],
+                                            "stage_duration_ms": _last_duration,
+                                        }
+                                    }
+                                }
+                            },
+                        )
                 else:
                     page_ms = _elapsed_ms(page_started)
                     active_pages = max(0, active_pages - 1)

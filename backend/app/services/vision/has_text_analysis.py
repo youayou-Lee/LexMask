@@ -9,9 +9,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from contextvars import ContextVar
 from collections import Counter
 from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any
 
 from app.core.config import settings

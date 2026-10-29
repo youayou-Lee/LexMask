@@ -21,6 +21,49 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+_PAGE_FATAL_METRIC_ALIASES: dict[str, str] = {
+    "has_text_ner_budget_skipped_groups": "bsg",
+    "has_text_ner_orphan_threads": "orph",
+    "has_text_ner_budget_exceeded": "bex",
+}
+# `recognition.failed_pages` 侧还有一层 `[:200]` 截断（
+# `task_queue_pipelines` 的 `stage_failed[p] = f"..."[:200]`），所以拼接后
+# 总长必须留出余量，不能把要看的计数挤到截断线之外。
+_PAGE_FATAL_REASON_BUDGET = 150
+
+
+def format_page_fatal_metrics(duration_ms: dict | None) -> str:
+    """把预算/孤儿线程计数压成短串（``bsg=3 orph=1``），无计数时返回空串。"""
+    if not duration_ms:
+        return ""
+    parts: list[str] = []
+    for key, alias in _PAGE_FATAL_METRIC_ALIASES.items():
+        value = duration_ms.get(key)
+        if value:
+            parts.append(f"{alias}={value}")
+    return " ".join(parts)
+
+
+def decorate_page_fatal_reason(exc: BaseException, duration_ms: dict | None) -> None:
+    """把计数挂到异常 reason 上，同时保证整串不超过 ``_PAGE_FATAL_REASON_BUDGET``。
+
+    原地改 ``exc.args``（异常类型与实例不变，页级调用方按 `stage_label: Type: msg`
+    记账的格式也不变）。
+    """
+    metrics = format_page_fatal_metrics(duration_ms)
+    if not metrics:
+        return
+    head = exc.args[0] if exc.args else ""
+    if not isinstance(head, str):
+        head = str(head)
+    suffix = f" [{metrics}]"
+    if len(head) + len(suffix) > _PAGE_FATAL_REASON_BUDGET:
+        # 兜底：宁可截断基线说明，也要保住计数（计数才是本函数的存在理由）
+        keep = max(0, _PAGE_FATAL_REASON_BUDGET - len(suffix) - 1)
+        head = head[:keep] + "…"
+    exc.args = (f"{head}{suffix}",)
+
+
 def is_page_fatal_stage_error(result) -> bool:
     """阶段异常是否应**升级为页级失败**（门⑥ F8 加固，2026-10-29）。
 
@@ -501,17 +544,13 @@ class VisionService:
             # `stage_label: Type: message` 记账），交付闸/导出 409 随之生效。
             # 门⑥ I4：把预算阶段计数并进 reason，否则失败页只剩「budget
             # exceeded」，看不到跳过了几组、遗留几个孤儿线程。
-            _budget_metrics = dict(
-                getattr(getattr(self, "ocr_has_service", None), "last_duration_ms", {}) or {}
+            # 用**短别名 + 总长预算**，因为 `task_queue_pipelines` 落
+            # `recognition.failed_pages` 时还会 `[:200]` 截断（增量复核 I4 实测
+            # 原长拼接 266 字被截成 200，恰好丢掉 skipped/orphan 两个目标面）。
+            decorate_page_fatal_reason(
+                page_fatal_error,
+                getattr(getattr(self, "ocr_has_service", None), "last_duration_ms", {}) or {},
             )
-            _pairs = ", ".join(
-                f"{k}={_budget_metrics[k]}"
-                for k in sorted(_budget_metrics)
-                if "budget" in k or "orphan" in k or "skipped" in k
-            )
-            if _pairs:
-                _head = page_fatal_error.args[0] if page_fatal_error.args else ""
-                page_fatal_error.args = (f"{_head} [{_pairs}]",)
             raise page_fatal_error
 
         # Specialized signature detector (conditional-detr) REPLACES the LA

@@ -235,7 +235,6 @@ def test_page_level_budget_failure_propagates_out_of_the_page_pipeline(monkeypat
 
     门⑥ 增量复核 I3 抓出的空档：此前只有谓词本身的用例，接线（真上抛）零判据。
     """
-    import pytest as _pytest
     from app.services.vision.has_text_analysis import HasTextNerPageBudgetExceeded
     from app.services.vision_service import VisionService
 
@@ -261,7 +260,7 @@ def test_page_level_budget_failure_propagates_out_of_the_page_pipeline(monkeypat
 
     from app.services.vision_service import FileType
 
-    with _pytest.raises(HasTextNerPageBudgetExceeded) as excinfo:
+    with pytest.raises(HasTextNerPageBudgetExceeded) as excinfo:
         asyncio.run(
             svc.detect_with_dual_pipeline("x.png", FileType.IMAGE, 1, ["身份证号"], [])
         )
@@ -293,3 +292,46 @@ def test_page_entry_resets_the_page_deadline(monkeypatch):
         assert _re.search(r"reset_page_ner_deadline\(\)", body), (
             f"页入口 {marker} 必须 reset 页级死线（否则 OCR 耗时不进预算，F5 回归）"
         )
+
+
+# ---------------------------------------------------------------------------
+# I4：失败页 reason 必须在 `[:200]` 截断线下仍带着预算计数（增量复核 2）
+# ---------------------------------------------------------------------------
+
+def test_page_fatal_reason_keeps_counts_under_the_queue_truncation():
+    """`task_queue_pipelines` 落 failed_pages 时会 `[:200]` 截断。
+
+    增量复核实测：原长拼接 84 字基线 + 138 字计数 = 266 字 ⇒ 截成 200，
+    `skipped_groups`/`orphan_threads` **恰好被截掉**，I4 等于没救。所以这里钉死
+    「拼接后总长 ≤ 150」，并且两个计数都必须落在里面。
+    """
+    from app.services.vision_service import (
+        _PAGE_FATAL_REASON_BUDGET,
+        decorate_page_fatal_reason,
+        format_page_fatal_metrics,
+    )
+    from app.services.vision.has_text_analysis import HasTextNerPageBudgetExceeded
+
+    metrics = {
+        "has_text_ner_budget_exceeded": 1,
+        "has_text_ner_budget_skipped_groups": 3,
+        "has_text_ner_orphan_threads": 2,
+        "ocr_has": 12345,  # 无关键不得出现
+    }
+    compact = format_page_fatal_metrics(metrics)
+    assert compact == "bsg=3 orph=2 bex=1", compact
+
+    exc = HasTextNerPageBudgetExceeded(
+        "HaS NER budget exceeded after 216.4s (budget 255s): main NER phase stopped early"
+    )
+    decorate_page_fatal_reason(exc, metrics)
+    reason = exc.args[0]
+    assert len(reason) <= _PAGE_FATAL_REASON_BUDGET <= 200
+    assert "bsg=3" in reason and "orph=2" in reason
+    assert "ocr_has" not in reason
+
+    # 无 metrics ⇒ 一字不改（不能让失败页出现空的 ` []`）
+    plain = HasTextNerPageBudgetExceeded("budget exceeded")
+    before = plain.args
+    decorate_page_fatal_reason(plain, {})
+    assert plain.args == before
