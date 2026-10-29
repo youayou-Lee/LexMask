@@ -736,9 +736,31 @@ class HaSClient:
         name = last_match.group(1)
         if name not in set(types or []):
             return None
-        # 桶已闭合 ⇒ 截断发生在桶与桶之间（或无截断），没有"被切断的桶"
-        if "]" in raw[last_match.end():]:
-            return None
+        # 桶已闭合 ⇒ 截断发生在桶与桶之间（或无截断），没有"被切断的桶"。
+        # 门⑥ F9（2026-10-29）：不能只看「后面有没有 ``]``」——值字符串里含
+        # ``]``（地址 ``A[1]``、含括号的编号）会假阴性，让 C2 静默失效。这里做
+        # 一次最小词法扫描：跳过字符串字面量、按 ``[``/``]`` 计深度，只有深度
+        # 归零才判定桶已闭合。
+        depth = 1
+        in_string = False
+        escaped = False
+        for ch in raw[last_match.end():]:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    return None
         return name
 
     @staticmethod
@@ -992,11 +1014,31 @@ If nothing matches, return {{}}.
             _NER_COMPLETION_CAP_FLOOR,
             min(configured_max_tokens, int(context_tokens * _NER_COMPLETION_CONTEXT_RATIO)),
         )
+        # 门⑥ F6（2026-10-29）：`max(_NER_MAX_TOKENS_FLOOR, context_room)` 会在
+        # context_room ∈ (0, 64] 时把 `estimate + max_tokens` 顶到装填上限之上
+        # 最多 64 token（绕过分组规划器的直调路径可命中）。这里只在 room 为正时
+        # 直接取 room；room <= 0（提示词本身已装不下）仍退回下限，由规划器/上层
+        # 负责分组——单条请求无法自救，但会留下可观测的 WARNING。
+        if context_room > 0:
+            effective_room = context_room
+        else:
+            effective_room = _NER_MAX_TOKENS_FLOOR
+            logger.warning(
+                "HaS NER prompt alone exceeds fill budget: context=%d est_prompt=%d "
+                "reserve=%d safety=%d (types=%d, text_chars=%d); falling back to floor=%d",
+                context_tokens,
+                prompt_token_estimate,
+                _NER_CONTEXT_RESERVE_TOKENS,
+                _NER_FILL_SAFETY_TOKENS,
+                len(types),
+                len(text or ""),
+                _NER_MAX_TOKENS_FLOOR,
+            )
         max_tokens = min(
             configured_max_tokens,
             desired_max_tokens,
             completion_cap,
-            max(_NER_MAX_TOKENS_FLOOR, context_room),
+            effective_room,
         )
         hard_cap = cls._effective_completion_hard_cap(settings)
         if hard_cap > 0:
@@ -1502,6 +1544,21 @@ If nothing matches, return {{}}.
                     # ①「整桶丢失」的补查集合：与改前逐字一致，死锁规避判据也只用它
                     parse_missing = [t for t in types if t not in result]
                     missing = list(parse_missing)
+                    # 补查的文本轴先算出来：既要用于下面「是否会同 key 重发」的
+                    # 判定，也直接作为后续 retry_chunks（一处计算、两处使用）。
+                    requery_single_pass_chars = int(
+                        getattr(settings, "HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS", 0) or 0
+                    )
+                    if requery_single_pass_chars > 0 and len(text) <= requery_single_pass_chars:
+                        requery_chunks_preview = [text]
+                    else:
+                        requery_chunks_preview = self._split_requery_chunks(text)
+                    # 「补查会把文本切块」⇒ 每个块 != 原文 ⇒ inflight key 与本次不同
+                    # ⇒ 不存在自连接死锁。此时可以放心把被切断的桶也并进补查集合。
+                    resend_same_text = (
+                        len(requery_chunks_preview) == 1
+                        and requery_chunks_preview[0] == text
+                    )
                     # Issue#209 C2：被切断的那个桶"存在"（只是尾值被砍），所以
                     # 不算 missing、永远补不上——密集页（真实页 133：编号 83 个值
                     # 只落 4 个）就此静默少打码，且 confirmed 还能是 True。实测把
@@ -1512,14 +1569,28 @@ If nothing matches, return {{}}.
                     # 等于全类型，补查 = 同 payload 同预算整段重发（必然同结局），
                     # 且补查 key 与本次 inflight 相同 ⇒ 自连接死锁白等（实测
                     # 复现 3×120s 挂起）。此时宁可留着尾值缺失，也不做无望重发。
+                    # 门⑥ F2（2026-10-29）：原判据用「类型集合基数」近似「会不会
+                    # 整段重发」，但改动③之后长文本**恒按行边界切块**，切出的块
+                    # key 必然与原文不同 ⇒ 自连接前提消失。改按真实判据：
+                    # 只有「本次补查仍会发完全相同的 text」时才保留保守闸。
                     if (
                         cut_bucket
                         and cut_bucket not in parse_missing
-                        and len(parse_missing) < len(types) - 1
+                        and (not resend_same_text or len(parse_missing) < len(types) - 1)
                     ):
                         missing = [cut_bucket, *missing]
                         logger.warning(
                             "HaS NER output truncated while enumerating %r; including it in re-query (Issue#209 C2)",
+                            cut_bucket,
+                        )
+                    # 门⑥ F3：被切断的桶存在但没能并入补查集合 ⇒ 结果**已知残缺**
+                    # （尾值缺失），不得落共享缓存（否则同键下次零调用命中并报
+                    # ok=True，静默少打码）。
+                    cut_bucket_dropped = bool(cut_bucket and cut_bucket not in missing)
+                    if cut_bucket_dropped:
+                        logger.warning(
+                            "HaS NER truncated bucket %r could not be re-queried within "
+                            "the same-payload guard; result marked unconfirmed (not cached)",
                             cut_bucket,
                         )
                     if len(parse_missing) == len(types):
@@ -1580,10 +1651,6 @@ If nothing matches, return {{}}.
                                 or 2
                             ),
                         )
-                        requery_single_pass_chars = int(
-                            getattr(settings, "HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS", 0)
-                            or 0
-                        )
                         # 类型批**只在真装不下时才切**：整批预算已能装进完成帽 ⇒
                         # 单批（同 #103/#104 的容量算术同源原则）。门④二轮实测
                         # （2026-10-29，15:27）暴露反例：整段 3924 字符 × 2 类型
@@ -1603,10 +1670,7 @@ If nothing matches, return {{}}.
                                 missing[i : i + require_requery_type_batch]
                                 for i in range(0, len(missing), require_requery_type_batch)
                             ]
-                        if requery_single_pass_chars > 0 and len(text) <= requery_single_pass_chars:
-                            retry_chunks = [text]
-                        else:
-                            retry_chunks = self._split_requery_chunks(text)
+                        retry_chunks = requery_chunks_preview
                         # 嵌套观测面：只收本次补查自身的 finish_reason/计数。
                         # 门④判据口径：finish_reason=stop 且 confirmed=True 且
                         # recovered 闭合才算「补查逃逸复读」；补查再次截断时
@@ -1666,7 +1730,7 @@ If nothing matches, return {{}}.
                             for value in values:
                                 if value and value not in bucket:
                                     bucket.append(value)
-                        confirmed = retry_confirmed
+                        confirmed = retry_confirmed and not cut_bucket_dropped
             # Issue#108 ⑥ 评审 C1/C2：只有确认过解析成功的结果才进缓存；残缺结果
             # 仍原样返回给调用方（尽力而为的容忍语义不变），但不落键。
             if confirmed:

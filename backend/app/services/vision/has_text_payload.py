@@ -215,6 +215,18 @@ def _iter_payload_texts(text: str | None) -> list[str]:
 #   * 总闸：HAS_NER_NEAR_DUP_COLLAPSE=False 时整体关闭。
 _DIGIT_RE = re.compile(r"\d")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+# 门⑥ F1（2026-10-29）：**结构化行**的判别器。族键只把数字抹成 `#`，于是水印
+# 碎片「术映峰1450120141」与真实表单行「身份证号 370702199001014521」在键上
+# 完全同构——旧实现（默认开）在 120 行「标签+不同数字」的表单上实测丢掉 115 行
+# 真实值，而 open-vocab 类型没有正则兜底 ⇒ 静默少打码。水印碎片是**无分隔的
+# 连续串**；真实列几乎都有空白/冒号/等号/逗号/顿号/竖线这类"字段分隔符"。
+# 带分隔符的行一律**不参与折叠**（宁可少折，不可误删）。
+_SEPARATOR_RE = re.compile(r"[\s:：=,，、|/\u3000]")
+# 水印碎片的**形状**：CJK 碎片在前、数字只作为**结尾**的一整串（映峰1450120、
+# 术映峰1450120141）。真实编号几乎不长这样：案号 `鲁0702民初123号` 数字居中、
+# 身份证/电话列带分隔符、报关单号是纯数字（被 CJK 闸挡掉）。要求这条形状，
+# 是因为「数字居中/两侧都有字」的行一旦折叠，丢的是真实业务值。
+_FRAGMENT_SHAPE_RE = re.compile(r"^[^\d#]+\d+$")
 
 
 def _near_duplicate_key(text: str) -> str:
@@ -246,6 +258,12 @@ def _collapse_near_duplicate_lines(
         if len(compact) > max_line_chars:
             continue
         if len(_CJK_RE.findall(compact)) < min_cjk_chars:
+            continue
+        # 门⑥ F1：带字段分隔符的行 = 结构化表单列（标签 + 值），不折叠。
+        if _SEPARATOR_RE.search(text):
+            continue
+        # 门⑥ F1：必须是「CJK 碎片 + 结尾一整串数字」的水印形状，否则不折叠。
+        if not _FRAGMENT_SHAPE_RE.match(compact):
             continue
         families.setdefault(_near_duplicate_key(text), []).append(index)
 
@@ -398,8 +416,13 @@ def _filter_blocks_for_has_text(
 # ---------------------------------------------------------------------------
 
 # 组装填上限在「实发预算」之外再留的安全边（token）：生效上下文 − reserve − 本值。
-# 与 D7 数值判据同源；min 链自身留 reserve(160)，规划器再留 64。
-_GROUP_FILL_MARGIN_TOKENS = 64
+# 门⑥ F10（2026-10-29）：这里的 64 与 ``has_client._NER_FILL_SAFETY_TOKENS`` 是
+# **同一条不变式的两侧**（规划器决定"能不能发"，预算算术决定"发多少"），必须
+# 一处定义、另一处引用——两处手抄必然漂移（#104 教训）。故此处直接取别名为同一
+# 对象，DO NOT 再写字面量 64。
+from app.services.has_client import (  # noqa: E402  (常量别名，位置在模块中段的说明块)
+    _NER_FILL_SAFETY_TOKENS as _GROUP_FILL_MARGIN_TOKENS,
+)
 
 _ALNUM_BOUNDARY_RE = re.compile(r"[0-9A-Za-z]")
 

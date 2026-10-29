@@ -78,7 +78,10 @@ def test_requery_chunks_text_and_keeps_all_missing_types_together():
     chunks = client._split_requery_chunks(_LONG)
     assert len(chunks) > 1, "用例前提：该文本会被切块"
     assert len(requery) == len(chunks), f"每块 1 次，实际 {len(requery)} 次"
-    missing = sorted(set(_TYPES) - set(main["types"][:1]))
+    # 门⑥ F2：假模型的主查只回了 ``类型0`` 且尾值被切断 ⇒ 该桶既"存在"又被
+    # 切断，按 C2 必须并入补查集合（长文本恒切块 ⇒ 无自连接重发风险）⇒ 缺失集
+    # 合是**全部**类型，而不是「除类型0 以外」。
+    missing = sorted(_TYPES)
     for call in requery:
         assert sorted(call["types"]) == missing, (
             f"默认应整批问缺失类型 {missing}，实际 {sorted(call['types'])}"
@@ -94,7 +97,7 @@ def test_requery_type_batching_only_when_budget_truly_exceeds_cap(monkeypatch):
     client.ner_checked(_LONG, _TYPES, None, context_tokens=8192)
 
     main, requery = client.calls[0], client.calls[1:]
-    missing = sorted(set(_TYPES) - set(main["types"][:1]))
+    missing = sorted(_TYPES)  # 同 F2：被切断的 ``类型0`` 也进补查集合
     per_call = settings.HAS_NER_REQUERY_MAX_TYPES_PER_CALL
     assert all(len(c["types"]) <= per_call for c in requery), (
         f"超预算时必须按类型切小：{[c['types'] for c in requery]}"

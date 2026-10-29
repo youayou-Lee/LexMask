@@ -193,7 +193,11 @@ async def _run_has_text_ner_groups(
         （C5 的病），None 则被 ``merge_group_ner_results`` 与失败过滤天然排除。
         """
         _record_has_text_metric(stage_status, "has_text_ner_budget_exceeded", 1)
-        _add_has_text_duration(stage_status, "has_text_ner_budget_skipped_groups", 1)
+        # 门⑥ F11：这是**计数组**（跳过几组），不能借 `_add_has_text_duration`
+        # （ms 累加器）记——同名键会被下游按毫秒读。
+        stage_status["has_text_ner_budget_skipped_groups"] = (
+            int(stage_status.get("has_text_ner_budget_skipped_groups", 0) or 0) + 1
+        )
         logger.warning(
             "HaS page NER budget exhausted (deadline=%s); skipping remaining group(s)",
             deadline,
@@ -355,7 +359,9 @@ def aggregate_ner_samples(
         matcher is the leak-safe gate — it yields 0 region for any value that
         does not occur in the OCR blocks. Growing the union cannot uncover PII.
 
-    接线 TODO (human GPU main loop): drive ``sample_fn`` as
+    接线现状 (2026-10-29)：本函数已由 ``_run_has_text_ner_groups`` 真实驱动，
+    ``sample_fn`` 即该处的 ``_ner_sample``（走 shared_gpu_inference_slot +
+    HAS_VISION_MAX_GROUPS_INFLIGHT 组闸 + 页级死线）。以下为实现契约备忘：drive ``sample_fn`` as
     ``lambda i: has_client.ner(text, types, temperature=(0.0 if i == 0 else T),
     sample_index=i)`` inside shared_gpu_inference_slot; read ``max_passes`` from
     a config knob; cache ONLY the returned union under the canonical
@@ -527,12 +533,18 @@ _PAGE_NER_DEADLINE: ContextVar[float | None] = ContextVar(
 
 
 def reset_page_ner_deadline() -> None:
-    """页级入口调用：清掉上一页留下的死线，让本页重新起算。"""
-    _PAGE_NER_DEADLINE.set(None)
+    """页级入口调用：本页从「现在」重新起算一条真实死线。
+
+    门⑥ F5（2026-10-29）：死线必须从**页入口**起算，而不是「首次 NER 调用」起算
+    ——否则 OCR 慢的页（OCR 120s + NER 200s = 320s）仍会先撞 300s 页墙，页级预算
+    这条保命闸永远触发不了。预算关闸（<=0）时置 None。
+    """
+    budget = float(getattr(settings, "HAS_NER_PAGE_BUDGET_SEC", 0.0) or 0.0)
+    _PAGE_NER_DEADLINE.set(time.monotonic() + budget if budget > 0 else None)
 
 
 def has_text_page_deadline() -> float | None:
-    """本页的 HaS NER 死线（首次调用时建立，后续复用）。"""
+    """本页的 HaS NER 死线（页入口建立；未建则首次调用兜底建立，后续复用）。"""
     deadline = _PAGE_NER_DEADLINE.get()
     if deadline is not None:
         return deadline
@@ -610,6 +622,10 @@ async def run_has_text_analysis(
                 f"HaS NER budget exceeded after {elapsed_ms / 1000:.1f}s "
                 f"(budget {page_budget_sec:.0f}s): {reason}; page scanned only partially"
             )
+        # 门⑥ F8（2026-10-29）：非 strict 时页仍按 completed 收尾，交付面
+        # （ready_for_delivery / ZIP 409 闸）看不出「只扫了一部分」。至少留一个
+        # 与 failed_pages 并列的显式标记，供交付面/审计面区分部分扫描。
+        _record_has_text_metric(stage_status, "has_text_partial_scan", 1)
 
     _record_has_text_metric(stage_status, "has_text_cache_status", "not_started")
     _record_has_text_metric(stage_status, "has_text_slot_wait_ms", 0)

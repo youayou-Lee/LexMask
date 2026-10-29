@@ -554,7 +554,16 @@ class Settings(BaseSettings):
     # （正常页字节不变；页 133=323 行、页 134=147 行命中，页 132=67 行不命中）。
     # 保守面：要求归一化前含 ≥MIN_CJK_CHARS 个 CJK 字符，纯数字列（身份证号列、
     # 卡号列等）不折叠；长行（真实表格行）不折叠。
-    HAS_NER_NEAR_DUP_COLLAPSE: bool = True
+    #
+    # 默认 **False**（门⑥ 2026-10-29 F1 判定）：族键把一切数字抹成 `#` 后，
+    # 「水印碎片「映峰1450120141」→ 映峰#」 与「真实表单列「身份证号
+    # 370702199001014521」→ 身份证号#」**同形**。实测 120 行「标签+不同数字」
+    # 表单（身份证号/电话/住址各 40 行、每行值不同）折叠后只剩 5 行 ⇒ 115 行
+    # 真实值进不了 NER 提示词，而 ADDRESS/单位名等 open-vocab 类型没有正则
+    # 兜底 ⇒ 静默少打码。且该能力在本件目标页（第四卷第 133 页）实测折叠
+    # **0 行**（病态重复是纯数字列，被 CJK 闸正确挡掉）⇒ 零收益、有损风险。
+    # 保留为可开关的辅助能力，等有「族键能区分水印与标签列」的判据再默认开。
+    HAS_NER_NEAR_DUP_COLLAPSE: bool = False
     HAS_NER_NEAR_DUP_MIN_PAYLOAD_LINES: int = 120
     HAS_NER_NEAR_DUP_FAMILY_MIN_MEMBERS: int = 3
     HAS_NER_NEAR_DUP_MAX_LINE_CHARS: int = 40

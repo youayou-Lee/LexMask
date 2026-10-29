@@ -124,7 +124,9 @@ def test_payload_line_gate(monkeypatch, total, expect_collapsed):
 # ③ 水印型族 ⇒ 折成首行、计数=5 族=1、一条 WARNING（不带行内容）
 # ---------------------------------------------------------------------------
 
-def test_watermark_family_collapses_to_first_occurrence(caplog):
+def test_watermark_family_collapses_to_first_occurrence(caplog, monkeypatch):
+    # 门⑥ F1：默认闸已关闭（有损变换不做默认），本用例显式打开验证机制本身。
+    monkeypatch.setattr(settings, "HAS_NER_NEAR_DUP_COLLAPSE", True)
     # 首行不排在最前：验证「保留首次出现」而不是「保留第一条」。
     lines = _payload_lines(_WATERMARK_LINES, 130)
     assert lines[3] == _WATERMARK_LINES[3]  # 校验的是「保留首次出现」而非「保留第一条」
@@ -233,9 +235,11 @@ def test_family_requires_same_structure_after_digit_normalization(monkeypatch):
 
     payload = _build(lines)
 
+    # 门⑥ F1（2026-10-29）硬化语义：案号这类「数字居中 / 带字段分隔符」的
+    # **真实编号列**一律不折叠（旧语义会折掉 5 条真实案号 ⇒ 静默少打码）。
     assert payload.texts[0] == "案号：（2024）鲁0702民初123号"
-    assert payload.near_duplicate_collapsed_lines == 5
-    assert payload.near_duplicate_families == 1
+    assert payload.near_duplicate_collapsed_lines == 0
+    assert payload.near_duplicate_families == 0
 
 
 # ---------------------------------------------------------------------------
@@ -256,5 +260,35 @@ def test_new_stat_fields_default_to_zero_for_existing_constructors():
         max_chars=100,
         truncated=False,
     )
+    assert payload.near_duplicate_collapsed_lines == 0
+    assert payload.near_duplicate_families == 0
+
+# ---------------------------------------------------------------------------
+# ④ 门⑥ F1（2026-10-29）：默认**关**，且「标签 + 不同数字」的真实表单列一条
+#    都不许折——这是折叠闸最危险的同构形态（族键只把数字抹成 #，水印碎片
+#    「映峰1450120141」与真实列「身份证号 370702199001014521」长得一模一样）。
+# ---------------------------------------------------------------------------
+
+def test_collapse_is_off_by_default():
+    """有损变换不做默认：本件目标页实测折叠 0 行（零收益），风险面是任何
+    ≥120 行的多记录页 ⇒ 默认必须关，需要时显式开。"""
+    assert settings.HAS_NER_NEAR_DUP_COLLAPSE is False
+
+
+def test_label_plus_distinct_digits_column_is_never_collapsed(monkeypatch):
+    """正控（评审 F1 的实测反例）：40 条身份证号 + 40 条电话 + 40 条住址，
+    每条数字都不同 ⇒ **一条都不许丢**。旧默认（True）实测 dropped=115
+    families=4 kept=5，即 115 条真实值进不了提示词（静默少打码）。"""
+    monkeypatch.setattr(settings, "HAS_NER_NEAR_DUP_COLLAPSE", True)
+    lines = (
+        [f"身份证号 370702199001{index:06d}" for index in range(40)]
+        + [f"联系电话 1380013{index:04d}" for index in range(40)]
+        + [f"住址 北京市朝阳区建国路{index}号院{index}号楼" for index in range(40)]
+    )
+    assert len(lines) == 120  # 正好压闸门（MIN_PAYLOAD_LINES=120）
+
+    payload = _build(lines)
+
+    assert payload.texts == lines
     assert payload.near_duplicate_collapsed_lines == 0
     assert payload.near_duplicate_families == 0
