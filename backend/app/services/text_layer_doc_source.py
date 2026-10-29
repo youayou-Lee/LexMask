@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.models.entity_schemas import BoundingBox
 from app.services import text_layer_docline_service as docline
 from app.services import text_layer_quality as quality
+from app.services import visible_text_watermark
 from app.services.has_client import has_client
 from app.services.vision.has_text_payload import (
     _build_has_text_type_names,
@@ -57,6 +58,21 @@ SOURCE_DETAIL = "text_layer_docline"
 def reset_memo() -> None:
     """仅测试与文件级缓存失效使用。"""
     _MEMO.clear()
+
+
+def _word_filter_knob_key() -> str:
+    """Issue#206 阶段 2'：过滤开关及其阈值必须进 memo key。
+
+    否则同一 file_id 的「开关两份 job」会吃到上一跑的 memo，两臂必然零差异
+    （门①.5 冷审 D7 / AC27）。单独抽成函数是为了让 AC27 能在单测里直接判红。
+    """
+    return (
+        f"{int(bool(settings.VISIBLE_WATERMARK_WORD_FILTER_ENABLED))}:"
+        f"{settings.VISIBLE_WATERMARK_WORD_MIN_REPEAT}:"
+        f"{settings.VISIBLE_WATERMARK_WORD_COVER_MIN}:"
+        f"{settings.VISIBLE_WATERMARK_MAX_DROP_VS_WM_CHARS}:"
+        f"{settings.VISIBLE_WATERMARK_PROBE_PAGES}"
+    )
 
 
 def _labels(ocr_has_types) -> list[str]:
@@ -240,8 +256,16 @@ async def _build(
             permanent=True,
         )
 
+    # **建链流词级过滤**（Issue#206 阶段 2'）：可见平铺水印的 4 字词在文本层里与正文
+    # 同形、每页重复几十次，docline 会把它们当正文送 NER（门④ 实测：一卷 31 页
+    # 77.7% 的框是纯水印字符框）。这里只把**送进 NER 的词流**洗一遍——上面三道闸
+    # （预算/质量/重复片段）仍然吃**未过滤**的页，所以「本卷是否接管 docline」与今天
+    # 完全一致：过滤只会让流更小，不会把今天被拒的卷放进来（族 A 类卷要等 #204）。
+    ner_pages, word_filter_stats = await asyncio.to_thread(
+        visible_text_watermark.maybe_filter_pages, path, pages
+    )
     result = await docline.run_document_ner(
-        pages, labels, has_client=has_client, regex_types=regex_types
+        ner_pages, labels, has_client=has_client, regex_types=regex_types
     )
     # **卷级合格门**（门⑥ 二轮 Important#5）：失败块/回映失败率/覆盖率任一越界即整卷
     # 放弃走文档级链、回落旧路径。这些门以前不存在，或只在**任何值**下都成立。
@@ -337,11 +361,12 @@ async def _build(
         "uncovered_pages": sorted(set(page_chars) - covered_pages),
         "verdict": verdict.severity,
         "ink_alignment": metrics.ink_alignment,
+        "word_filter": word_filter_stats,
         "seconds": round(time.perf_counter() - started, 3),
     }
     logger.info(
         "text_layer_docline built file=%s pages=%d covered=%d ent=%d chunks=%d coverage=%.3f "
-        "calls=%d residual=%d http_errors=%d truncated=%d elapsed=%.2fs",
+        "calls=%d residual=%d http_errors=%d truncated=%d word_filter=%s/%s elapsed=%.2fs",
         file_id[:8],
         result.pages,
         len(covered_pages),
@@ -352,6 +377,8 @@ async def _build(
         result.residual_calls,
         result.http_errors,
         result.truncated_chunks,
+        word_filter_stats.get("code"),
+        word_filter_stats.get("chars_dropped", 0),
         memo["seconds"],
     )
     return memo
@@ -428,6 +455,7 @@ async def boxes_for_page(
         f"{settings.TEXT_LAYER_DOCLINE_CONCURRENCY}:{settings.TEXT_LAYER_PAGE_MIN_CHARS}:"
         f"{settings.TEXT_LAYER_DOCLINE_MAX_BUILD_SEC}:"
         f"{settings.TEXT_LAYER_DOCLINE_BUILD_SEC_PER_PAGE}:"
+        f"{_word_filter_knob_key()}:"
         f"{';'.join(f'{tid}={pat}' for tid, pat in regex_types)}"
     )
     key = (

@@ -706,6 +706,35 @@ class Settings(BaseSettings):
     TEXT_LAYER_REPEATED_FRAGMENT_MIN_REPEATS: int = 8
     TEXT_LAYER_REPEATED_FRAGMENT_MIN_PAGES: int = 5
     TEXT_LAYER_MAX_REPEATED_FRAGMENT_COVERAGE: float = 0.15
+    # --- Issue#206 阶段 2'：可见平铺文本水印的词级过滤（默认关，云门④ 后再拍板）---
+    # 形态（门④ 实测）：水印**不是像素**，是盖在扫描图上的倾斜半透明平铺文本层，
+    # 每页一次 text-showing op，把同一个 4 字词平铺几十次。它与正文同字体同色 ⇒
+    # 字符级不可区分，只能用版式签名（倾斜 + 半透明 + 字体/角度/透明度一致 +
+    # 字号极差小 + 候选占可见文本比例高）识别，再按「字符集 ⊆ 水印字符集 且
+    # 本页重复 ≥MIN_REPEAT 次」把词从**建链流**里去掉（不动原件、不动渲染）。
+    # 过滤不参与任何资格闸：预算/质量/重复片段闸仍吃未过滤页 ⇒ 是否接管 docline
+    # 与今天完全一致（把被拒的卷放进来是 #204 的账，不是这里）。
+    VISIBLE_WATERMARK_WORD_FILTER_ENABLED: bool = False
+    # 探测只读前 N 页（第 1 页常是封面，留 5 页容错）。
+    VISIBLE_WATERMARK_PROBE_PAGES: int = 5
+    # 判定「这是平铺水印」三条：命中页数 / 候选字符占可见文本比例 / 最高签名占比。
+    VISIBLE_WATERMARK_MIN_PAGES: int = 3
+    VISIBLE_WATERMARK_MIN_VISIBLE_SHARE: float = 0.5
+    VISIBLE_WATERMARK_MIN_TOP_SIG_SHARE: float = 0.85
+    # 同一签名的字号极差上限（pt）：平铺水印是同一字号重复；正文会混字号。
+    VISIBLE_WATERMARK_MAX_SIZE_SPREAD: float = 2.0
+    # 词过滤：同一词在本页重复次数下限（族 B 实测 65/页；正文里的正规简称同页
+    # 一般 ≤2 次）⇒ 阈值把「真实机关简称」与「平铺水印词」分开。
+    VISIBLE_WATERMARK_WORD_MIN_REPEAT: int = 8
+    # 每页不变式：被丢字符数不得超过「探测到的每页水印字符数中位数 × 本倍数」。
+    # 越界则该页保持原样（宁可留噪声，不可误删正文）。刻意不用「占该页总字符数
+    # 的比例」——薄页正文本就少，占比天然偏高，用占比会把最需要过滤的薄页全挡下。
+    VISIBLE_WATERMARK_MAX_DROP_VS_WM_CHARS: float = 1.5
+    # 几何判据（承重）：词框必须被**本页水印字形框**覆盖到这个比例才可能是水印词。
+    # 门④ GT 实测：族 B 卷的「不可见正文层」本身是对带水印扫描图 OCR 出来的，
+    # 同页会带上十几二十份水印串；纯文本判据会在这些位置上误丢正文实例 ⇒ 必须
+    # 用几何把「正文位置的同形词」与「平铺水印位置的同形词」分开。
+    VISIBLE_WATERMARK_WORD_COVER_MIN: float = 0.35
     # （门⑥ 三轮 Minor#4：原 `TEXT_LAYER_EMPTY_PAGE_FALLBACK` 开关已删除。
     # 原因：置 False 会把「覆盖页 0 框」当成「这页已由文档级链处理」⇒ 整页丢检，
     # 一行配置就能把上一轮修掉的 C-1 重新打开。现在 0 框页**无条件**回落旧路径。）
@@ -927,6 +956,47 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_text_layer_repeated_fragment_min_repeats(cls, v: int) -> int:
         return max(2, min(10_000, v))
+
+    @field_validator("VISIBLE_WATERMARK_PROBE_PAGES")
+    @classmethod
+    def _validate_visible_watermark_probe_pages(cls, v: int) -> int:
+        # 0 = 读全卷（大卷会很慢，仅调试用）；上限 5 与验收方案一致，再多没必要。
+        return max(0, min(5, v))
+
+    @field_validator("VISIBLE_WATERMARK_MIN_PAGES")
+    @classmethod
+    def _validate_visible_watermark_min_pages(cls, v: int) -> int:
+        return max(1, min(5, v))
+
+    @field_validator("VISIBLE_WATERMARK_MIN_VISIBLE_SHARE", "VISIBLE_WATERMARK_MIN_TOP_SIG_SHARE")
+    @classmethod
+    def _validate_visible_watermark_share(cls, v: float) -> float:
+        return max(0.0, min(1.0, v))
+
+    @field_validator("VISIBLE_WATERMARK_MAX_SIZE_SPREAD")
+    @classmethod
+    def _validate_visible_watermark_max_size_spread(cls, v: float) -> float:
+        return max(0.0, min(72.0, v))
+
+    @field_validator("VISIBLE_WATERMARK_WORD_MIN_REPEAT")
+    @classmethod
+    def _validate_visible_watermark_word_min_repeat(cls, v: int) -> int:
+        # 2 = 只要重复就丢（危险：正文里重复出现的词会被误删）；上限放到千级。
+        return max(2, min(1_000, v))
+
+    @field_validator("VISIBLE_WATERMARK_MAX_DROP_VS_WM_CHARS")
+    @classmethod
+    def _validate_visible_watermark_max_drop_vs_wm_chars(cls, v: float) -> float:
+        # 下限 1.0 = 最多丢掉「一页水印字符量」；默认 1.5 给平铺密度波动留余量。
+        # 上限 5.0 防呆：再大就失去不变式意义。
+        return max(1.0, min(5.0, v))
+
+    @field_validator("VISIBLE_WATERMARK_WORD_COVER_MIN")
+    @classmethod
+    def _validate_visible_watermark_word_cover_min(cls, v: float) -> float:
+        # 0 = 关掉几何判据（退回纯文本判据，门④ GT 实测会误丢正文实例 ⇒ 不建议）。
+        # 上限 1.0 防呆；0.35 是族 B「OCR 带进来的水印词」实测覆盖度分布下的取值。
+        return max(0.0, min(1.0, v))
 
     @field_validator("TEXT_LAYER_REPEATED_FRAGMENT_MIN_PAGES")
     @classmethod

@@ -436,6 +436,8 @@ def _text_layer_doc_status(doc_boxes, doc_memo: dict, page: int) -> dict:
         "fallback_failed_chunks": doc_detail.get("failed_chunks"),
         "fallback_chunks": doc_detail.get("chunks"),
         "fallback_page": page,
+        # Issue#206 阶段 2'：词级过滤的计数（成功/回落两态都写；不带字面量）。
+        "word_filter": doc_memo.get("word_filter"),
     }
 
 
