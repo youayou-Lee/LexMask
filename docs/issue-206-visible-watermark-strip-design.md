@@ -5,7 +5,7 @@
 | Issue | youayou-Lee/LexMask#206（原「想法（暂不实施）」；本文档把想法变为可实施方案） |
 | 基线 | `origin/preview` @ `686c4c0`（含 #203/#199 水印闸、#210 `perf(#207)`；本方案先做**阶段 2'**） |
 | 分支 | `feat/issue206-word-filter`（worktree：`.worktrees/feat-issue206-word-filter`） |
-| 状态 | **v1.5**（阶段 2' 已实现：判据=**文本 ∩ 几何**；①.5 冷审 REVISE 已逐条处置；独立 GT 复验 `body_missing_free=0/0/0`；门④ 双 job 已实测（纯水印框 78.3%→0%、框 −81.7%），待门⑥） |
+| 状态 | **v1.6**（阶段 2' 已实现：判据=**文本 ∩ 几何 ∩ 字形来源**；①.5 与门⑥ 两段冷审 REVISE 均已逐条处置；独立 GT 复验 `body_missing_free=0/0/0`、族 B 丢弃率 1.000→0.69/0.66（来源维度救回被正文层覆盖的实例）；门④ 双 job 已实测（纯水印框 78.3%→0%、框 −81.7%）；待门⑥ 第三段） |
 | 关联 | #203（预建链水印闸，已合）· **#204（建链 O(整卷) 与单页门限解耦，OPEN，本方案的阶段 2 被它阻塞）** · #208（页级续跑）· #165（回落原因可观测） |
 | 日期 | 2026-10-30 |
 
@@ -426,6 +426,38 @@ filter_failed}` —— **五态必须可区分**（门⑥ 冷审 I3）：`no_wat
 15. `pages_hit` 口径是「本页候选字符 >0」，不强制这些字符属于 `top_sig`：多签名卷可能「页数够但签名主占比不够」，此时由 `top_sig_share >= 0.85` 兜底，**不会**把签名不占主导的层当水印。
 16. `collect_watermark_rects` 在探测命中后再开一次 PDF 逐页取 `get_texttrace()`：族 B 31 页 0.08s、族 A 149 页 <1s（都在建链预算内），但**没有独立耗时上限**；千页级卷需按建流预算闸同款加超时（登记，不在本 PR）。
 17. 覆盖率/截断率/块失败率这几道**后置**卷级门仍吃过滤后的流（C2 机制）：本 PR 只用「语料上零路由漂移（AC17b）+ 上报未过滤口径」证明没把今天被拒的卷放进来，**没有**证明「机制上不可能」；`truncated_ratio` / `map_failure_ratio` 分母变小只会更严，方向安全，但不是形式化证明。
+
+### v1.6：门⑥ 第二段独立评审的逐条处置（`c2aae17`）
+
+第二段冷审结论 REVISE：1 Critical + 4 Important + Minor/AC 判读。逐条处置与证据（代码锚点）：
+
+| 项 | 判定 | 处置 |
+|---|---|---|
+| **C1 判据不看字形来源 ⇒ 正文实体被当水印删（漏打码）** | 成立，已修 | 判据加**来源维度**：同一份 `get_texttrace()` 同时取两组字形框——`_visible_char_rects`（`1/255 < opacity < 220/255` 且 `\|dir.y\| ≥ 0.2`）与 `_body_char_rects`（`opacity==0` 或 `≥220/255`，即正文层）。`_watermark_word_drops` 现在要求「可见组覆盖 ≥ `WORD_COVER_MIN` **且** 正文层覆盖 < `WORD_COVER_MIN`」才丢。回归用例 `test_provenance_keeps_words_under_invisible_body_layer`（65 份同形词全压在水印字形上、同时被正文层覆盖 ⇒ 0 丢弃）。真卷复验（独立 GT，3 卷族 B）：字数丢弃率从 1.000 降到 **0.693 / 0.664**，`body_missing_free` 仍为 **0**（即：少丢的是被正文层覆盖的那部分，正文实例一个没少）；`~ -203` 那批框因此有了机械解释。 |
+| **I1 后置五道卷级门方向不止一个，且与旧文字相反** | 成立 | 逐门订正（写进 `text_layer_doc_source.py` 注释与本节）：① `failed_chunks > 0`、② `http_errors > 上限` 是**计数量**，块数 14→9 ⇒ 触发机会变少 ⇒ **可能更宽松**；③ `map_failure_ratio`、④ `truncated_ratio` 分子分母同源 ⇒ **不定**；⑤ `coverage` 两向皆可翻。为什么不改成「未过滤基」判：未过滤分子含大量水印噪声实体（只因水印进流才被认出），改用未过滤分母会把今天走 docline 的族 B 真卷打到约 0.6 ⇒ 全部回落 OCR、收益归零。处置=**上报 + 语料冻结**：`gate_basis_unfiltered_coverage` 写 memo/日志，AC17b 冻结 12 卷路由清单（本地复跑与改动前**逐值相同**），诚实边界 17 写明「不是形式化证明」。 |
+| **I2 marker 缺 `word_filter`，键集不稳定** | 成立，已修 | 8 条 `_TransientIneligible` 与通用 `except` 分支的 marker 都带 `word_filter={"code": f"not_run:<reason_code>"}`（通用异常为 `not_run:error`），与成功路径 `code` 命名空间区分；文档/AC 里 `docline_word_filter` 与实现 `word_filter` 键名统一。AC20 口径从「两态都出现」改为「**只要进入建链就出现**」。 |
+| **I3 4 个变异存活 ⇒ 默认值/逐 knob 无判据** | 成立，已修 | 新增 `test_every_filter_knob_enters_memo_key`（**10 个**阈值**逐个**参数化，删任一行即红）、`test_stage2_settings_defaults_pinned`（10 键默认值全断言，钉住「默认关」）、`test_word_cover_min_clamps_lower_bound`（置 0/-5 ⇒ 钳回 0.2）。对应 M5/M13/M14/M16 全部转 KILLED。 |
+| **I4 `_covered_ratio` 不扣框间重叠 ⇒ 判据系统性放宽** | 成立，已修 | 改为**精确并集**（x 方向区间扫描 + y 区间合并，每词只有几个字形框，代价可忽略）。回归用例 `test_covered_ratio_uses_union_not_sum`（两个完全重叠的框 ⇒ 0.5 而非 1.0；部分重叠 ⇒ 并集）。真卷效果见 C1 行（丢弃率随之降到 0.69/0.66）。 |
+| Minor 1 `getattr(..., "MIN_VISIBLE_SHARE", 0.5)` 死兜底与默认 0.35 不一致 | 部分采纳 | 保留 `getattr` 形式（测试需要 monkeypatch settings），但默认值以 `config.py` 为准并在该行加注释；不改读取方式以免测试双轨。 |
+| Minor 2 `build_stream` 无条件执行 | 采纳 | 改为**懒算**：仅 `word_filter_stats.get("applied")` 时计算未过滤流长。 |
+| Minor 3 memo key 未含 `TEXT_LAYER_*` 阈值（既有缺口） | 登记 | 属既有缺陷（非本 PR 引入）；过滤后 coverage 会变 ⇒ 影响面被放大，已在诚实边界 18 登记为「随 #204 一并纳入 key」。 |
+| Minor 4/5 文档残留「keep floor 7 份」、键数写 9 实为 10、`ruff check app/ tests/` 有 137 个既有错误 | 采纳 | 文档改为「10 个键」并删 keep floor 残留；`ruff check app/`（CI 口径）全绿，`app/ tests/` 的 137 个错误均不在改动文件，登记口径差异。 |
+| AC 表恒真/永不成立判读（AC25、AC21④、AC17、AC26、AC19②、AC15②、AC15③…） | 部分成立 | AC25/AC21④ 确实与 AC24 重复 ⇒ 并入 AC24 表述（保留为「闸指标清单」测量项而非独立判据）；AC17 族 A 卷**永不进过滤器**是设计（闸在前）⇒ 判据改写为「路由与冗余行为不变 + 令牌 `repeated_fragment_coverage` 不变」；AC15② 的正文 GT 定义**必须保留**（排除被水印覆盖的词）但由 AC36 覆盖被覆盖情形；AC15③ 加上界（≤ GT 的 1.05 倍）；AC19② 由 `test_stage2_settings_defaults_pinned` 与门④「不设环境变量」双证。 |
+
+**新增/改写 AC（v1.6）**：
+
+| AC | 判据 | 证据 |
+|---|---|---|
+| AC36 来源维度（C1，承重） | ① 单测：同形词被正文层（`opacity==0`）覆盖 ⇒ **0 丢弃**；仅被水印字形覆盖 ⇒ 丢弃。② 真卷：独立 GT 下 `body_missing_free == 0` **且** 丢弃率随来源维度下降（族 B 实测 1.000 → 0.693/0.664）。③ 云上两臂：非水印框文本多重集差的每一项必须能归因（水印粘连/OCR 碎片），不得出现「整条正文实体消失」 | 单测 + GT 脚本 + ④ 两臂 diff |
+| AC37 并集覆盖（I4） | `_covered_ratio` 必须是真并集：完全重叠框 ⇒ 0.5；部分重叠 ⇒ 并集；禁用「逐框累加」变异必红 | 单测 + 变异 |
+| AC38 远端观测字段（I2） | 所有回落/marker 路径（8 条 `_TransientIneligible` + 通用异常）`pipeline_status.text_layer_doc.word_filter.code` 必须存在且形如 `not_run:<reason_code>`；成功路径键集 = 11 键（`applied`）/3 键（`no_watermark`/`disabled`），并在文档里写成**可选键**契约 | 单测（8 条逐条）+ 静态断言 |
+| AC39 默认值钉子（I3） | 10 个 `VISIBLE_WATERMARK_*` 默认值逐键断言；任一默认被改（含「默认开」）必须红；逐 knob memo key 参数化 10 键全覆盖 | 单测 |
+
+**诚实边界（阶段 2' 追加，v1.6）**：
+
+18. 五道后置卷级门吃过滤流（C2/I1）：`failed_chunks`/`http_errors` 这类**计数量**门在块数减少后触发机会变少（**可能更宽松**），`coverage` 两向可翻。本 PR 的证明手段是「语料上零路由漂移（AC17b，12 卷逐值相同）+ 未过滤口径上报」，**不是**形式化证明；同时 `visible_text_watermark` 顶部的「是否接管 docline 与今天完全一致」表述已按此订正。
+19. 来源维度（C1）把「正文层覆盖」当作保留理由：无正文层的卷（纯扫描 + 纯水印层，抽样 [2] 29 页）因此**整卷不剥**（`would_wiped_page`/`pages_skipped_invariant`），表现为「这类卷收益为零但行为完全等于今天」。这是刻意的保守：宁可少降噪，不改正文。
+20. 正文与水印字形**物理重叠**且两者字符集相同的形态，来源维度能救回「正文层有词」的那部分；若正文层没在这些位置出词（OCR 漏认），仍会按水印丢弃——该残余风险已在 PR 描述与 AC36③ 里点名，属已知、可解释、不静默。
 
 ## §8 未采用的方案与理由（防后人重走）
 

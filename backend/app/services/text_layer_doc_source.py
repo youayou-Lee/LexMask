@@ -291,10 +291,12 @@ async def _build(
     ner_pages, word_filter_stats = await asyncio.to_thread(
         visible_text_watermark.maybe_filter_pages, path, pages
     )
-    # 门⑥ 冷审 C2：`result.coverage_ratio` 的分母是送进 NER 的流长。这里记下**未过滤**
-    # 流长（`build_stream` 返回 `(stream, spans)` 元组 ⇒ 取 `[0]`），供后置覆盖率门
-    # 上报未过滤口径（见下），让「今天会/不会走 docline」的差别在 memo 里可审计。
-    unfiltered_stream_chars = len(docline.build_stream(pages)[0])
+    # 门⑥ 冷审 C2/Minor2：只有真过滤时才需要「未过滤流长」这项审计口径——默认关、
+    # 探测不中或异常时不算（`build_stream` 是同步调用，150k 字符约 11ms，属纯浪费）。
+    # `build_stream` 返回 `(stream, spans)` 元组 ⇒ 取 `[0]`。
+    unfiltered_stream_chars = 0
+    if word_filter_stats.get("applied"):
+        unfiltered_stream_chars = len(docline.build_stream(pages)[0])
     result = await docline.run_document_ner(
         ner_pages, labels, has_client=has_client, regex_types=regex_types
     )
@@ -353,6 +355,19 @@ async def _build(
                     "ratio": round(truncated_ratio, 4)},
         )
     coverage = float(result.coverage_ratio)
+    # 门⑥ 冷审 I1（口径订正）：后置五道卷级门吃的是**过滤后**的 `result`。逐门方向如下，
+    # 上一版注释/文档里「与今天完全一致」「方向只会更严」两句都是**错的**：
+    #   ① `failed_chunks > 0`（计数量）：块数减少 ⇒ 出现失败的机会变少 ⇒ **可能更宽松**；
+    #   ② `http_errors > 上限`（计数量）：同上 ⇒ **可能更宽松**；
+    #   ③ `map_failure_ratio`（分子分母同源于 `calls`）：过滤后 calls 减少但比例同尺度
+    #      ⇒ 方向**不定**；④ `truncated_ratio`（分子分母同源于 `chunks`）同上 ⇒ **不定**；
+    #   ⑤ `coverage`：分子是**过滤后**实体覆盖、分母是**过滤后**流长 ⇒ 两向都可能翻
+    #      （今天 0.92 → 过滤后 0.873 可由通过转拒；今天 0.80 → 1.00 可由拒转过）。
+    # 为什么不改成「未过滤基」来判：未过滤口径**无法事后重建**——今天的分子含大量水印噪声
+    # 实体（它们只因水印进了流才被认出来），过滤后不再产生；拿 `covered/未过滤流长` 当门会把
+    # 今天走 docline 的族 B 真卷打到约 0.6 ⇒ 全部回落 OCR、阶段 2' 收益归零（门④ 实测
+    # 31 页卷仍走 docline）。因此：门仍按过滤后流判（语义=「剩下的内容认全了吗」），
+    # 同时把未过滤口径与逐门计数写进 memo，让任何路由翻转在语料上可审计（AC17b）。
     if word_filter_stats.get("applied") and unfiltered_stream_chars > 0:
         # 门⑥ 冷审 C2：覆盖率分母是**送进 NER 的流长**，过滤把分母缩小 ⇒ 该数必然上升。
         # 但「未过滤口径」**无法事后重建**：今天的分子里含大量水印噪声实体（它们正是
@@ -522,13 +537,18 @@ async def boxes_for_page(
                         "reason": str(exc),
                         "reason_code": exc.code,
                         "reason_detail": exc.detail,
+                        # 门⑥ 冷审 I2：这 8 条 raise 路径原本 marker 里没有 `word_filter`，
+                        # 消费者读到的就是 None，分不清「没跑」与「跑了没命中」。这里补一个
+                        # **固定形状**的码，且与成功路径的 `code` 命名空间区分（`not_run:`）。
+                        "word_filter": {"code": f"not_run:{exc.code}"},
                     }
                 except Exception as exc:  # noqa: BLE001 - 本链任何故障都退回旧路径
                     logger.warning("text_layer_docline build failed file=%s: %s", file_id[:8], exc)
                     built = None
                     marker = {"unusable": True, "retry_at": time.monotonic() + _NEGATIVE_TTL_SEC,
                               "reason": f"error:{type(exc).__name__}",
-                              "reason_code": "error", "reason_detail": {}}
+                              "reason_code": "error", "reason_detail": {},
+                              "word_filter": {"code": "not_run:error"}}
                 else:
                     # `_build` 返回 None = **本卷不适用**（无路径 / 非扫描件），不是回落失败：
                     # 不能报成 fallback，否则每个文本型 PDF 的每一页都会多出一块假失败。

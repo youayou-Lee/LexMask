@@ -206,32 +206,26 @@ def probe_visible_watermark(file_path: str, *, max_pages: int | None = None) -> 
 _GRID_CELL = 64.0
 
 
-def _visible_char_rects(page: fitz.Page) -> list[fitz.Rect]:
-    """本页所有「可见候选 op」（倾斜 + 半透明）的**字形框**，页面空间坐标。
-
-    实测（族 B 真卷 + PyMuPDF 1.27）：`get_texttrace()` 的 `chars[i][3]` 与
-    `get_text("words")` **同一坐标空间**（原点在页左上、y 向下；例如字形框
-    y=3479..3520 与词框 y=3434..3520 的行对齐），**不需要 `height - y` 翻转**。
-    （阶段 1 的笔记里记过「chars 在 PDF 空间」，那是另一份文档的坐标系记忆；这里
-    以实测为准。若某天坐标系变了，覆盖率会整体趋 0 ⇒ 该页不剥，失败方向安全。）
-
-    用**逐字形框**而不是 `entry["bbox"]`：平铺水印一个 op 的 bbox 常常覆盖大半页
-    （斜行 + 越出页边），拿它当几何会把整页正文都判成水印。
-    """
-    # 门⑥ 冷审 C1：`text_layer_docline_service._word_boxes` 对 `rotation % 360` 非零页
-    # 会把词框乘 `page.rotation_matrix`（转到旋转后空间），而 trace 字形框是**未旋转**
-    # 空间的 ⇒ 这里必须做同一校正。不做时覆盖率只是**部分**命中（0.35 恰好落在重叠带），
-    # 会误删与水印毫无关系的正文词 ⇒ 漏打码（实测 3 页 rot90：40 个正文词被删）。
+def _char_rects(page: fitz.Page, *, body: bool) -> list[fitz.Rect]:
+    """按**来源**取本页字形框：`body=False` ⇒ 可见候选（倾斜 + 半透明）；`body=True` ⇒ 正文层。"""
     rotation = int(getattr(page, "rotation", 0) or 0)
     rotate = page.rotation_matrix if rotation % 360 else None
     out: list[fitz.Rect] = []
     for entry in page.get_texttrace():
         opacity = float(entry.get("opacity") or 0.0)
-        if not (_ALPHA_VISIBLE_MIN / 255.0 < opacity < _ALPHA_OPAQUE_MAX / 255.0):
-            continue
-        direction = entry.get("dir") or (1.0, 0.0)
-        if len(direction) < 2 or abs(float(direction[1])) < _TILT_MIN_ABS_Y:
-            continue
+        visible = _ALPHA_VISIBLE_MIN / 255.0 < opacity < _ALPHA_OPAQUE_MAX / 255.0
+        if body:
+            # 门⑥ 冷审 C1：扫描件的正文躺在 opacity=0（或全不透明）的层里，它**不是**水印。
+            # 判据必须知道一个词的字形来源：只凭「压在水印字形上」就删，会把正文实体当水印删掉
+            # ⇒ 交付件里这处实体没有框 = 漏打码。
+            if visible:
+                continue
+        else:
+            if not visible:
+                continue
+            direction = entry.get("dir") or (1.0, 0.0)
+            if len(direction) < 2 or abs(float(direction[1])) < _TILT_MIN_ABS_Y:
+                continue
         for char in entry.get("chars") or ():
             box = char[3]
             if len(box) != 4:
@@ -243,6 +237,22 @@ def _visible_char_rects(page: fitz.Page) -> list[fitz.Rect]:
                 rect = rect * rotate
             out.append(rect)
     return out
+
+
+def _visible_char_rects(page: fitz.Page) -> list[fitz.Rect]:
+    """本页「可见候选 op」（倾斜 + 半透明）的**字形框**，页面空间坐标。
+
+    实测（族 B 真卷 + PyMuPDF 1.27）：`get_texttrace()` 的 `chars[i][3]` 与
+    `get_text("words")` **同一坐标空间**（原点左上、y 向下）。用**逐字形框**而不是
+    `entry["bbox"]`：平铺水印一个 op 的 bbox 常覆盖大半页，拿它当几何会把整页正文判成水印。
+    旋转页的坐标校正见 `_char_rects`（门⑥ 冷审 C1）。
+    """
+    return _char_rects(page, body=False)
+
+
+def _body_char_rects(page: fitz.Page) -> list[fitz.Rect]:
+    """本页**正文层**（opacity==0 或全不透明）的字形框，用于判据的来源维度。"""
+    return _char_rects(page, body=True)
 
 
 def _grid_index(boxes: list[fitz.Rect], cell: float = _GRID_CELL) -> dict[tuple[int, int], list[int]]:
@@ -258,13 +268,17 @@ def _grid_index(boxes: list[fitz.Rect], cell: float = _GRID_CELL) -> dict[tuple[
 def _covered_ratio(rect: fitz.Rect, boxes: list[fitz.Rect],
                    grid: dict[tuple[int, int], list[int]] | None = None,
                    cell: float = _GRID_CELL) -> float:
-    """词框被水印字形框覆盖的面积比例（重叠按逐框裁剪累加，上限 1.0）。"""
+    """词框被**字形框并集**覆盖的面积比例（门⑥ 冷审 I4：必须并集，不能逐框累加）。
+
+    逐框交集直接相加会把同一处被多个字形框重复计入，实测 28pt 时 1.000 vs 真并集 0.763、
+    11pt 时 0.575 vs 0.462 ⇒ 判据系统性放宽，正是「正文被当水印删」的必要条件。
+    这里用 x 方向的区间扫描求精确并集（每词只有几个字形框，代价可忽略）。
+    """
     if rect.is_empty:
         return 0.0
     area = rect.width * rect.height
     if area <= 0:
         return 0.0
-    covered = 0.0
     if grid is None:
         candidates = boxes
     else:
@@ -272,32 +286,63 @@ def _covered_ratio(rect: fitz.Rect, boxes: list[fitz.Rect],
         picked: list[int] = []
         for cx in range(int(rect.x0 // cell), int(rect.x1 // cell) + 1):
             for cy in range(int(rect.y0 // cell), int(rect.y1 // cell) + 1):
-                for index in grid.get((cx, cy), ()):  # 跨格重复只算一次
+                for index in grid.get((cx, cy), ()):  # 跨格重复只取一次
                     if index not in seen:
                         seen.add(index)
                         picked.append(index)
         candidates = [boxes[index] for index in picked]
+    clipped: list[tuple[float, float, float, float]] = []
     for box in candidates:
         inter = rect & box
-        if not inter.is_empty:
-            covered += inter.width * inter.height
+        if not inter.is_empty and inter.width > 0 and inter.height > 0:
+            clipped.append((inter.x0, inter.x1, inter.y0, inter.y1))
+    if not clipped:
+        return 0.0
+    xs = sorted({x for item in clipped for x in (item[0], item[1])})
+    covered = 0.0
+    for left, right in zip(xs, xs[1:], strict=False):
+        if right <= left:
+            continue
+        spans = sorted((item[2], item[3]) for item in clipped if item[0] <= left and item[1] >= right)
+        if not spans:
+            continue
+        merged = 0.0
+        cur_lo, cur_hi = spans[0]
+        for lo, hi in spans[1:]:
+            if lo > cur_hi:
+                merged += cur_hi - cur_lo
+                cur_lo, cur_hi = lo, hi
+            else:
+                cur_hi = max(cur_hi, hi)
+        merged += cur_hi - cur_lo
+        covered += merged * (right - left)
     return min(1.0, covered / area)
 
 
-def collect_watermark_rects(file_path: str) -> dict[int, list[fitz.Rect]]:
-    """整卷每页的水印字形框（1 起页号）。只读；加密卷由调用方已解密落盘。"""
-    rects: dict[int, list[fitz.Rect]] = {}
+def collect_watermark_rects(
+    file_path: str,
+) -> tuple[dict[int, list[fitz.Rect]], dict[int, list[fitz.Rect]]]:
+    """整卷每页字形框，返回 `(水印可见候选, 正文层)` 两份字典（1 起页号）。
+
+    两份一起取保证同一次 `get_texttrace()` 读到的字形在判据里按来源区分（门⑥ 冷审 C1）。
+    只读；加密卷由调用方已解密落盘。
+    """
+    visible: dict[int, list[fitz.Rect]] = {}
+    body: dict[int, list[fitz.Rect]] = {}
     with fitz.open(file_path) as doc:
         if doc.needs_pass:
-            return rects
+            return visible, body
         for index in range(doc.page_count):
             page = doc[index]
             if page.rect.width <= 0 or page.rect.height <= 0:
                 continue
             found = _visible_char_rects(page)
             if found:
-                rects[index + 1] = found
-    return rects
+                visible[index + 1] = found
+            body_found = _body_char_rects(page)
+            if body_found:
+                body[index + 1] = body_found
+    return visible, body
 
 
 def _watermark_word_drops(
@@ -307,6 +352,8 @@ def _watermark_word_drops(
     boxes: list[fitz.Rect],
     cover_min: float,
     grid: dict[tuple[int, int], list[int]] | None = None,
+    body_boxes: list[fitz.Rect] | None = None,
+    body_grid: dict[tuple[int, int], list[int]] | None = None,
 ) -> tuple[set[int], int, int]:
     """本页该丢哪些词（按位置下标）、丢多少词、丢多少字符（纯计算，不改页）。
 
@@ -327,6 +374,11 @@ def _watermark_word_drops(
             continue
         word_rect = fitz.Rect(word.x0, word.y0, word.x1, word.y1)
         if _covered_ratio(word_rect, boxes, grid) < cover_min:
+            continue
+        # 门⑥ 冷审 C1（承重）：**来源**维度。词框同时被正文层（opacity=0/全不透明）字形
+        # 覆盖时，它是正文，不是水印 —— 正文 OCR 层也可能恰好写在水印字形的位置上
+        # （同一引擎对着带水印的扫描图 OCR），只凭几何会把它删掉 ⇒ 漏打码。
+        if body_boxes and _covered_ratio(word_rect, body_boxes, body_grid) >= cover_min:
             continue
         candidates.append((index, text))
     if not candidates:
@@ -369,6 +421,7 @@ def filter_watermark_words(
     profile: WatermarkProfile | None,
     *,
     wm_rects: dict[int, list[fitz.Rect]] | None = None,
+    body_rects: dict[int, list[fitz.Rect]] | None = None,
     min_repeat: int | None = None,
     max_drop_vs_wm: float | None = None,
     cover_min: float | None = None,
@@ -444,8 +497,16 @@ def filter_watermark_words(
             out.append(page)
             pages_skipped_no_geometry += 1
             continue
+        body_boxes = (body_rects or {}).get(page.no) or []
         drop, words_dropped, chars_dropped = _watermark_word_drops(
-            page, profile.wm_charset, repeat, boxes, cover, _grid_index(boxes)
+            page,
+            profile.wm_charset,
+            repeat,
+            boxes,
+            cover,
+            _grid_index(boxes),
+            body_boxes=body_boxes,
+            body_grid=_grid_index(body_boxes) if body_boxes else None,
         )
         if not drop:
             out.append(page)
@@ -525,8 +586,10 @@ def maybe_filter_pages(file_path: str, pages: list[TextLayerPage]) -> tuple[list
             }
         # 几何判据是承重条件（见 `_watermark_word_drops` 与 §7.1）：没有本页水印字形框
         # 就无法把「正文位置的同形词」与「水印位置的同形词」分开，宁可不剥。
-        wm_rects = collect_watermark_rects(file_path)
-        return filter_watermark_words(pages, profile, wm_rects=wm_rects)
+        wm_rects, body_rects = collect_watermark_rects(file_path)
+        return filter_watermark_words(
+            pages, profile, wm_rects=wm_rects, body_rects=body_rects
+        )
     except Exception as exc:  # noqa: BLE001 - 过滤失败绝不引入新失败
         logger.warning("visible_watermark word filter failed: %s", type(exc).__name__)
         return pages, {

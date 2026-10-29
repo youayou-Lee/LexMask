@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 
 import fitz
+import pytest
 
 from app.core.config import settings
 from app.services import text_layer_doc_source as source
@@ -399,7 +400,7 @@ def test_code_no_geometry_when_profile_hit_but_rects_missing(monkeypatch, tmp_pa
     """门⑥ 冷审 I3：探测到水印但几何拿不到 ⇒ `no_geometry`，**不能**报 `no_watermark`。"""
     path = _wm_pdf(tmp_path / "g.pdf", pages=3)
     monkeypatch.setattr(settings, "VISIBLE_WATERMARK_WORD_FILTER_ENABLED", True)
-    monkeypatch.setattr(vwm, "collect_watermark_rects", lambda *_a, **_k: {})
+    monkeypatch.setattr(vwm, "collect_watermark_rects", lambda *_a, **_k: ({}, {}))
     pages = docline.extract_text_layer_pages(path)
     filtered, stats = vwm.maybe_filter_pages(path, pages)
     assert stats["code"] == "no_geometry"
@@ -765,18 +766,91 @@ def test_probe_returns_none_for_empty_document(tmp_path):
     assert vwm.probe_visible_watermark(str(path)) is None
 
 
-def test_memo_knob_key_tracks_filter_settings(monkeypatch):
-    """AC27：开关与三个阈值任一变化都必须改变 memo key（否则两臂零差异会假通过）。"""
-    from app.services import text_layer_doc_source as source
-
-    baseline = source._word_filter_knob_key()
-    for name, value in (
+@pytest.mark.parametrize(
+    "name,value",
+    [
         ("VISIBLE_WATERMARK_WORD_FILTER_ENABLED", True),
+        ("VISIBLE_WATERMARK_PROBE_PAGES", 4),
+        ("VISIBLE_WATERMARK_MIN_PAGES", 4),
+        ("VISIBLE_WATERMARK_MIN_VISIBLE_SHARE", 0.4),
+        ("VISIBLE_WATERMARK_MIN_TOP_SIG_SHARE", 0.9),
+        ("VISIBLE_WATERMARK_MAX_SIZE_SPREAD", 3.0),
         ("VISIBLE_WATERMARK_WORD_MIN_REPEAT", 9),
         ("VISIBLE_WATERMARK_WORD_COVER_MIN", 0.5),
         ("VISIBLE_WATERMARK_MAX_DROP_VS_WM_CHARS", 2.0),
-        ("VISIBLE_WATERMARK_PROBE_PAGES", 4),
-    ):
-        monkeypatch.setattr(settings, name, value)
-        assert source._word_filter_knob_key() != baseline, name
-        monkeypatch.undo()
+        ("VISIBLE_WATERMARK_MIN_KEEP_RATIO", 0.25),
+    ],
+)
+def test_every_filter_knob_enters_memo_key(monkeypatch, name, value):
+    """AC27（门⑥ 第二段 I3）：**10 个**阈值逐个进 key —— 删任意一行都必须红。
+
+    上一版只枚举 5 键（`MIN_PAGES`/`MIN_VISIBLE_SHARE`/`MAX_SIZE_SPREAD` 从 key 里删掉
+    也不红），冷审核实 M5/M14 因此存活。这里参数化到全键，逐键做「改值 ⇒ key 变」。
+    """
+    from app.services import text_layer_doc_source as source
+
+    baseline = source._word_filter_knob_key()
+    monkeypatch.setattr(settings, name, value)
+    assert source._word_filter_knob_key() != baseline, name
+
+
+def test_stage2_settings_defaults_pinned():
+    """AC19① （门⑥ 第二段 I3）：默认值必须被钉住 —— 删掉「默认关」或改阈值都要红。
+
+    冷审 M13（ENABLED 默认 False→True）/ M14（MIN_VISIBLE_SHARE 0.35→0.5）存活，
+    就是因为没人断言默认值。评审要求的口径是「默认交付态 = 今天的行为」。
+    """
+    assert settings.VISIBLE_WATERMARK_WORD_FILTER_ENABLED is False
+    assert settings.VISIBLE_WATERMARK_PROBE_PAGES == 5
+    assert settings.VISIBLE_WATERMARK_MIN_PAGES == 3
+    assert settings.VISIBLE_WATERMARK_MIN_VISIBLE_SHARE == 0.35
+    assert settings.VISIBLE_WATERMARK_MIN_TOP_SIG_SHARE == 0.85
+    assert settings.VISIBLE_WATERMARK_MAX_SIZE_SPREAD == 2.0
+    assert settings.VISIBLE_WATERMARK_WORD_MIN_REPEAT == 8
+    assert settings.VISIBLE_WATERMARK_WORD_COVER_MIN == 0.35
+    assert settings.VISIBLE_WATERMARK_MAX_DROP_VS_WM_CHARS == 1.5
+    assert settings.VISIBLE_WATERMARK_MIN_KEEP_RATIO == 0.15
+
+
+def test_word_cover_min_clamps_lower_bound():
+    """门⑥ 第二段 I3/M16：`WORD_COVER_MIN` 是承重判据，配 0 必须被钳回下限（不能一键关掉判据）。"""
+    from app.core.config import Settings
+
+    assert Settings(VISIBLE_WATERMARK_WORD_COVER_MIN=0.0).VISIBLE_WATERMARK_WORD_COVER_MIN == 0.2
+    assert Settings(VISIBLE_WATERMARK_WORD_COVER_MIN=-5).VISIBLE_WATERMARK_WORD_COVER_MIN == 0.2
+    assert Settings(VISIBLE_WATERMARK_WORD_COVER_MIN=0.6).VISIBLE_WATERMARK_WORD_COVER_MIN == 0.6
+
+
+def test_covered_ratio_uses_union_not_sum():
+    """门⑥ 第二段 I4：同一处被多个字形框覆盖时**只能算一次**（旧实现逐框累加 ⇒ 判据放宽）。"""
+    rect = fitz.Rect(0, 0, 100, 100)
+    boxes = [fitz.Rect(0, 0, 100, 50), fitz.Rect(0, 0, 100, 50)]
+    assert abs(vwm._covered_ratio(rect, boxes) - 0.5) < 1e-9
+    partial = [fitz.Rect(0, 0, 100, 30), fitz.Rect(0, 20, 100, 50)]
+    assert abs(vwm._covered_ratio(rect, partial) - 0.5) < 1e-9
+
+
+def test_provenance_keeps_words_under_invisible_body_layer():
+    """门⑥ 第二段 C1（承重）：词框被**正文层**（不可见）字形覆盖时它属于正文，绝不能被删。
+
+    族 B 的正文 OCR 层是对带水印扫描图跑出来的，同一位置可能既有水印字形又有正文词；
+    只凭「压在水印字形上」就删会漏打码（冷审复现：每页 4 处正文实体删掉 2 处）。
+    """
+    from app.services.text_layer_docline_service import TextLayerPage, TextLayerWord
+
+    rect = fitz.Rect(10, 10, 90, 40)
+    words = [TextLayerWord(x0=10, y0=10, x1=90, y1=40, text=_WM_WORD)] * 65
+    page = TextLayerPage(no=1, width=400, height=400, words=words)
+    visible = [fitz.Rect(rect)] * 65
+    body = [fitz.Rect(rect)]
+    drop, count, chars = vwm._watermark_word_drops(
+        page,
+        frozenset(_WM_WORD),
+        8,
+        visible,
+        0.35,
+        vwm._grid_index(visible),
+        body_boxes=body,
+        body_grid=vwm._grid_index(body),
+    )
+    assert (drop, count, chars) == (set(), 0, 0)
