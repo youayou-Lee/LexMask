@@ -315,13 +315,16 @@ filtered, stats = filter_watermark_words(pages, profile, wm_rects=wm_rects)
 （v1.2 写的「≤ 该页总字符数 × 0.5」已废：薄页正文本就少，占比天然 >0.5，会把最需要过滤的薄页全部挡下。）
 
 **可观测**（键名以实现为准：写在 `pipeline_status["text_layer_doc"]["word_filter"]`；门⑥ 第一段冷审 Minor#1）：
-`{applied, code, pages_total, pages_filtered, pages_skipped_invariant, pages_skipped_no_geometry,
-pages_skipped_would_wiped, words_dropped, chars_dropped, dropped_ratio, profile}`；开启过滤且真剥过时
-额外带 `gate_basis_unfiltered_coverage`（见下方 C2 处置）。
-`code ∈ {applied, disabled, no_watermark, no_geometry, would_wiped_page, filter_invariant_exceeded,
-filter_failed}` —— **五态必须可区分**（门⑥ 冷审 I3）：`no_watermark` = 探测不中；`no_geometry` =
-探测到水印但拿不到逐字形框（整卷没剥）；`would_wiped_page` = 页级保留下限把整页挡下（假阳性形态）；
-`filter_invariant_exceeded` = 预算越界；`applied` = 真剥了。`profile` 只带计数与比例。
+**12 键固定形状**（门⑥ 第三段 I2/M4）：`{applied, code, pages_total, pages_filtered, pages_skipped_invariant,
+pages_skipped_no_geometry, pages_skipped_would_wiped, words_dropped, chars_dropped, dropped_ratio,
+gate_basis_unfiltered_coverage, profile}`；未跑过滤时后两项为 `null`，`filter_failed` 另加 `error`。
+`code ∈ {applied, no_candidates, disabled, no_watermark, no_geometry, would_wiped_page,
+filter_invariant_exceeded, filter_failed, not_run:<gate>}` —— **各态必须可区分**（门⑥ 冷审 I3 / 第三段 I2）：
+`no_watermark` = 探测不中（`profile is None`）；`no_candidates` = 探测命中但零丢弃（含「全被来源判据保留」）；
+`no_geometry` = 探测到水印但整卷拿不到逐字形框（整卷没剥）；`would_wiped_page` = 页级保留下限把整页挡下
+（假阳性形态）；`filter_invariant_exceeded` = 预算越界；`applied` = 真剥了；`not_run:<gate>` 只用于
+**过滤之前**就失败的闸（过滤之后失败的闸必须带真实统计 + `rejected_by=<gate>`，见 AC38）。
+`profile` 只带计数与比例。
 **不带任何字面量**（延续 #203 AC4 口径）。
 
 **失败回落**：开关关 ⇒ `disabled`；探测不中 ⇒ `no_watermark`；任何异常 ⇒ 用**未过滤**页 + `filter_failed`。
@@ -435,7 +438,7 @@ filter_failed}` —— **五态必须可区分**（门⑥ 冷审 I3）：`no_wat
 |---|---|---|
 | **C1 判据不看字形来源 ⇒ 正文实体被当水印删（漏打码）** | 成立，已修 | 判据加**来源维度**：同一份 `get_texttrace()` 同时取两组字形框——`_visible_char_rects`（`1/255 < opacity < 220/255` 且 `\|dir.y\| ≥ 0.2`）与 `_body_char_rects`（`opacity==0` 或 `≥220/255`，即正文层）。`_watermark_word_drops` 现在要求「可见组覆盖 ≥ `WORD_COVER_MIN` **且** 正文层覆盖 < `WORD_COVER_MIN`」才丢。回归用例 `test_provenance_keeps_words_under_invisible_body_layer`（65 份同形词全压在水印字形上、同时被正文层覆盖 ⇒ 0 丢弃）。真卷复验（独立 GT，3 卷族 B）：字数丢弃率从 1.000 降到 **0.693 / 0.664**，`body_missing_free` 仍为 **0**（即：少丢的是被正文层覆盖的那部分，正文实例一个没少）；`~ -203` 那批框因此有了机械解释。 |
 | **I1 后置五道卷级门方向不止一个，且与旧文字相反** | 成立 | 逐门订正（写进 `text_layer_doc_source.py` 注释与本节）：① `failed_chunks > 0`、② `http_errors > 上限` 是**计数量**，块数 14→9 ⇒ 触发机会变少 ⇒ **可能更宽松**；③ `map_failure_ratio`、④ `truncated_ratio` 分子分母同源 ⇒ **不定**；⑤ `coverage` 两向皆可翻。为什么不改成「未过滤基」判：未过滤分子含大量水印噪声实体（只因水印进流才被认出），改用未过滤分母会把今天走 docline 的族 B 真卷打到约 0.6 ⇒ 全部回落 OCR、收益归零。处置=**上报 + 语料冻结**：`gate_basis_unfiltered_coverage` 写 memo/日志，AC17b 冻结 12 卷路由清单（本地复跑与改动前**逐值相同**），诚实边界 17 写明「不是形式化证明」。 |
-| **I2 marker 缺 `word_filter`，键集不稳定** | 成立，已修 | 8 条 `_TransientIneligible` 与通用 `except` 分支的 marker 都带 `word_filter={"code": f"not_run:<reason_code>"}`（通用异常为 `not_run:error`），与成功路径 `code` 命名空间区分；文档/AC 里 `docline_word_filter` 与实现 `word_filter` 键名统一。AC20 口径从「两态都出现」改为「**只要进入建链就出现**」。 |
+| **I2 marker 缺 `word_filter`，键集不稳定** | 成立，已修 | 8 条 `_TransientIneligible` 与通用 `except` 分支的 marker 都带（**本节为 v1.6 历史记录**；v1.8 已把 raise 处数订正为 9 处、并把「过滤后失败」与「过滤前失败」分成 `rejected_by` / `not_run` 两种码） `word_filter={"code": f"not_run:<reason_code>"}`（通用异常为 `not_run:error`），与成功路径 `code` 命名空间区分；文档/AC 里 `docline_word_filter` 与实现 `word_filter` 键名统一。AC20 口径从「两态都出现」改为「**只要进入建链就出现**」。 |
 | **I3 4 个变异存活 ⇒ 默认值/逐 knob 无判据** | 成立，已修 | 新增 `test_every_filter_knob_enters_memo_key`（**10 个**阈值**逐个**参数化，删任一行即红）、`test_stage2_settings_defaults_pinned`（10 键默认值全断言，钉住「默认关」）、`test_word_cover_min_clamps_lower_bound`（置 0/-5 ⇒ 钳回 0.2）。对应 M5/M13/M14/M16 全部转 KILLED。 |
 | **I4 `_covered_ratio` 不扣框间重叠 ⇒ 判据系统性放宽** | 成立，已修 | 改为**精确并集**（x 方向区间扫描 + y 区间合并，每词只有几个字形框，代价可忽略）。回归用例 `test_covered_ratio_uses_union_not_sum`（两个完全重叠的框 ⇒ 0.5 而非 1.0；部分重叠 ⇒ 并集）。真卷效果见 C1 行（丢弃率随之降到 0.69/0.66）。 |
 | Minor 1 `getattr(..., "MIN_VISIBLE_SHARE", 0.5)` 死兜底与默认 0.35 不一致 | 部分采纳 | 保留 `getattr` 形式（测试需要 monkeypatch settings），但默认值以 `config.py` 为准并在该行加注释；不改读取方式以免测试双轨。 |
