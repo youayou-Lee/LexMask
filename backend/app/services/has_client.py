@@ -1581,13 +1581,28 @@ If nothing matches, return {{}}.
                             ),
                         )
                         requery_single_pass_chars = int(
-                            getattr(settings, "HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS", 6000)
+                            getattr(settings, "HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS", 0)
                             or 0
                         )
-                        type_batches = [
-                            missing[i : i + require_requery_type_batch]
-                            for i in range(0, len(missing), require_requery_type_batch)
-                        ]
+                        # 类型批**只在真装不下时才切**：整批预算已能装进完成帽 ⇒
+                        # 单批（同 #103/#104 的容量算术同源原则）。门④二轮实测
+                        # （2026-10-29，15:27）暴露反例：整段 3924 字符 × 2 类型
+                        # 单请求生成 72.6s（模型要重读整页再枚举该类型全部值），
+                        # 比切成 450 字符块慢一个数量级 ⇒ 默认**始终切文本**，
+                        # 类型轴只作为超预算保护。
+                        requery_cap = int(
+                            getattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048) or 2048
+                        )
+                        if (
+                            self._ner_completion_budget(len(missing), text, _NER_TOKENS_PER_TYPE)
+                            <= requery_cap
+                        ):
+                            type_batches = [list(missing)]
+                        else:
+                            type_batches = [
+                                missing[i : i + require_requery_type_batch]
+                                for i in range(0, len(missing), require_requery_type_batch)
+                            ]
                         if requery_single_pass_chars > 0 and len(text) <= requery_single_pass_chars:
                             retry_chunks = [text]
                         else:

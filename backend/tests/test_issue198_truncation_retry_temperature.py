@@ -75,13 +75,18 @@ def test_truncated_requery_escalates_temperature_and_merges():
 
     main, requery = _split_calls(calls)
     assert requery, "用例前提：必须发生补查"
+    requery_missing = ["日期", "薪酬", "年龄（岁）"]
     # 种子趟保持调用方温度；补查趟（可能多个子批）全部升到设置默认 0.7
     assert main["temperature"] == 0.0
     assert all(c["temperature"] == 0.7 for c in requery)
     # 补查 prompt 只带缺失类型：已落桶的姓名不得再问，缺失类型必须都覆盖到
     for call in requery:
         assert "姓名" not in call["content"]
-        assert len(_specified_types(call["content"])) <= settings.HAS_NER_REQUERY_MAX_TYPES_PER_CALL
+        # Issue#209 成本结构修复③：类型轴只在「整批真装不下完成帽」时才切
+        # （`HAS_NER_REQUERY_MAX_TYPES_PER_CALL` 是上限而非固定批长）。本页
+        # 94 字符 × 3 类型远小于 4096 帽 ⇒ 单批 3 类型是**期望行为**；
+        # 「超预算才切」由 tests/test_issue209_requery_budget.py 专钉。
+        assert set(_specified_types(call["content"])) <= set(requery_missing)
     covered = {t for call in requery for t in _specified_types(call["content"])}
     assert {"薪酬", "年龄（岁）"} <= covered
     # 合并结果闭合全部缺失桶

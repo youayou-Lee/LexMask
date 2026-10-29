@@ -418,7 +418,9 @@ def test_batch_path_requery_capped_once(monkeypatch):
     calls = []
 
     def counting(messages, *, max_tokens=None, temperature=None):
-        calls.append(_prompt_types(messages[0]["content"]))
+        calls.append(
+            {"types": _prompt_types(messages[0]["content"]), "temperature": temperature}
+        )
         return respond(messages, max_tokens=max_tokens, temperature=temperature)
 
     # Issue#198 分块补查由专测覆盖（test_issue198_*）；此处钉「封顶 1 次/批」
@@ -434,14 +436,21 @@ def test_batch_path_requery_capped_once(monkeypatch):
     # Issue#209 成本结构修复③：补查再沿类型轴切小（每请求 ≤2 类型），因此每批
     # 截断后是 ceil(缺失/2) 个子请求而不是 1 次——「封顶」语义不变（补查自身
     # 一律 _allow_truncation_retry=False，绝不二次补查），断言改成结构口径。
-    main_calls = [c for c in calls if len(c) > 2]
-    requery_calls = [c for c in calls if len(c) <= 2]
+    # 主/补查用**温度**区分（补查趟统一升到 HAS_NER_TRUNCATION_RETRY_TEMPERATURE），
+    # 不能用类型数量区分：Issue#209 之后补查默认整批问缺失类型，批长与主批同量级。
+    retry_temp = settings.HAS_NER_TRUNCATION_RETRY_TEMPERATURE
+    main_calls = [c for c in calls if c["temperature"] != retry_temp]
+    requery_calls = [c for c in calls if c["temperature"] == retry_temp]
     assert len(main_calls) >= 2, f"用例前提：20 型必须分批，实际 {len(main_calls)} 批"
     assert requery_calls, "用例前提：确实发生了补查"
-    assert all(len(c) <= 2 for c in requery_calls), f"补查必须按类型切小：{requery_calls}"
-    # 每批只补查一层：子请求数 ≤ 批数 × ceil(最多缺失 10 型 / 2)
-    assert len(requery_calls) <= len(main_calls) * 5, (
-        f"补查层数越界：{len(requery_calls)} 个子请求 / {len(main_calls)} 个主批"
+    main_sets = [set(c["types"]) for c in main_calls]
+    for c in requery_calls:
+        assert any(set(c["types"]) <= batch for batch in main_sets), (
+            f"补查越过了自己的主批（可能发生了跨批全局重查）：{c['types']}"
+        )
+    # 每个主批至多贡献 1 个补查请求（无分块时）
+    assert len(requery_calls) <= len(main_calls), (
+        f"补查层数越界：{len(requery_calls)} 个补查请求 / {len(main_calls)} 个主批"
     )
     assert len(result) >= 3
     # 主批各记一次；补查子批自身复截断时也会记（话题模型在 ≥2 型批上恒返

@@ -560,16 +560,17 @@ class Settings(BaseSettings):
     HAS_NER_NEAR_DUP_MAX_LINE_CHARS: int = 40
     HAS_NER_NEAR_DUP_MIN_CJK_CHARS: int = 2
 
-    # 截断补查的**每请求类型数上限**（Issue#209 成本结构修复③）。门④实测：
-    # 同一段 3928 字符文本上「2 类型 / 640 帽」的补查块**收敛**
+    # 截断补查的**每请求类型数上限**（Issue#209 成本结构修复③）。门④实测（一
+    # 轮）：同一段 3928 字符文本上「2 类型 / 640 帽」的补查块收敛
     # （finish_reason=stop recovered=2/2），而流水线实际发的「4 类型 / ≈860 帽」
-    # 块反复 finish_reason=length、confirmed=False——补查自己又被截断，于是
-    # 12 段补查烧掉 100s+。⇒ 补查按类型切小（默认 2），让每请求的输出规模
-    # 由类型数决定，不再依赖"碰巧装下"。
+    # 块反复 finish_reason=length、confirmed=False——补查自己又被截断。
+    # 该上限**只在整批真装不下完成帽时**生效（容量算术与 #103/#104 同源）；
+    # 装得下就单批，不做无谓的类型切分。
     HAS_NER_REQUERY_MAX_TYPES_PER_CALL: int = 2
-    # 补查时**整段单次**的文本字符上限：类型数已受限（≤2）时输出规模小，
-    # 不需要再按行切块；超过本上限才退回行边界分块（防超上下文/长程复读）。
-    HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS: int = 6000
+    # 补查时**整段单次**的文本字符上限。默认 0 = 始终按行边界分块：门④二轮
+    # 实测（2026-10-29 15:27）「整段 3924 字符 × 2 类型」单请求生成 72.6s
+    # （模型重读整页再枚举该类全部值），比 450 字符块慢一个数量级。
+    HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS: int = 0
 
     # 残差 payload 相对主查 payload 的字符上限比（Issue#209 成本结构修复②，
     # 禁「整页重发」）。截断时 `_block_residual_ink` 会判定"几乎整页墨迹都
