@@ -8,6 +8,7 @@
 """
 
 import csv
+import json
 
 import pytest
 
@@ -83,6 +84,44 @@ def test_export_report_surfaces_recognition_failed_pages(job_env):
     # 干净条目：字段为空列表、error 不含警示
     clean = next(f for f in report["files"] if f["file_id"] == file_ids[1])
     assert clean["recognition_failed_pages"] == []
+
+
+def test_update_item_performance_is_deep_merge_across_page_patches(job_env):
+    """门⑥ 第三段 must-fix：失败页补记依赖「深合并、不覆盖同 item 其它页」。
+
+    `task_queue_pipelines` 的失败分支会为**同一 item 的另一页**再写一笔
+    `recognition.pages.<p>`。若 `update_item_performance` 退化成覆盖写，页 2 的
+    completed 记录会被页 1 的失败补记整体冲掉（交付面丢页）。这里钉住合并语义
+    （`job_store.update_item_performance` → `_deep_merge_dict`）。
+
+    变异验证：把 `_record_item_performance` 那段删掉 ⇒
+    `test_issue199_page_failure_isolation.py::test_u11…` 变红；把 job_store 的
+    `_deep_merge_dict(...)` 换成 `patch` ⇒ 本用例变红。
+    """
+    store, job_id, file_ids = job_env
+    item_id = next(
+        it["id"] for it in store.list_items(job_id) if it["file_id"] == file_ids[0]
+    )
+    store.update_item_performance(
+        item_id,
+        {"recognition": {"pages": {"2": {"status": "completed", "duration_ms": 111}}}},
+    )
+    store.update_item_performance(
+        item_id,
+        {
+            "recognition": {
+                "pages": {"1": {"status": "failed", "error": "ValueError: page boom"}},
+                "total_ms": 4242,
+            }
+        },
+    )
+
+    row = store.get_item(item_id)
+    perf = json.loads(row["performance_json"])
+    pages = perf["recognition"]["pages"]
+    assert pages["2"] == {"status": "completed", "duration_ms": 111}, pages
+    assert pages["1"]["status"] == "failed", pages
+    assert perf["recognition"]["total_ms"] == 4242, perf
 
 
 def test_summary_only_report_keeps_aggregates_drops_files(job_env):

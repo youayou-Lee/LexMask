@@ -258,13 +258,24 @@ def test_page_level_budget_failure_propagates_out_of_the_page_pipeline(monkeypat
 
     monkeypatch.setattr(svc, "_detect_with_ocr_has", _boom)
 
+    # 门⑥ 第三段复核 must-fix：I4 的**接线**（raise 前的 decorate 调用）此前零判据
+    # ——删掉它 10 个用例仍全绿。这里喂进预算计数，要求上抛的 reason 里带着它们。
+    svc.ocr_has_service.last_duration_ms = {
+        "has_text_ner_budget_exceeded": 1,
+        "has_text_ner_budget_skipped_groups": 3,
+        "has_text_ner_orphan_threads": 2,
+    }
+
     from app.services.vision_service import FileType
 
     with pytest.raises(HasTextNerPageBudgetExceeded) as excinfo:
         asyncio.run(
             svc.detect_with_dual_pipeline("x.png", FileType.IMAGE, 1, ["身份证号"], [])
         )
-    assert "budget exceeded" in str(excinfo.value)
+    reason = str(excinfo.value)
+    assert "budget exceeded" in reason
+    assert "bsg=3" in reason, reason
+    assert "orph=2" in reason, reason
 
 
 # ---------------------------------------------------------------------------
