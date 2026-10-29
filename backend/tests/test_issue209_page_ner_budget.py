@@ -325,6 +325,8 @@ def test_page_budget_is_a_hard_wall_around_one_long_call(monkeypatch, caplog):
     assert merged == [], "被硬墙截断的组不得当成功值合并"
     assert stage.get("has_text_ner_budget_exceeded") == 1
     assert any("budget exceeded" in r.getMessage() for r in caplog.records), caplog.text
+    # 门⑥ F4：被放手的 to_thread 线程仍在后台跑（且可能写共享缓存），必须可观测
+    assert stage.get("has_text_ner_orphan_threads") == 1
 
 
 def test_page_budget_zero_disables_the_wall(monkeypatch):

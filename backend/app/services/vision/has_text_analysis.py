@@ -274,8 +274,12 @@ async def _run_has_text_ner_groups(
                                         # 在同步 HTTP 里跑，取消不了；`wait_for` 会
                                         # **等它自然结束**再抛 TimeoutError（实测 2s
                                         # 预算量出 3.05s），等于没有墙。用 asyncio.wait
-                                        # 超时就直接放手（线程在后台跑完，其结果无人
-                                        # 消费；页不再被它拖住）。
+                                        # 超时就直接放手：页不再被它拖住，但**线程会
+                                        # 在后台跑完**——它会继续占用 GPU、并且**可能
+                                        # 把自己的结果写进 HaS 共享缓存**（门⑥ F4：
+                                        # 早先注释写的"结果无人消费"不准确）。因此
+                                        # 这里记账 `has_text_ner_orphan_threads`，让
+                                        # 这种"页已放行、模型还在跑"的形态可观测。
                                         task = asyncio.ensure_future(
                                             asyncio.to_thread(
                                                 aggregate_ner_samples, _ner_sample, k_samples
@@ -288,6 +292,9 @@ async def _run_has_text_ner_groups(
                                             task.add_done_callback(
                                                 lambda t: t.cancelled() or t.exception()
                                             )
+                                            stage_status["has_text_ner_orphan_threads"] = int(
+                                                stage_status.get("has_text_ner_orphan_threads", 0) or 0
+                                            ) + 1
                                             raise TimeoutError
                                         result, passes_run = task.result()
                                 except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041
