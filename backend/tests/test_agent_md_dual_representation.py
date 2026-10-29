@@ -108,10 +108,12 @@ def test_v2_dropped_table_falls_back_to_v1(sample_pdf, tmp_path):
     assert "6222020200012345678" in _body(task)
     assert any("dual_representation_shortfall" in w and "winner=content_list_v1" in w
                for w in task.warnings)
-    assert task.dropped_blocks == {"empty_table": 1, "unhandled": {},
-                                   "source": "content_list_v1"}
+    assert task.dropped_blocks == {"empty_table": 1, "empty_table_pages": [0],
+                                   "unhandled": {}, "source": "content_list_v1"}
     assert task.state == TaskState.MAPPING_READY
     assert task.entities  # fake NER 从 v1 正文里认出张某某
+    # 门⑥ I3：默认九类必须真的写进 task（零实体闸的豁免条件依赖它非空）
+    assert task.entity_types_used, "entity_types_used 不能为空——否则零实体闸对所有任务豁免"
 
 
 # ---- b) 水印/重复放大：v1 侧字符暴涨 ⇒ 不得盲取较大者，留在 v2 ----
@@ -151,7 +153,8 @@ def test_both_representations_empty_fails_loudly(sample_pdf, tmp_path):
     assert task.state == TaskState.FAILED
     assert task.message.startswith("parse_no_text")
     assert task.mapping == []
-    assert task.dropped_blocks == {"empty_table": 1, "unhandled": {}, "source": "none"}
+    assert task.dropped_blocks == {"empty_table": 1, "empty_table_pages": [0],
+                                   "unhandled": {}, "source": "none"}
 
 
 # ---- e) v2 缺失、v1 完整 ⇒ 用 v1（管线主路径整版缺失也不得归零）----
@@ -174,8 +177,8 @@ def test_close_representations_use_v2_without_warn(sample_pdf, tmp_path):
 
     assert "6222020200012345678" in _body(task)
     assert not any("dual_representation_" in w for w in task.warnings)
-    assert task.dropped_blocks == {"empty_table": 0, "unhandled": {},
-                                   "source": "content_list_v2"}
+    assert task.dropped_blocks == {"empty_table": 0, "empty_table_pages": [],
+                                   "unhandled": {}, "source": "content_list_v2"}
 
 # ---- g) v1 存在但正文全空（≠ v1 缺失）⇒ 用 v2，绝不把 v1 空串当正文 ----
 
@@ -190,6 +193,70 @@ def test_v1_present_but_empty_text_uses_v2(sample_pdf, tmp_path):
     assert "dual_representation_shortfall: winner=content_list_v2 v1=0 v2=33" in task.warnings
     assert not any("dual_representation_unavailable" in w for w in task.warnings)
     assert task.dropped_blocks["source"] == "content_list_v2"
+
+
+# ---- j) I2：v2 部分丢表（有正文但少一截 + 有空表）⇒ 回落 v1 ----
+
+
+def test_partially_dropped_v2_falls_back_to_v1(sample_pdf, tmp_path):
+    """v2 丢了部分表格（还有一张带 html）时，走"short + 有空表"分支回落 v1。
+
+    这是"部分丢表"事故的唯一保命路径（整版丢表由 v2_chars==0 分支处理），门⑥
+    发现该分支零判据（M9 SURVIVED），故补此例。
+    """
+    v2 = _v2_page(html=_HTML)
+    v2[0].append({"type": "table",
+                  "content": {"image_source": {"path": "images/x.jpg"}},
+                  "bbox": [0, 120, 100, 220]})
+    v1 = _v1_flat(extra_text="余额 134.37 元")
+
+    task = _run(sample_pdf, tmp_path, v2=v2, v1=v1)
+
+    assert task.dropped_blocks["source"] == "content_list_v1"
+    assert task.dropped_blocks["empty_table"] == 1  # 仍报 v2 事故侧计数
+    assert "134.37" in _body(task)  # v1 独有内容确实进来了
+    assert any("winner=content_list_v1" in w and "v2=33" in w for w in task.warnings)
+    assert task.state == TaskState.MAPPING_READY
+
+
+# ---- k) I6：v1 缺失且 v2 正文全空 ⇒ 同样是 parse_no_text，不是"0 实体就绪" ----
+
+
+def test_missing_v1_and_empty_v2_fails_loudly(sample_pdf, tmp_path):
+    task = _run(sample_pdf, tmp_path, v2=_v2_page(html=None), v1=[])
+
+    assert task.state == TaskState.FAILED
+    assert task.message.startswith("parse_no_text")
+    assert task.dropped_blocks["source"] == "none"
+
+
+# ---- l) m5：GUARD_RATIO=0.95 的"恰等"与"略小"边界 ----
+
+
+def _text_page(text: str) -> list[list[dict]]:
+    return [[{"type": "paragraph",
+              "content": {"paragraph_content": [{"type": "text", "content": text}]},
+              "bbox": [0, 0, 100, 100]}]]
+
+
+def _text_flat(text: str) -> list[dict]:
+    return [{"type": "text", "text": text, "page_idx": 0}]
+
+
+def test_guard_ratio_exact_boundary_does_not_short(sample_pdf, tmp_path):
+    """v2 == 0.95×v1 恰等：不算 short，不回落、不告警。"""
+    task = _run(sample_pdf, tmp_path, v2=_text_page("B" * 190), v1=_text_flat("B" * 200))
+
+    assert task.dropped_blocks["source"] == "content_list_v2"
+    assert not any("dual_representation_" in w for w in task.warnings)
+
+
+def test_guard_ratio_just_below_boundary_is_short(sample_pdf, tmp_path):
+    """v2 = 0.945×v1（略小）：short 成立，但因 v2 没丢表 ⇒ 留在 v2 并指名数值。"""
+    task = _run(sample_pdf, tmp_path, v2=_text_page("B" * 189), v1=_text_flat("B" * 200))
+
+    assert task.dropped_blocks["source"] == "content_list_v2"
+    assert "dual_representation_shortfall: winner=content_list_v2 v1=200 v2=189" in task.warnings
 
 
 # ---- h) v1 明显少于 v2（v2 未丢表、非 short 方向）⇒ 仍用 v2 并指明数值 ----
@@ -219,10 +286,10 @@ def test_concurrent_tasks_do_not_cross_contaminate(sample_pdf, tmp_path):
         f_ok = pool.submit(run_case, _v2_page(), _v1_flat(), "b")
         t_drop, t_ok = f_drop.result(), f_ok.result()
 
-    assert t_drop.dropped_blocks == {"empty_table": 1, "unhandled": {},
-                                     "source": "content_list_v1"}
+    assert t_drop.dropped_blocks == {"empty_table": 1, "empty_table_pages": [0],
+                                     "unhandled": {}, "source": "content_list_v1"}
     assert any("winner=content_list_v1" in w for w in t_drop.warnings)
 
-    assert t_ok.dropped_blocks == {"empty_table": 0, "unhandled": {},
-                                   "source": "content_list_v2"}
+    assert t_ok.dropped_blocks == {"empty_table": 0, "empty_table_pages": [],
+                                   "unhandled": {}, "source": "content_list_v2"}
     assert not any("dual_representation_" in w for w in t_ok.warnings)

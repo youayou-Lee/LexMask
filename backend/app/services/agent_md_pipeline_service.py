@@ -179,6 +179,7 @@ class AgentMdPipelineService:
             segs, warns, dropped, source = self._choose_representation(result)
             task.dropped_blocks = {
                 "empty_table": dropped.empty_table_blocks,
+                "empty_table_pages": list(dropped.empty_table_pages),
                 "unhandled": dict(dropped.dropped_block_types),
                 "source": source,
             }
@@ -220,40 +221,47 @@ class AgentMdPipelineService:
         - 两路接近 → 用 v2（管线主路径），不告警。
         """
         v2_stats = CleanStats()
-        v2_segs, _ = clean_segments(
+        v2_segs, v2_warns = clean_segments(
             normalize_content_list(result.content_list_v2), stats=v2_stats)
         v1_stats = CleanStats()
-        v1_segs, _ = clean_segments(
+        v1_segs, v1_warns = clean_segments(
             normalize_content_list(result.content_list_v1), stats=v1_stats)
         v2_chars, v1_chars = _body_chars(v2_segs), _body_chars(v1_segs)
         warns: list[str] = []
 
-        if not result.content_list_v1:
-            warns.append("dual_representation_unavailable: mineru 产物缺 v1 content_list")
-            return v2_segs, warns, v2_stats, "content_list_v2"
+        # 门⑥ I6：两路皆空必须判"没解析出正文"——即使 v1 缺失也不能当"识别完 0 实体"
         if v1_chars == 0 and v2_chars == 0:
             return None, warns, v2_stats, "none"
+        if not result.content_list_v1:
+            warns.append("dual_representation_unavailable: mineru 产物缺 v1 content_list")
+            warns.extend(f"v2: {w}" for w in v2_warns)
+            return v2_segs, warns, v2_stats, "content_list_v2"
         if v1_chars == 0:
             warns.append(
                 f"dual_representation_shortfall: winner=content_list_v2 v1=0 v2={v2_chars}")
+            warns.extend(f"v2: {w}" for w in v2_warns)
             return v2_segs, warns, v2_stats, "content_list_v2"
         if v2_chars == 0:
             warns.append(
                 f"dual_representation_shortfall: winner=content_list_v1 v1={v1_chars} v2=0")
+            warns.extend(f"v1: {w}" for w in v1_warns)
             return v1_segs, warns, v2_stats, "content_list_v1"
         short = v2_chars < GUARD_RATIO * v1_chars
         if short and v2_stats.empty_table_blocks > 0:
             warns.append("dual_representation_shortfall: winner=content_list_v1 "
                          f"v1={v1_chars} v2={v2_chars}")
+            warns.extend(f"v1: {w}" for w in v1_warns)
             return v1_segs, warns, v2_stats, "content_list_v1"
         if short:
             # v2 没丢表但正文比 v1 少一截：多半是 v1 侧被水印/重复文本撑大，不盲取较大者
             warns.append("dual_representation_shortfall: winner=content_list_v2 "
                          f"v1={v1_chars} v2={v2_chars}")
+            warns.extend(f"v2: {w}" for w in v2_warns)
             return v2_segs, warns, v2_stats, "content_list_v2"
         if v1_chars < GUARD_RATIO * v2_chars:
             warns.append("dual_representation_shortfall: winner=content_list_v2 "
                          f"v1={v1_chars} v2={v2_chars}")
+        warns.extend(f"v2: {w}" for w in v2_warns)
         return v2_segs, warns, v2_stats, "content_list_v2"
 
     @staticmethod

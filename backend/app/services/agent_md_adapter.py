@@ -36,6 +36,8 @@ class CleanStats:
 
     empty_table_blocks: int = 0
     dropped_block_types: dict[str, int] = field(default_factory=dict)
+    # 门⑥ I1：只给总数无法安排人工复核页；页码清单单独留（有上限，防 80 页×N 撑爆）
+    empty_table_pages: list[int] = field(default_factory=list)
 _LATEX_DISPLAY_SQ = re.compile(r"\\\[(.*?)\\\]")
 _LATEX_DISPLAY_RQ = re.compile(r"\\\((.*?)\\\)")
 _LATEX_DOLLAR_PAIR = re.compile(r"\$([^$]*)\$")
@@ -210,6 +212,8 @@ def clean_segments(
                 # Issue#212：空表格块此前既不产段也不告警（静默丢表 = 事故本体）
                 if stats is not None:
                     stats.empty_table_blocks += 1
+                    if len(stats.empty_table_pages) < 100:
+                        stats.empty_table_pages.append(page_idx)
                 warns.append(f"empty table block: page={page_idx}")
         elif btype == "image":
             path = item.get("img_path", "")

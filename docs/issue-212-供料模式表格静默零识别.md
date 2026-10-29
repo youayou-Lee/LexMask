@@ -53,7 +53,7 @@ v1_table_scan: blocks=6 segs=4 chars=258 warns=[]
 
 - `_V2_TYPE_TO_V1` 增 `title → text`；
 - `_v2_block_to_flat`：`type == "table"` 且缺 `table_body` 时从 `content["html"]` 上浮；`table_caption` / `table_footnote`（v2 为 `[{type:text,content:…}]` 数组）拼接成字符串上浮为同名扁平键（已存在则不覆写）；
-- `clean_segments` 返回**三段组** `(segs, warns, stats)`，`stats` 为新增 `@dataclass CleanStats`：
+- `clean_segments(content_list, stats: CleanStats | None = None)` 仍返回**二元组** `(segs, warns)`；`stats` 是新增 `@dataclass CleanStats` 的可选出参（既有调用方零改动）：
   - `empty_table_blocks: int`、`dropped_block_types: dict[str, int]`；
   - 表格正文 = `table_to_text(table_body)`，再把非空 caption / footnote 各追加一行（`" | "` 拼接风格保持与 body 一致）；
   - 空表格块计入 `stats.empty_table_blocks` 并按 `empty table block: page=N` 进 warns；未知 type 计入 `stats.dropped_block_types[type]` 并保留 `unhandled block type: X` warn；
@@ -107,8 +107,8 @@ v2_chars, v1_chars = 正文（text/table）字符数；GUARD_RATIO = 0.95
 - `api.ts`：`StatusDto` 增 `warnings?: string[]`、`warnings_total?: number`、`dropped_blocks?: {empty_table?: number; unhandled?: Record<string, number>; source?: string}`；
 - `lib/agent-md-flow.ts`：新增纯函数 `needsZeroEntityAck(items) => items.length === 0`；
 - `step-review.tsx`：空映射时置顶告警条（i18n zh/en 两条文案），「确认出稿」在 `needsZeroEntityAck(items)` 为真时 disabled，需勾选「我已知晓本次未识别到任何敏感实体」后才可点，提交带 `acknowledge_zero_entities: true`；
-- `step-processing.tsx` / `step-result.tsx`：展示 `warnings`（折叠）+ `dropped_blocks` 聚合；
-- i18n：`agentMd.zeroEntitiesWarning` / `zeroEntitiesAck` / `droppedBlocksHint`（zh+en）。
+- `step-processing.tsx`：展示 `warnings`（最多 3 条折叠 + 其余条数）+ `dropped_blocks.empty_table` 计数（`agent-md-parse-warnings`）；
+- i18n：`agentMd.zeroEntitiesWarning` / `agentMd.zeroEntitiesAck` / `agentMd.parseWarningsTitle` / `agentMd.droppedEmptyTable` / `agentMd.parseWarningsMore`（zh+en）。
 
 ### 3.6 文档
 
@@ -251,3 +251,20 @@ i) **并发不串味**：两个任务在不同线程各自跑 1 个 service（�
 | R3-5 | 版本号仍写 v2、round2 无留痕 | 采纳 → 版本改 v3 + §7.2/§7.3 |
 | R3-6 | 138 与 143 并列无说明 | 采纳 → §1 补口径说明（clean 后正文 vs NER 载荷） |
 | R3-7 | §3.3 伪码 `clean_segments(..., stats=v2_stats)` 自引用 | 采纳 → 伪码改为先建 `CleanStats()` 再 out 传参 |
+### 7.4 门⑥ 冷审处置（2026-10-29，APPROVE with fixes：C0 / I6 / M7）
+
+| # | 意见 | 处置 |
+|---|---|---|
+| I1 | 逐页空表告警被丢（`clean_segments` warns 绑 `_`），"page=N 在 API 可见"不成立 | 采纳：`CleanStats.empty_table_pages`（上限 100）+ 两路 warns 按胜者侧加 `v2:`/`v1:` 前缀并入 `task.warnings` + `dropped_blocks.empty_table_pages` 经 status 透出；被测 |
+| I2 | 分支⑤（部分丢表回落 v1）零判据（M9 SURVIVED） | 采纳：`test_partially_dropped_v2_falls_back_to_v1`（v2 有 html 表 + 空表、v1 更全）；变异复验 KILLED |
+| I3 | `task.entity_types_used` 生产接线零判据（M10 SURVIVED，删一行即让零实体闸全局豁免） | 采纳：在 a) 用例断言 `task.entity_types_used` 非空；变异复验 KILLED |
+| I4 | 前端两处接线零判据（F1 页面丢 ack 转发 / F2 告警面板关闭仍全绿） | 采纳：新增 `api.test.ts`（网络层 payload 带/不带 ack）、`step-processing.parse-warnings.test.tsx`（面板可见 + 无告警不显示）、`lib/wiring-contract.test.ts`（页面 `confirm(taskId, decisions, options)` 表达式契约）；两个变异复验 KILLED |
+| I5 | upload 的 `file_id` 入口不校验 owner，可借他人文件建任务再读映射/产物 | 采纳：`fms.assert_file_owner(file_id, owner_id)`（`owner_id` 非空且非 `anonymous` 时）+ 跨 owner 404 用例 + 同 owner 正向对照；变异复验 KILLED |
+| I6 | `parse_no_text` 未覆盖"v1 缺失 + v2 全空"（状态机把"没解析出正文"当"识别完 0 实体"） | 采纳：两路皆 0 判断前移到"v1 缺失"之前；新增 `test_missing_v1_and_empty_v2_fails_loudly`；变异复验 KILLED |
+| m1 | `_body_chars` docstring 与 `chars` 时点不符（enrich 前、不含 img_ocr） | 采纳：docstring 改正、`chars` 语义不变（不改门④ 数字） |
+| m2 | `empty_table` 恒 v2 侧而 `chars` 是胜者侧 | 采纳：摘要写入 API 注释明示口径（不改字段名，避免 API 再动） |
+| m3 | `acknowledge_zero_entities` 真值判断，`"false"` 也算确认 | 采纳：`is True` |
+| m4 | 豁免路径交付未脱敏原文却零审计 | 采纳：零实体恒审计，detail 增 `exempt_all_types_disabled`/`acknowledged`/`filename` |
+| m5 | `GUARD_RATIO=0.95` 边界未钉 | 采纳：新增"恰等不 short / 0.945 short"两例 |
+| m6 | 文档/CHANGELOG/PR 数字与文案漂移 | 采纳：§3.1 二元组、§3.5 键名与实际组件、测试计数改为后端 +33 / 前端 +18 |
+| m7 | 告警 `<li key={w}>` 重复文本撞 key | 采纳：`key={`${i}-${w}`}` |

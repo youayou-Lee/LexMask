@@ -73,7 +73,8 @@ def test_status_exposes_dropped_blocks_and_chars(fake):
     body = client.get("/api/v1/agent-md/tk-1/status").json()
 
     assert body["dropped_blocks"] == {
-        "empty_table": 79, "unhandled": {"title": 8}, "source": "content_list_v1"}
+        "empty_table": 79,
+        "empty_table_pages": [], "unhandled": {"title": 8}, "source": "content_list_v1"}
     assert body["chars"] == 138
     assert body["warnings_total"] == 21
     assert len(body["warnings"]) == 20
@@ -85,7 +86,8 @@ def test_status_zero_counts_are_explicit_not_missing(fake):
 
     body = client.get("/api/v1/agent-md/tk-1/status").json()
 
-    assert body["dropped_blocks"] == {"empty_table": 0, "unhandled": {},
+    assert body["dropped_blocks"] == {"empty_table": 0, "empty_table_pages": [],
+                                      "unhandled": {},
                                       "source": "none"}
     assert body["chars"] == 0
 
@@ -176,3 +178,61 @@ def test_zero_entity_gate_requires_mapping_ready_state(fake):
     assert resp.status_code == 409
     assert resp.json()["error_code"] == "TASK_NOT_READY"
     assert fp.confirm_calls == 0
+
+
+# ---- I5（门⑥）：file_id 入口必须校验 owner，否则可借他人文件建任务再读映射/产物 ----
+
+
+class _StoreWithOwner:
+    def __init__(self, entries):
+        self._entries = entries
+
+    def get(self, file_id):
+        return self._entries.get(file_id)
+
+
+def test_upload_with_file_id_of_other_owner_is_404(fake, tmp_path, monkeypatch):
+    from app.core.auth import require_auth
+    from app.services import file_management_service as fms
+
+    uploads = Path(settings.UPLOAD_DIR)
+    uploads.mkdir(parents=True, exist_ok=True)
+    pdf = uploads / "a.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    monkeypatch.setattr(fms, "file_store", _StoreWithOwner(
+        {"fid-a": {"file_path": str(pdf), "original_filename": "a.pdf",
+                   "owner_id": "tenant-a"}}))
+    fake()
+
+    app.dependency_overrides[require_auth] = lambda: "tenant-b"
+    try:
+        r = client.post("/api/v1/agent-md/upload", data={"file_id": "fid-a"})
+    finally:
+        app.dependency_overrides.pop(require_auth, None)
+
+    assert r.status_code == 404
+    assert r.json()["error_code"] == "FILE_NOT_FOUND"
+
+
+def test_upload_with_own_file_id_is_accepted(fake, tmp_path, monkeypatch):
+    """正向对照：同 owner 的 file_id 必须照常放行（防"一律 404"假绿）。"""
+    from app.core.auth import require_auth
+    from app.services import file_management_service as fms
+
+    uploads = Path(settings.UPLOAD_DIR)
+    uploads.mkdir(parents=True, exist_ok=True)
+    pdf = uploads / "a.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    monkeypatch.setattr(fms, "file_store", _StoreWithOwner(
+        {"fid-a": {"file_path": str(pdf), "original_filename": "a.pdf",
+                   "owner_id": "tenant-a"}}))
+    fp = fake()
+
+    app.dependency_overrides[require_auth] = lambda: "tenant-a"
+    try:
+        r = client.post("/api/v1/agent-md/upload", data={"file_id": "fid-a"})
+    finally:
+        app.dependency_overrides.pop(require_auth, None)
+
+    assert r.status_code == 200
+    assert fp.t is not None

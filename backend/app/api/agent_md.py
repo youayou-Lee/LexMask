@@ -67,7 +67,16 @@ async def upload(
     上传，playground 分流入口）；给 file 时走常规 multipart 上传。
     """
     if file_id:
-        info = fms.file_store.get(file_id)
+        # 门⑥ I5：入口也必须校验 owner——否则 B 可用 A 的 file_id 建"自己的"任务，
+        # 再从 /mapping、/artifacts 读到 A 的未脱敏原文，绕过 _get_owned。
+        try:
+            info = (
+                fms.assert_file_owner(file_id, owner_id)
+                if owner_id and owner_id != "anonymous"
+                else fms.file_store.get(file_id)
+            )
+        except Exception:  # noqa: BLE001 —— NotFoundError 统一折成 404 语义
+            info = None
         if not isinstance(info, dict):
             raise AppError(status_code=404, error_code="FILE_NOT_FOUND", message="文件不存在")
         path = info.get("file_path")
@@ -123,6 +132,7 @@ async def status(task_id: str, owner_id: str = Depends(require_auth)):
         "warnings_total": len(task.warnings),
         "dropped_blocks": {
             "empty_table": int(dropped.get("empty_table", 0)),
+            "empty_table_pages": [int(p) for p in (dropped.get("empty_table_pages") or [])],
             "unhandled": dict(dropped.get("unhandled") or {}),
             "source": str(dropped.get("source") or "none"),
         },
@@ -147,20 +157,25 @@ async def confirm(task_id: str, body: dict, owner_id: str = Depends(require_auth
     """
     task = _require_ready(task_id, owner_id)
     zero_entities = not task.mapping
-    if zero_entities and task.entity_types_used and not body.get("acknowledge_zero_entities"):
+    acknowledged = body.get("acknowledge_zero_entities") is True
+    if zero_entities and task.entity_types_used and not acknowledged:
         raise AppError(
             status_code=409,
             error_code="ZERO_ENTITIES_NOT_ACKNOWLEDGED",
             message="本次未识别到任何敏感实体，确认出稿将得到未脱敏原文；请先勾选已知晓",
         )
     task = await pipeline_mod.get_agent_md_pipeline().confirm(task_id, body.get("decisions", []))
-    if zero_entities and task.entity_types_used:
+    if zero_entities:
+        # 门⑥ m4：豁免路径（停用全部类型）同样交付未脱敏原文，必须一并留痕
         audit_log(
             "agent_md_confirm_zero_entities",
             "agent_md_task",
             task_id,
             user=owner_id,
             detail={
+                "exempt_all_types_disabled": not task.entity_types_used,
+                "acknowledged": acknowledged,
+                "filename": task.filename,
                 "pages_total": task.pages_total,
                 "chars": task.chars,
                 "entity_types_used": list(task.entity_types_used),

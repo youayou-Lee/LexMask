@@ -134,8 +134,8 @@ export function StepProcessing({ status, pollOnce, onError, onFail }: StepProces
           )}
           {warningsShown > 0 && (
             <ul className="mt-1 list-disc pl-4 text-muted-foreground">
-              {warnings.slice(0, warningsShown).map((w) => (
-                <li key={w}>{w}</li>
+              {warnings.slice(0, warningsShown).map((w, i) => (
+                <li key={`${i}-${w}`}>{w}</li>
               ))}
             </ul>
           )}
