@@ -941,7 +941,47 @@ async def run_has_text_analysis(
                 max_block_chars=settings.HAS_VISION_MAX_BLOCK_CHARS,
             )
             residual_text = residual_payload.content
-            if residual_text.strip() and residual_text != text_content:
+            # Issue#209（成本结构修复②）：截断会让 `_block_residual_ink` 判定
+            # "几乎整页墨迹都未被解释"，于是残差 payload ≈ 整页（实测 3928 →
+            # 5372 字符），用 32000 上限再发一次全类型 ⇒ 又截断 ⇒ 又分块补查。
+            # 这就是页内"两次整页请求"的来源，单页 300s 页墙装不下。
+            # 判据：残差 ≤ 主查 payload 的 RATIO 才允许发；超过即判定为「截断
+            # 而非遗漏」（真遗漏的墨迹是零散小段），跳过整页重发 —— 缺失类型
+            # 由 `ner_checked` 的类型级补查链负责，而不是再烧一次整页生成。
+            residual_ratio = float(
+                getattr(settings, "HAS_NER_RESIDUAL_MAX_PAYLOAD_RATIO", 0.35) or 0.0
+            )
+            # 必须"绝对量大 + 相对主查也大"才算整页重发：小页的残差占比天然偏高
+            # （单块两列 → 残差≈40%），但只有几十字符，照旧发不影响成本。
+            residual_min_chars = int(
+                getattr(settings, "HAS_NER_RESIDUAL_MIN_CHARS", 2000) or 0
+            )
+            main_chars = len(text_content or "")
+            residual_chars = len(residual_text or "")
+            residual_limit = max(
+                residual_min_chars, int(main_chars * residual_ratio)
+            )
+            residual_oversize = bool(
+                residual_ratio > 0.0
+                and main_chars > 0
+                and residual_chars >= residual_limit
+            )
+            if residual_oversize:
+                stage_status["has_text_residual_skipped_oversize"] = 1
+                stage_status["has_text_residual_skipped_chars"] = residual_chars
+                stage_status["has_text_residual_max_chars"] = residual_limit
+                logger.warning(
+                    "HaS residual payload %.0f chars > %.0f%% of main payload "
+                    "(%d chars); skipping whole-page re-ask (Issue#209)",
+                    residual_chars,
+                    residual_ratio * 100,
+                    main_chars,
+                )
+            if (
+                residual_text.strip()
+                and residual_text != text_content
+                and not residual_oversize
+            ):
                 residual_ner_result = _get_cached_has_text_ner(has_client, residual_text, chinese_types)
                 if residual_ner_result is None:
                     from app.core.gpu_inference_gate import shared_gpu_inference_slot

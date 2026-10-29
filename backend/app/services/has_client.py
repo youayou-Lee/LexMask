@@ -81,6 +81,11 @@ _NER_TEXT_CHARS_PER_TOKEN = 2
 _NER_CONTEXT_TOKENS_FLOOR = 512
 # 上下文中预留给模板/分隔的 token 数
 _NER_CONTEXT_RESERVE_TOKENS = 160
+# 装填安全余量（Issue#209）：实发 `prompt + max_tokens` 必须装进
+# `context - reserve - safety`。派发侧（视觉线载荷规划器）一直按 64 判定，
+# 而 `_resolve_ner_budget` 的 context_room 只扣了 reserve ⇒ 完成帽一抬就出现
+# 64 token 的溢出（D2 不变式红）。两处判据必须同源，故把余量提为模块常量。
+_NER_FILL_SAFETY_TOKENS = 64
 # 补全 token 上限下限
 _NER_COMPLETION_CAP_FLOOR = 384
 # 补全 token 占上下文窗口比例
@@ -972,7 +977,17 @@ If nothing matches, return {{}}.
             len(types), text, cls._effective_tokens_per_type(settings)
         )
         prompt_token_estimate = cls._estimate_prompt_tokens(prompt)
-        context_room = context_tokens - prompt_token_estimate - _NER_CONTEXT_RESERVE_TOKENS
+        # Issue#209：context_room 必须与派发侧的装填判据同源——实发
+        # `prompt + max_tokens` 要装进 `context - reserve - safety`。旧算术只
+        # 扣 reserve，于是帽抬到 4096 后 max_tokens=context_room 会超出装填上限
+        # 整整一个 safety 余量（D2 不变式 `estimate + max_tokens <=
+        # context-160-64` 实测破裂）。帽=2048 时被帽掩盖，提帽才暴露。
+        context_room = (
+            context_tokens
+            - prompt_token_estimate
+            - _NER_CONTEXT_RESERVE_TOKENS
+            - _NER_FILL_SAFETY_TOKENS
+        )
         completion_cap = max(
             _NER_COMPLETION_CAP_FLOOR,
             min(configured_max_tokens, int(context_tokens * _NER_COMPLETION_CONTEXT_RATIO)),
@@ -1551,37 +1566,60 @@ If nothing matches, return {{}}.
                         # 诱饵是**长文本本身**：按行边界把补查文本切块，单次生成
                         # 变短，循环既难触发也烧不满预算（#60「改循环粒度」的既定
                         # 策略）。短文本维持单次补查，行为不变。
-                        retry_chunks = self._split_requery_chunks(text)
+                        #
+                        # Issue#209（成本结构修复③）：光切文本还不够——门④实测
+                        # 同一段 3928 字符上「4 类型 / ≈860 帽」的补查块反复
+                        # finish_reason=length、confirmed=False（补查自己又被截断），
+                        # 而隔离态「2 类型 / 640 帽」一次收敛。⇒ 补查再沿**类型轴**
+                        # 切小（默认每请求 ≤2 类型），且类型数已受限时不再切文本
+                        # （输出规模由类型数决定，长文本本身不是瓶颈）。
+                        require_requery_type_batch = max(
+                            1,
+                            int(
+                                getattr(settings, "HAS_NER_REQUERY_MAX_TYPES_PER_CALL", 2)
+                                or 2
+                            ),
+                        )
+                        requery_single_pass_chars = int(
+                            getattr(settings, "HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS", 6000)
+                            or 0
+                        )
+                        type_batches = [
+                            missing[i : i + require_requery_type_batch]
+                            for i in range(0, len(missing), require_requery_type_batch)
+                        ]
+                        if requery_single_pass_chars > 0 and len(text) <= requery_single_pass_chars:
+                            retry_chunks = [text]
+                        else:
+                            retry_chunks = self._split_requery_chunks(text)
                         # 嵌套观测面：只收本次补查自身的 finish_reason/计数。
                         # 门④判据口径：finish_reason=stop 且 confirmed=True 且
                         # recovered 闭合才算「补查逃逸复读」；补查再次截断时
                         # finish_reason=length（drain 折叠口径）+ confirmed=False。
+                        logger.warning(
+                            "HaS NER re-query plan: %d type batch(es) x %d text chunk(s) "
+                            "(missing=%d types, max_types_per_call=%d, text_chars=%d)",
+                            len(type_batches),
+                            len(retry_chunks),
+                            len(missing),
+                            require_requery_type_batch,
+                            len(text),
+                        )
                         with ner_metrics_scope() as retry_scope:
-                            if len(retry_chunks) <= 1:
-                                retry_result, retry_confirmed = self.ner_checked(
-                                    text,
-                                    missing,
-                                    retry_guidance,
-                                    temperature=retry_temperature,
-                                    sample_index=sample_index,
-                                    _allow_truncation_retry=False,
-                                    raise_on_error=raise_on_error,
-                                    context_tokens=context_tokens,
-                                    deadline=deadline,
-                                )
-                            else:
-                                logger.warning(
-                                    "HaS NER re-query split into %d line-boundary chunks (text_chars=%d)",
-                                    len(retry_chunks),
-                                    len(text),
-                                )
-                                merged_retry: dict[str, list[str]] = {}
-                                retry_confirmed = True
-                                for chunk in retry_chunks:
+                            merged_retry: dict[str, list[str]] = {}
+                            retry_confirmed = True
+                            for chunk in retry_chunks:
+                                for type_batch in type_batches:
+                                    batch_set = set(type_batch)
+                                    batch_guidance = [
+                                        item
+                                        for item in (retry_guidance or [])
+                                        if str(item.get("type") or "") in batch_set
+                                    ] or None
                                     part, part_confirmed = self.ner_checked(
                                         chunk,
-                                        missing,
-                                        retry_guidance,
+                                        type_batch,
+                                        batch_guidance,
                                         temperature=retry_temperature,
                                         sample_index=sample_index,
                                         _allow_truncation_retry=False,
@@ -1597,7 +1635,7 @@ If nothing matches, return {{}}.
                                             if value and value not in bucket:
                                                 bucket.append(value)
                                     retry_confirmed = retry_confirmed and part_confirmed
-                                retry_result = merged_retry
+                            retry_result = merged_retry
                         retry_metrics = drain_ner_metrics(retry_scope)
                         logger.warning(
                             "HaS NER re-query finished: finish_reason=%s confirmed=%s recovered=%d/%d types",

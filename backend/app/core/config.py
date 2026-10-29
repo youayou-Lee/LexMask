@@ -464,12 +464,20 @@ class Settings(BaseSettings):
     # 不进入结果——与「自证未确认」同一语义（保守、不新增假阳性），代价是
     # 可能少召回。默认值由真实案卷 A/B 定档（见 issue136-verify-cap-plan §3）。
     HAS_NER_VERIFY_MAX_JOBS_PER_PAGE: int = 200
-    # NER 完成帽（Issue#41 截断风暴治理）。对齐模型卡 generation_config.json
-    # 写死的 max_new_tokens=2048：生产预算公式（类型数×72 + 文本字符/2）超帽
-    # 的整页调用必然 finish=length → json_repair→整类型重查。>0 时帽参与
-    # max_tokens 预算，且预算>帽的调用**前置**沿类型轴主动分批（跳过注定
-    # 截断的整页调用）；≤0 = 关闭（退回现状）。上调前先核对模型卡帽。
-    HAS_NER_COMPLETION_HARD_CAP: int = 2048
+    # NER 完成帽（Issue#41 截断风暴治理；Issue#209 从 2048 放开到 4096）。
+    # >0 时帽参与 max_tokens 预算，且预算>帽的调用**前置**沿类型轴主动分批
+    # （跳过注定截断的整页调用）；≤0 = 关闭（退回现状）。
+    #
+    # 为什么放开（Issue#209，2026-10-29 真实第四卷第 133 页实测）：该页真实
+    # 实体值 ≈200 个 ⇒ 一次问全需 ≥2048 token 输出，2048 帽下主查**必然**
+    # 截断（实测 70–124s 烧满帽）→ 截断恢复（分块补查 + 残差整页重发 + 逐值
+    # 自证）把同一页排成 2 次整页 + 20 余次子请求 = 300–427s > 300s 页墙。
+    # 同页隔离实测帽=4096 ⇒ **85.3s / 154 值 / 一次收敛**，比"问两遍"更快更全。
+    # 上限仍受上下文余量硬约束（`_resolve_ner_budget` 的 context_room）：8k
+    # 上下文 + 4k 提示词时实际可用 ≈3.6k，4096 即"放开但不越上下文"的值。
+    # 抬高时必须同步复核 #103/#104 的 fill-budget 不变式（实发
+    # prompt+max_tokens 必须装进 context - reserve - safety）。
+    HAS_NER_COMPLETION_HARD_CAP: int = 4096
     # 每类型完成 token 成本（Issue#41 S1 校准）。原公式 72 token/型对密集 CJK
     # 页低估 ~2.4 倍：S1 实测（2026-10-06，DCU 实例）12 型批请求 2032 自截断、
     # 11 型重查 1960、5 型重查 1528 仍截断——批调用被"自己的预算"腰斩，与模型
@@ -551,6 +559,28 @@ class Settings(BaseSettings):
     HAS_NER_NEAR_DUP_FAMILY_MIN_MEMBERS: int = 3
     HAS_NER_NEAR_DUP_MAX_LINE_CHARS: int = 40
     HAS_NER_NEAR_DUP_MIN_CJK_CHARS: int = 2
+
+    # 截断补查的**每请求类型数上限**（Issue#209 成本结构修复③）。门④实测：
+    # 同一段 3928 字符文本上「2 类型 / 640 帽」的补查块**收敛**
+    # （finish_reason=stop recovered=2/2），而流水线实际发的「4 类型 / ≈860 帽」
+    # 块反复 finish_reason=length、confirmed=False——补查自己又被截断，于是
+    # 12 段补查烧掉 100s+。⇒ 补查按类型切小（默认 2），让每请求的输出规模
+    # 由类型数决定，不再依赖"碰巧装下"。
+    HAS_NER_REQUERY_MAX_TYPES_PER_CALL: int = 2
+    # 补查时**整段单次**的文本字符上限：类型数已受限（≤2）时输出规模小，
+    # 不需要再按行切块；超过本上限才退回行边界分块（防超上下文/长程复读）。
+    HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS: int = 6000
+
+    # 残差 payload 相对主查 payload 的字符上限比（Issue#209 成本结构修复②，
+    # 禁「整页重发」）。截断时 `_block_residual_ink` 会判定"几乎整页墨迹都
+    # 未被解释"⇒ 残差 payload ≈ 整页（实测 3928 → 5372 字符），用 32000 上限
+    # 再发一次 20 类型 ⇒ 又截断 ⇒ 又 12 段补查，这是页内 2 次整页请求的来源。
+    # 超过本比例即判定为「截断而非遗漏」：跳过残差重发（记
+    # has_text_residual_skipped_oversize + WARNING），缺的类型交给补查链。
+    HAS_NER_RESIDUAL_MAX_PAYLOAD_RATIO: float = 0.35
+    # 残差跳闸的**绝对字符下限**：只有"绝对量大 + 相对主查也大"才算整页重发。
+    # 小页的残差（几十字符、占比天然偏高）照旧发，避免把既有召回路径误杀。
+    HAS_NER_RESIDUAL_MIN_CHARS: int = 2000
 
     # --- 批量异步导出（万级文件：分卷落盘，见 services/export_service.py） ---
     EXPORT_VOLUME_MAX_BYTES: int = 2 * 1024**3   # 每卷 zip ≤2GB
