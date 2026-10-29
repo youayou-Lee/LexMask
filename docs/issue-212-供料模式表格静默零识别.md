@@ -167,6 +167,14 @@ i) **并发不串味**：两个任务在不同线程各自跑 1 个 service（�
 - 限时：`T` = **受测 run 之前**在云隔离端口对同一文件独立预跑一次的实测耗时（不得取受测 run 自身耗时，否则自指恒真），PR 写死 `T` 的值；判据 `≤ 1.5 × T`（可判定）。
 - 并发/串味：本地已由 AC3i 覆盖（引擎 `_lock` 全局串行，per-run stats）；云端不重复造并发。
 
+**AC6 实测回填（2026-10-29，云实例隔离端口 8100，HEAD `6e65486`）**
+- `T = 733.1s`（预跑 run1：上传→`mapping_ready`，task `70c23624…`；判决 run2 要求 ≤ **1099.7s**）；
+- `N0 = 495`（事故原始产物 zip 复放：v1 直取 + 同一 NER，3 次跑均 `4093` 原始 / **`495`** 去重；明细 `CASE_NUMBER 261 / ORG 141 / BIRTH_DATE 44 / BANK_CARD 14 / PERSON 10 / ID_CARD 9 / ADDRESS 9 / PHONE 5 / LICENSE_PLATE 2`）；
+- 判决容差：`items` ∈ **[446, 570]**（≥0.9×N0 且 ±15%）；
+- run1 实测 `items=494`、`PERSON 10 / ID_CARD 9 / BANK_CARD 14` ①三条类别均 ≥1 ②落在容差带内；
+- 红性对照实测：preview 未修代码对同一 v2 产物 → **6 segs / 138 chars**（对齐生产 `6 lines/1 chunks/143 chars`，143=138+分块分隔符）；分支代码对同一产物 → `v2 = 187,119 chars`（`empty_table=60`、`unhandled={}`，title 已归位）、`v1 = 33 segs / 187,119 chars`，守卫留在 v2 且不告警（两路一致）；
+- 残留面（如实记账）：事故产物 79 张表里有 **60 张 MinerU 只给截图无 html**，修复只保证"有 html 的表格不再丢"+"空表逐张可见告警"，**不能凭空恢复截图表格的文字**；该残留经 `dropped_blocks.empty_table` 与 `empty table block: page=N` 告警在 API/前端可见，不在本 Issue 静默。
+
 **AC7 回归与门禁**
 - 后端 `pytest tests/`：failed 集合与基线（preview 同机同命令）**完全相同**（`comm -3` 对比名单）；
 - 前端 `npm run build && npm test && npm run lint` 全绿；
@@ -177,7 +185,7 @@ i) **并发不串味**：两个任务在不同线程各自跑 1 个 service（�
 1. `docker nginx` 静态托管链与云实例只差前端镜像构建产物，本次未实测；替代证据 = 前端 build/lint 绿 + 组件渲染测试；
 2. 浏览器级端到端（真点勾选再 confirm）未覆盖；替代证据 = 组件渲染测试 + 云隔离端口 API 走查；
 3. 本地无 MinerU/GPU，真件 e2e 仅云隔离端口可达；
-4. AC6 的 `T` 与 `N0` 需云上实测回填后方可判绿（PR 未回填不算完成）；`T` 必须来自受测前的独立预跑，`N0` 来自 v1 直取探针（不得由被测路径自产）。
+4. AC6 的 `T` 与 `N0` **已回填**（`T=733.1s` 预跑 run1、`N0=495` v1 直取探针 3 次取中位，见 AC6 末段）；判决 run2 只需与预跑不同一次、且满足时限与容差。
 
 ## 5. 验收方案（谁验收）
 
