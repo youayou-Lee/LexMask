@@ -22,10 +22,25 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.services import file_management_service as fms
-from app.services.agent_md_adapter import clean_segments, enrich_image_blocks, normalize_content_list
+from app.services.agent_md_adapter import (
+    CleanStats,
+    clean_segments,
+    enrich_image_blocks,
+    normalize_content_list,
+)
 from app.services.agent_md_ner import build_mapping_draft, chunk_segments, run_ner
 from app.services.agent_md_replace import apply_decisions, render_outputs
-from app.services.agent_md_types import AgentMdTask, TaskState
+from app.services.agent_md_types import AgentMdTask, Seg, TaskState
+
+# Issue#212：两版正文量相差超过 5%（= 比值低于 0.95）即视为某一版丢了东西。
+# 阈值来源：修复前真实案卷 v2/v1 = 138/187,119 = 0.0007、合成夹具 33/258 = 0.128，
+# 修复后两路应逐段一致（比值 1.0）；取 0.95 只在"确实少了一截"时触发。
+GUARD_RATIO = 0.95
+
+
+def _body_chars(segs: list[Seg]) -> int:
+    """正文量口径：只数真正进 NER 的 text/table 段（哨兵/OCR 占位不计）。"""
+    return sum(len(s.text) for s in segs if s.source in ("text", "table"))
 
 
 class AgentMdPipelineService:
@@ -161,7 +176,19 @@ class AgentMdPipelineService:
             task.state = TaskState.NER_RUNNING
             task.stage = "ner"
             # 终审 C1：sidecar v2 为外层按页嵌套形态（Task 0 §6c），先归一化成扁平 v1
-            segs, warns = clean_segments(normalize_content_list(result.content_list_v2))
+            segs, warns, dropped, source = self._choose_representation(result)
+            task.dropped_blocks = {
+                "empty_table": dropped.empty_table_blocks,
+                "empty_table_pages": list(dropped.empty_table_pages),
+                "unhandled": dict(dropped.dropped_block_types),
+                "source": source,
+            }
+            if segs is None:  # 两路都解析不出正文：显式失败，禁"0 映射静默就绪"
+                task.state = TaskState.FAILED
+                task.message = "parse_no_text: MinerU 未解析出任何正文（v1/v2 两路均 0 字符）"
+                task.warnings.extend(warns)
+                return task
+            task.chars = _body_chars(segs)
             segs, more = enrich_image_blocks(segs, result.images, self.ocr)
             task.warnings.extend(warns)
             task.warnings.extend(more)
@@ -169,6 +196,7 @@ class AgentMdPipelineService:
             chunks = chunk_segments(segs)
             # run_ner 就地平移 Entity 偏移——每任务只调一次
             entity_types = self.entity_types or self._resolve_entity_types(task.owner_id)
+            task.entity_types_used = [str(t) for t in entity_types]
             entities, _ = await run_ner(chunks, entity_types, self.ner)
             task.entities = entities
             task.mapping = build_mapping_draft(entities)
@@ -179,6 +207,62 @@ class AgentMdPipelineService:
             task.state = TaskState.FAILED
             task.message = f"{type(exc).__name__}: {exc}"
         return task
+
+    @staticmethod
+    def _choose_representation(result) -> tuple[list[Seg] | None, list[str], CleanStats, str]:
+        """Issue#212 双表示守卫：v1/v2 两版正文都算，差超阈值时指名胜者并告警。
+
+        返回 (segs, warns, v2 主表示 stats, 命中来源)；两路皆 0 字符时 segs 为 None
+        （调用方判 FAILED）。`stats` 固定取 v2——它是事故产出侧，也是字段漂移的
+        观测面：即使因守卫回落 v1，"empty_table=79" 仍要在 API 上可见。
+        - v1 缺失（客户端未拿到）→ 用 v2 + `dual_representation_unavailable`；
+        - v2 丢表或整体归零，且正文明显少于 v1 → 回落 v1（`winner=content_list_v1`）；
+        - v1 反而更多但 v2 没有丢表（典型=水印/重复放大把 v1 撑大）→ 留在 v2；
+        - 两路接近 → 用 v2（管线主路径），不告警。
+        """
+        v2_stats = CleanStats()
+        v2_segs, v2_warns = clean_segments(
+            normalize_content_list(result.content_list_v2), stats=v2_stats)
+        v1_stats = CleanStats()
+        v1_segs, v1_warns = clean_segments(
+            normalize_content_list(result.content_list_v1), stats=v1_stats)
+        v2_chars, v1_chars = _body_chars(v2_segs), _body_chars(v1_segs)
+        warns: list[str] = []
+
+        # 门⑥ I6：两路皆空必须判"没解析出正文"——即使 v1 缺失也不能当"识别完 0 实体"
+        if v1_chars == 0 and v2_chars == 0:
+            return None, warns, v2_stats, "none"
+        if not result.content_list_v1:
+            warns.append("dual_representation_unavailable: mineru 产物缺 v1 content_list")
+            warns.extend(f"v2: {w}" for w in v2_warns)
+            return v2_segs, warns, v2_stats, "content_list_v2"
+        if v1_chars == 0:
+            warns.append(
+                f"dual_representation_shortfall: winner=content_list_v2 v1=0 v2={v2_chars}")
+            warns.extend(f"v2: {w}" for w in v2_warns)
+            return v2_segs, warns, v2_stats, "content_list_v2"
+        if v2_chars == 0:
+            warns.append(
+                f"dual_representation_shortfall: winner=content_list_v1 v1={v1_chars} v2=0")
+            warns.extend(f"v1: {w}" for w in v1_warns)
+            return v1_segs, warns, v2_stats, "content_list_v1"
+        short = v2_chars < GUARD_RATIO * v1_chars
+        if short and v2_stats.empty_table_blocks > 0:
+            warns.append("dual_representation_shortfall: winner=content_list_v1 "
+                         f"v1={v1_chars} v2={v2_chars}")
+            warns.extend(f"v1: {w}" for w in v1_warns)
+            return v1_segs, warns, v2_stats, "content_list_v1"
+        if short:
+            # v2 没丢表但正文比 v1 少一截：多半是 v1 侧被水印/重复文本撑大，不盲取较大者
+            warns.append("dual_representation_shortfall: winner=content_list_v2 "
+                         f"v1={v1_chars} v2={v2_chars}")
+            warns.extend(f"v2: {w}" for w in v2_warns)
+            return v2_segs, warns, v2_stats, "content_list_v2"
+        if v1_chars < GUARD_RATIO * v2_chars:
+            warns.append("dual_representation_shortfall: winner=content_list_v2 "
+                         f"v1={v1_chars} v2={v2_chars}")
+        warns.extend(f"v2: {w}" for w in v2_warns)
+        return v2_segs, warns, v2_stats, "content_list_v2"
 
     @staticmethod
     def _resolve_entity_types(owner_id: str | None) -> list:

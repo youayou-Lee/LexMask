@@ -32,7 +32,7 @@ def _env(tmp_path, monkeypatch):
 class _FakePipeline:
     def __init__(self):
         self.t = AgentMdTask(task_id="tk-1", state=TaskState.MAPPING_READY, pages_total=3, pages_done=3,
-                             filename="a.pdf", file_path="x")
+                             filename="a.pdf", file_path="x", owner_id="anonymous")
         self.t.mapping = [MappingItem(id="e1", original_text="张三", entity_type="PERSON", replacement="[人名_1]")]
         self.created_with: tuple[str, str] | None = None
         self.confirm_record: dict | None = None

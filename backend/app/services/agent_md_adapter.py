@@ -9,15 +9,35 @@
 把两种形态统一成扁平 v1 形态再喂 ``clean_segments``。
 """
 import re
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any
 
 from app.services.agent_md_types import Seg
 
 _DROP_TYPES = {"header", "footer", "page_number", "aside_text"}
-# v2 块 type 名 → v1 名（Task 0 §6c 实测 paragraph/page_header；其余形态未观测，
-# 不认识的保持原样由 clean_segments 走 unhandled 警告，不臆造）。
-_V2_TYPE_TO_V1 = {"paragraph": "text", "page_header": "header", "page_footer": "footer"}
+# v2 块 type 名 → v1 名（Task 0 §6c 实测 paragraph/page_header；title 为 Issue#212
+# 实测补充——真实案卷的机构名/表名就在 title_content 里，此前当未知块型整块丢弃）。
+_V2_TYPE_TO_V1 = {
+    "paragraph": "text",
+    "page_header": "header",
+    "page_footer": "footer",
+    "title": "text",
+}
+
+
+@dataclass
+class CleanStats:
+    """Issue#212：丢弃必须可观测——按原因结构化计数（不只靠 warnings 文本）。
+
+    管线把它透出到任务 `status.dropped_blocks`，使"解析出正文但表全空"这类
+    静默失败可被前端与运维按码取数（键恒存在，0 也显式返回）。
+    """
+
+    empty_table_blocks: int = 0
+    dropped_block_types: dict[str, int] = field(default_factory=dict)
+    # 门⑥ I1：只给总数无法安排人工复核页；页码清单单独留（有上限，防 80 页×N 撑爆）
+    empty_table_pages: list[int] = field(default_factory=list)
 _LATEX_DISPLAY_SQ = re.compile(r"\\\[(.*?)\\\]")
 _LATEX_DISPLAY_RQ = re.compile(r"\\\((.*?)\\\)")
 _LATEX_DOLLAR_PAIR = re.compile(r"\$([^$]*)\$")
@@ -131,12 +151,45 @@ def _v2_block_to_flat(block: dict, page_idx: int) -> dict:
             for src_key in ("sub_type", "img_path", "table_body"):
                 if item.get(src_key) and not out.get(src_key):
                     out[src_key] = item[src_key]
+    if isinstance(content, dict):
+        # Issue#212：MinerU 3.4.5 v2 表格正文在 content["html"]（不是 table_body），
+        # 表名/脚注在 content["table_caption"/"table_footnote"]（部件数组）。只在
+        # table 块上上浮，避免把任意块里的 html 当表格正文。
+        if btype == "table":
+            if not out.get("table_body") and isinstance(content.get("html"), str):
+                out["table_body"] = content["html"]
+            for extra_key in ("table_caption", "table_footnote"):
+                if not out.get(extra_key):
+                    extra = _parts_text(content.get(extra_key))
+                    if extra:
+                        out[extra_key] = extra
     if parts and not out.get("text"):
         out["text"] = "\n".join(parts)
     return out
 
 
-def clean_segments(content_list: list[dict]) -> tuple[list[Seg], list[str]]:
+def _parts_text(raw: Any) -> str:
+    """v2 部件数组（[{"type":"text","content":...}]）或纯字符串 → 一行文本。"""
+    if isinstance(raw, str):
+        return raw.strip()
+    if not isinstance(raw, list):
+        return ""
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            if item.strip():
+                out.append(item.strip())
+        elif isinstance(item, dict):
+            text = item.get("content")
+            if isinstance(text, str) and text.strip():
+                out.append(text.strip())
+    return " | ".join(out)
+
+
+def clean_segments(
+    content_list: list[dict], stats: CleanStats | None = None
+) -> tuple[list[Seg], list[str]]:
+    """item 列表 → 清洁文本段 + 告警。`stats` 传入时按原因累计丢弃计数（Issue#212）。"""
     segs: list[Seg] = []
     warns: list[str] = []
     for item in content_list or []:
@@ -149,7 +202,19 @@ def clean_segments(content_list: list[dict]) -> tuple[list[Seg], list[str]]:
         elif btype == "table":
             body = table_to_text(item.get("table_body", ""))
             if body:
-                segs.append(Seg(text=body, page_idx=page_idx, source="table"))
+                lines = [body]
+                for extra_key in ("table_caption", "table_footnote"):
+                    extra = (item.get(extra_key) or "").strip()
+                    if extra:
+                        lines.append(extra)
+                segs.append(Seg(text="\n".join(lines), page_idx=page_idx, source="table"))
+            else:
+                # Issue#212：空表格块此前既不产段也不告警（静默丢表 = 事故本体）
+                if stats is not None:
+                    stats.empty_table_blocks += 1
+                    if len(stats.empty_table_pages) < 100:
+                        stats.empty_table_pages.append(page_idx)
+                warns.append(f"empty table block: page={page_idx}")
         elif btype == "image":
             path = item.get("img_path", "")
             warns.append(f"image block pending ocr: {path}")
@@ -159,6 +224,9 @@ def clean_segments(content_list: list[dict]) -> tuple[list[Seg], list[str]]:
             if body:
                 segs.append(Seg(text=body, page_idx=page_idx, source="text"))
         elif btype is not None:
+            if stats is not None:
+                stats.dropped_block_types[str(btype)] = (
+                    stats.dropped_block_types.get(str(btype), 0) + 1)
             warns.append(f"unhandled block type: {btype}")
     return segs, warns
 

@@ -51,6 +51,9 @@ class MineruResult:
     md: str
     content_list_v2: list[dict] = field(default_factory=list)
     images: dict[str, bytes] = field(default_factory=dict)
+    # Issue#212：v1 扁平表示（表格正文在 table_body）——第二来源，用于一致性校验/
+    # 回退；MinerU 实测同一次任务的 zip 里两版都会给，此前被整体丢弃。
+    content_list_v1: list[dict] = field(default_factory=list)
 
 
 class MineruParseClient:
@@ -165,10 +168,11 @@ class MineruParseClient:
             await asyncio.sleep(self.poll_interval)
 
     async def _fetch_result(self, task_id: str) -> MineruResult:
-        """取结果 zip 并拆包：md / content_list_v2 / images（三者均可缺省为空）。
+        """取结果 zip 并拆包：md / content_list_v2 / content_list_v1 / images（均可缺省）。
 
         zip 内同时存在 v1（*_content_list.json，扁平）与 v2（*_content_list_v2.json，
-        list-of-lists），本客户端只认 v2（Task 0 §6c/§6d）；*_middle.json 忽略。
+        list-of-lists）：两版都解出（Issue#212——v1 作第二来源，防某一版字段改名
+        再次静默归零）；*_middle.json 忽略。
         """
         try:
             async with self._async_client() as client:
@@ -185,7 +189,7 @@ class MineruParseClient:
             raise MineruParseError(f"mineru task not found: {task_id}", transient=False)
         if resp.status_code >= 400:
             self._raise(resp.status_code, resp.text[:200], task_id)
-        md, content_list_v2, images = "", [], {}
+        md, content_list_v2, content_list_v1, images = "", [], [], {}
         try:
             with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
                 entries = zf.namelist()
@@ -195,6 +199,8 @@ class MineruParseClient:
                     blob = zf.read(name)
                     if name.endswith("_content_list_v2.json"):
                         content_list_v2 = json.loads(blob)
+                    elif name.endswith("_content_list.json"):
+                        content_list_v1 = json.loads(blob)
                     elif name.endswith(".md") and not md:
                         md = blob.decode("utf-8")
                     elif "images/" in name:
@@ -207,7 +213,14 @@ class MineruParseClient:
             logger.warning("mineru result zip 缺 .md: task=%s entries=%d", task_id, len(entries))
         if not content_list_v2:
             logger.warning("mineru result zip 缺 *_content_list_v2.json: task=%s", task_id)
-        return MineruResult(md=md, content_list_v2=content_list_v2, images=images)
+        if not content_list_v1:
+            logger.warning("mineru result zip 缺 *_content_list.json(v1): task=%s", task_id)
+        return MineruResult(
+            md=md,
+            content_list_v2=content_list_v2,
+            images=images,
+            content_list_v1=content_list_v1,
+        )
 
     @staticmethod
     def _normalize_state(raw: str) -> str:

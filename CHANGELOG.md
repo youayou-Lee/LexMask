@@ -2,6 +2,19 @@
 
 ## 2026-10-29
 
+### 修复（Issue#212）供料模式对表格型扫描件静默零识别：v2 表格正文在 content.html、适配层只认 table_body
+
+- **现象**：生产账号上传 80 页扫描件「财产查询反馈信息表」（MinerU 3.4.5 解析 7 分 18 秒成功），喂 Agent 模式回 0 实体、空映射，UI 无任何告警；同账号 3 页文本型「执行裁定书」同流程正常出 52 实体。
+- **根因**（真实产物逐层坐实）：MinerU 产出的 v2 `_content_list_v2.json` 里表格正文在 `content.html`（79 个 table 块），而 `agent_md_adapter._v2_block_to_flat` 只上浮 `table_body`（v1 键名），`clean_segments` 取不到正文即静默跳过——同产物 v1 表示 33 段/187,119 字符，v2 表示只剩 6 段/138 字符，喂给 NER 的是 143 字符（含分块分隔符）⇒ 必然 0 实体。另 8 个 `title` 块因 `_V2_TYPE_TO_V1` 缺映射被当未知块整块丢弃（机构名/表名在里面）。
+- **改法**（5 面）：
+  1. **适配层**（`agent_md_adapter.py`）：表格 `table_body` 缺失时回落 `content["html"]`，上浮 `table_caption`/`table_footnote`（`_parts_text` 拼入正文）；`title` → `text` 映射（`title_content`）；新增 `CleanStats{empty_table_blocks, dropped_block_types}`，空表格与未知块型不再静默——各计一数并出 warn（`empty table block: page=N` / `unhandled block type: X`）。
+  2. **第二表示来源**（`mineru_parse_client.py`）：`MineruResult.content_list_v1` 同时解 `*_content_list.json`（此前只认 v2、v1 从未被读）；缺 v1 不失败。
+  3. **双表示守卫**（`agent_md_pipeline_service.py`）：`GUARD_RATIO=0.95` + `_choose_representation` 八行判据（v1 缺失→v2；两路 0 字符→显式 FAILED `parse_no_text`；v1 空→v2；v2 空→v1；v2 偏少或有空表→v1；v1 被水印撑大（`short` 但 v2 无空表）→v2；其余→v2），warn 带 `winner=` 与两路字符数 `v1=N v2=M`。
+  4. **可观测**（`agent_md.py` status）：恒返 `warnings`（前 20）、`warnings_total`、`dropped_blocks{empty_table,unhandled,source}`、`chars`；四端点补 owner 校验（此前 status/mapping/confirm/artifacts 完全不校验，新增字段会跨用户泄露解析细节）。
+  5. **零实体安全闸**：空映射时 confirm 默认 409 `ZERO_ENTITIES_NOT_ACKNOWLEDGED`（否则等于交付未脱敏原文），须显式 `acknowledge_zero_entities=true` 并写审计 `agent_md_confirm_zero_entities`（含 actor/chars/pages/entity_types）；用户主动停用全部实体类型（`entity_types_used` 为空）豁免。前端评审步空映射时显示告警 + 知情勾选（未勾选按钮禁用），处理步显示解析告警与空表计数。
+- **测试**：后端 +33 例（v2 真形态 golden 逐段 258 字、80 页同形状 79 表全解析、title/caption/footnote、空表计数与页码、双表示守卫 13 例含 watermark 撑大/两路皆空/部分丢表回落/0.95 边界/并发、API 12 例含非零 79/owner 隔离含 file_id 入口/零实体闸/豁免/审计/正向对照、客户端 12 例）；前端 +18 例（helper 2、零实体组件 2、ack 载荷 2、解析告警面板 2、页面接线契约 1 等；40 文件 297 例）。红性由探针实测（未修时 v2 夹具 1 段 33 字、`unhandled block type: title`）。
+- **影响面**：所有表格为主的扫描件（银行流水、财产查询反馈表、对账单、协执清单）在供料模式下此前必然 0 实体且零提示；#197 `agent_batch` 复用同一适配器，合入后自动获益。
+
 ### 修复（Issue#209）单页 HaS NER 超越 300s 页墙：完成帽按实体值需求放开 + 残差禁整页重发 + 补查切文本 + 页级预算硬墙
 
 - **现象**：真实案卷「第四卷.pdf」149 页，逐页识别时**第 133 页单页 NER >420s 不收敛**（页墙 300s 一到整页清零）⇒ 整卷 148/149、失败页显式记账（#199 行为正常，但该页永远救不回来）。同卷其余 148 页 8–52s 全过。
