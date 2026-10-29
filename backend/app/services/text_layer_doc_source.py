@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.models.entity_schemas import BoundingBox
 from app.services import text_layer_docline_service as docline
 from app.services import text_layer_quality as quality
+from app.services import visible_text_watermark
 from app.services.has_client import has_client
 from app.services.vision.has_text_payload import (
     _build_has_text_type_names,
@@ -45,11 +46,16 @@ class _TransientIneligible(Exception):
     """
 
     def __init__(self, message: str, *, code: str = "ineligible",
-                 detail: dict | None = None, permanent: bool = False) -> None:
+                 detail: dict | None = None, permanent: bool = False,
+                 word_filter: dict | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.detail = dict(detail or {})
         self.permanent = bool(permanent)
+        # 门⑥ 第三段 I1：**过滤已经跑过之后**才失败的卷（后置五道卷级门），
+        # 不能把 `word_filter` 记成 `not_run`（那读起来像「没跑」）。这里把过滤统计
+        # 一路带到 marker：`word_filter` 非空 ⇒ 上层记 `ran_then_rejected:<gate>`。
+        self.word_filter = dict(word_filter) if word_filter else None
 
 SOURCE_DETAIL = "text_layer_docline"
 
@@ -57,6 +63,48 @@ SOURCE_DETAIL = "text_layer_docline"
 def reset_memo() -> None:
     """仅测试与文件级缓存失效使用。"""
     _MEMO.clear()
+
+
+def _word_filter_knob_key() -> str:
+    """Issue#206 阶段 2'：过滤开关及其阈值必须进 memo key。
+
+    否则同一 file_id 的「开关两份 job」会吃到上一跑的 memo，两臂必然零差异
+    （门①.5 冷审 D7 / AC27）。单独抽成函数是为了让 AC27 能在单测里直接判红。
+    """
+    return (
+        f"{int(bool(settings.VISIBLE_WATERMARK_WORD_FILTER_ENABLED))}:"
+        f"{settings.VISIBLE_WATERMARK_WORD_MIN_REPEAT}:"
+        f"{settings.VISIBLE_WATERMARK_WORD_COVER_MIN}:"
+        f"{settings.VISIBLE_WATERMARK_MAX_DROP_VS_WM_CHARS}:"
+        f"{settings.VISIBLE_WATERMARK_PROBE_PAGES}:"
+        f"{settings.VISIBLE_WATERMARK_MIN_PAGES}:"
+        f"{settings.VISIBLE_WATERMARK_MIN_VISIBLE_SHARE}:"
+        f"{settings.VISIBLE_WATERMARK_MIN_TOP_SIG_SHARE}:"
+        f"{settings.VISIBLE_WATERMARK_MAX_SIZE_SPREAD}:"
+        f"{settings.VISIBLE_WATERMARK_MIN_KEEP_RATIO}"
+    )
+
+
+def _memo_key(file_id: str, snapshot: dict, labels: list[str],
+              regex_types: list[tuple[str, str]]) -> str:
+    """卷级 memo 的键。
+
+    抽成纯函数是为了能测「开关/阈值必须进 key」（门①.5 冷审 D7 / 门⑥ 冷审 I4）：
+    原先 AC27 的单测只直接比对 `_word_filter_knob_key()` 返回的字符串，把这一行从
+    拼接里删掉也照样绿 —— 真正决定命中/不命中的是这里。
+    """
+    knobs = (
+        f"{settings.TEXT_LAYER_DOCLINE_CHUNK_CHARS}:{settings.TEXT_LAYER_DOCLINE_CHUNK_OVERLAP}:"
+        f"{settings.TEXT_LAYER_DOCLINE_CONCURRENCY}:{settings.TEXT_LAYER_PAGE_MIN_CHARS}:"
+        f"{settings.TEXT_LAYER_DOCLINE_MAX_BUILD_SEC}:"
+        f"{settings.TEXT_LAYER_DOCLINE_BUILD_SEC_PER_PAGE}:"
+        f"{_word_filter_knob_key()}:"
+        f"{';'.join(f'{tid}={pat}' for tid, pat in regex_types)}"
+    )
+    return (
+        f"{file_id}|{_file_fingerprint(str(snapshot.get('file_path') or ''))}"
+        f"|{','.join(labels)}|{knobs}"
+    )
 
 
 def _labels(ocr_has_types) -> list[str]:
@@ -240,9 +288,42 @@ async def _build(
             permanent=True,
         )
 
-    result = await docline.run_document_ner(
-        pages, labels, has_client=has_client, regex_types=regex_types
+    # **建链流词级过滤**（Issue#206 阶段 2'）：可见平铺水印的 4 字词在文本层里与正文
+    # 同形、每页重复几十次，docline 会把它们当正文送 NER（门④ 实测：一卷 31 页
+    # 77.7% 的框是纯水印字符框）。这里只把**送进 NER 的词流**洗一遍——上面三道闸
+    # （预算/质量/重复片段）仍然吃**未过滤**的页，前置判定与今天一致。
+    # **但后置五道卷级门吃过滤后的结果**：块数下降会让计数型门（`failed_chunks`/
+    # `http_errors`）变宽松、`coverage` 分母缩小 ⇒ 「今天被拒的卷今天通过」在机制上
+    # **可能发生**（门⑥ 第三段 I4 已合成复现）。所以对「族 A 类卷要等 #204」只能说
+    # **前置判定**不变；后置门的路由漂移属已登记残余风险（见 §7.1 诚实边界与 AC17b 口径）。
+    ner_pages, word_filter_stats = await asyncio.to_thread(
+        visible_text_watermark.maybe_filter_pages, path, pages
     )
+    # 门⑥ 冷审 C2/Minor2：只有真过滤时才需要「未过滤流长」这项审计口径——默认关、
+    # 探测不中或异常时不算（`build_stream` 是同步调用，150k 字符约 11ms，属纯浪费）。
+    # `build_stream` 返回 `(stream, spans)` 元组 ⇒ 取 `[0]`。
+    unfiltered_stream_chars = 0
+    if word_filter_stats.get("applied"):
+        unfiltered_stream_chars = len(docline.build_stream(pages)[0])
+    result = await docline.run_document_ner(
+        ner_pages, labels, has_client=has_client, regex_types=regex_types
+    )
+    # 门⑥ 第四段 Minor：未过滤口径要在**第一道后置门之前**就填好，否则只有 coverage
+    # 门失败时能看到它，其余四道门失败时审计值断档（键在、值空）。
+    if word_filter_stats.get("applied") and unfiltered_stream_chars > 0:
+        word_filter_stats = dict(word_filter_stats)
+        word_filter_stats["gate_basis_unfiltered_coverage"] = round(
+            float(result.covered_chars) / float(unfiltered_stream_chars), 4
+        )
+        logger.info(
+            "text_layer_docline coverage: filtered=%.3f unfiltered_basis=%.3f "
+            "stream_chars %d->%d file=%s",
+            float(result.coverage_ratio),
+            word_filter_stats["gate_basis_unfiltered_coverage"],
+            unfiltered_stream_chars,
+            int(result.stream_chars),
+            file_id[:8],
+        )
     # **卷级合格门**（门⑥ 二轮 Important#5）：失败块/回映失败率/覆盖率任一越界即整卷
     # 放弃走文档级链、回落旧路径。这些门以前不存在，或只在**任何值**下都成立。
     if result.failed_chunks > 0:
@@ -254,6 +335,7 @@ async def _build(
             f"failed_chunks:{result.failed_chunks}/{result.chunks}",
             code="failed_chunks",
             detail={"failed_chunks": int(result.failed_chunks), "chunks": int(result.chunks)},
+            word_filter=word_filter_stats,
         )
     map_ratio = float(result.map_failure_ratio)
     if map_ratio > float(settings.TEXT_LAYER_MAX_MAP_FAILURE_RATIO):
@@ -264,6 +346,7 @@ async def _build(
             f"map_failure_ratio:{map_ratio:.3f}",
             code="map_failure_ratio",
             detail={"ratio": round(map_ratio, 4)},
+            word_filter=word_filter_stats,
         )
     max_errors = int(settings.TEXT_LAYER_MAX_BLOCK_ERRORS)
     if result.http_errors > max_errors:
@@ -278,6 +361,7 @@ async def _build(
             f"block_errors:{result.http_errors}/{result.chunks}",
             code="block_errors",
             detail={"http_errors": int(result.http_errors), "chunks": int(result.chunks)},
+            word_filter=word_filter_stats,
         )
     truncated_ratio = (
         float(result.truncated_chunks) / float(result.chunks) if result.chunks else 0.0
@@ -296,8 +380,25 @@ async def _build(
             code="truncated_chunks",
             detail={"truncated": int(result.truncated_chunks), "chunks": int(result.chunks),
                     "ratio": round(truncated_ratio, 4)},
+            word_filter=word_filter_stats,
         )
     coverage = float(result.coverage_ratio)
+    # 门⑥ 冷审 I1（口径订正）：后置五道卷级门吃的是**过滤后**的 `result`。逐门方向如下，
+    # 上一版注释/文档里「与今天完全一致」「方向只会更严」两句都是**错的**：
+    #   ① `failed_chunks > 0`（计数量）：块数减少 ⇒ 出现失败的机会变少 ⇒ **可能更宽松**；
+    #   ② `http_errors > 上限`（计数量）：同上 ⇒ **可能更宽松**；
+    #   ③ `map_failure_ratio`（分子分母同源于 `calls`）：过滤后 calls 减少但比例同尺度
+    #      ⇒ 方向**不定**；④ `truncated_ratio`（分子分母同源于 `chunks`）同上 ⇒ **不定**；
+    #   ⑤ `coverage`：分子是**过滤后**实体覆盖、分母是**过滤后**流长 ⇒ 两向都可能翻
+    #      （今天 0.92 → 过滤后 0.873 可由通过转拒；今天 0.80 → 1.00 可由拒转过）。
+    # 为什么不改成「未过滤基」来判：未过滤口径**无法事后重建**——今天的分子含大量水印噪声
+    # 实体（它们只因水印进了流才被认出来），过滤后不再产生；拿 `covered/未过滤流长` 当门会把
+    # 今天走 docline 的族 B 真卷打到约 0.6 ⇒ 全部回落 OCR、阶段 2' 收益归零（门④ 实测
+    # 31 页卷仍走 docline）。因此：门仍按过滤后流判（语义=「剩下的内容认全了吗」），
+    # 同时把未过滤口径与逐门计数写进 memo，让任何路由翻转在语料上可审计（AC17b）。
+    # 门⑥ 冷审 C2（续）：未过滤口径只在**真过滤**时计算（默认关/探测不中/异常时不算，
+    # `build_stream` 是同步调用，150k 字符约 11ms 属纯浪费），且必须在上面的第一道后置门
+    # 之前就写进统计块，否则只有 coverage 门失败时审计值才在、其余四道门断档。
     if coverage < float(settings.TEXT_LAYER_MIN_COVERAGE):
         logger.warning(
             "text_layer_docline skipped: coverage %.3f < %.2f file=%s",
@@ -308,6 +409,7 @@ async def _build(
             code="coverage",
             detail={"coverage": round(coverage, 4),
                     "min": round(float(settings.TEXT_LAYER_MIN_COVERAGE), 4)},
+            word_filter=word_filter_stats,
         )
     label_to_id = build_label_to_type_id(ocr_has_types)
     # **只有真正带词的页才算被覆盖**：`extract_text_layer_pages` 会把无文本层的页
@@ -337,11 +439,12 @@ async def _build(
         "uncovered_pages": sorted(set(page_chars) - covered_pages),
         "verdict": verdict.severity,
         "ink_alignment": metrics.ink_alignment,
+        "word_filter": word_filter_stats,
         "seconds": round(time.perf_counter() - started, 3),
     }
     logger.info(
         "text_layer_docline built file=%s pages=%d covered=%d ent=%d chunks=%d coverage=%.3f "
-        "calls=%d residual=%d http_errors=%d truncated=%d elapsed=%.2fs",
+        "calls=%d residual=%d http_errors=%d truncated=%d word_filter=%s/%s elapsed=%.2fs",
         file_id[:8],
         result.pages,
         len(covered_pages),
@@ -352,6 +455,8 @@ async def _build(
         result.residual_calls,
         result.http_errors,
         result.truncated_chunks,
+        word_filter_stats.get("code"),
+        word_filter_stats.get("chars_dropped", 0),
         memo["seconds"],
     )
     return memo
@@ -393,6 +498,15 @@ async def _lookup_memo(key: str) -> dict | None:
         return memo
 
 
+def _marker_word_filter(exc: _TransientIneligible) -> dict:
+    """失败卷 marker 里的 `word_filter` 块（形状固定，键集与成功路径一致）。"""
+    if exc.word_filter:
+        block = dict(exc.word_filter)
+        block["rejected_by"] = str(exc.code)
+        return block
+    return {"code": f"not_run:{exc.code}", "rejected_by": str(exc.code)}
+
+
 async def boxes_for_page(
     *,
     file_id: str,
@@ -423,17 +537,7 @@ async def boxes_for_page(
     if not labels:
         return None, None
     regex_types = _regex_types(owner_id)
-    knobs = (
-        f"{settings.TEXT_LAYER_DOCLINE_CHUNK_CHARS}:{settings.TEXT_LAYER_DOCLINE_CHUNK_OVERLAP}:"
-        f"{settings.TEXT_LAYER_DOCLINE_CONCURRENCY}:{settings.TEXT_LAYER_PAGE_MIN_CHARS}:"
-        f"{settings.TEXT_LAYER_DOCLINE_MAX_BUILD_SEC}:"
-        f"{settings.TEXT_LAYER_DOCLINE_BUILD_SEC_PER_PAGE}:"
-        f"{';'.join(f'{tid}={pat}' for tid, pat in regex_types)}"
-    )
-    key = (
-        f"{file_id}|{_file_fingerprint(str(snapshot.get('file_path') or ''))}"
-        f"|{','.join(labels)}|{knobs}"
-    )
+    key = _memo_key(file_id, snapshot, labels, regex_types)
     try:
         async with _key_lock(key):
             memo = await _lookup_memo(key)
@@ -457,13 +561,21 @@ async def boxes_for_page(
                         "reason": str(exc),
                         "reason_code": exc.code,
                         "reason_detail": exc.detail,
+                        # 门⑥ 冷审 I2 / 第三段 I1：9 条 raise 路径原本 marker 里没有
+                        # `word_filter`，消费者读到 None，分不清「没跑」与「跑了没命中」。
+                        #  - 过滤**之前**就失败（前 4 道闸）⇒ `not_run:<gate>`；
+                        #  - 过滤**之后**才失败（后置 5 道卷级门）⇒ 带上真实统计，并指明
+                        #    `rejected_by=<gate>`（`code` 仍是 `applied`/`no_candidates`），
+                        #    这样「过滤缩小分母导致 coverage 翻门」这类路由变化可事后审计。
+                        "word_filter": _marker_word_filter(exc),
                     }
                 except Exception as exc:  # noqa: BLE001 - 本链任何故障都退回旧路径
                     logger.warning("text_layer_docline build failed file=%s: %s", file_id[:8], exc)
                     built = None
                     marker = {"unusable": True, "retry_at": time.monotonic() + _NEGATIVE_TTL_SEC,
                               "reason": f"error:{type(exc).__name__}",
-                              "reason_code": "error", "reason_detail": {}}
+                              "reason_code": "error", "reason_detail": {},
+                              "word_filter": {"code": "error", "rejected_by": "error"}}
                 else:
                     # `_build` 返回 None = **本卷不适用**（无路径 / 非扫描件），不是回落失败：
                     # 不能报成 fallback，否则每个文本型 PDF 的每一页都会多出一块假失败。
