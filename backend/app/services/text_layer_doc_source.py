@@ -71,7 +71,34 @@ def _word_filter_knob_key() -> str:
         f"{settings.VISIBLE_WATERMARK_WORD_MIN_REPEAT}:"
         f"{settings.VISIBLE_WATERMARK_WORD_COVER_MIN}:"
         f"{settings.VISIBLE_WATERMARK_MAX_DROP_VS_WM_CHARS}:"
-        f"{settings.VISIBLE_WATERMARK_PROBE_PAGES}"
+        f"{settings.VISIBLE_WATERMARK_PROBE_PAGES}:"
+        f"{settings.VISIBLE_WATERMARK_MIN_PAGES}:"
+        f"{settings.VISIBLE_WATERMARK_MIN_VISIBLE_SHARE}:"
+        f"{settings.VISIBLE_WATERMARK_MIN_TOP_SIG_SHARE}:"
+        f"{settings.VISIBLE_WATERMARK_MAX_SIZE_SPREAD}:"
+        f"{settings.VISIBLE_WATERMARK_MIN_KEEP_RATIO}"
+    )
+
+
+def _memo_key(file_id: str, snapshot: dict, labels: list[str],
+              regex_types: list[tuple[str, str]]) -> str:
+    """卷级 memo 的键。
+
+    抽成纯函数是为了能测「开关/阈值必须进 key」（门①.5 冷审 D7 / 门⑥ 冷审 I4）：
+    原先 AC27 的单测只直接比对 `_word_filter_knob_key()` 返回的字符串，把这一行从
+    拼接里删掉也照样绿 —— 真正决定命中/不命中的是这里。
+    """
+    knobs = (
+        f"{settings.TEXT_LAYER_DOCLINE_CHUNK_CHARS}:{settings.TEXT_LAYER_DOCLINE_CHUNK_OVERLAP}:"
+        f"{settings.TEXT_LAYER_DOCLINE_CONCURRENCY}:{settings.TEXT_LAYER_PAGE_MIN_CHARS}:"
+        f"{settings.TEXT_LAYER_DOCLINE_MAX_BUILD_SEC}:"
+        f"{settings.TEXT_LAYER_DOCLINE_BUILD_SEC_PER_PAGE}:"
+        f"{_word_filter_knob_key()}:"
+        f"{';'.join(f'{tid}={pat}' for tid, pat in regex_types)}"
+    )
+    return (
+        f"{file_id}|{_file_fingerprint(str(snapshot.get('file_path') or ''))}"
+        f"|{','.join(labels)}|{knobs}"
     )
 
 
@@ -264,6 +291,10 @@ async def _build(
     ner_pages, word_filter_stats = await asyncio.to_thread(
         visible_text_watermark.maybe_filter_pages, path, pages
     )
+    # 门⑥ 冷审 C2：`result.coverage_ratio` 的分母是送进 NER 的流长。这里记下**未过滤**
+    # 流长（`build_stream` 返回 `(stream, spans)` 元组 ⇒ 取 `[0]`），供后置覆盖率门
+    # 上报未过滤口径（见下），让「今天会/不会走 docline」的差别在 memo 里可审计。
+    unfiltered_stream_chars = len(docline.build_stream(pages)[0])
     result = await docline.run_document_ner(
         ner_pages, labels, has_client=has_client, regex_types=regex_types
     )
@@ -322,6 +353,23 @@ async def _build(
                     "ratio": round(truncated_ratio, 4)},
         )
     coverage = float(result.coverage_ratio)
+    if word_filter_stats.get("applied") and unfiltered_stream_chars > 0:
+        # 门⑥ 冷审 C2：覆盖率分母是**送进 NER 的流长**，过滤把分母缩小 ⇒ 该数必然上升。
+        # 但「未过滤口径」**无法事后重建**：今天的分子里含大量水印噪声实体（它们正是
+        # 因为水印进了流才被认出来），过滤后这些实体不再产生；若拿 `covered/未过滤流长`
+        # 当门，族 B 真卷会从今天的 1.000 掉到约 0.6 ⇒ 今天走 docline 的卷全部回落 OCR，
+        # 阶段 2' 收益归零（门④ 实测：31 页卷过滤后 chunks 14→9 仍走 docline）。
+        # 所以门仍按**过滤后流**判（语义 =「剩下的内容认全了吗」），同时把未过滤口径的
+        # 覆盖率写进 memo/日志，供 AC17 在语料上冻结「路由变化清单」（可审计）。
+        unfiltered_basis = float(result.covered_chars) / float(unfiltered_stream_chars)
+        word_filter_stats = dict(word_filter_stats)
+        word_filter_stats["gate_basis_unfiltered_coverage"] = round(unfiltered_basis, 4)
+        logger.info(
+            "text_layer_docline coverage: filtered=%.3f unfiltered_basis=%.3f "
+            "stream_chars %d->%d file=%s",
+            coverage, unfiltered_basis, unfiltered_stream_chars, int(result.stream_chars),
+            file_id[:8],
+        )
     if coverage < float(settings.TEXT_LAYER_MIN_COVERAGE):
         logger.warning(
             "text_layer_docline skipped: coverage %.3f < %.2f file=%s",
@@ -450,18 +498,7 @@ async def boxes_for_page(
     if not labels:
         return None, None
     regex_types = _regex_types(owner_id)
-    knobs = (
-        f"{settings.TEXT_LAYER_DOCLINE_CHUNK_CHARS}:{settings.TEXT_LAYER_DOCLINE_CHUNK_OVERLAP}:"
-        f"{settings.TEXT_LAYER_DOCLINE_CONCURRENCY}:{settings.TEXT_LAYER_PAGE_MIN_CHARS}:"
-        f"{settings.TEXT_LAYER_DOCLINE_MAX_BUILD_SEC}:"
-        f"{settings.TEXT_LAYER_DOCLINE_BUILD_SEC_PER_PAGE}:"
-        f"{_word_filter_knob_key()}:"
-        f"{';'.join(f'{tid}={pat}' for tid, pat in regex_types)}"
-    )
-    key = (
-        f"{file_id}|{_file_fingerprint(str(snapshot.get('file_path') or ''))}"
-        f"|{','.join(labels)}|{knobs}"
-    )
+    key = _memo_key(file_id, snapshot, labels, regex_types)
     try:
         async with _key_lock(key):
             memo = await _lookup_memo(key)

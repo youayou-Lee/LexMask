@@ -719,7 +719,7 @@ class Settings(BaseSettings):
     VISIBLE_WATERMARK_PROBE_PAGES: int = 5
     # 判定「这是平铺水印」三条：命中页数 / 候选字符占可见文本比例 / 最高签名占比。
     VISIBLE_WATERMARK_MIN_PAGES: int = 3
-    VISIBLE_WATERMARK_MIN_VISIBLE_SHARE: float = 0.5
+    VISIBLE_WATERMARK_MIN_VISIBLE_SHARE: float = 0.35
     VISIBLE_WATERMARK_MIN_TOP_SIG_SHARE: float = 0.85
     # 同一签名的字号极差上限（pt）：平铺水印是同一字号重复；正文会混字号。
     VISIBLE_WATERMARK_MAX_SIZE_SPREAD: float = 2.0
@@ -734,6 +734,13 @@ class Settings(BaseSettings):
     # 门④ GT 实测：族 B 卷的「不可见正文层」本身是对带水印扫描图 OCR 出来的，
     # 同页会带上十几二十份水印串；纯文本判据会在这些位置上误丢正文实例 ⇒ 必须
     # 用几何把「正文位置的同形词」与「平铺水印位置的同形词」分开。
+    # 页级保留下限（门⑥ 冷审 I2/I6）：丢掉水印词后，本页剩余字符若低于
+    # `page_chars × 本键`，说明这页**几乎全是候选词**（典型形态 = 正文本身就写成
+    # 倾斜半透明平铺）⇒ 整页保持原样并单独计数 `pages_skipped_would_wiped`。
+    # 0.15 = 族 B 真卷最薄的页（正文 74 / 水印 260 字符，丢弃比 0.78）还能剥，
+    # 而假阳性页（丢弃比 0.96）会被挡下。
+    VISIBLE_WATERMARK_MIN_KEEP_RATIO: float = 0.15
+
     VISIBLE_WATERMARK_WORD_COVER_MIN: float = 0.35
     # （门⑥ 三轮 Minor#4：原 `TEXT_LAYER_EMPTY_PAGE_FALLBACK` 开关已删除。
     # 原因：置 False 会把「覆盖页 0 框」当成「这页已由文档级链处理」⇒ 整页丢检，
@@ -991,12 +998,19 @@ class Settings(BaseSettings):
         # 上限 5.0 防呆：再大就失去不变式意义。
         return max(1.0, min(5.0, v))
 
+    @field_validator("VISIBLE_WATERMARK_MIN_KEEP_RATIO")
+    @classmethod
+    def _validate_visible_watermark_min_keep_ratio(cls, v: float) -> float:
+        # 太低（<0.02）等于关掉守护；太高（>0.9）会把正常薄页也挡下 ⇒ 收益归零。
+        return max(0.02, min(0.9, v))
+
     @field_validator("VISIBLE_WATERMARK_WORD_COVER_MIN")
     @classmethod
     def _validate_visible_watermark_word_cover_min(cls, v: float) -> float:
-        # 0 = 关掉几何判据（退回纯文本判据，门④ GT 实测会误丢正文实例 ⇒ 不建议）。
-        # 上限 1.0 防呆；0.35 是族 B「OCR 带进来的水印词」实测覆盖度分布下的取值。
-        return max(0.0, min(1.0, v))
+        # 下限 0.2（门⑥ 冷审 Minor#4）：几何判据是承重条件，置 0 = 退回纯文本判据，
+        # 门④ GT 实测会误丢正文实例（31 页卷 322 个正文词）。上限 1.0 防呆；
+        # 0.35 是族 B「OCR 带进来的水印词」实测覆盖度分布下的取值。
+        return max(0.2, min(1.0, v))
 
     @field_validator("TEXT_LAYER_REPEATED_FRAGMENT_MIN_PAGES")
     @classmethod

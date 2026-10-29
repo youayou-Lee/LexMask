@@ -218,6 +218,12 @@ def _visible_char_rects(page: fitz.Page) -> list[fitz.Rect]:
     用**逐字形框**而不是 `entry["bbox"]`：平铺水印一个 op 的 bbox 常常覆盖大半页
     （斜行 + 越出页边），拿它当几何会把整页正文都判成水印。
     """
+    # 门⑥ 冷审 C1：`text_layer_docline_service._word_boxes` 对 `rotation % 360` 非零页
+    # 会把词框乘 `page.rotation_matrix`（转到旋转后空间），而 trace 字形框是**未旋转**
+    # 空间的 ⇒ 这里必须做同一校正。不做时覆盖率只是**部分**命中（0.35 恰好落在重叠带），
+    # 会误删与水印毫无关系的正文词 ⇒ 漏打码（实测 3 页 rot90：40 个正文词被删）。
+    rotation = int(getattr(page, "rotation", 0) or 0)
+    rotate = page.rotation_matrix if rotation % 360 else None
     out: list[fitz.Rect] = []
     for entry in page.get_texttrace():
         opacity = float(entry.get("opacity") or 0.0)
@@ -233,6 +239,8 @@ def _visible_char_rects(page: fitz.Page) -> list[fitz.Rect]:
             rect = fitz.Rect(float(box[0]), float(box[1]), float(box[2]), float(box[3]))
             if rect.is_empty:
                 continue
+            if rotate is not None:
+                rect = rect * rotate
             out.append(rect)
     return out
 
@@ -332,6 +340,30 @@ def _watermark_word_drops(
     return drop_indices, len(drop_indices), chars_dropped
 
 
+def _filter_code(
+    *,
+    pages_filtered: int,
+    pages_skipped_invariant: int,
+    pages_skipped_would_wiped: int,
+    pages_skipped_no_geometry: int,
+    pages_total: int,
+) -> str:
+    """机读码：必须能区分「真剥了 / 探测有但几何缺失 / 假阳性挡下 / 预算越界 / 无水印」。
+
+    门⑥ 冷审 I3：几何缺失原本会落回 `no_watermark`，运维读成「本卷没水印」，
+    实际是「有水印、拿不到几何、整卷没剥」——两件事必须用不同码。
+    """
+    if pages_filtered > 0:
+        return "applied"
+    if pages_skipped_would_wiped > 0:
+        return "would_wiped_page"
+    if pages_skipped_invariant > 0:
+        return "filter_invariant_exceeded"
+    if pages_total > 0 and pages_skipped_no_geometry >= pages_total:
+        return "no_geometry"
+    return "no_watermark"
+
+
 def filter_watermark_words(
     pages: list[TextLayerPage],
     profile: WatermarkProfile | None,
@@ -340,6 +372,7 @@ def filter_watermark_words(
     min_repeat: int | None = None,
     max_drop_vs_wm: float | None = None,
     cover_min: float | None = None,
+    min_keep_ratio: float | None = None,
 ) -> tuple[list[TextLayerPage], dict]:
     """把水印词从词流里去掉；返回新页表 + 只带计数的统计块。
 
@@ -367,6 +400,11 @@ def filter_watermark_words(
         if cover_min is not None
         else getattr(settings, "VISIBLE_WATERMARK_WORD_COVER_MIN", 0.35)
     )
+    keep_ratio = float(
+        min_keep_ratio
+        if min_keep_ratio is not None
+        else getattr(settings, "VISIBLE_WATERMARK_MIN_KEEP_RATIO", 0.15)
+    )
 
     stats = {
         "applied": False,
@@ -375,6 +413,7 @@ def filter_watermark_words(
         "pages_filtered": 0,
         "pages_skipped_invariant": 0,
         "pages_skipped_no_geometry": 0,
+        "pages_skipped_would_wiped": 0,
         "words_dropped": 0,
         "chars_dropped": 0,
     }
@@ -393,6 +432,7 @@ def filter_watermark_words(
     pages_filtered = 0
     pages_skipped = 0
     pages_skipped_no_geometry = 0
+    pages_skipped_would_wiped = 0
     words_dropped_total = 0
     chars_dropped_total = 0
     for page in pages:
@@ -416,6 +456,14 @@ def filter_watermark_words(
             out.append(page)
             pages_skipped += 1
             continue
+        kept_chars = page_chars - chars_dropped
+        if kept_chars < int(round(keep_ratio * page_chars)):
+            # 页级保留下限（门⑥ 冷审 I2/I6）：这页几乎全是候选词 ⇒ 更可能是「正文本身
+            # 就写成倾斜半透明平铺」的假阳性，或薄页里 OCR 把水印认成了一大片。
+            # 与预算越界**分开计数**，避免两种原因在运维口径里混成一个。
+            out.append(page)
+            pages_skipped_would_wiped += 1
+            continue
         out.append(
             TextLayerPage(no=page.no, width=page.width, height=page.height, words=kept)
         )
@@ -426,14 +474,17 @@ def filter_watermark_words(
     stats.update(
         {
             "applied": pages_filtered > 0,
-            "code": (
-                "applied"
-                if pages_filtered > 0
-                else ("filter_invariant_exceeded" if pages_skipped > 0 else "no_watermark")
+            "code": _filter_code(
+                pages_filtered=pages_filtered,
+                pages_skipped_invariant=pages_skipped,
+                pages_skipped_would_wiped=pages_skipped_would_wiped,
+                pages_skipped_no_geometry=pages_skipped_no_geometry,
+                pages_total=len(pages),
             ),
             "pages_filtered": pages_filtered,
             "pages_skipped_invariant": pages_skipped,
             "pages_skipped_no_geometry": pages_skipped_no_geometry,
+            "pages_skipped_would_wiped": pages_skipped_would_wiped,
             "words_dropped": words_dropped_total,
             "chars_dropped": chars_dropped_total,
             "dropped_ratio": round(

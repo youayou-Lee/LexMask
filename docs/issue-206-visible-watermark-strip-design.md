@@ -5,7 +5,7 @@
 | Issue | youayou-Lee/LexMask#206（原「想法（暂不实施）」；本文档把想法变为可实施方案） |
 | 基线 | `origin/preview` @ `686c4c0`（含 #203/#199 水印闸、#210 `perf(#207)`；本方案先做**阶段 2'**） |
 | 分支 | `feat/issue206-word-filter`（worktree：`.worktrees/feat-issue206-word-filter`） |
-| 状态 | **v1.4**（阶段 2' 已实现：判据=**文本 ∩ 几何**；①.5 冷审 REVISE 已逐条处置；独立 GT 复验 `body_missing_free=0/0/0`；门④ 双 job 已实测（纯水印框 78.3%→0%、框 −81.7%），待门⑥） |
+| 状态 | **v1.5**（阶段 2' 已实现：判据=**文本 ∩ 几何**；①.5 冷审 REVISE 已逐条处置；独立 GT 复验 `body_missing_free=0/0/0`；门④ 双 job 已实测（纯水印框 78.3%→0%、框 −81.7%），待门⑥） |
 | 关联 | #203（预建链水印闸，已合）· **#204（建链 O(整卷) 与单页门限解耦，OPEN，本方案的阶段 2 被它阻塞）** · #208（页级续跑）· #165（回落原因可观测） |
 | 日期 | 2026-10-30 |
 
@@ -168,13 +168,20 @@ parse() → ensure_pdf_accessible() → 原件 path
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `VISIBLE_WATERMARK_STRIP_ENABLED` | `False` | 总开关。实现期默认关；④ 云验收通过后按 #129 惯例拍板默认开 |
-| `VISIBLE_WATERMARK_PROBE_PAGES` | `5` | 探测页数 |
-| `VISIBLE_WATERMARK_MIN_PAGES` | `3` | 命中页数下限 |
-| `VISIBLE_WATERMARK_MIN_VISIBLE_SHARE` | `0.5` | 候选/可见字符占比下限 |
-| `VISIBLE_WATERMARK_TOP_SIG_SHARE` | `0.85` | 最高签名占比下限 |
-| `VISIBLE_WATERMARK_MAX_FILE_MB` | `400` | 体积闸；超则不建副本直接回落 |
-| `VISIBLE_WATERMARK_COPY_TTL_MIN` | `30` | 临时副本清扫 TTL |
+> 下表是**阶段 1（渲染面）的规划值**，除探测/判据那几个键（阶段 2' 已落地、见 §7.1）外**尚未在
+> `config.py` 里存在**；键名以本表为准，落地时按此命名（门⑥ 第一段冷审 Minor#1：原表里
+> `..._TOP_SIG_SHARE` 与已实现键名 `..._MIN_TOP_SIG_SHARE` 不一致）。
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `VISIBLE_WATERMARK_STRIP_ENABLED` | `False` | 阶段 1 总开关（规划）。实现期默认关；④ 云验收通过后按 #129 惯例拍板默认开 |
+| `VISIBLE_WATERMARK_PROBE_PAGES` | `5` | 探测页数（**已落地**，阶段 2' 共用） |
+| `VISIBLE_WATERMARK_MIN_PAGES` | `3` | 命中页数下限（已落地） |
+| `VISIBLE_WATERMARK_MIN_VISIBLE_SHARE` | `0.35` | 候选/可见字符占比下限（已落地；0.5 在「正文层不透明」的卷上余量只剩 0.005） |
+| `VISIBLE_WATERMARK_MIN_TOP_SIG_SHARE` | `0.85` | 最高签名占比下限（已落地） |
+| `VISIBLE_WATERMARK_MAX_SIZE_SPREAD` | `2.0` | 同一签名内字号极差上限 pt（已落地） |
+| `VISIBLE_WATERMARK_MAX_FILE_MB` | `400` | 体积闸；超则不建副本直接回落（**阶段 1 规划**） |
+| `VISIBLE_WATERMARK_COPY_TTL_MIN` | `30` | 临时副本清扫 TTL（**阶段 1 规划**） |
 
 可观测（**无条件写块**，延续 #165 口径）：`pipeline_status["visible_watermark"] =
 {code, pages_probed, pages_hit, span_count, chars, visible_share, build_ms, copy_bytes}`。
@@ -299,20 +306,33 @@ filtered, stats = filter_watermark_words(pages, profile, wm_rects=wm_rects)
 > 改为**文本 ∩ 几何**后同一脚本复验：**`body_missing_free = 0 / 0 / 0`**，水印位置字符 **8,060 / 8,580 / 7,540**
 > 全部清掉（第 3 卷有 2 页因不变式越界保持原样 ⇒ 残留噪声，方向安全）。keep floor 随之取消。
 
-**防误剥不变式**（每页独立判定，越界只放弃该页）：被丢字符数 ≤ **`VISIBLE_WATERMARK_MAX_DROP_VS_WM_CHARS`(1.5) ×
-探测到的每页水印字符数中位数**；越界或该页会丢成空页 ⇒ 该页保持原样、记 `pages_skipped_invariant`。
+**防误剥不变式**（每页独立判定，越界只放弃该页）：
+① 被丢字符数 ≤ **`VISIBLE_WATERMARK_MAX_DROP_VS_WM_CHARS`(1.5) × 探测到的每页水印字符数中位数**；
+② **页级保留下限**（门⑥ 冷审 I2/I6）：过滤后本页剩余字符 < `page_chars × VISIBLE_WATERMARK_MIN_KEEP_RATIO`(0.15)
+⇒ 该页保持原样、单独记 `pages_skipped_would_wiped`（与预算越界**分开计数**）。
+第二种情况是「正文本身写成倾斜半透明平铺」的假阳性通道（实测丢弃比 0.96），单一 `not kept`
+只挡得住「丢成 0 词」。族 B 最薄的真页（正文 74 / 水印 260 字符，丢弃比 0.78）仍然被剥。
 （v1.2 写的「≤ 该页总字符数 × 0.5」已废：薄页正文本就少，占比天然 >0.5，会把最需要过滤的薄页全部挡下。）
 
-**可观测**：`pipeline_status["docline_word_filter"] = {applied, code, pages_total, pages_filtered,
-pages_skipped_invariant, words_dropped, chars_dropped, dropped_ratio, profile}`；
-`code ∈ {applied, no_watermark, filter_failed, filter_invariant_exceeded}`；`profile` 只带计数与比例。
+**可观测**（键名以实现为准：写在 `pipeline_status["text_layer_doc"]["word_filter"]`；门⑥ 第一段冷审 Minor#1）：
+`{applied, code, pages_total, pages_filtered, pages_skipped_invariant, pages_skipped_no_geometry,
+pages_skipped_would_wiped, words_dropped, chars_dropped, dropped_ratio, profile}`；开启过滤且真剥过时
+额外带 `gate_basis_unfiltered_coverage`（见下方 C2 处置）。
+`code ∈ {applied, disabled, no_watermark, no_geometry, would_wiped_page, filter_invariant_exceeded,
+filter_failed}` —— **五态必须可区分**（门⑥ 冷审 I3）：`no_watermark` = 探测不中；`no_geometry` =
+探测到水印但拿不到逐字形框（整卷没剥）；`would_wiped_page` = 页级保留下限把整页挡下（假阳性形态）；
+`filter_invariant_exceeded` = 预算越界；`applied` = 真剥了。`profile` 只带计数与比例。
 **不带任何字面量**（延续 #203 AC4 口径）。
 
 **失败回落**：开关关 ⇒ `disabled`；探测不中 ⇒ `no_watermark`；任何异常 ⇒ 用**未过滤**页 + `filter_failed`。
 绝不抛给上层、绝不写新的永久负缓存。
 
 **开关**：`VISIBLE_WATERMARK_WORD_FILTER_ENABLED` 默认 **False**；翻转默认值必须单独提交并附 ④ 证据（AC19）。
-开关与三个阈值**都进 memo key**，否则「同 file_id 开关两份 job」会吃到同一 memo、两臂必然零差异（AC27）。
+开关与**全部**阈值（`WORD_MIN_REPEAT` / `WORD_COVER_MIN` / `MAX_DROP_VS_WM_CHARS` / `PROBE_PAGES` /
+`MIN_PAGES` / `MIN_VISIBLE_SHARE` / `MIN_TOP_SIG_SHARE` / `MAX_SIZE_SPREAD` / `MIN_KEEP_RATIO`）都进 memo key，
+否则「同 file_id 开关两份 job」会吃到同一 memo、两臂必然零差异（AC27）。键组装抽成纯函数
+`text_layer_doc_source._memo_key()`，让「阈值是否真的进了拼接」可被单测判红（原先只直接比对
+`_word_filter_knob_key()` 的字串，把这一行从拼接里删掉照样绿 —— 门⑥ 冷审 I4/M3）。
 
 **门④ 实测（阶段 2'，2026-10-29，族 B 31 页真卷；两臂同一份字节各自独立上传、唯一差别是开关）**：
 
@@ -336,6 +356,29 @@ pages_skipped_invariant, words_dropped, chars_dropped, dropped_ratio, profile}`�
 - AC19 默认态：A 臂**未设任何环境变量**跑出 `word_filter=disabled/0`，行为=今天。
 - AC26 安全阀：build 137.10s ≪ 300s，无 `build_budget` 回落、无整卷清零、无 300s 整页被杀。
 
+### v1.5：门⑥ 第一段独立评审的逐条处置（`686c4c0..9bbca7f`）
+
+评审结论 REVISE，两条 Critical + 六条 Important + Minor/AC 表判读。逐条处置与证据：
+
+| 项 | 判定 | 处置（代码锚点） |
+|---|---|---|
+| **C1 旋转页坐标系错位 ⇒ 误删正文（漏打码）** | 成立 | `_visible_char_rects` 与非零 `page.rotation` 页同样乘 `page.rotation_matrix`（与 `text_layer_docline_service._word_boxes` 同一校正）。单测 `test_filter_works_on_rotated_page_keeps_body`（3 页 `/Rotate 90`，断言正文词逐字保留）；变异=删掉该乘法 ⇒ 红 |
+| **C2 后置卷级门吃过滤流 ⇒ 可能改路由** | 机制成立，但**不可事后重建未过滤口径** | 覆盖率门**仍按过滤后流判**：未过滤分子里含大量水印噪声实体（它们正因为水印进了流才被认出），若改用 `covered/未过滤流长`，族 B 真卷会从今天的 1.000 掉到约 0.6 ⇒ 今天走 docline 的卷全部回落 OCR、本阶段收益归零（门④ 实测过滤后 `chunks 14→9` 仍走 docline）。因此改为**上报**：`gate_basis_unfiltered_coverage` 写入 memo + 日志（`filtered=… unfiltered_basis=… stream_chars a->b`），并由 **AC17b** 在语料上冻结「由拒转过/由通过转拒」清单 = 0。`truncated_ratio`/`map_failure_ratio` 的分母只会更小 ⇒ 方向只能是更严，已在 §7.1 说明 |
+| I1 `MIN_VISIBLE_SHARE=0.5` 余量只有 0.005 | 成立 | 默认改 **0.35**（正文层不透明时 300 字/页 share=0.459 仍判命中） |
+| I2 假阳性（正文本身是倾斜半透明平铺）无兜底 | 成立 | 新增页级保留下限 `MIN_KEEP_RATIO=0.15`（见上），单独计数 `pages_skipped_would_wiped` |
+| I3 几何缺失仍报 `no_watermark` | 成立 | `_filter_code()` 五态，新增 `no_geometry` |
+| I4 7 个变异 SURVIVED | 成立 | 变异表扩到 **16 个、全部 KILLED**（见 AC31）；新增用例：`_memo_key` 真拼接、`compute_metrics` 实参、`page_chars` 来源、空页回退、probe 三闸、倾斜/不透明常量、字符集条件、`MIN_VISIBLE_SHARE` 默认值、`no_geometry` 分支、keep-ratio 守护、旋转校正、C2 上报 |
+| I5 memo key 缺 4 个探测阈值 | 成立 | 全阈值进 key（见上），并抽 `_memo_key()` |
+| I6 无页级字符下限 / 计数器混用 | 成立 | keep-ratio 守护 + 分开计数（见上） |
+| I7 1–2 页卷永不剥 | 方向安全，登记 | 见诚实边界 14 |
+| I8 `pages_hit` 口径不绑 `top_sig` | 部分成立 | `top_sig_share≥0.85` 兜底；登记为边界 15 |
+| Minor 键名漂移 / `.env.example` 未登记 / COVER_MIN 可配 0 / 两次开 PDF 无上限 | 成立 | §4 表标注规划态并改对键名；`.env.example` 登记 9 个键；`WORD_COVER_MIN` 钳 **[0.2, 1.0]**；`collect_watermark_rects` 只是逐页 trace（族 B 31 页 0.08s、族 A 149 页 <1s），登记为边界 16 |
+| AC15①/AC16/AC19/AC21/AC22①/AC24/AC26/AC27/AC31 判读 | 成立 | 逐条重写（见 AC 表）：AC16 加 `pages_probed>0 & profile.pages_hit>0` 反恒真断言；AC21 换 keep-ratio/no_geometry；AC22① 补字符集钉子；AC24 补 `compute_metrics` 实参；AC26 去掉恒真式；AC27 换 `_memo_key`；AC31 换 16 变异表 |
+
+**我方对评审的三处反驳（已在 v1.3 记录并复核）**：①`testdata/第四卷.pdf` 实为 45°/opacity 0.2/
+`NotoSansCJKsc-Regular`（族 A），不是 −30°；②`~/caseData`（44GB/540 卷）在**本机**，语料脚本本地只读可跑；
+③「过滤会改变闸输入」在最终实现里不成立（闸吃原页）。
+
 **阶段 2' 的 AC（v1.3 重写；门①.5 冷审逐条处置，旧 AC15–AC20 已替换）**：
 
 | AC | 判据（可判，未实现时必须红） | 证据 | 门 |
@@ -343,21 +386,24 @@ pages_skipped_invariant, words_dropped, chars_dropped, dropped_ratio, profile}`�
 | AC15 过滤正确性与正文零损失（**独立 GT**） | GT **不取自过滤器输出**：直接从 PDF 文本对象层标注——① 被丢词全部落在水印字形上（`chars_dropped` 与「可见 span 字符数」误差 ≤5%；第 3 卷 allowlist 2 页不变式外，其余页 100%）；② **正文零损失**：把「只由 `alpha=0` span 覆盖的词、且不被水印字形覆盖」作为正文 GT，过滤后按 `(页, 归一化坐标)` 逐条必须仍在 ⇒ `body_missing_free == 0`；③ 同一脚本必须同时报出「水印位置的同形词被丢掉多少」（丢弃数 / GT 水印字符数 ≥95%）。族 B 抽样 ≥3 卷（本地只读 `~/caseData`），**已跑出 0/0/0**（私有底稿 §10） | 单测（合成夹具）+ 只读脚本 + 结果表（私有底稿） | ②③ |
 | AC16 反例零动作（默认开配置下） | 11 卷反例 + 61 卷明文案卷：`docline_word_filter.code == "no_watermark"`（**字段缺失即 FAIL**，不是「计数为 0」）、`words_dropped == chars_dropped == 0`、且文本层逐页词表与今天**逐条相同**（深比较）；必含 4 卷 `alpha=0` 倾斜层样本与 2 卷「扫描件误判为文本型」 | 单测（每卷一条）+ 规模脚本 | ②③ |
 | AC17 路由零变化 | 族 A 真卷（149 页）在**开启**过滤时仍被 `repeated_fragment_coverage` 拒（闸吃原页 ⇒ coverage 0.3764 不变）、`reason_code` 与今天逐字相同；**零个「由拒转过」卷**（全量清单见 AC25）；与现网行为一致性由 AC24 的顺序钉住 | 单测 + 云 ④ 单卷 | ②③④ |
+| AC17b 路由冻结清单（C2 反恒真） | 在 12 卷 docline 资格抽样的同一批卷上，重跑「开关关 / 开关开」并逐卷比较 `docline_word_filter` 与路由结果：**「由拒转过」清单 = 0**；「由通过转拒」清单只允许 §7.1 明列的已知形态（无正文层卷 ⇒ `would_wiped_page`）。同时冻结 `gate_basis_unfiltered_coverage` 上报值（每卷 1 个数），差值 >±0.05 即说明过滤器动了流（与 AC25 同源）。理由：C2 机制（后置门分母缩小）真实存在但**不可事后重建未过滤口径**，只能用「语料上零路由漂移」代替「机制不可能」 | 只读脚本 + 清单 | ②③ |
 | AC18 云上收益（④，同卷**两份独立上传**） | 主判据 = **纯水印框（独立 GT：框 text 全字符 ⊆ 可见水印字符集 且框中心落在水印字符 bbox 内，GT 由 PDF trace 标注，不用过滤器输出）** 从 N 降到 **≤ 5% × N**（v1.4：几何判据下预期近 0，留 5% 容 NER 把相邻正文与水印粘连）；框总数、`stream_chars`、`chunks`、`recognition.duration_ms` 全部报实数，且 `duration_ms ≤ 基线 × 1.05`。**禁止**用「5,935−4,612」这类算术重述充当证据 | 两份 job + diff + GT 表（私有底稿） | ④⑤ |
 | AC19 默认交付态 | ① 单测钉住 config 默认值（`ENABLED is False`）与三个阈值默认值；② ④ 取证用**环境变量**开跑；③ 若拍板默认开，则翻转必须同 PR 内单独提交，并跑一次**不设任何环境变量**的 job 证明默认生效；④ 默认开时族 B 抽样 10 卷 docline 接管率 ≥ 现网基线（10/11），`docline_word_filter.applied` 的卷 ≥8 | 单测 + ④ job 清单 | ②④ |
 | AC20 可观测 + 敏感面 | `docline_word_filter` 在成功/回落两态都出现且键集稳定；`reason_detail` / 日志 / 状态块不含水印字面量、案卷名、临时路径；新增文件过 G4 公开树扫描 0 命中，且**同轮注入 canary**（假水印词 + 假案卷名各一）证明扫描器能抓（否则该条恒真） | 单测 + 扫描 + canary | ②③ |
-| AC21 页级下限与薄页 | 过滤后逐页保留字符 >0（丢空即该页回退原样，单测钉）；薄页（正文 <120 字）必须照样被过滤（族 B 实测 3/31 页属此类）——夹具与真卷各 1 例；`covered_pages` / `uncovered_pages` / `page_chars` 与今天**逐页相同**（深比较，因为闸与页表口径未变） | 单测 + 只读脚本 | ②③ |
-| AC22 高频正文短语保护 | 夹具三种：① 字符集**不在**水印字符集里的 4 字短语（「本院认为」形态）同页 5 次、跨 160 页共 800 次 ⇒ **0 丢弃**；② 字符集**在**水印字符集里的 4 字短语、同页 5 次且**不在水印字形上** ⇒ 0 丢弃；③ 同上但落在水印字形上 65 份 ⇒ 只丢这 65 份、正文位置的同形词一份不动（几何判据显式钉住，`test_filter_keeps_body_position_copies_of_watermark_text` 单测）。真卷侧由 AC15 的正文 GT 兜住 | 单测 ×3 + 变异 | ②③ |
+| AC21 页级下限、薄页与假阳性兜底 | ① 过滤后逐页保留字符 >0（丢空即该页回退原样）；② **页级保留下限** `MIN_KEEP_RATIO=0.15`：夹具构造「正文本身写成倾斜半透明平铺」⇒ 该页整页保持原样、记 `pages_skipped_would_wiped`（不是被剥空）；真卷侧验证「薄页照样被剥」（族 B 3/31 页正文 <120 字）；③ **几何缺失单独成码**：profile 命中但 `collect_watermark_rects` 空 ⇒ `code == "no_geometry"`（不许报 `no_watermark`）；④ `covered_pages` / `uncovered_pages` 与今天逐页相同（深比较；`page_chars` 是 `_build` 内联量、不在 memo 键里） | 单测 ×4 + 只读脚本 | ②③ |
+| AC22 高频正文短语保护 | 夹具三种：① 字符集**不在**水印字符集里的 4 字短语（「本院认为」形态）同页 5 次、跨 160 页共 800 次 ⇒ **0 丢弃**；② 字符集**在**水印字符集里的 4 字短语、同页 5 次且**不在水印字形上** ⇒ 0 丢弃；③ 同上但落在水印字形上 65 份 ⇒ 只丢这 65 份、正文位置的同形词一份不动（`test_filter_keeps_body_position_copies_of_watermark_text`）；④ **字符集是必要条件**：4 字词即使 65 份全落在水印字形上，字符集不在 `profile.wm_charset` ⇒ 0 丢弃（`test_filter_requires_charset_membership_even_when_covered`；变异=删字符集判断必须红）。真卷侧由 AC15 的正文 GT 兜住 | 单测 ×4 + 变异 | ②③ |
 | AC23 异常/极端/并发/幂等 | 无文本层、0 页、损坏 PDF、加密件、非 CJK、>1000 页（`MAX_PAGES` 截断）、单页无水印的混合卷、过滤后正文全空、同卷 4 并发、job 重试：每例「行为 == 今天」；**不新增 permanent 负缓存**（断言 `reason_code` 与 `retry_at` 非新增 inf，除非与今天同因） | 单测 + 云故障注入 | ②③④ |
-| AC24 闸位置钉住 | 单测：`compute_metrics` 与 `measure_repeated_fragment_coverage` 收到的是**同一个未过滤 `pages` 对象**（`is` 比较），`run_document_ner` 收到过滤后的新对象；变异=把过滤挪到闸之前 ⇒ 必须红 | 单测 + 变异 | ②③ |
+| AC24 闸位置钉住 | 单测：`compute_metrics`、`measure_repeated_fragment_coverage` 与建流预算闸收到的是**同一个未过滤 `pages` 对象**（`is` 比较；`compute_metrics` 的 `page_word_texts` 实参也逐页等于未过滤词文本，stub 不得丢参），`run_document_ner` 收到过滤后的新对象；变异=把过滤挪到闸之前或丢参 ⇒ 必须红 | 单测 + 变异 | ②③ |
 | AC25 闸指标清单（④） | 抽样 5 卷报 `short_word_ratio / avg_word_len / chars_per_page / garbage_ratio / coverage / map_failure_ratio` 过滤前后数值；因闸吃原页，判据=**逐值相同**（差异出现即说明过滤位置被改坏）；并列「由拒转过 / 由通过转拒」卷清单（预期 0） | ④ 只读 DB + 日志 | ④ |
-| AC26 安全阀真实数值（④） | 3 卷（含 ≥1 卷 >120 页）给出「块数 × 实测每块秒」的建链时长估计误差 ≤1.5×；结果**三选一必居其一**：completed 且建链 <300s / 显式回落带机读码 / `build_budget` 回落。**绝不出现整卷清零或 300.004s 整页被杀**。删掉 v1.2「必须回落 build_budget」的方向性断言（默认 600s ÷1.6s/页 下 149 页估 238.4s，永不触发；现网码是 `repeated_fragment_coverage`） | 单测（合成阈值）+ ④ 实测 | ②③④ |
-| AC27 开关/memo 隔离 | 单测：`ENABLED` / `WORD_MIN_REPEAT` / `MAX_DROP_VS_WM_CHARS` 任一变化 ⇒ memo key 变化；④ 两臂必须**各自独立上传**（不同 `file_id`）；红测=把开关从 key 里删掉后「同 file_id 两跑零差异」必须可复现（证明 AC18 不会被 memo 假通过） | 单测 + ④ 记录 | ②③④ |
+| AC26 安全阀真实数值（④） | 3 卷（含 ≥1 卷 >120 页）：逐卷报「建链墙钟 / 块数 / 是否回落 / 回落码」，判据只有两条 —— ① **没有任何一页被 300s 门限杀**（`recognition.failed_pages` 不出现 `timeout`）；② 终态 ∈ `{awaiting_review, completed, completed_with_failures}` 且未出现整卷清零。**不再断言「必须回落 build_budget」**（默认 600s ÷1.6s/页 下 149 页估 238.4s 永不触发；现网码 `repeated_fragment_coverage`），也不把「三选一」当判据（恒真）。已实测（门④）：build 137.10s ≪ 300s、无回落、无杀页 | 单测（合成阈值）+ ④ 实测 | ②③④ |
+| AC27 开关/memo 隔离 | 单测直接打 `text_layer_doc_source._memo_key(file_id, snapshot, labels, regex_types)`：开关 / `WORD_MIN_REPEAT` / `MAX_DROP_VS_WM_CHARS` / `MIN_KEEP_RATIO` / `MIN_PAGES` / `MIN_VISIBLE_SHARE` / `MIN_TOP_SIG_SHARE` / `MAX_SIZE_SPREAD` **任一变** ⇒ key 变（`test_memo_key_includes_filter_settings`）；④ 两臂必须**各自独立上传**（不同 `file_id`）。注：`_memo_key` 是 `boxes_for_page` 里 memo 的唯一拼装入参，`_build` 本身不读写 memo（旧写法「跑两次 `_build`」抓不到 knobs 拼接，已弃） | 单测 + ④ 记录 | ②③④ |
 | AC28 原件/产物边界 | 原件 `sha256` 与 `mtime` 过滤前后完全一致（只读打开，不写盘）；过滤只在内存里产出新列表、不落任何中间文件；不新增下载/导出/预览面 | 单测 + 脚本断言 | ②③ |
 | AC29 产品能力边界 | 前端无「去水印」设置项/无对应 API 参数/文档不宣称支持去水印；开关只在后端配置；PR 描述不含「支持去水印/可去水印」表述 | grep 断言 + 人工核对 | ②③ |
 | AC30 零回归口径（重写） | 基线 = **分支点 `686c4c0`**（preview HEAD，含 #210），不是 `89f51f9`；比较**归一化投影**（boxes 归一化坐标 + 类型 + 页号、`reason_code`、region 计数），显式排除 timestamp / job_id / duration / 临时路径；后端「FAILED 集合 `comm -3` = 0 行」并给两侧总数；前端给例数基线（当前 279） | 双跑 + 投影 diff | ②③④ |
-| AC31 变异测试 | AC15（chars_dropped 口径）、AC22（零丢弃）、AC24（闸位置）、AC27（key 隔离开关）、AC16（`no_watermark` 存在性）各 ≥1 变异，全部 KILLED；否则判据无法证明能红 | 变异记录表 | ②③ |
+| AC31 变异测试 | **16 个变异全部 KILLED**：M3 knob key 拼接、M5 `page_chars` 来源、M7 空页回退、M8 旋转校正、M9/M9b/M9c probe 三闸、M10 倾斜阈值 0、M10b 不透明上限 255、M11 删字符集条件、M12 `no_geometry` 分支、M13 NER 吃未过滤页、M14 删 memo key knob 段、M17 `MIN_VISIBLE_SHARE` 默认值、C2 删未过滤口径上报、N1 删 keep-ratio 守护。变异纪律：先 `assert old in s` 再写（否则「SURVIVED」可能是没改到），复原用 `cp .bak` 而非 `git checkout`（未提交改动会被抹掉） | 变异记录表 | ②③ |
 | AC32 部署链路 | 本地 `docker compose --profile gpu` 冒烟（backend+ocr+ner+frontend）；云 DCU ④（docline NER 走 DCU vLLM）；docker nginx 链路断言无 504（`frontend/nginx.conf.template` `proxy_read_timeout=900s`，本 PR 不改超时）。`deploy/dual-5090` 若本地不可达，写明「本 PR 未改超时/端点/取图口以外的东西 ⇒ 跳过 + 理由」，不得沉默跳过 | 三处日志/截图 | ②④⑤ |
+| AC34 旋转页坐标一致性（C1） | 单测：3 页 `/Rotate 90` 的族 B 形态夹具 ⇒ `code=="applied"`、水印词被剥、**正文词逐字保留**；`words` 与 `get_texttrace()` 字形框必须落在**同一页面空间**（旋转页两者都乘 `page.rotation_matrix`）。变异=删字形框旋转校正 ⇒ 用例必红（已 KILLED）。真卷侧：docline 抽样里含 `/Rotate 90/270` 页的卷 | 单测 + 变异 + 真卷抽页 | ②③ |
+| AC35 页级保留下限与几何缺失（I2/I3/I6） | 单测三条：① keep-ratio 越界 ⇒ 整页原样且 `pages_skipped_would_wiped` 计数；② keep-ratio 允许薄页真正文被剥；③ profile 命中但几何为空 ⇒ `no_geometry`。真卷侧：[2] 29 页无正文层卷实测 `code=="would_wiped_page"`、0 丢弃（守护生效） | 单测 ×3 + 真卷 | ②③ |
 | AC33 抽样预注册 | 抽样帧、随机种子、卷名清单**先落** `LexMask-workspace/docs/acceptance/`（git-crypt），再跑；≥5 卷须含 1 页卷、>120 页大卷、混合卷（部分页无水印）、45°/0.2 生成器卷；禁止事后挑选 | 预注册文件 + job 清单 | ④ |
 
 **阶段 2' 的诚实边界（追加，必须进 PR 描述）**：
@@ -375,6 +421,11 @@ pages_skipped_invariant, words_dropped, chars_dropped, dropped_ratio, profile}`�
     实测 `dir=(0.866,−0.5)`（−30°）、`opacity=0.3`、`STSong-Light` ⇒ **族 B**。两族逐卷列名见私有底稿 §1，
     不以族标签取卷。另：471+61 卷私有语料在**本机** `~/caseData`（只读），不在云实例——规模层脚本可在本地跑，
     结果落私有底稿（回应冷审「环境不可达」第 1 条）。
+
+14. 1–2 页卷**永不剥**（探测要求 `pages_hit >= 3`）：这类卷今天噪声也最小，方向是「少做但不做错」；要覆盖需改探测口径，另开 issue。
+15. `pages_hit` 口径是「本页候选字符 >0」，不强制这些字符属于 `top_sig`：多签名卷可能「页数够但签名主占比不够」，此时由 `top_sig_share >= 0.85` 兜底，**不会**把签名不占主导的层当水印。
+16. `collect_watermark_rects` 在探测命中后再开一次 PDF 逐页取 `get_texttrace()`：族 B 31 页 0.08s、族 A 149 页 <1s（都在建链预算内），但**没有独立耗时上限**；千页级卷需按建流预算闸同款加超时（登记，不在本 PR）。
+17. 覆盖率/截断率/块失败率这几道**后置**卷级门仍吃过滤后的流（C2 机制）：本 PR 只用「语料上零路由漂移（AC17b）+ 上报未过滤口径」证明没把今天被拒的卷放进来，**没有**证明「机制上不可能」；`truncated_ratio` / `map_failure_ratio` 分母变小只会更严，方向安全，但不是形式化证明。
 
 ## §8 未采用的方案与理由（防后人重走）
 
