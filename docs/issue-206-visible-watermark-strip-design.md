@@ -535,6 +535,6 @@ filter_invariant_exceeded, filter_failed, not_run:<gate>}` —— **各态必须
   | Minor-2：`visible_text_watermark.py` 模块头仍是旧绝对断言「不会把今天被拒的卷放进来」 | 成立 | 改写为「**前置**三道闸不变；**后置**五道门吃过滤后结果 ⇒ 机制上可能翻转」，指向 §7.1 与 AC17b |
   | 观测：`gate_basis_unfiltered_coverage` 只在 coverage 段赋值 ⇒ 其余四道门拒时键在值空 | 成立 | 计算上移到 NER 返回后、**第一道后置门之前**；新增 `test_gate_basis_filled_before_every_post_filter_gate` |
 
-  复验（本轮）：目标测试 **60 passed**；后端全量 **18 failed / 2462 passed / 54 skipped**，与基线 `686c4c0` 失败集合 `comm -3` = 0；变异表 **26/26 KILLED**。
+  复验（本轮）：目标测试 **60 passed**；后端全量 **18 failed / 2465 passed / 54 skipped**，与基线 `686c4c0` 失败集合 `comm -3` = 0；变异表 **26/26 KILLED**。
 
 - **AC40（来源判据的边界）**：正文层字形拼出的字串 ⊆ 水印字符集 ⇒ 该页该词不丢；拼出其它字 ⇒ 丢。变异双向取证（v1.7 定稿后复跑）：`if under:`（恒保留）⇒ `test_provenance_drops_when_body_text_is_other_characters` 红；`if False:`（恒不保留）⇒ `test_provenance_keeps_words_under_invisible_body_layer` 红 ⇒ 两个方向各自承重。
