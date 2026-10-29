@@ -2579,6 +2579,12 @@ Object.assign(zhOverrides, {
   'agentMd.include': '恢复替换',
   'agentMd.customPlaceholder': '自定义替换值',
   'agentMd.confirmGenerate': '确认生成',
+  'agentMd.zeroEntitiesWarning':
+    '本次未识别到任何敏感实体。若直接生成，文稿将与原文一致（等于未脱敏），请确认文档内容或稍后重试。',
+  'agentMd.zeroEntitiesAck': '我已知晓：本次未识别到敏感实体，仍要生成',
+  'agentMd.parseWarningsTitle': '解析提示（不影响继续使用）',
+  'agentMd.droppedEmptyTable': '空表格块',
+  'agentMd.parseWarningsMore': '其余告警条数',
   'agentMd.resultTitle': '脱敏 Markdown 已生成',
   'agentMd.copyMd': '一键复制喂 AI',
   'agentMd.copied': '已复制',

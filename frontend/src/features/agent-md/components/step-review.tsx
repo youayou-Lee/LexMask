@@ -14,15 +14,18 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import type { MappingItemDto, ItemEdits } from '../lib/agent-md-flow';
+import { needsZeroEntityAck, type MappingItemDto, type ItemEdits } from '../lib/agent-md-flow';
 
 /** 每页固定 20 行（YAGNI：不做行数选择器）。 */
 const PAGE_SIZE = 20;
 
 interface StepReviewProps {
   items: MappingItemDto[];
-  /** 确认生成：页面把 edits 经 buildDecisions 转决策并 POST /confirm。 */
-  onConfirm: (edits: ItemEdits) => Promise<void>;
+  /**
+   * 确认生成：页面把 edits 经 buildDecisions 转决策并 POST /confirm。
+   * Issue#212：0 实体时须带上知情确认（acknowledgeZeroEntities）。
+   */
+  onConfirm: (edits: ItemEdits, options?: { acknowledgeZeroEntities?: boolean }) => Promise<void>;
 }
 
 /**
@@ -36,6 +39,8 @@ export function StepReview({ items, onConfirm }: StepReviewProps) {
   const [edits, setEdits] = useState<ItemEdits>({});
   const [confirming, setConfirming] = useState(false);
   const [issue, setIssue] = useState<string | null>(null);
+  // Issue#212：0 实体出稿闸——空映射时默认不可生成，须显式勾选知情
+  const [zeroAck, setZeroAck] = useState(false);
   // 分页：edits 按 item.id 键控，与页码无关，翻页不丢改动
   const [page, setPage] = useState(1);
   const pageCount = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
@@ -44,6 +49,13 @@ export function StepReview({ items, onConfirm }: StepReviewProps) {
   useEffect(() => {
     setPage(1);
   }, [items]);
+
+  // 新任务（items 变化）时重置知情勾选，避免沿用上一份文档的确认
+  useEffect(() => {
+    setZeroAck(false);
+  }, [items]);
+
+  const zeroEntities = needsZeroEntityAck(items);
 
   const safePage = Math.min(page, pageCount);
   const pageItems = items.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
@@ -59,10 +71,11 @@ export function StepReview({ items, onConfirm }: StepReviewProps) {
 
   const confirm = async () => {
     if (confirming) return;
+    if (zeroEntities && !zeroAck) return; // 未勾选知情不发请求（按钮本身 disabled）
     setConfirming(true);
     setIssue(null);
     try {
-      await onConfirm(edits);
+      await onConfirm(edits, { acknowledgeZeroEntities: zeroEntities && zeroAck });
     } catch (err) {
       setIssue(err instanceof Error && err.message ? err.message : t('agentMd.confirmFailed'));
     } finally {
@@ -75,9 +88,9 @@ export function StepReview({ items, onConfirm }: StepReviewProps) {
       <h2 className="text-lg font-semibold tracking-tight">{t('agentMd.reviewTitle')}</h2>
 
       {items.length === 0 ? (
-        <p className="rounded-2xl border border-border bg-card p-8 text-center text-sm text-muted-foreground">
-          {t('agentMd.mappingEmpty')}
-        </p>
+        <div className="rounded-2xl border border-border bg-card p-8 text-center">
+          <p className="text-sm text-muted-foreground">{t('agentMd.mappingEmpty')}</p>
+        </div>
       ) : (
         <div className="overflow-hidden rounded-2xl border border-border bg-card">
           <Table>
@@ -167,6 +180,32 @@ export function StepReview({ items, onConfirm }: StepReviewProps) {
         </div>
       )}
 
+      {zeroEntities && (
+        <div
+          className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive"
+          role="alert"
+          data-testid="agent-md-zero-entities-warning"
+        >
+          {t('agentMd.zeroEntitiesWarning')}
+        </div>
+      )}
+
+      {zeroEntities && (
+        <label
+          className="flex items-start gap-2 text-sm text-muted-foreground"
+          data-testid="agent-md-zero-ack-label"
+        >
+          <Checkbox
+            checked={zeroAck}
+            onCheckedChange={(checked) => setZeroAck(checked === true)}
+            disabled={confirming}
+            aria-label={t('agentMd.zeroEntitiesAck')}
+            data-testid="agent-md-zero-ack"
+          />
+          <span>{t('agentMd.zeroEntitiesAck')}</span>
+        </label>
+      )}
+
       {issue && (
         <div
           className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive"
@@ -180,7 +219,7 @@ export function StepReview({ items, onConfirm }: StepReviewProps) {
       <div className="flex justify-end">
         <Button
           onClick={() => void confirm()}
-          disabled={confirming}
+          disabled={confirming || (zeroEntities && !zeroAck)}
           data-testid="agent-md-confirm"
         >
           {confirming ? '…' : t('agentMd.confirmGenerate')}

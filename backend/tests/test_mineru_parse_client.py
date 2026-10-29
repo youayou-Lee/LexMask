@@ -17,8 +17,8 @@ import pytest
 from app.services.mineru_parse_client import MineruParseClient, MineruParseError
 
 
-def _result_zip(with_images: bool = True) -> bytes:
-    """合成产物 zip：路径对照实测（stem=out, parse_method=auto），含 v1 干扰项。"""
+def _result_zip(with_images: bool = True, with_v1: bool = True) -> bytes:
+    """合成产物 zip：路径对照实测（stem=out, parse_method=auto），v1 与 v2 并存。"""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("out/auto/out.md", "# 合成\n正文一段")
@@ -34,11 +34,12 @@ def _result_zip(with_images: bool = True) -> bytes:
                   "bbox": [5, 6, 7, 8]}],
             ]),
         )
-        # v1 扁平 list 干扰项：提取器必须只认 *_content_list_v2.json
-        zf.writestr(
-            "out/auto/out_content_list.json",
-            json.dumps([{"type": "text", "text": "v1 decoy", "page_idx": 0}]),
-        )
+        # v1 扁平 list：Issue#212 起作第二来源一并解出（此前被当干扰项丢弃）
+        if with_v1:
+            zf.writestr(
+                "out/auto/out_content_list.json",
+                json.dumps([{"type": "text", "text": "v1 decoy", "page_idx": 0}]),
+            )
         zf.writestr("out/auto/out_middle.json", json.dumps({"middle": True}))
         if with_images:
             zf.writestr("out/auto/images/p0.jpg", b"fakejpg")
@@ -151,9 +152,10 @@ async def test_wait_result_polls_until_done_and_parses_zip():
         "job-1", on_progress=lambda done, total: seen_progress.append((done, total))
     )
     assert result.md.startswith("# 合成")
-    # 认 v2（list-of-lists）而非 v1 干扰项
+    # v2（list-of-lists）是主表示；v1（扁平）自 Issue#212 起作第二来源一并解出
     assert result.content_list_v2[0][0]["type"] == "page_header"
     assert result.content_list_v2[1][0]["content"]["paragraph_content"][0]["content"] == "正文一段"
+    assert result.content_list_v1 == [{"type": "text", "text": "v1 decoy", "page_idx": 0}]
     assert result.images == {"out/auto/images/p0.jpg": b"fakejpg"}
     # sidecar 无进度字段（Task 0 §8.2）：归一化进度恒 0，页计数由管线层本地负责
     assert seen_progress == [(0, 0), (0, 0)]
@@ -199,3 +201,15 @@ async def test_is_available_true_and_false():
 
     assert await _client(ok).is_available() is True
     assert await _client(down).is_available() is False
+
+
+@pytest.mark.asyncio
+async def test_wait_result_without_v1_yields_empty_v1_not_failure():
+    """缺 v1 不失败也不静默：content_list_v1 为空，由管线守卫报
+    dual_representation_unavailable（Issue#212）。"""
+    handler = _transport(states=[{"status": "completed"}],
+                         result=_result_zip(with_images=False, with_v1=False))
+    result = await _client(handler).wait_result("job-1")
+
+    assert result.content_list_v2  # 主表示仍在
+    assert result.content_list_v1 == []

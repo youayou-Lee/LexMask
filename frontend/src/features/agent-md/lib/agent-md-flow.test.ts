@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDecisions, nextStepFromStatus } from './agent-md-flow';
+import { buildDecisions, needsZeroEntityAck, nextStepFromStatus } from './agent-md-flow';
 import type { MappingItemDto } from './agent-md-flow';
 
 describe('nextStepFromStatus', () => {
@@ -49,5 +49,20 @@ describe('buildDecisions', () => {
       ghost: { action: 'keep' },
     });
     expect(decisions).toEqual([{ id: 'e1', action: 'exclude' }]);
+  });
+});
+
+
+describe('needsZeroEntityAck（Issue#212）', () => {
+  it('空映射 ⇒ 需要知情确认', () => {
+    expect(needsZeroEntityAck([])).toBe(true);
+  });
+
+  it('有任一映射项 ⇒ 不需要', () => {
+    expect(
+      needsZeroEntityAck([
+        { id: 'e1', original_text: '张三', entity_type: 'PERSON', replacement: '[人名_1]', excluded: false },
+      ]),
+    ).toBe(false);
   });
 });

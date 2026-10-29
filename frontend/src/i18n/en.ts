@@ -2636,6 +2636,12 @@ Object.assign(enOverrides, {
   'agentMd.include': 'Restore replacement',
   'agentMd.customPlaceholder': 'Custom replacement',
   'agentMd.confirmGenerate': 'Confirm & generate',
+  'agentMd.zeroEntitiesWarning':
+    'No sensitive entity was recognized. Generating now yields the original text unredacted — please double-check the document or retry later.',
+  'agentMd.zeroEntitiesAck': 'I understand no entity was found and still want to generate',
+  'agentMd.parseWarningsTitle': 'Parsing notes (you can continue)',
+  'agentMd.droppedEmptyTable': 'Empty table blocks',
+  'agentMd.parseWarningsMore': 'More warnings',
   'agentMd.resultTitle': 'Redacted Markdown generated',
   'agentMd.copyMd': 'Copy for AI',
   'agentMd.copied': 'Copied',
