@@ -464,12 +464,20 @@ class Settings(BaseSettings):
     # 不进入结果——与「自证未确认」同一语义（保守、不新增假阳性），代价是
     # 可能少召回。默认值由真实案卷 A/B 定档（见 issue136-verify-cap-plan §3）。
     HAS_NER_VERIFY_MAX_JOBS_PER_PAGE: int = 200
-    # NER 完成帽（Issue#41 截断风暴治理）。对齐模型卡 generation_config.json
-    # 写死的 max_new_tokens=2048：生产预算公式（类型数×72 + 文本字符/2）超帽
-    # 的整页调用必然 finish=length → json_repair→整类型重查。>0 时帽参与
-    # max_tokens 预算，且预算>帽的调用**前置**沿类型轴主动分批（跳过注定
-    # 截断的整页调用）；≤0 = 关闭（退回现状）。上调前先核对模型卡帽。
-    HAS_NER_COMPLETION_HARD_CAP: int = 2048
+    # NER 完成帽（Issue#41 截断风暴治理；Issue#209 从 2048 放开到 4096）。
+    # >0 时帽参与 max_tokens 预算，且预算>帽的调用**前置**沿类型轴主动分批
+    # （跳过注定截断的整页调用）；≤0 = 关闭（退回现状）。
+    #
+    # 为什么放开（Issue#209，2026-10-29 真实第四卷第 133 页实测）：该页真实
+    # 实体值 ≈200 个 ⇒ 一次问全需 ≥2048 token 输出，2048 帽下主查**必然**
+    # 截断（实测 70–124s 烧满帽）→ 截断恢复（分块补查 + 残差整页重发 + 逐值
+    # 自证）把同一页排成 2 次整页 + 20 余次子请求 = 300–427s > 300s 页墙。
+    # 同页隔离实测帽=4096 ⇒ **85.3s / 154 值 / 一次收敛**，比"问两遍"更快更全。
+    # 上限仍受上下文余量硬约束（`_resolve_ner_budget` 的 context_room）：8k
+    # 上下文 + 4k 提示词时实际可用 ≈3.6k，4096 即"放开但不越上下文"的值。
+    # 抬高时必须同步复核 #103/#104 的 fill-budget 不变式（实发
+    # prompt+max_tokens 必须装进 context - reserve - safety）。
+    HAS_NER_COMPLETION_HARD_CAP: int = 4096
     # 每类型完成 token 成本（Issue#41 S1 校准）。原公式 72 token/型对密集 CJK
     # 页低估 ~2.4 倍：S1 实测（2026-10-06，DCU 实例）12 型批请求 2032 自截断、
     # 11 型重查 1960、5 型重查 1528 仍截断——批调用被"自己的预算"腰斩，与模型
@@ -493,6 +501,109 @@ class Settings(BaseSettings):
     # 命中即断开（复读 ~66s 烧满 → ~5-10s 掐断），finish_reason 按 length 收口
     # 接截断恢复链路（json_repair→分块补查）。通道异常自动回落非流式。
     HAS_STREAM_LOOP_ABORT: bool = True
+    # 归一化行复读掐断（Issue#209 生成侧止损②，复用 HAS_STREAM_LOOP_ABORT 之外的
+    # 独立判据）：#202 的复读签名抓不到"同一行结构、只差数字"的枚举式复读——真实
+    # 案卷 133 页在水印碎片（姓名碎片+17 位编号，每段编号不同）上正是这种形态：
+    # 模型一行一行枚举近似重复行，签名匹配不到，只能烧满 max_tokens=2048（实测单
+    # 请求 83.4s / 65.5s）。本判据按「数字归一化后的行」计数，同一族出现
+    # ≥HAS_STREAM_LINE_REPEAT_MIN_OCCURRENCES 次即断开，finish_reason 按 length
+    # 收口（接截断恢复链路）。≤0/关闭时行为与现状一致。
+    #
+    # **默认关（Issue#209 门④实测）**：模型输出的是 JSON 行
+    # `{"text": "*721720240174000394", "type": "编号"}`（≈45 字符，含 CJK「编号」）
+    # ⇒ 同一归一化键会重复 74 次，本判据在第 4 行就断开。而该枚举是**真实报关单号
+    # 列**（页 133 真值 编号 83 个值、车牌号 29 个），断开后截断恢复只补查"完全缺失
+    # 的类型"，正在枚举的类型只留切点前的 ~4 个值 ⇒ 直接砍召回。只有在确认某类卷
+    # 的枚举确为水印碎片（而非真实业务值）时才打开；打开前必须复测召回。
+    HAS_STREAM_LINE_REPEAT_ABORT: bool = False
+    HAS_STREAM_LINE_REPEAT_MIN_OCCURRENCES: int = 4
+    HAS_STREAM_LINE_REPEAT_MAX_LINE_CHARS: int = 48
+    # 参与归一化行计数的行至少含几个 CJK 字符（默认 1）：纯数字枚举（身份证号列、
+    # 卡号列、流水号列）**不**掐断，避免误伤真实的长枚举；水印碎片是「中文碎片+
+    # 编号」故必然命中。
+    HAS_STREAM_LINE_REPEAT_MIN_CJK_CHARS: int = 1
+
+    # 页级 HaS NER 预算（Issue#209 服务侧止损）：页 133 实测在主查复读（83.4s/次）
+    # + 9~12 段补查 + 外层整页重发上烧掉 >420s，撞 300s 页墙后整页清零。给页级
+    # NER 一条自己的墙：超预算时**停发剩余阶段**（剩余组/复查/残差），用已聚合的
+    # 部分结果收尾并显式记账（stage_status/metrics + WARNING），而不是死在页门限上。
+    # 0 = 关闭（退回"只受页门限看管"）。
+    # 默认 255s 的来历（门④实测，2026-10-29）：C2 生效后同一病态页在**页级隔离**
+    # 探针里（payload 3928 字符 / 13 类型）OCR 20s + NER 159.7s 能收敛（ok=True、
+    # 222 个实体值）⇒ 预算必须高于 160s，否则会把"能跑完"的页重新判成失败。
+    # 但在**真实流水线**里同一页的 payload 最多 5393 字符 / 20 类型：主查 50s 被
+    # #202 签名掐断 → 按缺失类型切 12 段补查、每段仍塞 4 个类型（max_tokens≈860
+    # 装不下，反复 finish_reason=length、confirmed=False）⇒ 单次 ner() 内就能吃满
+    # 240s，贴住 300s 页墙（06:41 首测：预算应在页墙前 ~33s 触发，演示不出"先于
+    # 页墙收尾"）。故取 255s：覆盖最坏一轮（见下"页总量口径"）。
+    HAS_NER_PAGE_BUDGET_SEC: float = 255.0
+    # 口径（2026-10-29 门⑥ I1 订正）：**从页入口起算的页总量**（含 OCR 与预处理），
+    # 不是「只给 NER 的额度」。真实 NER 可用额度 ≈ 255 − OCR ≈ 230s（OCR 实测
+    # 20–25s，本卷 149 页全部扫描件，未见过 30s 以上）。
+    # 取 255 的来历：页墙 `BATCH_RECOGNITION_PAGE_TIMEOUT=300`（本文件 :331），
+    # 留 45s 给视觉通道（LA ~3.6s）+ 区域合并 + 落库，其余给 OCR+HaS NER。
+    # 门④实测该页 NER 真实耗时 163–216s（最坏一轮=主查 106s 只出 3 桶 ⇒ 补查集合
+    # 变大），加 OCR 25s ⇒ 241s < 255 装得下；再坏一档则该页**显式失败**（strict，
+    # 见 HAS_NER_PAGE_BUDGET_STRICT_FAIL），不会静默少扫。
+    # 运维口径（门⑥ I2，措辞已按增量复核收回过度断言）：同一个 budget 下重跑**基本
+    # 复现**同样的结局（补查温度下限 0.7 会让个别补查批有微小差异，故不是 bit 级幂等，
+    # 但「指望重试碰运气跑过」不成立）。「必须过」的卷要么调高本键、要么走 #208 的
+    # 页级续跑/提额。`HAS_NER_PAGE_BUDGET_STRICT_FAIL=False` 不是备选：那会退回
+    # 「completed 但只扫了一部分」的静默少扫（`has_text_partial_scan` 目前只写不读，
+    # 交付面只认 `recognition.failed_pages`）。
+
+    # 预算耗尽后是否把该页判为**失败**（Issue#209）。True（默认）=抛
+    # HasTextNerPageBudgetExceeded ⇒ 页级 stage 记入 recognition.failed_pages
+    # （与页超时同一条交付拦截链：界面可查 + 有失败页时导出 ZIP 拒绝）；
+    # False = 用已聚合的部分结果收尾（仍记 metrics + WARNING），不判失败。
+    HAS_NER_PAGE_BUDGET_STRICT_FAIL: bool = True
+
+    # HaS 提示词近似重复折叠（Issue#209 提示词侧止损）：页 133 的 HaS 提示词 323 行
+    # 里 293 行（≈90%）是"只差数字"的近似重复行（水印碎片：映峰1450120 /
+    # 映峰1450120141 / 术映峰1450120141…）——精确去重杀不掉（每段编号独立），
+    # 模型在其上枚举复读。本闸把**短行**（≤MAX_LINE_CHARS）且**归一化后同族
+    # ≥FAMILY_MIN_MEMBERS 行**的族折成一行（保留首个），并把丢弃数计入 payload
+    # 统计 + WARNING 日志（可审计）。只在提示词行数 ≥MIN_PAYLOAD_LINES 时启用
+    # （正常页字节不变；页 133=323 行、页 134=147 行命中，页 132=67 行不命中）。
+    # 保守面：要求归一化前含 ≥MIN_CJK_CHARS 个 CJK 字符，纯数字列（身份证号列、
+    # 卡号列等）不折叠；长行（真实表格行）不折叠。
+    #
+    # 默认 **False**（门⑥ 2026-10-29 F1 判定）：族键把一切数字抹成 `#` 后，
+    # 「水印碎片「映峰1450120141」→ 映峰#」 与「真实表单列「身份证号
+    # 370702199001014521」→ 身份证号#」**同形**。实测 120 行「标签+不同数字」
+    # 表单（身份证号/电话/住址各 40 行、每行值不同）折叠后只剩 5 行 ⇒ 115 行
+    # 真实值进不了 NER 提示词，而 ADDRESS/单位名等 open-vocab 类型没有正则
+    # 兜底 ⇒ 静默少打码。且该能力在本件目标页（第四卷第 133 页）实测折叠
+    # **0 行**（病态重复是纯数字列，被 CJK 闸正确挡掉）⇒ 零收益、有损风险。
+    # 保留为可开关的辅助能力，等有「族键能区分水印与标签列」的判据再默认开。
+    HAS_NER_NEAR_DUP_COLLAPSE: bool = False
+    HAS_NER_NEAR_DUP_MIN_PAYLOAD_LINES: int = 120
+    HAS_NER_NEAR_DUP_FAMILY_MIN_MEMBERS: int = 3
+    HAS_NER_NEAR_DUP_MAX_LINE_CHARS: int = 40
+    HAS_NER_NEAR_DUP_MIN_CJK_CHARS: int = 2
+
+    # 截断补查的**每请求类型数上限**（Issue#209 成本结构修复③）。门④实测（一
+    # 轮）：同一段 3928 字符文本上「2 类型 / 640 帽」的补查块收敛
+    # （finish_reason=stop recovered=2/2），而流水线实际发的「4 类型 / ≈860 帽」
+    # 块反复 finish_reason=length、confirmed=False——补查自己又被截断。
+    # 该上限**只在整批真装不下完成帽时**生效（容量算术与 #103/#104 同源）；
+    # 装得下就单批，不做无谓的类型切分。
+    HAS_NER_REQUERY_MAX_TYPES_PER_CALL: int = 2
+    # 补查时**整段单次**的文本字符上限。默认 0 = 始终按行边界分块：门④二轮
+    # 实测（2026-10-29 15:27）「整段 3924 字符 × 2 类型」单请求生成 72.6s
+    # （模型重读整页再枚举该类全部值），比 450 字符块慢一个数量级。
+    HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS: int = 0
+
+    # 残差 payload 相对主查 payload 的字符上限比（Issue#209 成本结构修复②，
+    # 禁「整页重发」）。截断时 `_block_residual_ink` 会判定"几乎整页墨迹都
+    # 未被解释"⇒ 残差 payload ≈ 整页（实测 3928 → 5372 字符），用 32000 上限
+    # 再发一次 20 类型 ⇒ 又截断 ⇒ 又 12 段补查，这是页内 2 次整页请求的来源。
+    # 超过本比例即判定为「截断而非遗漏」：跳过残差重发（记
+    # has_text_residual_skipped_oversize + WARNING），缺的类型交给补查链。
+    HAS_NER_RESIDUAL_MAX_PAYLOAD_RATIO: float = 0.35
+    # 残差跳闸的**绝对字符下限**：只有"绝对量大 + 相对主查也大"才算整页重发。
+    # 小页的残差（几十字符、占比天然偏高）照旧发，避免把既有召回路径误杀。
+    HAS_NER_RESIDUAL_MIN_CHARS: int = 2000
 
     # --- 批量异步导出（万级文件：分卷落盘，见 services/export_service.py） ---
     EXPORT_VOLUME_MAX_BYTES: int = 2 * 1024**3   # 每卷 zip ≤2GB

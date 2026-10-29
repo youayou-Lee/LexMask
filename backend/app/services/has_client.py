@@ -81,6 +81,11 @@ _NER_TEXT_CHARS_PER_TOKEN = 2
 _NER_CONTEXT_TOKENS_FLOOR = 512
 # 上下文中预留给模板/分隔的 token 数
 _NER_CONTEXT_RESERVE_TOKENS = 160
+# 装填安全余量（Issue#209）：实发 `prompt + max_tokens` 必须装进
+# `context - reserve - safety`。派发侧（视觉线载荷规划器）一直按 64 判定，
+# 而 `_resolve_ner_budget` 的 context_room 只扣了 reserve ⇒ 完成帽一抬就出现
+# 64 token 的溢出（D2 不变式红）。两处判据必须同源，故把余量提为模块常量。
+_NER_FILL_SAFETY_TOKENS = 64
 # 补全 token 上限下限
 _NER_COMPLETION_CAP_FLOOR = 384
 # 补全 token 占上下文窗口比例
@@ -97,6 +102,23 @@ _REQUERY_CHUNK_TARGET = 450
 _STREAM_ABORT_CHECK_INTERVAL = 256
 _STREAM_ABORT_WINDOW = 1024
 _STREAM_ABORT_MIN_CHARS = 200
+# 归一化行复读判据（Issue#209 生成侧止损②）：把完整行里的数字统一成 # 后计数，
+# 抓「同一行骨架、只差编号」的枚举式复读（#202 的字节周期签名必漏此形态）。
+# 预编译正则：每行只归一化一次，复杂度 O(行数)/O(单行字符数)，不重扫全文。
+_STREAM_LINE_DIGIT_RE = re.compile(r"\d")
+_STREAM_LINE_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+# 截断输出里「顶层桶开口」`"<类型>": [`（Issue#209 C2）：定位被 max_tokens 切断时
+# 正在填充的那个桶，好把它并进补查集合（否则它的尾值静默丢失、confirmed 仍 True）。
+class NerDeadlineExceeded(RuntimeError):
+    """页级 NER 死线已过（Issue#209 C）。
+
+    只用于**拒绝发出新请求**（主查/补查链的每一段前检查）：已经在飞的单次请求
+    不会被中断（底层是线程里的同步 HTTP），但补查链不会再往下走。调用方
+    （has_text_analysis）把它折叠成预算跳过语义。
+    """
+
+
+_NER_OBJECT_KEY_OPEN_RE = re.compile(r'"([^"\\]{1,64})"\s*:\s*\[')
 # 类型引导 description 最大字符数
 _TYPE_GUIDANCE_DESC_MAX_CHARS = 96
 # 健康检查结果缓存秒数
@@ -181,6 +203,67 @@ def drain_ner_metrics(scope: NerMetricsScope) -> dict[str, Any]:
     if scope.rebatch_batches > 0:
         metrics["has_text_ner_rebatch_batches"] = scope.rebatch_batches
     return metrics
+
+
+class _NormalizedLineRepeatGuard:
+    """归一化行复读计数（Issue#209 生成侧止损②，流式路径上的第二条独立判据）。
+
+    #202 的复读签名（``_looks_like_loop``）判定的是**逐字节周期**；#209 真实案卷
+    页 133 的病理形态是「同一行骨架、只差编号」的枚举式复读（水印碎片
+    ``映峰1450120141`` / ``映峰1450120147`` …）——不存在字节周期，签名必然漏，
+    只能烧满 max_tokens（实测 83.4s / 65.5s）。本判据把完整行中的数字统一替换成
+    ``#`` 得到「归一化键」，同一键在**本次输出内**累计出现 min_occurrences 次即
+    判定为枚举复读。
+
+    只统计**完整行**：增量文本按 ``\\n`` 切分，末尾未换行的半行留在 ``_pending``
+    等下一次增量补齐（半行不计一次出现，防「同一长行只推进了几个字符」被重复
+    计数）。``raw.strip()`` 顺带吃掉 CRLF 的 ``\\r``。
+
+    计数结构 O(行数)：每行只做一次 ``sub`` + 一次字典累加，不做全文重扫。
+    """
+
+    def __init__(
+        self,
+        *,
+        min_occurrences: int = 4,
+        max_line_chars: int = 48,
+        min_cjk_chars: int = 1,
+    ) -> None:
+        self._min_occurrences = int(min_occurrences)
+        self._max_line_chars = int(max_line_chars)
+        self._min_cjk_chars = int(min_cjk_chars)
+        self._pending = ""
+        # 键 = 数字归一化后的整行；值 = 本次输出内的累计出现次数
+        self._counts: dict[str, int] = {}
+
+    def feed(self, chunk: str) -> tuple[str, int] | None:
+        """喂一段增量文本。
+
+        命中阈值时返回 ``(归一化行前缀, 累计出现次数)``，否则返回 None。
+        只在**完整行**（以 ``\\n`` 收尾）上计数。
+        """
+        if not chunk:
+            return None
+        parts = (self._pending + chunk).split("\n")
+        self._pending = parts.pop()  # 末尾未换行 = 半行，等下一次增量
+        for raw in parts:
+            hit = self._account(raw)
+            if hit is not None:
+                return hit
+        return None
+
+    def _account(self, raw: str) -> tuple[str, int] | None:
+        line = raw.strip()
+        if not line or len(line) > self._max_line_chars:
+            return None
+        if len(_STREAM_LINE_CJK_RE.findall(line)) < self._min_cjk_chars:
+            return None
+        key = _STREAM_LINE_DIGIT_RE.sub("#", line)
+        count = self._counts.get(key, 0) + 1
+        self._counts[key] = count
+        if count >= self._min_occurrences:
+            return key, count
+        return None
 
 
 class _StreamChatResponse:
@@ -387,12 +470,20 @@ class HaSClient:
         return ner_breaker.call_sync(_request)
 
     def _do_chat_request_stream(self, base: str, payload: dict[str, Any]):
-        """流式执行单次 chat 请求，复读签名命中即断开（Issue#202）。
+        """流式执行单次 chat 请求，复读命中即断开（Issue#202 / Issue#209）。
 
         返回 duck-typed Response（仅 .json() 面），stream_aborted 标记掐断。
         断开连接即令 vLLM 中止该次生成；finish_reason 按 length 收口，下游
         截断恢复链路（json_repair→分块补查）无需感知掐断来源。
+
+        同一路径上有两条**互相独立**的判据（谁先命中谁断开，收口完全相同）：
+
+        1. ``_looks_like_loop``：逐字节周期签名（#202，每 256 字符检一次）；
+        2. ``_NormalizedLineRepeatGuard``：归一化行复读（#209，每个增量事件检一次，
+           抓「同一行骨架、只差编号」的枚举式复读）。
         """
+        from app.core.config import settings
+
         sp = dict(payload)
         sp["stream"] = True
         sp["stream_options"] = {"include_usage": True}
@@ -402,6 +493,19 @@ class HaSClient:
         aborted = False
         last_checked = 0
         saw_data_line = False
+        emitted_chars = 0
+        line_guard: _NormalizedLineRepeatGuard | None = None
+        # 「≤0/关闭」= 退回现状（config.py 注释口径）；关闭时本判据连对象都不建，
+        # 通路与 #202 现状逐字节相同。
+        if (
+            settings.HAS_STREAM_LINE_REPEAT_ABORT
+            and settings.HAS_STREAM_LINE_REPEAT_MIN_OCCURRENCES > 0
+        ):
+            line_guard = _NormalizedLineRepeatGuard(
+                min_occurrences=settings.HAS_STREAM_LINE_REPEAT_MIN_OCCURRENCES,
+                max_line_chars=settings.HAS_STREAM_LINE_REPEAT_MAX_LINE_CHARS,
+                min_cjk_chars=settings.HAS_STREAM_LINE_REPEAT_MIN_CJK_CHARS,
+            )
         with self._http_client.stream(
             "POST", f"{base}/chat/completions", json=sp
         ) as resp:
@@ -421,14 +525,30 @@ class HaSClient:
                     obj = json.loads(data)
                 except ValueError:
                     continue
+                event_text_parts: list[str] = []
                 for choice in obj.get("choices") or []:
                     delta = (choice.get("delta") or {}).get("content")
                     if delta:
                         content_parts.append(delta)
+                        if line_guard is not None:
+                            event_text_parts.append(delta)
                     if choice.get("finish_reason"):
                         finish_reason = choice["finish_reason"]
                 if obj.get("usage"):
                     usage = obj["usage"]
+                if line_guard is not None and event_text_parts:
+                    emitted_chars += sum(len(part) for part in event_text_parts)
+                    hit = line_guard.feed("".join(event_text_parts))
+                    if hit is not None:
+                        key, occurrences = hit
+                        aborted = True
+                        logger.warning(
+                            "HaS stream loop-abort: normalized line repetition detected at ~%d chars (occurrences=%d, line_prefix=%r)",
+                            emitted_chars,
+                            occurrences,
+                            key[:20],
+                        )
+                        break
                 joined = "".join(content_parts)
                 if len(joined) - last_checked >= _STREAM_ABORT_CHECK_INTERVAL:
                     last_checked = len(joined)
@@ -592,6 +712,56 @@ class HaSClient:
                 return f"json_repair:{mode}", parsed
 
         return "failed", None
+
+    @staticmethod
+    def _truncated_tail_bucket(raw: str, types: list[str]) -> str | None:
+        """Issue#209：找出**被 max_tokens 切断时正在填充的那个桶**。
+
+        截断输出形如 ``{"日期": ["..."], "编号": ["...", "…切断``——json_repair
+        能把前面修好，但最后那个桶只剩切点之前的部分值：它**仍然"存在"**，所以
+        `missing = [t for t in types if t not in result]` 永远不含它，于是它被
+        静默当成完整结论（confirmed 还能是 True）。密集页上这就是"少打码"。
+
+        判据只看原文：取**最后一个**顶层桶开口 ``"<类型>": [``，并且只有当它
+        ①仍是本次请求的类型之一、②在它之后**没有**闭合的 ``]``（桶还开着 ⇒ 确实
+        被切在桶里）时才返回；否则返回 None（不猜）。
+        """
+        if not raw:
+            return None
+        last_match = None
+        for match in _NER_OBJECT_KEY_OPEN_RE.finditer(raw):
+            last_match = match
+        if last_match is None:
+            return None
+        name = last_match.group(1)
+        if name not in set(types or []):
+            return None
+        # 桶已闭合 ⇒ 截断发生在桶与桶之间（或无截断），没有"被切断的桶"。
+        # 门⑥ F9（2026-10-29）：不能只看「后面有没有 ``]``」——值字符串里含
+        # ``]``（地址 ``A[1]``、含括号的编号）会假阴性，让 C2 静默失效。这里做
+        # 一次最小词法扫描：跳过字符串字面量、按 ``[``/``]`` 计深度，只有深度
+        # 归零才判定桶已闭合。
+        depth = 1
+        in_string = False
+        escaped = False
+        for ch in raw[last_match.end():]:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    return None
+        return name
 
     @staticmethod
     def _trim_truncated_tail_value(result: dict[str, Any]) -> dict[str, Any]:
@@ -829,16 +999,49 @@ If nothing matches, return {{}}.
             len(types), text, cls._effective_tokens_per_type(settings)
         )
         prompt_token_estimate = cls._estimate_prompt_tokens(prompt)
-        context_room = context_tokens - prompt_token_estimate - _NER_CONTEXT_RESERVE_TOKENS
+        # Issue#209：context_room 必须与派发侧的装填判据同源——实发
+        # `prompt + max_tokens` 要装进 `context - reserve - safety`。旧算术只
+        # 扣 reserve，于是帽抬到 4096 后 max_tokens=context_room 会超出装填上限
+        # 整整一个 safety 余量（D2 不变式 `estimate + max_tokens <=
+        # context-160-64` 实测破裂）。帽=2048 时被帽掩盖，提帽才暴露。
+        context_room = (
+            context_tokens
+            - prompt_token_estimate
+            - _NER_CONTEXT_RESERVE_TOKENS
+            - _NER_FILL_SAFETY_TOKENS
+        )
         completion_cap = max(
             _NER_COMPLETION_CAP_FLOOR,
             min(configured_max_tokens, int(context_tokens * _NER_COMPLETION_CONTEXT_RATIO)),
         )
+        # 门⑥ F6（2026-10-29）：`max(_NER_MAX_TOKENS_FLOOR, context_room)` 会在
+        # context_room ∈ (0, 64] 时把 `estimate + max_tokens` 顶到装填上限之上
+        # 最多 64 token（绕过分组规划器的直调路径可命中）。这里 room > 0 就直取
+        # room——**装填不变式优先于「避免极小请求」**：room 很小时会发出一个注定
+        # 被 length 截断的小请求（门⑥ M1），但那是「白付一次」的成本问题，不是
+        # 漏检问题（截断 ⇒ C2 把被切断桶并入补查，召回仍靠补查兜住）；而超装填
+        # 会让请求被服务端拒绝/静默截断，属正确性问题。room <= 0（提示词本身已装
+        # 不下）才退回下限，并留下可观测的 WARNING。
+        if context_room > 0:
+            effective_room = context_room
+        else:
+            effective_room = _NER_MAX_TOKENS_FLOOR
+            logger.warning(
+                "HaS NER prompt alone exceeds fill budget: context=%d est_prompt=%d "
+                "reserve=%d safety=%d (types=%d, text_chars=%d); falling back to floor=%d",
+                context_tokens,
+                prompt_token_estimate,
+                _NER_CONTEXT_RESERVE_TOKENS,
+                _NER_FILL_SAFETY_TOKENS,
+                len(types),
+                len(text or ""),
+                _NER_MAX_TOKENS_FLOOR,
+            )
         max_tokens = min(
             configured_max_tokens,
             desired_max_tokens,
             completion_cap,
-            max(_NER_MAX_TOKENS_FLOOR, context_room),
+            effective_room,
         )
         hard_cap = cls._effective_completion_hard_cap(settings)
         if hard_cap > 0:
@@ -1040,6 +1243,7 @@ If nothing matches, return {{}}.
         _allow_truncation_retry: bool = True,
         raise_on_error: bool = False,
         context_tokens: int | None = None,
+        deadline: float | None = None,
     ) -> dict[str, list[str]]:
         """
         使用NER能力进行敏感实体识别
@@ -1074,6 +1278,7 @@ If nothing matches, return {{}}.
             _allow_truncation_retry=_allow_truncation_retry,
             raise_on_error=raise_on_error,
             context_tokens=context_tokens,
+            deadline=deadline,
         )[0]
 
     def ner_checked(
@@ -1087,6 +1292,7 @@ If nothing matches, return {{}}.
         _allow_truncation_retry: bool = True,
         raise_on_error: bool = False,
         context_tokens: int | None = None,
+        deadline: float | None = None,
     ) -> tuple[dict[str, list[str]], bool]:
         """`ner()` + **显式解析成功标志**（Issue#108 ⑥ 评审 C1/C2）。
 
@@ -1114,6 +1320,13 @@ If nothing matches, return {{}}.
             # 一旦落键，下一次同键请求就从这里被洗成 ok=True，服务层的写回门随即
             # 失效——零模型调用即可把部分并集提升成全类型键）。
             return cached, True
+
+        # Issue#209 C：页级死线已过就不开口子——否则补查链每段都要再等一次
+        # 单请求（实测补查块 6~14s，9~12 段能把 300s 页墙吃光）。
+        if deadline is not None and time.monotonic() >= deadline:
+            raise NerDeadlineExceeded(
+                "page NER deadline passed; refusing to start a new NER request"
+            )
 
         from app.core.config import settings
 
@@ -1153,6 +1366,7 @@ If nothing matches, return {{}}.
                         sample_index=sample_index,
                         raise_on_error=raise_on_error,
                         context_tokens=context_tokens,
+                        deadline=deadline,
                     )
                     all_confirmed = all_confirmed and part_confirmed
                     for key, values in (part or {}).items():
@@ -1330,8 +1544,59 @@ If nothing matches, return {{}}.
                     # 补查层（调用方正在补查）自己也被腰斩：修复出的残缺结果不可信。
                     confirmed = False
                 else:
-                    missing = [t for t in types if t not in result]
-                    if len(missing) == len(types):
+                    # ①「整桶丢失」的补查集合：与改前逐字一致，死锁规避判据也只用它
+                    parse_missing = [t for t in types if t not in result]
+                    missing = list(parse_missing)
+                    # 补查的文本轴先算出来：既要用于下面「是否会同 key 重发」的
+                    # 判定，也直接作为后续 retry_chunks（一处计算、两处使用）。
+                    requery_single_pass_chars = int(
+                        getattr(settings, "HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS", 0) or 0
+                    )
+                    if requery_single_pass_chars > 0 and len(text) <= requery_single_pass_chars:
+                        requery_chunks_preview = [text]
+                    else:
+                        requery_chunks_preview = self._split_requery_chunks(text)
+                    # 「补查会把文本切块」⇒ 每个块 != 原文 ⇒ inflight key 与本次不同
+                    # ⇒ 不存在自连接死锁。此时可以放心把被切断的桶也并进补查集合。
+                    resend_same_text = (
+                        len(requery_chunks_preview) == 1
+                        and requery_chunks_preview[0] == text
+                    )
+                    # Issue#209 C2：被切断的那个桶"存在"（只是尾值被砍），所以
+                    # 不算 missing、永远补不上——密集页（真实页 133：编号 83 个值
+                    # 只落 4 个）就此静默少打码，且 confirmed 还能是 True。实测把
+                    # 它并进补查集合后，分块补查（按行边界切文本 + 温度下限）
+                    # 能在各块内枚举完整、与既有结果去重合并 ⇒ 召回补齐。
+                    cut_bucket = self._truncated_tail_bucket(response, types)
+                    # 只在「补查集合仍是全类型的真子集」时才并入：若并入后正好
+                    # 等于全类型，补查 = 同 payload 同预算整段重发（必然同结局），
+                    # 且补查 key 与本次 inflight 相同 ⇒ 自连接死锁白等（实测
+                    # 复现 3×120s 挂起）。此时宁可留着尾值缺失，也不做无望重发。
+                    # 门⑥ F2（2026-10-29）：原判据用「类型集合基数」近似「会不会
+                    # 整段重发」，但改动③之后长文本**恒按行边界切块**，切出的块
+                    # key 必然与原文不同 ⇒ 自连接前提消失。改按真实判据：
+                    # 只有「本次补查仍会发完全相同的 text」时才保留保守闸。
+                    if (
+                        cut_bucket
+                        and cut_bucket not in parse_missing
+                        and (not resend_same_text or len(parse_missing) < len(types) - 1)
+                    ):
+                        missing = [cut_bucket, *missing]
+                        logger.warning(
+                            "HaS NER output truncated while enumerating %r; including it in re-query (Issue#209 C2)",
+                            cut_bucket,
+                        )
+                    # 门⑥ F3：被切断的桶存在但没能并入补查集合 ⇒ 结果**已知残缺**
+                    # （尾值缺失），不得落共享缓存（否则同键下次零调用命中并报
+                    # ok=True，静默少打码）。
+                    cut_bucket_dropped = bool(cut_bucket and cut_bucket not in missing)
+                    if cut_bucket_dropped:
+                        logger.warning(
+                            "HaS NER truncated bucket %r could not be re-queried within "
+                            "the same-payload guard; result marked unconfirmed (not cached)",
+                            cut_bucket,
+                        )
+                    if len(parse_missing) == len(types):
                         # 修复后的结果不含任何请求类型：重查 = 同 payload 同预算
                         # 原样重发（必然同结局），且补查 key 与本调用相同——会
                         # 自连接本调用尚未释放的 inflight 事件、白等满超时
@@ -1375,41 +1640,74 @@ If nothing matches, return {{}}.
                         # 诱饵是**长文本本身**：按行边界把补查文本切块，单次生成
                         # 变短，循环既难触发也烧不满预算（#60「改循环粒度」的既定
                         # 策略）。短文本维持单次补查，行为不变。
-                        retry_chunks = self._split_requery_chunks(text)
+                        #
+                        # Issue#209（成本结构修复③）：光切文本还不够——门④实测
+                        # 同一段 3928 字符上「4 类型 / ≈860 帽」的补查块反复
+                        # finish_reason=length、confirmed=False（补查自己又被截断），
+                        # 而隔离态「2 类型 / 640 帽」一次收敛。⇒ 补查再沿**类型轴**
+                        # 切小（默认每请求 ≤2 类型），且类型数已受限时不再切文本
+                        # （输出规模由类型数决定，长文本本身不是瓶颈）。
+                        require_requery_type_batch = max(
+                            1,
+                            int(
+                                getattr(settings, "HAS_NER_REQUERY_MAX_TYPES_PER_CALL", 2)
+                                or 2
+                            ),
+                        )
+                        # 类型批**只在真装不下时才切**：整批预算已能装进完成帽 ⇒
+                        # 单批（同 #103/#104 的容量算术同源原则）。门④二轮实测
+                        # （2026-10-29，15:27）暴露反例：整段 3924 字符 × 2 类型
+                        # 单请求生成 72.6s（模型要重读整页再枚举该类型全部值），
+                        # 比切成 450 字符块慢一个数量级 ⇒ 默认**始终切文本**，
+                        # 类型轴只作为超预算保护。
+                        requery_cap = int(
+                            getattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048) or 2048
+                        )
+                        if (
+                            self._ner_completion_budget(len(missing), text, _NER_TOKENS_PER_TYPE)
+                            <= requery_cap
+                        ):
+                            type_batches = [list(missing)]
+                        else:
+                            type_batches = [
+                                missing[i : i + require_requery_type_batch]
+                                for i in range(0, len(missing), require_requery_type_batch)
+                            ]
+                        retry_chunks = requery_chunks_preview
                         # 嵌套观测面：只收本次补查自身的 finish_reason/计数。
                         # 门④判据口径：finish_reason=stop 且 confirmed=True 且
                         # recovered 闭合才算「补查逃逸复读」；补查再次截断时
                         # finish_reason=length（drain 折叠口径）+ confirmed=False。
+                        logger.warning(
+                            "HaS NER re-query plan: %d type batch(es) x %d text chunk(s) "
+                            "(missing=%d types, max_types_per_call=%d, text_chars=%d)",
+                            len(type_batches),
+                            len(retry_chunks),
+                            len(missing),
+                            require_requery_type_batch,
+                            len(text),
+                        )
                         with ner_metrics_scope() as retry_scope:
-                            if len(retry_chunks) <= 1:
-                                retry_result, retry_confirmed = self.ner_checked(
-                                    text,
-                                    missing,
-                                    retry_guidance,
-                                    temperature=retry_temperature,
-                                    sample_index=sample_index,
-                                    _allow_truncation_retry=False,
-                                    raise_on_error=raise_on_error,
-                                    context_tokens=context_tokens,
-                                )
-                            else:
-                                logger.warning(
-                                    "HaS NER re-query split into %d line-boundary chunks (text_chars=%d)",
-                                    len(retry_chunks),
-                                    len(text),
-                                )
-                                merged_retry: dict[str, list[str]] = {}
-                                retry_confirmed = True
-                                for chunk in retry_chunks:
+                            merged_retry: dict[str, list[str]] = {}
+                            retry_confirmed = True
+                            for chunk in retry_chunks:
+                                for type_batch in type_batches:
+                                    batch_set = set(type_batch)
+                                    batch_guidance = [
+                                        item
+                                        for item in (retry_guidance or [])
+                                        if str(item.get("type") or "") in batch_set
+                                    ] or None
                                     part, part_confirmed = self.ner_checked(
                                         chunk,
-                                        missing,
-                                        retry_guidance,
+                                        type_batch,
+                                        batch_guidance,
                                         temperature=retry_temperature,
                                         sample_index=sample_index,
                                         _allow_truncation_retry=False,
                                         raise_on_error=raise_on_error,
                                         context_tokens=context_tokens,
+                                        deadline=deadline,
                                     )
                                     for key, values in (part or {}).items():
                                         if not isinstance(values, list):
@@ -1419,7 +1717,7 @@ If nothing matches, return {{}}.
                                             if value and value not in bucket:
                                                 bucket.append(value)
                                     retry_confirmed = retry_confirmed and part_confirmed
-                                retry_result = merged_retry
+                            retry_result = merged_retry
                         retry_metrics = drain_ner_metrics(retry_scope)
                         logger.warning(
                             "HaS NER re-query finished: finish_reason=%s confirmed=%s recovered=%d/%d types",
@@ -1435,7 +1733,7 @@ If nothing matches, return {{}}.
                             for value in values:
                                 if value and value not in bucket:
                                     bucket.append(value)
-                        confirmed = retry_confirmed
+                        confirmed = retry_confirmed and not cut_bucket_dropped
             # Issue#108 ⑥ 评审 C1/C2：只有确认过解析成功的结果才进缓存；残缺结果
             # 仍原样返回给调用方（尽力而为的容忍语义不变），但不落键。
             if confirmed:

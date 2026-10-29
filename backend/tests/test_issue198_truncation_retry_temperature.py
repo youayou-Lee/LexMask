@@ -33,6 +33,17 @@ TEXT = "焦先生 男 36岁 (1988年4月) 咨询项目经理 2.8万-3.5万/月 1
 TYPES = ["姓名", "日期", "薪酬", "年龄（岁）"]
 
 
+def _specified_types(content: str) -> list[str]:
+    line = next(l for l in content.splitlines() if l.startswith("Specified types:"))
+    return json.loads(line.split("Specified types:", 1)[1])
+
+
+def _split_calls(calls):
+    """calls[0] = 主查（全类型集）；之后都是补查（Issue#209③：每请求 ≤2 类型，
+    因此"一轮补查"可能是多个子请求）。"""
+    return calls[0], calls[1:]
+
+
 def make_client(responses):
     """responses: [(响应体, finish_reason), ...]；桩捕获每次调用的 temperature
     kwarg（payload 级证据，不读模块属性回显），并模拟真实 _call_model 的
@@ -62,13 +73,22 @@ def test_truncated_requery_escalates_temperature_and_merges():
     client, calls = make_client([(FLOOD_TRUNCATED, "length"), (CLEAN_TAIL, "stop")])
     result = client.ner(TEXT + " t1", TYPES, type_guidance=[], temperature=0.0)
 
-    assert len(calls) == 2, f"expected exactly one retry, got {len(calls)} calls"
-    # 种子趟保持调用方温度；补查趟升到设置默认 0.7
-    assert calls[0]["temperature"] == 0.0
-    assert calls[1]["temperature"] == 0.7
-    # 补查 prompt 只带缺失类型
-    assert "薪酬" in calls[1]["content"] and "年龄（岁）" in calls[1]["content"]
-    assert "姓名" not in calls[1]["content"]
+    main, requery = _split_calls(calls)
+    assert requery, "用例前提：必须发生补查"
+    requery_missing = ["日期", "薪酬", "年龄（岁）"]
+    # 种子趟保持调用方温度；补查趟（可能多个子批）全部升到设置默认 0.7
+    assert main["temperature"] == 0.0
+    assert all(c["temperature"] == 0.7 for c in requery)
+    # 补查 prompt 只带缺失类型：已落桶的姓名不得再问，缺失类型必须都覆盖到
+    for call in requery:
+        assert "姓名" not in call["content"]
+        # Issue#209 成本结构修复③：类型轴只在「整批真装不下完成帽」时才切
+        # （`HAS_NER_REQUERY_MAX_TYPES_PER_CALL` 是上限而非固定批长）。本页
+        # 94 字符 × 3 类型远小于 4096 帽 ⇒ 单批 3 类型是**期望行为**；
+        # 「超预算才切」由 tests/test_issue209_requery_budget.py 专钉。
+        assert set(_specified_types(call["content"])) <= set(requery_missing)
+    covered = {t for call in requery for t in _specified_types(call["content"])}
+    assert {"薪酬", "年龄（岁）"} <= covered
     # 合并结果闭合全部缺失桶
     assert result.get("薪酬") == ["10K-15K/月", "2.8万-3.5万/月"]
     assert result.get("年龄（岁）") == ["36岁"]
@@ -80,16 +100,18 @@ def test_requery_temperature_follows_setting_and_none_seed(monkeypatch):
     # temperature=None（_call_model 内部折算 0.0 的真实路径）也要走 max 语义
     client.ner(TEXT + " t2", TYPES, type_guidance=[])
 
-    assert len(calls) == 2
-    assert calls[1]["temperature"] == 0.9, "接线钉：设置必须真正到达补查调用"
+    main, requery = _split_calls(calls)
+    assert requery
+    assert all(c["temperature"] == 0.9 for c in requery), "接线钉：设置必须真正到达补查调用"
 
 
 def test_requery_temperature_never_downgrades_caller():
     client, calls = make_client([(FLOOD_TRUNCATED, "length"), (CLEAN_TAIL, "stop")])
     client.ner(TEXT + " t3", TYPES, type_guidance=[], temperature=1.2)
 
-    assert len(calls) == 2
-    assert calls[1]["temperature"] == 1.2, "max 语义：调用方已更高的温度不被拉低"
+    main, requery = _split_calls(calls)
+    assert requery
+    assert all(c["temperature"] == 1.2 for c in requery), "max 语义：调用方已更高的温度不被拉低"
 
 
 def test_clean_response_keeps_single_call_and_caller_temperature(caplog):
@@ -112,17 +134,22 @@ def test_requery_retruncated_capped_confirmed_false(caplog):
     with caplog.at_level(logging.WARNING, logger="app.services.has_client"):
         _, confirmed = client.ner_checked(TEXT + " t5", TYPES, type_guidance=[])
 
-    assert len(calls) == 2, "补查封顶语义不变：至多一次"
-    assert calls[1]["temperature"] == 0.7
+    main, requery = _split_calls(calls)
+    assert requery, "补查封顶语义不变：至多一轮"
+    assert all(c["temperature"] == 0.7 for c in requery)
     assert confirmed is False
     # 观测面在坏状态下如实报 length/False——判据②据此区分「逃逸」与「被封顶」
     assert "re-query finished: finish_reason=length confirmed=False" in caplog.text
 
 
-def test_rebatch_recursion_inherits_caller_temperature_characterization():
+def test_rebatch_recursion_inherits_caller_temperature_characterization(monkeypatch):
     """Issue#200 特征化钉（冷审 I3b）：解析失败分批递归现状 = 子批继承调用方
     温度。25 类型 > _NER_REBATCH_TYPE_THRESHOLD(24) → batch_size=24 → 首调用
     不可解析后递归 2 个子批。#200 后续修改本行为时此钉可见。"""
+    # Issue#209① 把默认完成帽抬到 4096 后，25 型在该文本上不再超批（
+    # _NER_REBATCH_TYPE_THRESHOLD 的触发前提是"预算超帽"）；本钉要的是**递归
+    # 子批继承温度**这一特征，故显式钉回 2048。
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
     types = [f"类型{i}" for i in range(25)]
     bodies = [
         ("this is not json at all", None),
@@ -162,7 +189,10 @@ def test_split_requery_chunks_unit():
     assert fn(no_newline) == [no_newline[i : i + 450] for i in range(0, 1000, 450)]
 
 
-def test_truncated_requery_long_text_chunked_and_merged(caplog):
+def test_truncated_requery_long_text_chunked_and_merged(caplog, monkeypatch):
+    # 本用例钉"长文本按行切块 + 每块补查"，故显式关掉 Issue#209③ 的"整段
+    # 单次"优化（默认 6000 会让 900 字符文本整段一次问完）。
+    monkeypatch.setattr(settings, "HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS", 0, raising=False)
     text = _long_multiline_text()
     clean = json.dumps({"薪酬": ["10K-15K/月"], "年龄（岁）": ["36岁"]}, ensure_ascii=False)
     client, calls = make_client(
@@ -171,20 +201,25 @@ def test_truncated_requery_long_text_chunked_and_merged(caplog):
     with caplog.at_level(logging.WARNING, logger="app.services.has_client"):
         result = client.ner(text, TYPES, type_guidance=[], temperature=0.0)
 
-    assert len(calls) == 4, f"主查 1 次 + 3 块补查（100 字符行按 450 目标打包成 3 块），got {len(calls)}"
-    assert all(c["temperature"] == 0.7 for c in calls[1:]), "每块补查都带升温"
-    assert "re-query split into 3" in caplog.text
+    main, requery = _split_calls(calls)
+    n_chunks = len(HaSClient._split_requery_chunks(text))
+    assert n_chunks == 3, "100 字符行按 450 目标打包成 3 块"
+    assert len(requery) % n_chunks == 0, f"每块都要有等量类型批：{len(requery)} / {n_chunks}"
+    assert all(c["temperature"] == 0.7 for c in requery), "每块补查都带升温"
+    assert f"3 text chunk(s)" in caplog.text
     assert "re-query finished: finish_reason=stop confirmed=True" in caplog.text
     assert result.get("薪酬") == ["10K-15K/月"]
     assert result.get("年龄（岁）") == ["36岁"]
 
 
-def test_chunk_retruncated_confirmed_false():
+def test_chunk_retruncated_confirmed_false(monkeypatch):
+    monkeypatch.setattr(settings, "HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS", 0, raising=False)
     text = _long_multiline_text()
     client, calls = make_client(
         [(FLOOD_TRUNCATED, "length"), (CLEAN_TAIL, "stop"), (TRUNCATED_AGAIN, "length")]
     )
     _, confirmed = client.ner_checked(text, TYPES, type_guidance=[])
 
-    assert len(calls) == 4, "主查 1 次 + 3 块补查"
+    main, requery = _split_calls(calls)
+    assert len(requery) >= 3, "主查 1 次 + 分块补查"
     assert confirmed is False, "任一块再截断 ⇒ 整体 confirmed=False（不写缓存）"

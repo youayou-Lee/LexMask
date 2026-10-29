@@ -445,6 +445,38 @@ class RecognitionPipelineMixin:
                     # SystemExit 是 BaseException，不在此捕获口径内，照常穿透。
                     if stage_failed is not None:
                         stage_failed[p] = f"{stage_label}: {type(exc).__name__}: {exc}"[:200]
+                    # 门⑥ 第三段复核 must-fix：失败页此前**不落 pipeline_status**，
+                    # 于是「预算/孤儿线程/跳过组数」这些排查面在失败页上全丢
+                    # （只有 completed 分支会写）。这里按 **completed 分支同一张表**
+                    # （`recognition.pages.<p>.pipeline_status[label]`）补记阶段状态。
+                    #
+                    # 耗时用**本页实测**的 `page_ms`：不再读
+                    # `get_ocr_has_vision_service().last_duration_ms` —— 那是模块级
+                    # 单例的「最后一次调用」状态，`BATCH_RECOGNITION_PAGE_CONCURRENCY`
+                    # 可 >1，该页若在 ocr_has 之前/之外失败，会把**别的页**的耗时
+                    # 记到本页（第三段复核 I4-b 指出的归因风险）。
+                    self._record_item_performance(
+                        store,
+                        task.item_id,
+                        {
+                            "recognition": {
+                                "pages": {
+                                    str(p): {
+                                        "page": p,
+                                        "status": "failed",
+                                        "error": f"{type(exc).__name__}: {exc}"[:500],
+                                        "stage_duration_ms": {stage_label: page_ms},
+                                        "pipeline_status": {
+                                            stage_label: {
+                                                "failed": True,
+                                                "error": f"{type(exc).__name__}: {exc}"[:200],
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                        },
+                    )
                 else:
                     page_ms = _elapsed_ms(page_started)
                     active_pages = max(0, active_pages - 1)

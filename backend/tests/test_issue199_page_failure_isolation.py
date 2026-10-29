@@ -383,3 +383,41 @@ def test_u11b_clean_item_does_not_carry_stale_error_summary() -> None:
 
     assert store.status_calls[-1]["error_message"] is None, store.status_calls[-1]
     assert store.status_calls[-1]["status"] == JobItemStatus.AWAITING_REVIEW.value
+
+
+# ---------------------------------------------------------------------------
+# U11：失败页必须落「错误 + 阶段耗时 + pipeline_status」（门⑥ 第三段 must-fix）
+# ---------------------------------------------------------------------------
+def test_u11_failed_page_records_stage_status_and_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """失败页此前只写 status/duration_ms，排查面（预算计数等在 pipeline_status 里）全丢。
+
+    门⑥ 第三段复核实测：删掉 `task_queue_pipelines` 里那段失败页补记，全量测试仍全绿
+    ⇒ 零判据。本用例钉住「error / stage_duration_ms / pipeline_status[stage].failed
+    三件都在，且同 item 其它页不受影响」。
+    """
+    store = _FakeStore()
+    queue = _queue(store)
+
+    async def _detect(file_id: str, page: int, **kwargs: Any) -> dict[str, Any]:
+        if page == 1:
+            raise ValueError("page boom")
+        return _boxes_result(page)
+
+    _vision_stubs(monkeypatch, pages=2, detect=_detect)
+
+    async def scenario() -> None:
+        await queue._run_vision(_item(), dict(_VISION_CFG))
+
+    _run(scenario)
+
+    entry = store.page_entry(1)
+    assert entry.get("status") == "failed", entry
+    assert "page boom" in str(entry.get("error")), entry
+    durations = entry.get("stage_duration_ms") or {}
+    assert durations, entry
+    assert all(isinstance(v, int) for v in durations.values()), entry
+    status = entry.get("pipeline_status") or {}
+    assert status.get("视觉识别", {}).get("failed") is True, entry
+
+    # 同 item 其它页不得被这条失败记录污染
+    assert store.page_entry(2).get("status") == "completed", store.performance

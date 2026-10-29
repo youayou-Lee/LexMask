@@ -20,6 +20,70 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+
+_PAGE_FATAL_METRIC_ALIASES: dict[str, str] = {
+    "has_text_ner_budget_skipped_groups": "bsg",
+    "has_text_ner_orphan_threads": "orph",
+    "has_text_ner_budget_exceeded": "bex",
+}
+# `recognition.failed_pages` 侧还有一层 `[:200]` 截断（
+# `task_queue_pipelines` 的 `stage_failed[p] = f"..."[:200]`），所以拼接后
+# 总长必须留出余量，不能把要看的计数挤到截断线之外。
+_PAGE_FATAL_REASON_BUDGET = 150
+
+
+def format_page_fatal_metrics(duration_ms: dict | None) -> str:
+    """把预算/孤儿线程计数压成短串（``bsg=3 orph=1``），无计数时返回空串。"""
+    if not duration_ms:
+        return ""
+    parts: list[str] = []
+    for key, alias in _PAGE_FATAL_METRIC_ALIASES.items():
+        value = duration_ms.get(key)
+        if value:
+            parts.append(f"{alias}={value}")
+    return " ".join(parts)
+
+
+def decorate_page_fatal_reason(exc: BaseException, duration_ms: dict | None) -> None:
+    """把计数挂到异常 reason 上，同时保证整串不超过 ``_PAGE_FATAL_REASON_BUDGET``。
+
+    原地改 ``exc.args``（异常类型与实例不变，页级调用方按 `stage_label: Type: msg`
+    记账的格式也不变）。
+    """
+    metrics = format_page_fatal_metrics(duration_ms)
+    if not metrics:
+        return
+    head = exc.args[0] if exc.args else ""
+    if not isinstance(head, str):
+        head = str(head)
+    suffix = f" [{metrics}]"
+    if len(head) + len(suffix) > _PAGE_FATAL_REASON_BUDGET:
+        # 兜底：宁可截断基线说明，也要保住计数（计数才是本函数的存在理由）
+        keep = max(0, _PAGE_FATAL_REASON_BUDGET - len(suffix) - 1)
+        head = head[:keep] + "…"
+    exc.args = (f"{head}{suffix}",)
+
+
+def is_page_fatal_stage_error(result) -> bool:
+    """阶段异常是否应**升级为页级失败**（门⑥ F8 加固，2026-10-29）。
+
+    `record_pipeline_result` 对任何阶段异常都只记 `pipeline_status[label].failed`
+    + warning，页面照旧 completed、不进 `recognition.failed_pages`。页级 NER 预算
+    的本意是「宁可显式失败，不可静默少打码」；若被降级，页面上就出现「已完成但
+    只扫了一部分」的交付面（云实测 2026-10-29：页 133 撞预算 179.7s ⇒
+    status=completed、failed_pages={}、ocr_has 区域数 0）。
+
+    本函数只把「页级 NER 预算 strict 失败」这一种异常升级为页级失败：
+    `task_queue_pipelines` 的 `except Exception` 会把它写进
+    `recognition.failed_pages`，交付闸/导出 409 随之生效。其它阶段异常（OCR
+    服务抖动、视觉通道故障）维持既有「降级 + warning」语义不变。
+    """
+    from app.services.vision.has_text_analysis import HasTextNerPageBudgetExceeded
+
+    if not isinstance(result, HasTextNerPageBudgetExceeded):
+        return False
+    return bool(getattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True))
+
 from PIL import Image, ImageOps
 
 from app.core.config import settings
@@ -396,6 +460,8 @@ class VisionService:
         else:
             logger.info("Visual features skipped (no types enabled)")
 
+        page_fatal_error = None
+
         async def record_pipeline_result(label: str, result) -> None:
             status = pipeline_status.setdefault(
                 label,
@@ -415,6 +481,14 @@ class VisionService:
                 logger.error("%s failed: %s", label, result)
                 status["failed"] = True
                 status["error"] = str(result)
+                # 门⑥ I4：失败页同样要留下耗时与阶段计数，否则
+                # `recognition.failed_pages` 只剩一句 error，预算/孤儿线程/跳过
+                # 组数这些恰恰是排查所需的面全部丢失。
+                _failed_stage_dur = dict(
+                    getattr(getattr(self, "ocr_has_service", None), "last_duration_ms", {}) or {}
+                )
+                if _failed_stage_dur:
+                    status["stage_duration_ms"] = _failed_stage_dur
                 self.last_warnings.append(f"{label} failed: {result}")
                 return
             boxes, _ = result
@@ -452,6 +526,8 @@ class VisionService:
             )
             for (label, _factory), result in zip(jobs, outcomes, strict=False):
                 await record_pipeline_result(label, result)
+                if is_page_fatal_stage_error(result):
+                    page_fatal_error = result
         else:
             for label, factory in jobs:
                 try:
@@ -459,6 +535,23 @@ class VisionService:
                 except Exception as exc:
                     result = exc
                 await record_pipeline_result(label, result)
+                if is_page_fatal_stage_error(result):
+                    page_fatal_error = result
+
+        if page_fatal_error is not None:
+            # 让页级调用方按 #199 的既有语义把它写进 recognition.failed_pages
+            # （`task_queue_pipelines` 的 `except Exception` 会以
+            # `stage_label: Type: message` 记账），交付闸/导出 409 随之生效。
+            # 门⑥ I4：把预算阶段计数并进 reason，否则失败页只剩「budget
+            # exceeded」，看不到跳过了几组、遗留几个孤儿线程。
+            # 用**短别名 + 总长预算**，因为 `task_queue_pipelines` 落
+            # `recognition.failed_pages` 时还会 `[:200]` 截断（增量复核 I4 实测
+            # 原长拼接 266 字被截成 200，恰好丢掉 skipped/orphan 两个目标面）。
+            decorate_page_fatal_reason(
+                page_fatal_error,
+                getattr(getattr(self, "ocr_has_service", None), "last_duration_ms", {}) or {},
+            )
+            raise page_fatal_error
 
         # Specialized signature detector (conditional-detr) REPLACES the LA
         # signature grounding when configured — single-class, never fires on
@@ -1630,6 +1723,10 @@ class VisionService:
         page: int,
         pipeline_types: list = None,
     ) -> tuple[list[BoundingBox], str | None]:
+        # Issue#209：文本层页也走同一套页级 NER 死线。
+        from app.services.vision.has_text_analysis import reset_page_ner_deadline
+
+        reset_page_ner_deadline()
         text_layer_start = time.perf_counter()
         blocks, width, height = await self.file_parser.get_pdf_page_text_blocks(file_path, page)
         text_chars = sum(len(str(block.text or "").strip()) for block in blocks)
@@ -1703,6 +1800,10 @@ class VisionService:
         draw_result: bool = True,
     ) -> tuple[list[BoundingBox], str | None]:
         page_blocks: list = []
+        # Issue#209：本页 NER 死线从页入口起算，页内多次 NER 调用共用一条墙。
+        from app.services.vision.has_text_analysis import reset_page_ner_deadline
+
+        reset_page_ner_deadline()
         regions, result_image_base64 = await self.ocr_has_service.detect_and_draw(
             image_data,
             vision_types=pipeline_types,
