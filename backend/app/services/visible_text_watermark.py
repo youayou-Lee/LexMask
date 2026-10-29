@@ -206,37 +206,46 @@ def probe_visible_watermark(file_path: str, *, max_pages: int | None = None) -> 
 _GRID_CELL = 64.0
 
 
-def _char_rects(page: fitz.Page, *, body: bool) -> list[fitz.Rect]:
-    """按**来源**取本页字形框：`body=False` ⇒ 可见候选（倾斜 + 半透明）；`body=True` ⇒ 正文层。"""
+def _page_char_rects(page: fitz.Page) -> tuple[list[fitz.Rect], list[fitz.Rect]]:
+    """**一次** `get_texttrace()` 同时产出 `(可见候选字形框, 正文层字形框)`。
+
+    为什么要一次：云上实测（PyMuPDF 1.27 + 120 页卷）在**单独第二遍**调用 trace 时踩到
+    解释器级崩溃 `Fatal Python error: none_dealloc: deallocating None`（C 扩展在回收
+    trace 元组里的 `None` 字形框时双重释放）。一次遍历 + 立即转成 `fitz.Rect` 既省一遍
+    C 侧分配/回收，也把「同一页两份几何」保证在同一快照上。
+
+    `chars[i][3]` 偶有为空（无字形框的 op）；这里显式跳过，不把 `None` 留在引用链里。
+    """
     rotation = int(getattr(page, "rotation", 0) or 0)
     rotate = page.rotation_matrix if rotation % 360 else None
-    out: list[fitz.Rect] = []
+    visible: list[fitz.Rect] = []
+    body: list[fitz.Rect] = []
     for entry in page.get_texttrace():
         opacity = float(entry.get("opacity") or 0.0)
-        visible = _ALPHA_VISIBLE_MIN / 255.0 < opacity < _ALPHA_OPAQUE_MAX / 255.0
-        if body:
-            # 门⑥ 冷审 C1：扫描件的正文躺在 opacity=0（或全不透明）的层里，它**不是**水印。
-            # 判据必须知道一个词的字形来源：只凭「压在水印字形上」就删，会把正文实体当水印删掉
-            # ⇒ 交付件里这处实体没有框 = 漏打码。
-            if visible:
-                continue
-        else:
-            if not visible:
-                continue
+        is_visible = _ALPHA_VISIBLE_MIN / 255.0 < opacity < _ALPHA_OPAQUE_MAX / 255.0
+        tilted = False
+        if is_visible:
             direction = entry.get("dir") or (1.0, 0.0)
-            if len(direction) < 2 or abs(float(direction[1])) < _TILT_MIN_ABS_Y:
-                continue
+            tilted = len(direction) >= 2 and abs(float(direction[1])) >= _TILT_MIN_ABS_Y
+        if not is_visible and not tilted:
+            target = body       # opacity==0 或全不透明 ⇒ 正文层
+        elif is_visible and tilted:
+            target = visible    # 倾斜 + 半透明 ⇒ 水印候选
+        else:
+            continue            # 水平半透明 / 倾斜不透明：两头都不算（刻意不作为）
         for char in entry.get("chars") or ():
+            if len(char) < 4:
+                continue
             box = char[3]
-            if len(box) != 4:
+            if box is None or len(box) != 4:
                 continue
             rect = fitz.Rect(float(box[0]), float(box[1]), float(box[2]), float(box[3]))
             if rect.is_empty:
                 continue
             if rotate is not None:
                 rect = rect * rotate
-            out.append(rect)
-    return out
+            target.append(rect)
+    return visible, body
 
 
 def _visible_char_rects(page: fitz.Page) -> list[fitz.Rect]:
@@ -245,14 +254,14 @@ def _visible_char_rects(page: fitz.Page) -> list[fitz.Rect]:
     实测（族 B 真卷 + PyMuPDF 1.27）：`get_texttrace()` 的 `chars[i][3]` 与
     `get_text("words")` **同一坐标空间**（原点左上、y 向下）。用**逐字形框**而不是
     `entry["bbox"]`：平铺水印一个 op 的 bbox 常覆盖大半页，拿它当几何会把整页正文判成水印。
-    旋转页的坐标校正见 `_char_rects`（门⑥ 冷审 C1）。
+    旋转页的坐标校正见 `_page_char_rects`（门⑥ 冷审 C1）。
     """
-    return _char_rects(page, body=False)
+    return _page_char_rects(page)[0]
 
 
 def _body_char_rects(page: fitz.Page) -> list[fitz.Rect]:
     """本页**正文层**（opacity==0 或全不透明）的字形框，用于判据的来源维度。"""
-    return _char_rects(page, body=True)
+    return _page_char_rects(page)[1]
 
 
 def _grid_index(boxes: list[fitz.Rect], cell: float = _GRID_CELL) -> dict[tuple[int, int], list[int]]:
@@ -336,10 +345,9 @@ def collect_watermark_rects(
             page = doc[index]
             if page.rect.width <= 0 or page.rect.height <= 0:
                 continue
-            found = _visible_char_rects(page)
+            found, body_found = _page_char_rects(page)
             if found:
                 visible[index + 1] = found
-            body_found = _body_char_rects(page)
             if body_found:
                 body[index + 1] = body_found
     return visible, body
