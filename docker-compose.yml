@@ -3,8 +3,13 @@
 # CPU API/frontend only:
 #   docker compose up -d
 #
-# Full GPU model stack:
+# Full GPU model stack (unchanged behavior; Issue#217 local presets use
+# start_local.sh which selects finer-grained profiles):
 #   docker compose --profile gpu up -d
+#
+# Model-service profiles (Issue#217): `ner` / `ocr-gpu` / `visual` can be
+# enabled independently; every model service also stays in the legacy `gpu`
+# profile so the existing one-command stack is untouched.
 
 services:
   backend:
@@ -16,6 +21,11 @@ services:
     env_file:
       - path: ${BACKEND_ENV_FILE:-.env}
         required: false
+    # Issue#217: model-service addresses are overridable so `start_local.sh
+    # --ocr cloud` style presets can point them at an SSH-tunneled instance.
+    # Defaults keep the in-network service names (behavior identical to before).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - DEBUG=${DEBUG:-false}
       - DATA_DIR=/app/data
@@ -32,11 +42,11 @@ services:
       - HAS_NER_VERIFY_PARALLEL_CAP=${HAS_NER_VERIFY_PARALLEL_CAP:-8}
       - VISUAL_FEATURES_CONCURRENCY=${VISUAL_FEATURES_CONCURRENCY:-1}
       - VISION_DUAL_PIPELINE_PARALLEL=${VISION_DUAL_PIPELINE_PARALLEL:-false}
-      - OCR_BASE_URL=http://ocr:8082
+      - OCR_BASE_URL=${OCR_BASE_URL:-http://ocr:8082}
       - HAS_TEXT_RUNTIME=${HAS_TEXT_RUNTIME:-vllm}
-      - HAS_TEXT_VLLM_BASE_URL=http://ner:8080/v1
+      - HAS_TEXT_VLLM_BASE_URL=${HAS_TEXT_VLLM_BASE_URL:-http://ner:8080/v1}
       - HAS_TEXT_MODEL_NAME=${HAS_TEXT_MODEL_NAME:-HaS_Text_0209_0.6B}
-      - VISUAL_FEATURES_BASE_URL=http://visual-features:8090
+      - VISUAL_FEATURES_BASE_URL=${VISUAL_FEATURES_BASE_URL:-http://visual-features:8090}
       - CORS_ORIGINS=${CORS_ORIGINS:-["http://localhost:${FRONTEND_PORT:-3000}","http://127.0.0.1:${FRONTEND_PORT:-3000}"]}
     volumes:
       - backend-data:/app/data
@@ -101,6 +111,7 @@ services:
       start_period: 60s
     profiles:
       - gpu
+      - ocr-gpu
     restart: unless-stopped
 
   ner:
@@ -152,6 +163,7 @@ services:
       start_period: 120s
     profiles:
       - gpu
+      - ner
     restart: unless-stopped
 
   visual-features:
@@ -189,6 +201,7 @@ services:
       start_period: 120s
     profiles:
       - gpu
+      - visual
     restart: unless-stopped
 
 volumes:

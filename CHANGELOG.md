@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 2026-10-31
+
+### 新增（Issue#217 PR①）本地 NVIDIA 开发环境基建：三模型引擎本地/云端可选 + 启动脚本
+
+- **为什么**：开发期大量 bug 并非云端独有，却每次都要上按小时计费的 DCU 实例复现。本机 NVIDIA（12GB 级）足够跑完整功能栈调试；云实例收敛到验收（门④）/性能调优/DCU 特有确认三类场景。分支模型不变——差异由运行环境承载。
+- **改了什么**（纯部署面，无模型栈代码改动）：
+  1. `docker-compose.yml`：backend 三个模型服务地址（`OCR_BASE_URL`/`VISUAL_FEATURES_BASE_URL`/`HAS_TEXT_VLLM_BASE_URL`）由硬编码改为 `${VAR:-默认}` 插值——缺省值与原硬编码逐字节相同（既有用户零变化）；backend 补 `extra_hosts: host.docker.internal:host-gateway`（云端隧道地址在容器内可达）；`ner`/`ocr`/`visual-features` 在既有 `gpu` profile 之外各加独立 profile（`ner`/`ocr-gpu`/`visual`），`--profile gpu` 服务集合经比对零差异。
+  2. `start_local.sh`：三档预设（默认=NER+OCR 本地 GPU、LA 关；`--with-visual` 视觉档，与本地 GPU OCR 互斥硬校验；`--cloud` 全云档=只起界面+后端）+ 引擎细粒度 `--ner gpu|cloud` / `--ocr gpu|cloud` / `--with-visual` / `--visual cloud`；真机显存探测与按档预警（`LEXMASK_VRAM_GB` 可覆盖）；端口冲突探测；云端档地址必须由环境变量/根 `.env` 提供（未配置立即报错不起半残栈），容器内自动改写 `127.0.0.1`→`host.docker.internal`；隧道连通性预检（不通=警告继续，任务级预检兜底）。
+  3. `stop_local.sh`：覆盖全部 profile 落栈，数据卷保留。
+  4. 文档：README 新增「本地 NVIDIA 开发环境」章节（哪个环节/给谁用/三档怎么选）；WORKFLOW.md §3.5 本/云分工规则与不对称判据成文。
+- **红线**：云端只指自有实例（SSH 隧道转发，非第三方云 API）；脚本不内嵌任何地址/口令；真实案卷禁止发往第三方云服务；推理一律 GPU（CPU 推理形态不进部署档）。
+- **探针锚定（P0，规则 A）**：LA 不可用两场景实测——连接拒绝（服务未启动）全真实调用链 3.1s 失败（含 2 次重试+退避）；挂起（TCP 通但不响应，如模型加载中/隧道黑洞）单次 240.2s 烧满 `VISUAL_FEATURES_TIMEOUT`，全链推演 ≈723s（重试 2 次为代码常量）——「240s 长挂」实锤属于挂起场景，PR② 的秒级预检阈值按此锚定（实测×5 且 ≤30s 封顶）。
+- **兼容性**：`docker compose --profile gpu up -d` 与 B 方案 venv 线（`cloud-deploy/`）文件零改动、行为不变。
+
 ## 2026-10-29
 
 ### 修复（Issue#212）供料模式对表格型扫描件静默零识别：v2 表格正文在 content.html、适配层只认 table_body

@@ -37,6 +37,23 @@ cd backend && pytest tests/
 cd frontend && npm run build && npm test && npm run lint
 ```
 
+## 本地 NVIDIA 开发环境（Issue#217）
+
+给谁用：在一台有 NVIDIA 显卡的机器上做日常功能调试的开发者——不必为了复现一个普通 bug 去开按小时计费的云实例。云实例（DCU）保留给三类场景：验收（门④）、性能/并发调优、DCU 特有行为确认。**分支模型不变**：本地与云只是运行环境不同，代码同源。
+
+三个模型引擎各自可选「本地 GPU / 云端」：
+
+| 档位 | 命令 | 起什么 | 本地显存 |
+|---|---|---|---|
+| 默认档 | `./start_local.sh` | 后端+前端+NER(GPU)+OCR(GPU)；LA 关 | ≈5GB |
+| 视觉档 | `./start_local.sh --with-visual` | 再加本地 LA；本地 OCR 不起（放不下），要 OCR 叠加 `--ocr cloud` | ≈11GB |
+| 全云档 | `./start_local.sh --cloud` | 只起后端+前端，NER/OCR/LA 全走云端隧道 | ≈0 |
+
+- 引擎细粒度：`--ner gpu|cloud`、`--ocr gpu|cloud`、`--with-visual`（本地）/ `--visual cloud`（云端），LA 默认关（普通 Word 文档用不到它）。
+- 云端 = **自有实例的 SSH 隧道**（转发现役端口 8080/8082/8090），不是第三方云 API；隧道你自己开，地址用环境变量或根目录 `.env` 的 `OCR_BASE_URL` / `VISUAL_FEATURES_BASE_URL` / `HAS_TEXT_VLLM_BASE_URL` 提供——`--xx cloud` 而地址没配会立即报错，不起半残栈。脚本不内嵌任何地址/口令；真实案卷禁止发往第三方云服务。
+- 勾了视觉识别项但 LA 没起：上传页直接显示「服务未启动」（PR② 起），提交任务也会秒级明确失败——绝不静默跳过（印章是要打码的对象，漏检=泄漏）。
+- 停止：`./stop_local.sh`（数据卷保留）。原有部署方式完全不变：`docker compose --profile gpu up -d` 照旧可用。
+
 ## 文档导航
 
 | 主题 | 位置 |
