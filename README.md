@@ -19,12 +19,12 @@
 
 ## 快速开始
 
-模型权重不入库，启动前放置：
+模型权重不入库，启动前放置（**默认走 ModelScope**，国内直连；org 与 HF 不同名，内容已 sha256 对账）：
 
 | 服务 | 路径 | 来源 |
 |---|---|---|
-| ner | `backend/models/has/HaS_Text_0209_0.6B/` | [xuanwulab/HaS_Text_0209_0.6B](https://huggingface.co/xuanwulab/HaS_Text_0209_0.6B)（MIT） |
-| visual-features | `backend/models/locateanything/LocateAnything-3B-HF/` | 官方权重（NVIDIA 非商用许可） |
+| ner | `backend/models/has/HaS_Text_0209_0.6B/` | ModelScope `TencentXuanwu/HaS_Text_0209_0.6B`（与 HF [xuanwulab/HaS_Text_0209_0.6B](https://huggingface.co/xuanwulab/HaS_Text_0209_0.6B)（MIT）逐字节一致） |
+| visual-features | `backend/models/locateanything/LocateAnything-3B-HF/` | 官方权重（NVIDIA 非商用许可）；仅 `--with-visual` 视觉档需要，默认档可不放 |
 
 ```bash
 docker compose --profile gpu up -d    # 打开 http://localhost:3000
