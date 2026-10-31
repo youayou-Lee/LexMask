@@ -95,12 +95,23 @@ gh issue list --milestone "v1.1" --state all
 |---|---|---|---|---|
 | **L1 单元** | 后端纯逻辑 + 前端组件/工具函数 | `cd backend && pytest tests/`；`cd frontend && npm test` | 每次 commit 前 + CI 强制 | 全绿；新增公开函数/组件配正常例+边界例 |
 | **L2 构建静态** | 前端编译 + lint | `cd frontend && npm run build && npm run lint` | 每 PR | 全绿，不引入新告警 |
-| **L3 端到端** | 全链路：上传→识别（OCR/NER/视觉）→复核→脱敏→导出 | 本地 `docker compose --profile gpu` 起栈；云实例 `cloud-deploy/e2e_smoke_test.py` | 涉及编排/模型服务/导出的 PR（门禁④） | 场景全过；真实案卷仅云实例使用且测后清理 |
+| **L3 端到端** | 全链路：上传→识别（OCR/NER/视觉）→复核→脱敏→导出 | 本地 `./start_local.sh` 三档起栈（Issue#217）或 `docker compose --profile gpu`；云实例 `cloud-deploy/e2e_smoke_test.py` | 涉及编排/模型服务/导出的 PR（门禁④） | 场景全过；真实案卷仅云实例使用且测后清理 |
 
 **三条纪律（铁律）**：
 1. 测试红 → 不 push 不 merge
 2. 修 bug 先写复现测试再修；修复后测试永久留在回归集
 3. "应该没问题"不作数，测试与实测数据说话
+
+## 3.5 本地 vs 云分工（Issue#217 起）
+
+| 环境 | 硬件 | 允许在此完成 |
+|---|---|---|
+| 本地（NVIDIA） | RTX 4070 12GB 级 | UI/纯逻辑开发、前端 build+test+lint、单测、**带真模型的端到端功能调试**（`./start_local.sh` 三档起栈，见 README「本地 NVIDIA 开发环境」） |
+| 云实例（DCU） | DTK 栈 | GPU 栈（paddle-dcu/vllm_hcu/DTK）一切改动、性能与并发调优、一切验收（门④） |
+
+**不对称判据**：改动不碰 GPU 栈代码路径时，本地证据即可支撑走门禁；碰了（模型服务代码、推理参数、DCU 适配层），本地 NVIDIA 只能**证伪**不能**证明**——DCU 上的算子/图捕获行为与 CUDA 不同（历史实例：FLASH_ATTN 乱码、FULL cudagraph 段错误，本地永不复现），修完仍须云上确认。
+
+**红线**：云端引擎只指自有实例（SSH 隧道）；真实案卷数据禁止发往任何第三方云服务；脚本/配置不内嵌地址口令。
 
 ## 4. 一票否决速查表
 

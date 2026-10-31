@@ -1,5 +1,40 @@
 # CHANGELOG
 
+## 2026-10-31
+
+### 新增（Issue#217 PR③）MinerU sidecar 仓内化 + GPU 容器形态 + 喂料通道接入
+
+- **为什么**：喂料通道（供料模式）的 MinerU 解析服务此前只在云实例侧（#75），仓内只有客户端——本地开发/小显存部署无法独立启用；且实例关机即不可用。
+- **改了什么**：
+  1. **sidecar 收编**（`backend/scripts/mineru_sidecar.py`）：按 `mineru_parse_client.py` 已钉契约重写（POST /tasks multipart→202→轮询 status→GET result zip；/health）。任务表内存+meta.json 落盘（重启后 completed 任务仍可取）。执行形态=to_thread+同步 subprocess（asyncio 子进程在 uvicorn 非主线程收不到退出回调）+后台协程强引用集（create_task 无引用会被 GC——任务卡 pending 的真因）。
+  2. **GPU 容器**（`backend/Dockerfile.mineru`）：官方 china 版组合——daocloud vLLM 0.21.0 基底 + mineru[torch]（阿里源）+ ModelScope 模型预下（`mineru-kit models download -s modelscope`）+ sidecar 层；推理一律 GPU 原则。
+  3. **4.x CLI/server 适配**：4.x 移除 `mineru -p`（改 `mineru parse --json --tier T -o <md> PATH`）；standard 档走本地 parse-server（managed 模式）。**显存现实**：12GB 全栈（NER+OCR≈5GB）下 standard 的 vLLM 引擎起不来 ⇒ sidecar 默认 tier=**flash**（实测 5s 完成真解析、无需 server、显存轻）；standard 留 `MINERU_SIDECAR_TIER` 可选。
+  4. **接入**：compose `mineru` profile（16581/GPU/健康检查/缓存卷）+ backend `MINERU_API_BASE_URL` 插值；`start_local.sh --with-mineru`（本地 GPU，与 `--with-visual` 互斥校验）/`--mineru cloud`/`--cloud` 全含。
+- **测试**：契约单测 +4 例（health/全生命周期/404-409 状态机/failed 带原因；fake CLI 同步 4.x 形态）。A5 端到端实测：canary PDF 经真 MinerU 4.x（GPU flash）→ **completed 5s** → zip 双产物（markdown + 4.x 结构 JSON）。
+- **挂账**：4.x schema（metadata/pages）与 3.x content_list 形状不同——backend 供料适配层的 4.x 支持另案（现役生产实例 3.4.5 产物不受影响）；standard 档显存调优（mem-fraction）同案。
+- **红线**：sidecar/容器不内嵌任何地址口令；ModelScope 为模型默认源。
+
+### 新增（Issue#217 PR②）可选服务双层知情：任务入口秒级预检 + 上传页识别项旁状态徽标
+
+- **为什么**：改前勾选视觉识别项而 LA 不在场时，任务直接发起调用——挂起场景（模型加载中/隧道半开）实测单次 240.2s、全链 ≈723s；拒绝场景虽快（3.1s）但报错无指引。用户裁定：不能等任务跑起来才知道——上传页就要看见（双层知情的用户侧），任务入口预检兜底（机器侧）。
+- **改了什么**：
+  1. **任务入口秒级预检（后端）**：`detect_vision` 在视觉管线启用时先探 LA `/health`（3s 短超时 + 负结果 5s TTL 缓存，与 HaS 负健康同源模式）；不可达立即 `AppError(503, "visual_service_unavailable")`，文案给三选指引（本地 `--with-visual` / 云端 `--visual cloud` / 取消勾选）。**绝不静默跳过**——印章是打码对象，漏检=泄漏（承 #199/#203 fail-closed 原则）。canary-217 改后对照实测：**0.0s 秒级失败**（对照改前挂起 240.2s）。
+  2. **上传页识别项旁徽标（前端）**：`VisualServiceBadge` 三态组件（在线=干净不渲染 / 未启动=琥珀徽标含怎么开 / 快照未知=不渲染防闪误报），挂在 playground 视觉识别项卡片头；消费既有 `/health/services` 轮询（`useServiceHealth`），新增 `isServiceLive` 导出。语义边界：快照是「拉取那一刻」，以任务执行时预检为准——两层知情互不替代。
+- **测试**：后端 +5 例（预检通过/秒级失败/负缓存 TTL/成功重置/AST 接线钉）；前端 +6 例（三态钉子）。canary-217 样本（testdata `697b7a8`）双向留证：改前 240.2s 长挂 / 改后 0.0s。
+- **兼容性**：不改变任何既有 API 形状；预检仅在视觉管线启用时触发，OCR+HaS 主线零影响。
+
+### 新增（Issue#217 PR①）本地 NVIDIA 开发环境基建：三模型引擎本地/云端可选 + 启动脚本
+
+- **为什么**：开发期大量 bug 并非云端独有，却每次都要上按小时计费的 DCU 实例复现。本机 NVIDIA（12GB 级）足够跑完整功能栈调试；云实例收敛到验收（门④）/性能调优/DCU 特有确认三类场景。分支模型不变——差异由运行环境承载。
+- **改了什么**（纯部署面，无模型栈代码改动）：
+  1. `docker-compose.yml`：backend 三个模型服务地址（`OCR_BASE_URL`/`VISUAL_FEATURES_BASE_URL`/`HAS_TEXT_VLLM_BASE_URL`）由硬编码改为 `${VAR:-默认}` 插值——缺省值与原硬编码逐字节相同（既有用户零变化）；backend 补 `extra_hosts: host.docker.internal:host-gateway`（云端隧道地址在容器内可达）；`ner`/`ocr`/`visual-features` 在既有 `gpu` profile 之外各加独立 profile（`ner`/`ocr-gpu`/`visual`），`--profile gpu` 服务集合经比对零差异。
+  2. `start_local.sh`：三档预设（默认=NER+OCR 本地 GPU、LA 关；`--with-visual` 视觉档，与本地 GPU OCR 互斥硬校验；`--cloud` 全云档=只起界面+后端）+ 引擎细粒度 `--ner gpu|cloud` / `--ocr gpu|cloud` / `--with-visual` / `--visual cloud`；真机显存探测与按档预警（`LEXMASK_VRAM_GB` 可覆盖）；端口冲突探测；云端档地址必须由环境变量/根 `.env` 提供（未配置立即报错不起半残栈），容器内自动改写 `127.0.0.1`→`host.docker.internal`；隧道连通性预检（不通=警告继续，任务级预检兜底）。
+  3. `stop_local.sh`：覆盖全部 profile 落栈，数据卷保留。
+  4. 文档：README 新增「本地 NVIDIA 开发环境」章节（哪个环节/给谁用/三档怎么选）；WORKFLOW.md §3.5 本/云分工规则与不对称判据成文。
+- **红线**：云端只指自有实例（SSH 隧道转发，非第三方云 API）；脚本不内嵌任何地址/口令；真实案卷禁止发往第三方云服务；推理一律 GPU（CPU 推理形态不进部署档）。
+- **探针锚定（P0，规则 A）**：LA 不可用两场景实测——连接拒绝（服务未启动）全真实调用链 3.1s 失败（含 2 次重试+退避）；挂起（TCP 通但不响应，如模型加载中/隧道黑洞）单次 240.2s 烧满 `VISUAL_FEATURES_TIMEOUT`，全链推演 ≈723s（重试 2 次为代码常量）——「240s 长挂」实锤属于挂起场景，PR② 的秒级预检阈值按此锚定（实测×5 且 ≤30s 封顶）。
+- **兼容性（评审 I2 修正措辞——「行为变化明细」而非笼统「不变」）**：B 方案 venv 线（`cloud-deploy/`）与 DCU 实例线文件零改动；**Docker 既有线有两处有意行为变化**：① backend 镜像不再内嵌 LibreOffice——.doc 老格式转换改为运行时挂载宿主 `/usr/lib/libreoffice`（宿主需 `sudo apt-get install --no-install-recommends libreoffice-writer-nogui`，缺失时 Docker 会把挂载点建成空目录→.doc 转换失败；`.docx`/PDF 不受影响；start_local.sh 已加宿主检测警告）；② ocr 容器从裸 uvicorn（init_ocr 从不执行、全端点 503 的坏形态）改为脚本直跑+结构模式 env（修复，GPU 占用 +~3GB、健康语义变化）；③ 根 `.env` 里已配置的三个 BASE_URL 键现在开始对 compose backend 生效（旧版被硬编码压制）。`--profile gpu` 服务集合不变。
+
 ## 2026-10-29
 
 ### 修复（Issue#212）供料模式对表格型扫描件静默零识别：v2 表格正文在 content.html、适配层只认 table_body

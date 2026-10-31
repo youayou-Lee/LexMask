@@ -1128,11 +1128,11 @@ const enOverrides: Record<string, string> = {
   'playground.upload.affectedServices': 'Affected services:',
   'playground.upload.nextAction': 'Next action:',
   'playground.upload.offlineAction':
-    'Run npm run doctor, then restart the backend or attach to the existing local stack.',
+    'Docker local stack: ./start_local.sh (add --with-visual for vision, --visual cloud for remote); npm dev: run npm run doctor then restart the backend.',
   'playground.upload.checkingAction':
     'If this message stays visible, run npm run doctor in another terminal.',
   'playground.upload.modelOfflineAction':
-    'Run npm run doctor, then start npm run dev:models or restart the listed services.',
+    'Docker local stack: ./start_local.sh --with-visual (or --visual cloud for remote); npm dev: npm run doctor + npm run dev:models.',
   'playground.dropHere': 'Drop a file here to upload',
   'playground.supportedFormats':
     'Supports .doc, .docx, .txt, .md, .html, .pdf, .jpg, .png, and more',
@@ -1147,6 +1147,7 @@ const enOverrides: Record<string, string> = {
   'playground.ocrShort': 'OCR+HaS',
   'playground.imageTextRange': 'Text vision',
   'playground.visualRegionRange': 'Image vision',
+  'playground.visualServiceDown': 'Service not running',
   'playground.selected': 'selected',
   'playground.textPresetLabel': 'Text recognition list',
   'playground.saveAsTextPreset': 'Save text list',
@@ -1784,6 +1785,7 @@ Object.assign(enOverrides, {
 
 Object.assign(enOverrides, {
   'playground.visualRegionRange': 'Image vision',
+  'playground.visualServiceDown': 'Service not running',
   'playground.visualFeatureShort': 'Visual features',
   'health.service.visual_features': 'Visual feature service',
   'history.previewImageRegion': 'Visual feature',

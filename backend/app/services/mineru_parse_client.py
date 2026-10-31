@@ -104,7 +104,10 @@ class MineruParseClient:
                 )
         except httpx.HTTPError as exc:
             raise MineruParseError(
-                f"mineru sidecar 不可达({self.base_url}): {exc!r}", transient=True
+                f"MinerU 喂料服务不可达({self.base_url}): {exc!r}。"
+                "启动指引：本地 ./start_local.sh --with-mineru（GPU 容器），"
+                "或 --mineru cloud（隧道指向自有实例）——Issue#217 PR③",
+                transient=True
             ) from exc
         if resp.status_code >= 400:
             self._raise(resp.status_code, resp.text[:200])
@@ -128,7 +131,10 @@ class MineruParseClient:
                 resp = await client.get(f"{self.base_url}/tasks/{task_id}")
         except httpx.HTTPError as exc:
             raise MineruParseError(
-                f"mineru sidecar 不可达({self.base_url}): {exc!r}", transient=True
+                f"MinerU 喂料服务不可达({self.base_url}): {exc!r}。"
+                "启动指引：本地 ./start_local.sh --with-mineru（GPU 容器），"
+                "或 --mineru cloud（隧道指向自有实例）——Issue#217 PR③",
+                transient=True
             ) from exc
         if resp.status_code == 404:
             raise MineruParseError(f"mineru task not found: {task_id}", transient=False)
@@ -179,7 +185,10 @@ class MineruParseClient:
                 resp = await client.get(f"{self.base_url}/tasks/{task_id}/result")
         except httpx.HTTPError as exc:
             raise MineruParseError(
-                f"mineru sidecar 不可达({self.base_url}): {exc!r}", transient=True
+                f"MinerU 喂料服务不可达({self.base_url}): {exc!r}。"
+                "启动指引：本地 ./start_local.sh --with-mineru（GPU 容器），"
+                "或 --mineru cloud（隧道指向自有实例）——Issue#217 PR③",
+                transient=True
             ) from exc
         if resp.status_code == 409:
             raise MineruParseError(

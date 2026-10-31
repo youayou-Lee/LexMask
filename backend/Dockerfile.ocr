@@ -4,7 +4,6 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-ocr.lock .
 RUN pip install --no-cache-dir -r requirements-ocr.lock
@@ -14,6 +13,17 @@ COPY scripts/ocr_server.py .
 RUN adduser --disabled-password --gecos '' appuser
 USER appuser
 
+# Issue#217: libgomp1 is a hard runtime dep of paddle (libpaddle.so fails to
+# import without it); libxinerama/libpng are LibreOffice/oosplash deps.
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+USER appuser
+
 EXPOSE 8082
 
-CMD ["uvicorn", "ocr_server:app", "--host", "0.0.0.0", "--port", "8082"]
+# Issue#217: run the script directly (not `uvicorn ocr_server:app`) —
+# init_ocr() only executes under `__main__`, so a bare uvicorn start never
+# initializes paddle and every endpoint stays 503. Same form as the
+# cloud-deploy venv line.
+CMD ["python3", "ocr_server.py"]

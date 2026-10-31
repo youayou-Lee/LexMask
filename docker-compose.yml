@@ -3,19 +3,32 @@
 # CPU API/frontend only:
 #   docker compose up -d
 #
-# Full GPU model stack:
+# Full GPU model stack (unchanged behavior; Issue#217 local presets use
+# start_local.sh which selects finer-grained profiles):
 #   docker compose --profile gpu up -d
+#
+# Model-service profiles (Issue#217): `ner` / `ocr-gpu` / `visual` can be
+# enabled independently; every model service also stays in the legacy `gpu`
+# profile so the existing one-command stack is untouched.
 
 services:
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    # 显式 working_dir：对仓内 Dockerfile 构建（自带 WORKDIR）是冗余，但对
+    # 本地 commit 形态的镜像（不继承 WORKDIR）是必要兜底——评审 M11 注释留痕。
+    working_dir: /app
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     env_file:
       - path: ${BACKEND_ENV_FILE:-.env}
         required: false
+    # Issue#217: model-service addresses are overridable so `start_local.sh
+    # --ocr cloud` style presets can point them at an SSH-tunneled instance.
+    # Defaults keep the in-network service names (behavior identical to before).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - DEBUG=${DEBUG:-false}
       - DATA_DIR=/app/data
@@ -32,16 +45,23 @@ services:
       - HAS_NER_VERIFY_PARALLEL_CAP=${HAS_NER_VERIFY_PARALLEL_CAP:-8}
       - VISUAL_FEATURES_CONCURRENCY=${VISUAL_FEATURES_CONCURRENCY:-1}
       - VISION_DUAL_PIPELINE_PARALLEL=${VISION_DUAL_PIPELINE_PARALLEL:-false}
-      - OCR_BASE_URL=http://ocr:8082
+      - OCR_BASE_URL=${OCR_BASE_URL:-http://ocr:8082}
       - HAS_TEXT_RUNTIME=${HAS_TEXT_RUNTIME:-vllm}
-      - HAS_TEXT_VLLM_BASE_URL=http://ner:8080/v1
+      - HAS_TEXT_VLLM_BASE_URL=${HAS_TEXT_VLLM_BASE_URL:-http://ner:8080/v1}
       - HAS_TEXT_MODEL_NAME=${HAS_TEXT_MODEL_NAME:-HaS_Text_0209_0.6B}
-      - VISUAL_FEATURES_BASE_URL=http://visual-features:8090
+      - VISUAL_FEATURES_BASE_URL=${VISUAL_FEATURES_BASE_URL:-http://visual-features:8090}
+      # Issue#217 PR③：MinerU 喂料地址（mineru profile 起容器名；云端档走隧道）
+      - MINERU_API_BASE_URL=${MINERU_API_BASE_URL:-http://mineru:16581}
       - CORS_ORIGINS=${CORS_ORIGINS:-["http://localhost:${FRONTEND_PORT:-3000}","http://127.0.0.1:${FRONTEND_PORT:-3000}"]}
     volumes:
       - backend-data:/app/data
       - backend-uploads:/app/uploads
       - backend-outputs:/app/outputs
+      # Issue#217: .doc conversion (soffice) is provided by the HOST, not baked
+      # into the image — requires libreoffice-writer-nogui on the host.
+      - /usr/lib/libreoffice:/usr/lib/libreoffice:ro
+      - /usr/bin/soffice:/usr/bin/soffice:ro
+      - /etc/libreoffice:/etc/libreoffice:ro
     networks:
       - redaction-net
     healthcheck:
@@ -82,6 +102,23 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.ocr
+    # Issue#217: run the script directly — init_ocr() only executes under
+    # `__main__`; a bare `uvicorn ocr_server:app` never initializes paddle
+    # (every endpoint stays 503 with ready:false). Same form as the
+    # cloud-deploy venv line.
+    command: ["python3", "ocr_server.py"]
+    environment:
+      # Same flags as cloud-deploy/start_cloud.sh's OCR line: structure-first
+      # mode (/structure is the primary path; without OCR_STRUCTURE_ENABLED=1
+      # the route is not even registered and ocr_has gets 404 → 0 blocks).
+      - OCR_VL_ENABLED=0
+      - OCR_STRUCTURE_ENABLED=1
+      - OCR_STRUCTURE_PRIMARY=1
+      - OCR_STRUCTURE_WARMUP=1
+      - OCR_STRUCTURE_RELEASE_AFTER_REQUEST=0
+      - OCR_MAX_IMAGE_SIDE=2048
+      - OCR_MAX_NEW_TOKENS=2048
+      - PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
     ports:
       - "${OCR_PORT:-8082}:8082"
     deploy:
@@ -101,6 +138,7 @@ services:
       start_period: 60s
     profiles:
       - gpu
+      - ocr-gpu
     restart: unless-stopped
 
   ner:
@@ -152,6 +190,7 @@ services:
       start_period: 120s
     profiles:
       - gpu
+      - ner
     restart: unless-stopped
 
   visual-features:
@@ -189,12 +228,54 @@ services:
       start_period: 120s
     profiles:
       - gpu
+      - visual
     restart: unless-stopped
+
+  mineru:
+    # Issue#217 PR③：MinerU 喂料通道（sidecar 容器，GPU 形态）。
+    # sidecar 契约与 backend/app/services/mineru_parse_client.py 对齐；
+    # 脚本=backend/scripts/mineru_sidecar.py（仓内化，实例侧 #75 底稿缺 → 按契约重写）。
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.mineru
+    # Issue#217：4.x parse 走「本地 parse-server」架构——容器入口先切 managed
+    # 模式并拉起 server（server start 即 daemon 返回），sidecar 随后。
+    # 与 Dockerfile.mineru 的 CMD 同文（本地 commit 镜像的 CMD 不含 server 链，
+    # compose command 覆盖兜底）——改一处务必同步另一处（评审 M11）。
+    command: ["bash", "-c", "mineru config set parse_server.local.mode managed >/dev/null 2>&1; mineru server start >mu-server.log 2>&1; exec python3 /app/mineru_sidecar.py"]
+    ports:
+      - "${MINERU_PORT:-16581}:16581"
+    environment:
+      - MINERU_SIDECAR_PORT=16581
+      - MINERU_SIDECAR_WORKDIR=work/mineru-sidecar
+      - MINERU_MODEL_SOURCE=local
+    volumes:
+      # 模型库与解析缓存（容器以 root 跑，持久挂 MinerU 的家目录——评审 M7 修正路径）
+      - mineru-cache:mineru-home
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - redaction-net
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:16581/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    profiles:
+      - mineru
 
 volumes:
   backend-data:
   backend-uploads:
   backend-outputs:
+  mineru-cache:
 
 networks:
   redaction-net:

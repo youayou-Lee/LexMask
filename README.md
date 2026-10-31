@@ -19,16 +19,18 @@
 
 ## 快速开始
 
-模型权重不入库，启动前放置：
+模型权重不入库，启动前放置（**默认走 ModelScope**，国内直连；org 与 HF 不同名，内容已 sha256 对账）：
 
 | 服务 | 路径 | 来源 |
 |---|---|---|
-| ner | `backend/models/has/HaS_Text_0209_0.6B/` | [xuanwulab/HaS_Text_0209_0.6B](https://huggingface.co/xuanwulab/HaS_Text_0209_0.6B)（MIT） |
-| visual-features | `backend/models/locateanything/LocateAnything-3B-HF/` | 官方权重（NVIDIA 非商用许可） |
+| ner | `backend/models/has/HaS_Text_0209_0.6B/` | ModelScope `TencentXuanwu/HaS_Text_0209_0.6B`（与 HF [xuanwulab/HaS_Text_0209_0.6B](https://huggingface.co/xuanwulab/HaS_Text_0209_0.6B)（MIT）逐字节一致） |
+| visual-features | `backend/models/locateanything/LocateAnything-3B-HF/` | 官方权重（NVIDIA 非商用许可）；仅 `--with-visual` 视觉档需要，默认档可不放 |
 
 ```bash
 docker compose --profile gpu up -d    # 打开 http://localhost:3000
 ```
+
+> 宿主前置：backend 容器的 .doc 老格式转换运行时挂载宿主 LibreOffice（`sudo apt-get install --no-install-recommends libreoffice-writer-nogui`）；缺失时 .docx/PDF 正常、.doc 转换不可用。
 
 本地开发与测试门禁：
 
@@ -36,6 +38,24 @@ docker compose --profile gpu up -d    # 打开 http://localhost:3000
 cd backend && pytest tests/
 cd frontend && npm run build && npm test && npm run lint
 ```
+
+## 本地 NVIDIA 开发环境（Issue#217）
+
+给谁用：在一台有 NVIDIA 显卡的机器上做日常功能调试的开发者——不必为了复现一个普通 bug 去开按小时计费的云实例。云实例（DCU）保留给三类场景：验收（门④）、性能/并发调优、DCU 特有行为确认。**分支模型不变**：本地与云只是运行环境不同，代码同源。
+
+三个模型引擎各自可选「本地 GPU / 云端」：
+
+| 档位 | 命令 | 起什么 | 本地显存 |
+|---|---|---|---|
+| 默认档 | `./start_local.sh` | 后端+前端+NER(GPU)+OCR(GPU)；LA 关 | ≈5GB |
+| 视觉档 | `./start_local.sh --with-visual` | 再加本地 LA；本地 OCR 不起（放不下），要 OCR 叠加 `--ocr cloud` | ≈11GB |
+| 全云档 | `./start_local.sh --cloud` | 只起后端+前端，NER/OCR/LA 全走云端隧道 | ≈0 |
+
+- 引擎细粒度：`--ner gpu|cloud`、`--ocr gpu|cloud`、`--with-visual`（本地）/ `--visual cloud`（云端），LA 默认关（普通 Word 文档用不到它）。
+- 云端 = **自有实例的 SSH 隧道**（转发现役端口 8080/8082/8090），不是第三方云 API；隧道你自己开，地址用环境变量或根目录 `.env` 的 `OCR_BASE_URL` / `VISUAL_FEATURES_BASE_URL` / `HAS_TEXT_VLLM_BASE_URL` 提供——`--xx cloud` 而地址没配会立即报错，不起半残栈。脚本不内嵌任何地址/口令；真实案卷禁止发往第三方云服务。
+- 勾了视觉识别项但 LA 没起：上传页直接显示「服务未启动」（PR② 起），提交任务也会秒级明确失败——绝不静默跳过（印章是要打码的对象，漏检=泄漏）。
+- MinerU 喂料（`--with-mineru`/`--mineru cloud`）：sidecar 契约端到端已通（解析→zip 产物）；**供料模式全链当前不可用**——MinerU 4.x 产物 schema 与 backend 适配层（认 3.x content_list）尚未打通，适配另案（现役生产实例 3.4.5 不受影响）。
+- 停止：`./stop_local.sh`（数据卷保留）。原有部署方式完全不变：`docker compose --profile gpu up -d` 照旧可用（.doc 转换需宿主 LibreOffice，见快速开始）。
 
 ## 文档导航
 
