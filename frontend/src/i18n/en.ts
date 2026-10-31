@@ -1147,6 +1147,7 @@ const enOverrides: Record<string, string> = {
   'playground.ocrShort': 'OCR+HaS',
   'playground.imageTextRange': 'Text vision',
   'playground.visualRegionRange': 'Image vision',
+  'playground.visualServiceDown': 'Service not running',
   'playground.selected': 'selected',
   'playground.textPresetLabel': 'Text recognition list',
   'playground.saveAsTextPreset': 'Save text list',
@@ -1784,6 +1785,7 @@ Object.assign(enOverrides, {
 
 Object.assign(enOverrides, {
   'playground.visualRegionRange': 'Image vision',
+  'playground.visualServiceDown': 'Service not running',
   'playground.visualFeatureShort': 'Visual features',
   'health.service.visual_features': 'Visual feature service',
   'history.previewImageRegion': 'Visual feature',

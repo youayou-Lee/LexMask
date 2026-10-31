@@ -10,6 +10,8 @@ import { getEntityTypeName } from '@/config/entityTypes';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { getSelectionToneClasses, type SelectionTone } from '@/ui/selectionPalette';
+import { useServiceHealth } from '@/hooks/use-service-health';
+import { VisualServiceBadge } from './visual-service-badge';
 import { localizeRecognitionTypeName } from '@/features/settings/lib/redaction-display';
 import type { usePlayground } from '../hooks/use-playground';
 import type { PipelineConfig, VisionTypeConfig } from '../types';
@@ -304,6 +306,9 @@ export const TextTypeGroups: FC<{ rec: RecognitionCtx }> = ({ rec }) => {
 
 export const VisionPipelines: FC<{ rec: RecognitionCtx }> = ({ rec }) => {
   const t = useT();
+  const { health } = useServiceHealth();
+  // Issue#217 PR②：视觉识别项旁的服务状态徽标（三态，语义边界见组件注释）。
+  const visualServiceStatus = health?.services?.visual_features?.status;
   const [pipelinePages, setPipelinePages] = useState<Record<string, number>>({});
   const pageSize = VISION_PIPELINE_PAGE_SIZE;
   const displayPipelines = useMemo(() => {
@@ -427,6 +432,9 @@ export const VisionPipelines: FC<{ rec: RecognitionCtx }> = ({ rec }) => {
                 >
                   {pipelineTypes.length}
                 </Badge>
+                {isVisualFeatures && (
+                  <VisualServiceBadge status={visualServiceStatus} />
+                )}
                 <Badge
                   variant="secondary"
                   className="rounded-full border border-border/70 bg-background/70 px-2 py-0.5 font-medium text-muted-foreground shadow-none"

@@ -1060,6 +1060,7 @@ const zhOverrides: Record<string, string> = {
   'playground.ocrShort': 'OCR+HaS',
   'playground.imageTextRange': '文本视觉',
   'playground.visualRegionRange': '图像视觉',
+  'playground.visualServiceDown': '服务未启动',
   'playground.selected': '已选',
   'playground.textPresetLabel': '文本配置清单',
   'playground.saveAsTextPreset': '保存文本清单',
@@ -1961,6 +1962,7 @@ Object.assign(zhOverrides, {
 
 Object.assign(zhOverrides, {
   'playground.visualRegionRange': '图像视觉',
+  'playground.visualServiceDown': '服务未启动',
   'playground.visualFeatureShort': '视觉特征',
   'playground.sourceImage': '视觉特征',
   'job.statusDesc.vision': '正在识别视觉特征。',
