@@ -37,6 +37,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+import json
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
@@ -88,23 +90,59 @@ def _run_mineru_sync(task_id: str, inputs: list[Path]) -> None:
     的事件循环里收不到退出回调，线程形态任何部署都稳）。"""
     task = _tasks[task_id]
     out_dir = _task_dir(task_id) / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
     task["status"] = "processing"
     task["progress"] = 5
     _write_task_meta(task_id)
     try:
         t0 = time.monotonic()
-        proc = subprocess.run(
-            [MINERU_BIN, "-p", *[str(p) for p in inputs], "-o", str(out_dir)],
-            capture_output=True,
-            timeout=MINERU_TIMEOUT_SEC,
-        )
+        # MinerU 4.x CLI：`mineru parse --json --tier <tier> -o <md> PATH`（逐文件）。
+        # 3.x 的 `mineru -p` 在 4.x 已移除（实测 "No such option '-p'"）；4.x 走
+        # 「本地 parse-server」架构（--tier standard 需 server managed 模式）。
+        # stdout(--json) 含 parse.sha256/tier，据此从 doclib 收取结构化产物。
+        exit_code = 0
+        output_tail = b""
+        parse_results: list[dict] = []
+        for input_path in inputs:
+            proc = subprocess.run(
+                [
+                    MINERU_BIN,
+                    "parse",
+                    "--json",
+                    "--tier",
+                    os.environ.get("MINERU_SIDECAR_TIER", "flash"),
+                    "-o",
+                    str(out_dir / (input_path.stem + ".md")),
+                    str(input_path),
+                ],
+                capture_output=True,
+                timeout=MINERU_TIMEOUT_SEC,
+            )
+            if proc.returncode != 0:
+                exit_code = proc.returncode
+                output_tail = proc.stdout or proc.stderr or b""
+                break
+            try:
+                parse_results.append(json.loads(proc.stdout.decode(errors="replace")))
+            except Exception:
+                parse_results.append({})
+        # 收取 doclib 结构化产物（4.x schema；backend 侧 3.x content_list 适配另案）
+        home = Path(os.environ.get("MINERU_SIDECAR_HOME", str(Path.home() / ".mineru")))
+        for pr in parse_results:
+            sha = (pr.get("parse") or {}).get("sha256") or ""
+            tier = (pr.get("parse") or {}).get("tier") or os.environ.get("MINERU_SIDECAR_TIER", "flash")
+            if sha:
+                lib = home / "doclib" / "parsed" / sha[:2] / sha / tier
+                for f in sorted(lib.glob("*.json")):
+                    dest = out_dir / f"mineru4_{tier}_{f.name}"
+                    shutil.copyfile(f, dest)
         # 进度按时间粗估（CLI 无结构化进度输出）；完成时置 100。
         task["progress"] = min(
             90, 5 + int((time.monotonic() - t0) / max(MINERU_TIMEOUT_SEC, 1) * 85)
         )
-        if proc.returncode != 0:
-            tail = (proc.stdout or proc.stderr or b"")[-500:].decode(errors="replace")
-            raise RuntimeError(f"mineru exit={proc.returncode}: {tail}")
+        if exit_code != 0:
+            tail = output_tail[-500:].decode(errors="replace")
+            raise RuntimeError(f"mineru exit={exit_code}: {tail}")
         files = sorted(p for p in out_dir.rglob("*") if p.is_file())
         if not files:
             raise RuntimeError("mineru produced no output files")

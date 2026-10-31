@@ -28,17 +28,15 @@ def client(tmp_path: Path, monkeypatch):
     fake_bin = tmp_path / "fake-mineru"
     fake_bin.write_text(
         "#!/bin/sh\n"
-        "# fake mineru: -p <inputs...> -o <outdir>\n"
+        "# fake mineru 4.x: parse --json --tier T -o <md-file> PATH\n"
         'out=""\n'
         'prev=""\n'
         "for a in \"$@\"; do\n"
-        '  if [ \"$prev\" = \"-o\" ]; then out=\"$a\"; fi\n'
-        '  prev=\"$a\"\n'
+        '  if [ "$prev" = "-o" ]; then out="$a"; fi\n'
+        '  prev="$a"\n'
         "done\n"
-        'mkdir -p \"$out/full\"\n'
-        "for f in \"$@\"; do :; done\n"
-        'printf \'[{"type":"text","text":"fake"}]\' > "$out/full/x_content_list.json"\n'
-        'printf "# fake\\n" > "$out/full/x.md"\n'
+        'printf "# fake\\n" > "$out"\n'
+        'printf \'[{"type":"text","text":"fake"}]\' > "$out.content_list.json"\n'
         "",
         encoding="utf-8",
     )
@@ -111,8 +109,8 @@ def test_full_task_lifecycle_contract(client):
     assert zr.headers["content-type"].startswith("application/zip")
     with zipfile.ZipFile(io.BytesIO(zr.content)) as zf:
         names = set(zf.namelist())
-    assert "full/x_content_list.json" in names, names
-    assert "full/x.md" in names, names
+    assert any(n.endswith(".content_list.json") for n in names), names
+    assert any(n.endswith(".md") for n in names), names
 
 
 def test_unknown_task_404_and_incomplete_409(client):

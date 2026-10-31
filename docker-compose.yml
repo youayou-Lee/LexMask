@@ -236,6 +236,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.mineru
+    # Issue#217：4.x parse 走「本地 parse-server」架构——容器入口先切 managed
+    # 模式并拉起 server（server start 即 daemon 返回），sidecar 随后。
+    command: ["bash", "-c", "mineru config set parse_server.local.mode managed >/dev/null 2>&1; mineru server start >/tmp/mineru-server.log 2>&1; exec python3 /app/mineru_sidecar.py"]
     ports:
       - "${MINERU_PORT:-16581}:16581"
     environment:

@@ -33,4 +33,6 @@ EXPOSE 16581
 
 ENTRYPOINT ["/bin/bash", "-c", "export MINERU_MODEL_SOURCE=local && exec \"$@\"", "--"]
 
-CMD ["python3", "/app/mineru_sidecar.py"]
+# Issue#217：4.x 的 parse 走「本地 parse-server」架构——sidecar 起前先切
+# managed 模式（standard 档）并拉起 server（实测 server start 即 daemon 返回）。
+CMD ["bash", "-c", "mineru config set parse_server.local.mode managed >/dev/null 2>&1; mineru server start >/tmp/mineru-server.log 2>&1; exec python3 /app/mineru_sidecar.py"]
