@@ -242,16 +242,16 @@ services:
     # 模式并拉起 server（server start 即 daemon 返回），sidecar 随后。
     # 与 Dockerfile.mineru 的 CMD 同文（本地 commit 镜像的 CMD 不含 server 链，
     # compose command 覆盖兜底）——改一处务必同步另一处（评审 M11）。
-    command: ["bash", "-c", "mineru config set parse_server.local.mode managed >/dev/null 2>&1; mineru server start >/tmp/mineru-server.log 2>&1; exec python3 /app/mineru_sidecar.py"]
+    command: ["bash", "-c", "mineru config set parse_server.local.mode managed >/dev/null 2>&1; mineru server start >mu-server.log 2>&1; exec python3 /app/mineru_sidecar.py"]
     ports:
       - "${MINERU_PORT:-16581}:16581"
     environment:
       - MINERU_SIDECAR_PORT=16581
-      - MINERU_SIDECAR_WORKDIR=/tmp/mineru-sidecar
+      - MINERU_SIDECAR_WORKDIR=work/mineru-sidecar
       - MINERU_MODEL_SOURCE=local
     volumes:
-      # 模型库与解析缓存（容器以 root 跑，库在 /root/.mineru——评审 M7 修正路径）
-      - mineru-cache:/root/.mineru
+      # 模型库与解析缓存（容器以 root 跑，持久挂 MinerU 的家目录——评审 M7 修正路径）
+      - mineru-cache:mineru-home
     deploy:
       resources:
         reservations:

@@ -15,7 +15,6 @@ FROM docker.m.daocloud.io/vllm/vllm-openai:v0.21.0
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         libgl1 && \
-    rm -rf /var/lib/apt/lists/*
 
 # MinerU 4 + torch（复用基底的 vLLM）；pip 走阿里源（pypi 直连在构建环境不可用）
 RUN python3 -m pip install -U 'mineru[torch]>=4.0,<5' python-multipart \
@@ -35,4 +34,4 @@ ENTRYPOINT ["/bin/bash", "-c", "export MINERU_MODEL_SOURCE=local && exec \"$@\""
 
 # Issue#217：4.x 的 parse 走「本地 parse-server」架构——sidecar 起前先切
 # managed 模式（standard 档）并拉起 server（实测 server start 即 daemon 返回）。
-CMD ["bash", "-c", "mineru config set parse_server.local.mode managed >/dev/null 2>&1; mineru server start >/tmp/mineru-server.log 2>&1; exec python3 /app/mineru_sidecar.py"]
+CMD ["bash", "-c", "mineru config set parse_server.local.mode managed >/dev/null 2>&1; mineru server start >mu-server.log 2>&1; exec python3 /app/mineru_sidecar.py"]

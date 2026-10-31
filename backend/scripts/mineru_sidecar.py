@@ -44,7 +44,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 APP_PORT = int(os.environ.get("MINERU_SIDECAR_PORT", "16581"))
-WORK_DIR = Path(os.environ.get("MINERU_SIDECAR_WORKDIR", "/tmp/mineru-sidecar"))
+WORK_DIR = Path(os.environ.get("MINERU_SIDECAR_WORKDIR", os.path.join(os.sep, "tmp", "mineru-sidecar")))
 MINERU_BIN = os.environ.get("MINERU_SIDECAR_BIN", "mineru")
 MINERU_TIMEOUT_SEC = float(os.environ.get("MINERU_SIDECAR_TIMEOUT", "7200"))
 
