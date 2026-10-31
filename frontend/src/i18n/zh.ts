@@ -1043,10 +1043,10 @@ const zhOverrides: Record<string, string> = {
     '当前主服务已连接，但识别模型未全部启动；仍可上传文件，受影响的识别能力会在服务恢复前失败或返回空结果。',
   'playground.upload.affectedServices': '受影响服务：',
   'playground.upload.nextAction': '下一步：',
-  'playground.upload.offlineAction': '先运行 npm run doctor，再重启后端或连接已有本地服务栈。',
+  'playground.upload.offlineAction': 'Docker 本地栈：./start_local.sh（含视觉加 --with-visual，云端 --visual cloud）；npm dev 形态：先 npm run doctor 再重启后端。',
   'playground.upload.checkingAction': '如果该提示长时间不消失，请在另一个终端运行 npm run doctor。',
   'playground.upload.modelOfflineAction':
-    '先运行 npm run doctor，再启动 npm run dev:models 或重启上面列出的服务。',
+    'Docker 本地栈：./start_local.sh --with-visual（或 --visual cloud 走云端实例）；npm dev 形态：npm run doctor + npm run dev:models。',
   'playground.dropHere': '把文件拖到这里上传',
   'playground.supportedFormats':
     '支持 .doc、.docx、.txt、.md、.html、.pdf、.jpg、.png 等格式',
