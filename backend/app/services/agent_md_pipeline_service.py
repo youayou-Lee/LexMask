@@ -26,7 +26,9 @@ from app.services.agent_md_adapter import (
     CleanStats,
     clean_segments,
     enrich_image_blocks,
+    markdown_body_chars,
     normalize_content_list,
+    normalize_docvortex,
 )
 from app.services.agent_md_ner import build_mapping_draft, chunk_segments, run_ner
 from app.services.agent_md_replace import apply_decisions, render_outputs
@@ -36,6 +38,12 @@ from app.services.agent_md_types import AgentMdTask, Seg, TaskState
 # 阈值来源：修复前真实案卷 v2/v1 = 138/187,119 = 0.0007、合成夹具 33/258 = 0.128，
 # 修复后两路应逐段一致（比值 1.0）；取 0.95 只在"确实少了一截"时触发。
 GUARD_RATIO = 0.95
+
+# Issue#219（I2）：4.x 单表示对 zip 内官方 .md 的比值守卫。探针锚点 0.9684
+# （canary-issue219 三页样本 v4=429 / md=443，2026-11-01 实测）；取 0.7——下方
+# 余量覆盖 md 剥除口径噪声（HTML 实体/页注释/图片 alt），上方紧到能抓住整类
+# 部件丢失（丢 text 部件类 ⇒ 比值趋 0）。门④ 端到端复测，跌破须修映射或重锚。
+DOC_VORTEX_MD_RATIO = 0.7
 
 
 def _body_chars(segs: list[Seg]) -> int:
@@ -185,7 +193,17 @@ class AgentMdPipelineService:
             }
             if segs is None:  # 两路都解析不出正文：显式失败，禁"0 映射静默就绪"
                 task.state = TaskState.FAILED
-                task.message = "parse_no_text: MinerU 未解析出任何正文（v1/v2 两路均 0 字符）"
+                # Issue#219：失败形态区分（AC5 矩阵）——4.x 单路空 / 未知形状点名 /
+                # 3.x 双路空，机读原因码统一 parse_no_text（前端零改动）
+                if getattr(result, "mineru4_docs", None):
+                    task.message = ("parse_no_text: MinerU 4.x 产物未解析出任何正文"
+                                    "（docvortex_middle 路 0 字符或文档 pages 不一致）")
+                elif getattr(result, "unknown_jsons", None):
+                    # 只点名文件名（owner 自见面）；产物内容不进任何告警
+                    task.message = ("parse_no_text: MinerU 产物 schema 无法识别"
+                                    f"（未知 JSON: {', '.join(result.unknown_jsons)}）")
+                else:
+                    task.message = "parse_no_text: MinerU 未解析出任何正文（v1/v2 两路均 0 字符）"
                 task.warnings.extend(warns)
                 return task
             task.chars = _body_chars(segs)
@@ -210,16 +228,58 @@ class AgentMdPipelineService:
 
     @staticmethod
     def _choose_representation(result) -> tuple[list[Seg] | None, list[str], CleanStats, str]:
-        """Issue#212 双表示守卫：v1/v2 两版正文都算，差超阈值时指名胜者并告警。
+        """Issue#212 双表示守卫 + Issue#219 4.x 分流：按产物 schema 选表示并告警。
 
-        返回 (segs, warns, v2 主表示 stats, 命中来源)；两路皆 0 字符时 segs 为 None
-        （调用方判 FAILED）。`stats` 固定取 v2——它是事故产出侧，也是字段漂移的
-        观测面：即使因守卫回落 v1，"empty_table=79" 仍要在 API 上可见。
+        返回 (segs, warns, 观测侧 stats, 命中来源)；选不出正文时 segs 为 None
+        （调用方判 FAILED，按来源写 parse_no_text 形态消息）。
+
+        Issue#219 v4 分支（起手先探，优先于 3.x）：docvortex.middle 单表示，
+        不走 v1/v2 双表示守卫（守卫空转）——但以 zip 内官方 .md 为参照做比值守卫
+        ``docvortex_shortfall``（无回落可用，warning-only）；文档 pages 去重后
+        仍 >1 份 ⇒ fail-closed。
+
+        3.x 双表示守卫（Issue#212，逐字保持）：
         - v1 缺失（客户端未拿到）→ 用 v2 + `dual_representation_unavailable`；
         - v2 丢表或整体归零，且正文明显少于 v1 → 回落 v1（`winner=content_list_v1`）；
         - v1 反而更多但 v2 没有丢表（典型=水印/重复放大把 v1 撑大）→ 留在 v2；
         - 两路接近 → 用 v2（管线主路径），不告警。
         """
+        if getattr(result, "mineru4_docs", None):
+            flat, norm_warns = normalize_docvortex(result.mineru4_docs)
+            v4_stats = CleanStats()
+            v4_segs, v4_warns = clean_segments(flat, stats=v4_stats)
+            # 门⑥ M-4：归一层告警与 clean 层告警统一 v4: 前缀（grep 取数一个口径）
+            warns = [f"v4: {w}" for w in norm_warns]
+            if getattr(result, "unknown_jsons", None):
+                warns.append(f"schema_unknown_json: {', '.join(result.unknown_jsons)}")
+            if getattr(result, "content_list_v1", None) or getattr(result, "content_list_v2", None):
+                warns.append("mixed_schema_v4_wins: zip 同时含 4.x 与 3.x 表示，已按 4.x 解析")
+            if any("mineru4_multiple_docs" in w for w in norm_warns):
+                # pages 去重后仍 >1 份（R1）：fail-closed，盲拼会把导出 md 全文翻倍；
+                # 门⑥ M-1：失败路径也要带上 clean 层告警（观测面不缺一截）
+                warns.extend(f"v4: {w}" for w in v4_warns)
+                return None, warns, v4_stats, "docvortex_middle"
+            if getattr(result, "content_list_v1", None) or getattr(result, "content_list_v2", None):
+                warns.append("mixed_schema_v4_wins: zip 同时含 4.x 与 3.x 表示，已按 4.x 解析")
+            v4_chars = _body_chars(v4_segs)
+            if v4_chars == 0:
+                warns.extend(f"v4: {w}" for w in v4_warns)
+                return None, warns, v4_stats, "docvortex_middle"
+            md = getattr(result, "md", "") or ""
+            md_chars = markdown_body_chars(md) if md.strip() else 0
+            if md_chars == 0:
+                # R4 + 门⑥ M-2：md 缺位与 md 无正文同一显式语义——守卫跳过必须留痕
+                warns.append("docvortex_md_missing: zip 内 .md 缺失或无正文字符，比值守卫跳过")
+            elif v4_chars < DOC_VORTEX_MD_RATIO * md_chars:
+                    warns.append("docvortex_shortfall: v4 正文显著少于 zip 内官方 md "
+                                 f"v4={v4_chars} md={md_chars}")
+            warns.extend(f"v4: {w}" for w in v4_warns)
+            return v4_segs, warns, v4_stats, "docvortex_middle"
+
+        warns: list[str] = []
+        if getattr(result, "unknown_jsons", None):
+            # 对称行为（R3）：3.x 有正文仍出稿，但未知形状必须点名不静默
+            warns.append(f"schema_unknown_json: {', '.join(result.unknown_jsons)}")
         v2_stats = CleanStats()
         v2_segs, v2_warns = clean_segments(
             normalize_content_list(result.content_list_v2), stats=v2_stats)
@@ -227,10 +287,11 @@ class AgentMdPipelineService:
         v1_segs, v1_warns = clean_segments(
             normalize_content_list(result.content_list_v1), stats=v1_stats)
         v2_chars, v1_chars = _body_chars(v2_segs), _body_chars(v1_segs)
-        warns: list[str] = []
 
         # 门⑥ I6：两路皆空必须判"没解析出正文"——即使 v1 缺失也不能当"识别完 0 实体"
         if v1_chars == 0 and v2_chars == 0:
+            if getattr(result, "unknown_jsons", None):
+                return None, warns, v2_stats, "unknown"  # AC5③：点名形态
             return None, warns, v2_stats, "none"
         if not result.content_list_v1:
             warns.append("dual_representation_unavailable: mineru 产物缺 v1 content_list")

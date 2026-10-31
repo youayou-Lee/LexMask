@@ -293,3 +293,187 @@ def test_concurrent_tasks_do_not_cross_contaminate(sample_pdf, tmp_path):
     assert t_ok.dropped_blocks == {"empty_table": 0, "empty_table_pages": [],
                                    "unhandled": {}, "source": "content_list_v2"}
     assert not any("dual_representation_" in w for w in t_ok.warnings)
+
+
+# ---- Issue#219：4.x docvortex.middle 表示分支与失败形态矩阵（AC3/AC5）----
+
+def _v4_doc(pages_blocks, *, schema_version="2.0"):
+    return {
+        "schema": "docvortex.middle", "schema_version": schema_version,
+        "metadata": {"producer": {"name": "mineru", "version": "4.1.3"}},
+        "pages": [
+            {"page_idx": idx, "blocks": blocks} for idx, blocks in pages_blocks
+        ],
+        "is_full_document": True,
+    }
+
+
+def _v4_text_block(text):
+    return {"type": "text", "index": 0, "bbox": [0, 0, 1, 1],
+            "content": [{"type": "text", "content": text}]}
+
+
+class _FakeMineruV4:
+    def __init__(self, docs, md="", v2=None, v1=None, unknown=None):
+        self._docs = docs
+        self._md = md
+        self._v2 = v2 or []
+        self._v1 = v1 or []
+        self._unknown = unknown or []
+
+    async def submit(self, file_bytes, filename):
+        return "job-1"
+
+    async def wait_result(self, task_id, on_progress=None):
+        if on_progress:
+            on_progress(1, 1)
+        return MineruResult(md=self._md, content_list_v2=self._v2,
+                            content_list_v1=self._v1, images={},
+                            mineru4_docs=self._docs, unknown_jsons=self._unknown)
+
+
+def _run_v4(sample_pdf, tmp_path, fake):
+    svc = AgentMdPipelineService(
+        mineru_client=fake, ocr=_FakeOcr(), ner=_FakeNer(),
+        entity_types=[], output_dir=str(tmp_path / "outputs"),
+    )
+    return svc.create_task_nowait(sample_pdf, "a.pdf", owner_id="u1")
+
+
+def test_v4_happy_path_maps_and_names_source(sample_pdf, tmp_path):
+    doc = _v4_doc([(0, [_v4_text_block("原告：张示例，住示例街道1号。")])])
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4([doc], md="原告：张示例，住示例街道1号。"))
+
+    assert task.state == TaskState.MAPPING_READY
+    assert "张示例" in _body(task)
+    assert task.dropped_blocks["source"] == "docvortex_middle"
+    assert not any("dual_representation_" in w for w in task.warnings)  # 单表示，守卫空转
+    assert not any("docvortex_shortfall" in w for w in task.warnings)  # 比值 1.0 ≥ 0.7
+
+
+def test_v4_multiple_distinct_docs_fail_closed(sample_pdf, tmp_path):
+    d1 = _v4_doc([(0, [_v4_text_block("甲卷正文")])], schema_version="2.0")
+    d2 = _v4_doc([(0, [_v4_text_block("乙卷正文")])], schema_version="2.0")
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4([d1, d2], md="x"))
+
+    assert task.state == TaskState.FAILED
+    assert task.message.startswith("parse_no_text")
+    assert any("mineru4_multiple_docs" in w for w in task.warnings)
+    assert task.dropped_blocks["source"] == "docvortex_middle"
+
+
+def test_v4_duplicate_pages_dedupe_succeeds(sample_pdf, tmp_path):
+    """C1/R1 正例：doclib 双文件 pages 相同 ⇒ 去重成功出稿（metadata 差异不判死）。"""
+    doc_a = _v4_doc([(0, [_v4_text_block("唯一正文：原告张示例")])])
+    import copy
+    doc_b = copy.deepcopy(doc_a)
+    doc_b["metadata"]["generated_at"] = "差异时间戳"  # 仅 metadata 不同
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4([doc_a, doc_b], md="唯一正文：原告张示例"))
+
+    assert task.state == TaskState.MAPPING_READY
+    assert _body(task).count("张示例") == 1  # 不翻倍
+    assert not any("mineru4_multiple_docs" in w for w in task.warnings)
+
+
+def test_v4_zero_text_fails_loudly(sample_pdf, tmp_path):
+    doc = _v4_doc([(0, [{"type": "image", "index": 0, "content": [
+        {"type": "image_body", "content": ""}]}])])
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4([doc], md=""))
+
+    assert task.state == TaskState.FAILED
+    assert task.message.startswith("parse_no_text")
+    assert task.dropped_blocks["source"] == "docvortex_middle"
+
+
+def test_v4_shortfall_vs_md_warns(sample_pdf, tmp_path):
+    """I2 比值守卫：segs 正文显著少于 zip 内官方 md ⇒ docvortex_shortfall 点名数值。"""
+    body = "正文只有一句"
+    doc = _v4_doc([(0, [_v4_text_block(body)])])
+    md = "本应更多的正文。" * 100  # md 参照 700 字，v4 只有 6 字
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4([doc], md=md))
+
+    assert task.state == TaskState.MAPPING_READY  # 有正文不判死，warning-only
+    assert any(w.startswith("docvortex_shortfall:") and "v4=" in w and "md=" in w
+               for w in task.warnings)
+
+
+def test_v4_md_missing_guard_skips_loudly(sample_pdf, tmp_path):
+    doc = _v4_doc([(0, [_v4_text_block("原告：张示例")])])
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4([doc], md=""))
+
+    assert task.state == TaskState.MAPPING_READY
+    assert any("docvortex_md_missing" in w for w in task.warnings)  # R4：显式跳过不静默
+    assert not any("docvortex_shortfall" in w for w in task.warnings)
+
+
+def test_v4_with_unknown_json_warns_named(sample_pdf, tmp_path):
+    doc = _v4_doc([(0, [_v4_text_block("原告：张示例")])])
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4([doc], md="原告：张示例",
+                                                       unknown=["case01_weird.json"]))
+
+    assert task.state == TaskState.MAPPING_READY
+    assert any("case01_weird.json" in w for w in task.warnings)
+
+
+def test_mixed_v4_and_3x_v4_wins_with_warning(sample_pdf, tmp_path):
+    """M3①：混合产物 v4 优先，但不得静默丢弃 3.x 表示。"""
+    doc = _v4_doc([(0, [_v4_text_block("v4 正文：被告李演示")])])
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4(
+        [doc], md="x", v2=_v2_page(), v1=_v1_flat()))
+
+    assert task.state == TaskState.MAPPING_READY
+    assert "李演示" in _body(task) and "6222020200012345678" not in _body(task)
+    assert task.dropped_blocks["source"] == "docvortex_middle"
+    assert any("mixed_schema_v4_wins" in w for w in task.warnings)
+
+
+def test_unknown_json_with_empty_3x_fails_source_unknown(sample_pdf, tmp_path):
+    """AC5③：v4 缺失 + v1/v2 空 + unknown 非空 ⇒ parse_no_text 且点名文件。"""
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4(
+        [], md="x", v2=[], v1=[], unknown=["mystery.json"]))
+
+    assert task.state == TaskState.FAILED
+    assert task.message.startswith("parse_no_text")
+    assert "mystery.json" in task.message
+    assert task.dropped_blocks["source"] == "unknown"
+
+
+def test_unknown_json_with_valid_3x_warns_but_completes(sample_pdf, tmp_path):
+    """R3 对称行为：3.x 有正文出稿，但 unknown 必须点名不静默。"""
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4(
+        [], md="x", v2=_v2_page(), v1=_v1_flat(), unknown=["mystery.json"]))
+
+    assert task.state == TaskState.MAPPING_READY
+    assert "6222020200012345678" in _body(task)
+    assert any("mystery.json" in w for w in task.warnings)
+
+
+# ---- 门⑥ fix 钉子：M-1 / M-2 / I-4 ----
+
+
+def test_v4_fail_closed_keeps_mixed_and_clean_warnings(sample_pdf, tmp_path):
+    """门⑥ M-1：多份文档 fail-closed 路径不得丢 mixed 线索与 clean 层告警。"""
+    d1 = _v4_doc([(0, [_v4_text_block("甲")])])
+    d2 = _v4_doc([(0, [_v4_text_block("乙")])])
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4([d1, d2], md="x",
+                                                       v2=_v2_page(), v1=_v1_flat()))
+    assert task.state == TaskState.FAILED
+    assert any("mineru4_multiple_docs" in w for w in task.warnings)
+    assert any("mixed_schema_v4_wins" in w for w in task.warnings)
+    assert any(w.startswith("v4: ") for w in task.warnings)  # clean 层告警带同前缀
+
+
+def test_v4_md_no_body_guard_skips_loudly(sample_pdf, tmp_path):
+    """门⑥ M-2：md 在但正文字符为 0（如仅一张表）——守卫跳过同样显式留痕。"""
+    doc = _v4_doc([(0, [_v4_text_block("原告：张示例")])])
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4([doc], md="<table><tr><td>1</td></tr></table>"))
+    assert task.state == TaskState.MAPPING_READY
+    assert any("docvortex_md_missing" in w for w in task.warnings)
+
+
+def test_v4_norm_warnings_carry_v4_prefix(sample_pdf, tmp_path):
+    """门⑥ M-4：归一层告警与 clean 层告警统一 v4: 前缀。"""
+    d1 = _v4_doc([(0, [_v4_text_block("甲")])])
+    d2 = _v4_doc([(0, [_v4_text_block("乙")])])
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4([d1, d2], md="x"))
+    assert any(w.startswith("v4: mineru4_multiple_docs") for w in task.warnings)
