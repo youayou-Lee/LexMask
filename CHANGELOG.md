@@ -6,8 +6,8 @@
 
 - **为什么**：本地 buildkit（新版）起栈实测暴露三问题——① `Dockerfile.ocr` 两处 `RUN apt-get` 续行符后跟空行，`COPY`/`USER` 被吞进 apt 命令，本地构建必败（云 CI 旧解析器能容忍，门④当时未暴露）；② OCR 容器无卷，PaddleX 模型落在容器层，`stop_local.sh`（down+recreate）后每次重启重下载约 4 分钟；③ 模型源默认 `huggingface`（`paddlex/utils/flags.py:72`），与 2026-10-31 裁定「模型权重一律走 ModelScope」冲突。
 - **改了什么**（纯部署面）：
-  1. `backend/Dockerfile.ocr`：去掉两处多余续行符（语义零变化）；预建 `/home/appuser/.paddlex` 并 chown appuser——named volume 首次使用继承镜像内目录属主，避免 root 属主导致 appuser 写不进。
-  2. `docker-compose.yml`：ocr 服务加 named volume `ocr-paddlex:/home/appuser/.paddlex`（模型缓存跨重建持久）；注入 `PADDLE_PDX_MODEL_SOURCE=modelscope`（配合既有的 `PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True`）。
+  1. `backend/Dockerfile.ocr`：去掉两处多余续行符（语义零变化）；镜像内预建 PaddleX 模型缓存目录（appuser 属主）——named volume 首次使用继承镜像内目录属主，避免 root 属主导致 appuser 写不进。
+  2. `docker-compose.yml`：ocr 服务加 named volume `ocr-paddlex`（挂到 PaddleX 缓存目录，模型缓存跨重建持久）；注入 `PADDLE_PDX_MODEL_SOURCE=modelscope`（配合既有的 `PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True`）。
 - **测试**：`docker compose config` 通过；本地 buildkit 从失效缓存起构建验证 RUN 层不再吞行（构建成功）；容器内 `flags.py` 实读确认变量名与默认值。
 - **红线**：不内嵌任何地址/口令；模型源=ModelScope。
 

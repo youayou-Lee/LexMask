@@ -21,7 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Issue#221: pre-create the PaddleX model cache dir with appuser ownership —
 # the named volume `ocr-paddlex` inherits this owner/content on first use,
 # otherwise the volume is created root-owned and appuser cannot write to it.
-RUN mkdir -p /home/appuser/.paddlex && chown -R appuser:appuser /home/appuser/.paddlex
+# (Container-internal path, not a host artifact — inline exemption below.)
+RUN mkdir -p /home/appuser/.paddlex && chown -R appuser:appuser /home/appuser/.paddlex  # public-tree-scan: ignore-line(abs_path)
 USER appuser
 
 EXPOSE 8082

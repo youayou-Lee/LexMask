@@ -128,7 +128,7 @@ services:
       # Issue#221: persist the PaddleX model cache across container recreation
       # (stop_local.sh is down+recreate; without this every restart re-downloads
       # ~4 min from the model source).
-      - ocr-paddlex:/home/appuser/.paddlex
+      - ocr-paddlex:/home/appuser/.paddlex  # public-tree-scan: ignore-line(abs_path)
     ports:
       - "${OCR_PORT:-8082}:8082"
     deploy:
