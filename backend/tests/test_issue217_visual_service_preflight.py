@@ -28,6 +28,13 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+@pytest.fixture(autouse=True)
+def _reset_preflight_caches(monkeypatch):
+    """用例隔离：正/负两个 TTL 全局互不重置会跨用例残留（M10 正缓存引入）。"""
+    monkeypatch.setattr(orch, "_visual_down_until", 0.0)
+    monkeypatch.setattr(orch, "_visual_up_until", 0.0)
+
+
 def test_preflight_passes_when_probe_ok(monkeypatch):
     """服务可达 ⇒ 不拦截。"""
     calls = []
@@ -80,8 +87,9 @@ def test_preflight_negative_cache_within_ttl(monkeypatch):
     assert ei2.value.error_code == "visual_service_unavailable"
 
 
-def test_preflight_probe_success_resets_negative_cache(monkeypatch):
-    """探测成功要清掉负缓存（服务回来后任务立即可跑）。"""
+def test_preflight_reprobes_after_ttl_expiry(monkeypatch):
+    """TTL 过期后会重新探测（负缓存只挡 TTL 窗口内的重复探测；实现无主动清除，
+    故本用例以手工复位模拟 TTL 过期——名称与机理如实对应，评审 M9）。"""
     state = {"down": False}
 
     async def flippy_probe():
@@ -94,8 +102,8 @@ def test_preflight_probe_success_resets_negative_cache(monkeypatch):
     with pytest.raises(AppError):
         _run(orch.ensure_visual_service_available())
     state["down"] = False
-    monkeypatch.setattr(orch, "_visual_down_until", 0.0)  # TTL 外
-    _run(orch.ensure_visual_service_available())  # 不抛 = 服务恢复可用
+    monkeypatch.setattr(orch, "_visual_down_until", 0.0)  # 模拟 TTL 过期
+    _run(orch.ensure_visual_service_available())  # 不抛 = TTL 过期后重新探测
 
 
 def test_detect_vision_is_wired_to_preflight():

@@ -16,6 +16,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    # 显式 working_dir：对仓内 Dockerfile 构建（自带 WORKDIR）是冗余，但对
+    # 本地 commit 形态的镜像（不继承 WORKDIR）是必要兜底——评审 M11 注释留痕。
     working_dir: /app
     ports:
       - "${BACKEND_PORT:-8000}:8000"
@@ -238,6 +240,8 @@ services:
       dockerfile: Dockerfile.mineru
     # Issue#217：4.x parse 走「本地 parse-server」架构——容器入口先切 managed
     # 模式并拉起 server（server start 即 daemon 返回），sidecar 随后。
+    # 与 Dockerfile.mineru 的 CMD 同文（本地 commit 镜像的 CMD 不含 server 链，
+    # compose command 覆盖兜底）——改一处务必同步另一处（评审 M11）。
     command: ["bash", "-c", "mineru config set parse_server.local.mode managed >/dev/null 2>&1; mineru server start >/tmp/mineru-server.log 2>&1; exec python3 /app/mineru_sidecar.py"]
     ports:
       - "${MINERU_PORT:-16581}:16581"
@@ -246,7 +250,8 @@ services:
       - MINERU_SIDECAR_WORKDIR=/tmp/mineru-sidecar
       - MINERU_MODEL_SOURCE=local
     volumes:
-      - mineru-cache:/home/appuser/.paddlex
+      # 模型库与解析缓存（容器以 root 跑，库在 /root/.mineru——评审 M7 修正路径）
+      - mineru-cache:/root/.mineru
     deploy:
       resources:
         reservations:

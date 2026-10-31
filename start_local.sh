@@ -31,30 +31,29 @@ MINERU_MODE="off"   # off | local | cloud
 WITH_MINERU=0
 VRAM_GB="${LEXMASK_VRAM_GB:-12}"
 
-usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+err()  { echo "[start_local] 错误：$*" >&2; exit 1; }
+warn() { echo "[start_local] 警告：$*"; }
+info() { echo "[start_local] $*"; }
+
+usage() { awk 'NR>1 && /^# 红线/{exit} NR>1 {sub(/^# ?/, ""); print}' "${BASH_SOURCE[0]}"; exit 0; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ner)         NER_MODE="${2:?--ner 需要 gpu|cloud}"; shift 2 ;;
     --ocr)         OCR_MODE="${2:?--ocr 需要 gpu|cloud}"; shift 2 ;;
     --with-visual) VISUAL_MODE="local"; shift ;;
-    --visual)      VISUAL_MODE="${2:?--visual 需要 cloud}"; shift 2 ;;
+    --visual)      VISUAL_MODE="${2:?--visual 只接受 cloud（本地 LA 用 --with-visual）}"; [[ "$VISUAL_MODE" == "cloud" ]] || err "--visual 只接受 cloud"; shift 2 ;;
     --cloud)       NER_MODE="cloud"; OCR_MODE="cloud"; VISUAL_MODE="cloud"; MINERU_MODE="cloud"; shift ;;
     --with-mineru) MINERU_MODE="local"; shift ;;
-    --mineru)      MINERU_MODE="${2:?--mineru 需要 cloud}"; shift 2 ;;
+    --mineru)      MINERU_MODE="${2:?--mineru 只接受 cloud（本地用 --with-mineru）}"; [[ "$MINERU_MODE" == "cloud" ]] || err "--mineru 只接受 cloud"; shift 2 ;;
     -h|--help)     usage ;;
     *) echo "未知参数: $1（--help 查看用法）" >&2; exit 2 ;;
   esac
 done
 
-err()  { echo "[start_local] 错误：$*" >&2; exit 1; }
-warn() { echo "[start_local] 警告：$*"; }
-info() { echo "[start_local] $*"; }
-
 [[ "$NER_MODE" == "gpu" || "$NER_MODE" == "cloud" ]] || err "--ner 只接受 gpu|cloud"
 [[ "$OCR_MODE" == "gpu" || "$OCR_MODE" == "cloud" ]] || err "--ocr 只接受 gpu|cloud"
-[[ "$VISUAL_MODE" == "off" || "$VISUAL_MODE" == "local" || "$VISUAL_MODE" == "cloud" ]] || err "--visual 只接受 cloud"
-[[ "$VISUAL_MODE" == "off" || "$VISUAL_MODE" == "local" || "$VISUAL_MODE" == "cloud" ]] || err "--visual 只接受 cloud"
+[[ "$VISUAL_MODE" == "off" || "$VISUAL_MODE" == "local" || "$VISUAL_MODE" == "cloud" ]] || err "VISUAL_MODE 非法"
 
 # ---- 真机显存探测（先于互斥校验：判据按实际显存算）-------------------------
 vram_free_mb() {
@@ -111,7 +110,9 @@ resolve_cloud_addr() { # $1=变量名 $2=用途
   if [[ -z "$val" && -f .env ]]; then
     val="$(grep -E "^${var}=" .env | tail -1 | cut -d= -f2- || true)"
   fi
-  [[ -n "$val" ]] || err "$2 走云端但未配置地址——先 export ${var}=http://127.0.0.1:<隧道端口>（隧道命令见私有辅仓 deploy 文档）"
+  local example="http://127.0.0.1:<隧道端口>"
+  [[ "$var" == "HAS_TEXT_VLLM_BASE_URL" ]] && example="http://127.0.0.1:<隧道端口>/v1"
+  err "$2 走云端但未配置地址——先 export ${var}=${example}（隧道命令见私有辅仓 deploy 文档）"
   [[ "$val" =~ ^http:// ]] || err "${var}=$val 不是 http:// 地址"
   # 容器内 127.0.0.1 指容器自身：改写为 host-gateway 网关名
   val="${val//127.0.0.1/host.docker.internal}"
@@ -150,9 +151,9 @@ if [[ "$MINERU_MODE" == "cloud" ]]; then
 fi
 
 # ---- 组装 profiles 并起栈 -------------------------------------------------
-PROFILES=(ner ocr-gpu)
-[[ "$NER_MODE" == "gpu" ]]    || PROFILES=("${PROFILES[@]/ner/}")
-[[ "$OCR_MODE" == "gpu" ]]    || PROFILES=("${PROFILES[@]/ocr-gpu/}")
+PROFILES=()
+[[ "$NER_MODE" == "gpu" ]]    && PROFILES+=("ner")
+[[ "$OCR_MODE" == "gpu" ]]    && PROFILES+=("ocr-gpu")
 [[ "$VISUAL_MODE" == "local" ]] && PROFILES+=("visual")
 [[ "$MINERU_MODE" == "local" ]] && PROFILES+=("mineru")
 COMPOSE_PROFILES_ARGS=()
@@ -177,5 +178,10 @@ done
 
 command -v nvidia-smi >/dev/null 2>&1 && \
   info "显存当前：$(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader | head -1)"
+# Issue#217（评审 I2a）：backend 镜像不含 LibreOffice（.doc 转换），运行时挂载宿主——
+# 宿主缺失时 Docker 会把挂载点建成空目录 → .doc 上传转换失败（静默）。这里显式警告。
+if [[ ! -d /usr/lib/libreoffice/program || ! -x /usr/bin/soffice ]]; then
+  warn "宿主未检测到 LibreOffice（/usr/lib/libreoffice 或 /usr/bin/soffice）——.doc 老格式转换将不可用（.docx/PDF 不受影响）。宿主安装：sudo apt-get install --no-install-recommends libreoffice-writer-nogui"
+fi
 info "完成 → 浏览器打开 http://localhost:${FRONTEND_PORT:-3000}"
 info "停止：./stop_local.sh"

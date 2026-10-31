@@ -1,7 +1,6 @@
 import { type FC } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { useT } from '@/i18n';
-import { isServiceLive } from '@/hooks/use-service-health';
 
 /**
  * Issue#217 PR②：视觉识别项旁的服务状态徽标（三态）。
@@ -15,7 +14,10 @@ import { isServiceLive } from '@/hooks/use-service-health';
  */
 export const VisualServiceBadge: FC<{ status?: string | null }> = ({ status }) => {
   const t = useT();
-  if (status === undefined || status === null || isServiceLive(status)) {
+  // 三态语义（评审 M5 补）：status 值域=online/degraded/offline（/health/services）。
+  // degraded = 可达但未就绪/CPU 回退风险（LA 正在加载中）——不是「未启动」，不渲染
+  // 此徽标（侧边栏与横幅的 affectedServices 已如实反映降级）；只有明确 offline 才亮标。
+  if (status !== 'offline') {
     return null;
   }
   return (

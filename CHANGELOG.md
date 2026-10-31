@@ -33,7 +33,7 @@
   4. 文档：README 新增「本地 NVIDIA 开发环境」章节（哪个环节/给谁用/三档怎么选）；WORKFLOW.md §3.5 本/云分工规则与不对称判据成文。
 - **红线**：云端只指自有实例（SSH 隧道转发，非第三方云 API）；脚本不内嵌任何地址/口令；真实案卷禁止发往第三方云服务；推理一律 GPU（CPU 推理形态不进部署档）。
 - **探针锚定（P0，规则 A）**：LA 不可用两场景实测——连接拒绝（服务未启动）全真实调用链 3.1s 失败（含 2 次重试+退避）；挂起（TCP 通但不响应，如模型加载中/隧道黑洞）单次 240.2s 烧满 `VISUAL_FEATURES_TIMEOUT`，全链推演 ≈723s（重试 2 次为代码常量）——「240s 长挂」实锤属于挂起场景，PR② 的秒级预检阈值按此锚定（实测×5 且 ≤30s 封顶）。
-- **兼容性**：`docker compose --profile gpu up -d` 与 B 方案 venv 线（`cloud-deploy/`）文件零改动、行为不变。
+- **兼容性（评审 I2 修正措辞——「行为变化明细」而非笼统「不变」）**：B 方案 venv 线（`cloud-deploy/`）与 DCU 实例线文件零改动；**Docker 既有线有两处有意行为变化**：① backend 镜像不再内嵌 LibreOffice——.doc 老格式转换改为运行时挂载宿主 `/usr/lib/libreoffice`（宿主需 `sudo apt-get install --no-install-recommends libreoffice-writer-nogui`，缺失时 Docker 会把挂载点建成空目录→.doc 转换失败；`.docx`/PDF 不受影响；start_local.sh 已加宿主检测警告）；② ocr 容器从裸 uvicorn（init_ocr 从不执行、全端点 503 的坏形态）改为脚本直跑+结构模式 env（修复，GPU 占用 +~3GB、健康语义变化）；③ 根 `.env` 里已配置的三个 BASE_URL 键现在开始对 compose backend 生效（旧版被硬编码压制）。`--profile gpu` 服务集合不变。
 
 ## 2026-10-29
 

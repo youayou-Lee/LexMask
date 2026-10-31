@@ -447,7 +447,9 @@ def _text_layer_doc_status(doc_boxes, doc_memo: dict, page: int) -> dict:
 # （探针实测：挂起场景全链 ≈723s；拒绝场景虽快但报错无指引且 transient 会被上层放大）。
 # 绝不静默跳过——印章是打码对象，漏检=泄漏（承 #199/#203 fail-closed 原则）。
 _VISUAL_SERVICE_DOWN_TTL_SEC = 5.0  # 负结果缓存，与 HaS _HAS_NEGATIVE_HEALTH_TTL_SEC 同源模式
+_VISUAL_SERVICE_UP_TTL_SEC = 5.0  # 正结果缓存（评审 M10：健康时免每页重复探测，隧道下累计秒级）
 _visual_down_until: float = 0.0
+_visual_up_until: float = 0.0
 
 
 def _visual_service_unavailable() -> AppError:
@@ -478,15 +480,20 @@ async def ensure_visual_service_available() -> None:
     负结果缓存 ``_VISUAL_SERVICE_DOWN_TTL_SEC`` 秒：TTL 内不重复发探测
     （探测本身是毫秒级，但密集页会每页触发一次——缓存挡住重复网络抖动）。
     """
-    global _visual_down_until
+    global _visual_down_until, _visual_up_until
     now = time.monotonic()
     if now < _visual_down_until:
         raise _visual_service_unavailable()
+    if now < _visual_up_until:
+        return  # 正结果 TTL 内免重复探测（隧道下每页几十 ms 会累计挤占页预算）
     try:
         await _probe_visual_service()
+        _visual_up_until = now + _VISUAL_SERVICE_UP_TTL_SEC
     except Exception:
         _visual_down_until = now + _VISUAL_SERVICE_DOWN_TTL_SEC
         raise _visual_service_unavailable()
+    # 注意：预检位于 vision 缓存判定之前——LA down 时连缓存可命的页也 503。
+    # 这是有意的 fail-closed（印章页不允许「静默跳过视觉」），勿当 bug 修。
 
 
 async def detect_vision(

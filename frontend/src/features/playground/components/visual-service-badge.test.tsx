@@ -14,8 +14,14 @@ describe('VisualServiceBadge（Issue#217 三态）', () => {
     expect(container.querySelector('[data-testid="playground-visual-service-down"]')).toBeNull();
   });
 
-  it.each(['busy', 'running', 'loading'])('其余存活档 %s 同样不渲染', (status) => {
+  it('degraded（可达但未就绪）⇒ 不渲染（不是「未启动」，评审 M5）', () => {
+    const { container } = render(<VisualServiceBadge status="degraded" />);
+    expect(container.querySelector('[data-testid="playground-visual-service-down"]')).toBeNull();
+  });
+
+  it.each(['online'])('存活档 %s 同样不渲染', (status) => {
     const container = render(<VisualServiceBadge status={status} />).container;
+    expect(container.querySelector('[data-testid="playground-visual-service-down"]')).toBeNull();
   });
 
   it('未启动（offline）⇒ 渲染徽标且带指引 title', () => {
@@ -26,7 +32,7 @@ describe('VisualServiceBadge（Issue#217 三态）', () => {
     expect(badge.getAttribute('title')).toContain('--with-visual');
   });
 
-  it('未知（undefined / null）⇒ 不渲染（加载期不闪误报）', () => {
+  it('未知（undefined / null，快照未拉到）⇒ 不渲染', () => {
     const c1 = render(<VisualServiceBadge status={undefined} />).container;
     const c2 = render(<VisualServiceBadge status={null} />).container;
     expect(c1.querySelector('[data-testid="playground-visual-service-down"]')).toBeNull();

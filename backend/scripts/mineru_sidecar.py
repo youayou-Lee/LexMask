@@ -18,8 +18,9 @@ LA/OCR 同为可选服务）、位置可换（本地容器或云端隧道，接�
 - ``GET  /tasks/{task_id}/result``→ 200 ``application/zip``（内含解析产物）
 
 MinerU 调用形态：``mineru -p <input> -o <outdir>``（4.x CLI），产物目录内
-``*_content_list*.json`` / ``*.md`` 全量打包装 zip。任务表在内存 + 落盘
-（重启后 completed 任务仍可取 zip）。
+``*_content_list*.json`` / ``*.md`` 全量打包装 zip。任务表在内存 + meta.json
+落盘（同容器内进程重启后 completed 任务仍可取 zip；WORKDIR 在 /tmp，不跨容器
+重建——容器重建后任务历史清零，属 dev 形态预期）。
 
 部署：容器内 16581 端口（与既有实例侧部署对齐）；配置一律环境变量
 （``MINERU_SIDECAR_*``），不内嵌任何地址口令。
