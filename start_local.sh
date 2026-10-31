@@ -112,7 +112,7 @@ resolve_cloud_addr() { # $1=变量名 $2=用途
   fi
   local example="http://127.0.0.1:<隧道端口>"
   [[ "$var" == "HAS_TEXT_VLLM_BASE_URL" ]] && example="http://127.0.0.1:<隧道端口>/v1"
-  err "$2 走云端但未配置地址——先 export ${var}=${example}（隧道命令见私有辅仓 deploy 文档）"
+  [[ -n "$val" ]] || err "$2 走云端但未配置地址——先 export ${var}=${example}（隧道命令见私有辅仓 deploy 文档）"
   [[ "$val" =~ ^http:// ]] || err "${var}=$val 不是 http:// 地址"
   # 容器内 127.0.0.1 指容器自身：改写为 host-gateway 网关名
   val="${val//127.0.0.1/host.docker.internal}"
@@ -135,18 +135,24 @@ PY
 
 if [[ "$NER_MODE" == "cloud" ]]; then
   CLOUD_ADDR_NER="$(resolve_cloud_addr HAS_TEXT_VLLM_BASE_URL "NER")"
+  # $( ) 子 shell 里的 export 传不回父 shell——改写值必须在调用侧显式 export
+  # 才能进 compose 插值（否则容器拿到原始 127.0.0.1 → 隧道不通 → 全 offline）。
+  [[ -n "$CLOUD_ADDR_NER" ]] && export HAS_TEXT_VLLM_BASE_URL="$CLOUD_ADDR_NER"
   health_probe "${CLOUD_ADDR_NER%/v1}/health" || warn "NER 云端地址暂不可达（隧道没开？）——backend/frontend 照常启动，任务提交时会失败"
 fi
 if [[ "$OCR_MODE" == "cloud" ]]; then
   CLOUD_ADDR_OCR="$(resolve_cloud_addr OCR_BASE_URL "OCR")"
+  [[ -n "$CLOUD_ADDR_OCR" ]] && export OCR_BASE_URL="$CLOUD_ADDR_OCR"
   health_probe "$CLOUD_ADDR_OCR/health" || warn "OCR 云端地址暂不可达（隧道没开？）——backend/frontend 照常启动，任务提交时会失败"
 fi
 if [[ "$VISUAL_MODE" == "cloud" ]]; then
   CLOUD_ADDR_VISUAL="$(resolve_cloud_addr VISUAL_FEATURES_BASE_URL "LA")"
+  [[ -n "$CLOUD_ADDR_VISUAL" ]] && export VISUAL_FEATURES_BASE_URL="$CLOUD_ADDR_VISUAL"
   health_probe "$CLOUD_ADDR_VISUAL/health" || warn "LA 云端地址暂不可达（隧道没开？）——backend/frontend 照常启动，勾视觉项的任务会秒级失败"
 fi
 if [[ "$MINERU_MODE" == "cloud" ]]; then
   CLOUD_ADDR_MINERU="$(resolve_cloud_addr MINERU_API_BASE_URL "MinerU 喂料")"
+  [[ -n "$CLOUD_ADDR_MINERU" ]] && export MINERU_API_BASE_URL="$CLOUD_ADDR_MINERU"
   health_probe "$CLOUD_ADDR_MINERU/health" || warn "MinerU 云端地址暂不可达（隧道没开？）——供料模式任务会失败"
 fi
 
