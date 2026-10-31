@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 \
+    libgl1 libglib2.0-0
 
 COPY requirements-ocr.lock .
 RUN pip install --no-cache-dir -r requirements-ocr.lock
@@ -17,7 +17,11 @@ USER appuser
 # import without it); libxinerama/libpng are LibreOffice/oosplash deps.
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgomp1 \
+    libgomp1
+# Issue#221: pre-create the PaddleX model cache dir with appuser ownership —
+# the named volume `ocr-paddlex` inherits this owner/content on first use,
+# otherwise the volume is created root-owned and appuser cannot write to it.
+RUN mkdir -p /home/appuser/.paddlex && chown -R appuser:appuser /home/appuser/.paddlex
 USER appuser
 
 EXPOSE 8082
