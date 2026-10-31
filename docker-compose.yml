@@ -16,6 +16,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    working_dir: /app
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     env_file:
@@ -52,6 +53,11 @@ services:
       - backend-data:/app/data
       - backend-uploads:/app/uploads
       - backend-outputs:/app/outputs
+      # Issue#217: .doc conversion (soffice) is provided by the HOST, not baked
+      # into the image — requires libreoffice-writer-nogui on the host.
+      - /usr/lib/libreoffice:/usr/lib/libreoffice:ro
+      - /usr/bin/soffice:/usr/bin/soffice:ro
+      - /etc/libreoffice:/etc/libreoffice:ro
     networks:
       - redaction-net
     healthcheck:
@@ -92,6 +98,23 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.ocr
+    # Issue#217: run the script directly — init_ocr() only executes under
+    # `__main__`; a bare `uvicorn ocr_server:app` never initializes paddle
+    # (every endpoint stays 503 with ready:false). Same form as the
+    # cloud-deploy venv line.
+    command: ["python3", "ocr_server.py"]
+    environment:
+      # Same flags as cloud-deploy/start_cloud.sh's OCR line: structure-first
+      # mode (/structure is the primary path; without OCR_STRUCTURE_ENABLED=1
+      # the route is not even registered and ocr_has gets 404 → 0 blocks).
+      - OCR_VL_ENABLED=0
+      - OCR_STRUCTURE_ENABLED=1
+      - OCR_STRUCTURE_PRIMARY=1
+      - OCR_STRUCTURE_WARMUP=1
+      - OCR_STRUCTURE_RELEASE_AFTER_REQUEST=0
+      - OCR_MAX_IMAGE_SIDE=2048
+      - OCR_MAX_NEW_TOKENS=2048
+      - PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
     ports:
       - "${OCR_PORT:-8082}:8082"
     deploy:
