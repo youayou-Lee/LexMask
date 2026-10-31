@@ -27,6 +27,7 @@ cd "$REPO_ROOT"
 NER_MODE="gpu"
 OCR_MODE="gpu"
 VISUAL_MODE="off"   # off | local | cloud
+MINERU_MODE="off"   # off | local | cloud
 WITH_MINERU=0
 VRAM_GB="${LEXMASK_VRAM_GB:-12}"
 
@@ -38,8 +39,9 @@ while [[ $# -gt 0 ]]; do
     --ocr)         OCR_MODE="${2:?--ocr 需要 gpu|cloud}"; shift 2 ;;
     --with-visual) VISUAL_MODE="local"; shift ;;
     --visual)      VISUAL_MODE="${2:?--visual 需要 cloud}"; shift 2 ;;
-    --cloud)       NER_MODE="cloud"; OCR_MODE="cloud"; VISUAL_MODE="cloud"; shift ;;
-    --with-mineru) WITH_MINERU=1; shift ;;
+    --cloud)       NER_MODE="cloud"; OCR_MODE="cloud"; VISUAL_MODE="cloud"; MINERU_MODE="cloud"; shift ;;
+    --with-mineru) MINERU_MODE="local"; shift ;;
+    --mineru)      MINERU_MODE="${2:?--mineru 需要 cloud}"; shift 2 ;;
     -h|--help)     usage ;;
     *) echo "未知参数: $1（--help 查看用法）" >&2; exit 2 ;;
   esac
@@ -52,7 +54,7 @@ info() { echo "[start_local] $*"; }
 [[ "$NER_MODE" == "gpu" || "$NER_MODE" == "cloud" ]] || err "--ner 只接受 gpu|cloud"
 [[ "$OCR_MODE" == "gpu" || "$OCR_MODE" == "cloud" ]] || err "--ocr 只接受 gpu|cloud"
 [[ "$VISUAL_MODE" == "off" || "$VISUAL_MODE" == "local" || "$VISUAL_MODE" == "cloud" ]] || err "--visual 只接受 cloud"
-[[ "$WITH_MINERU" -eq 0 ]] || err "--with-mineru 由 Issue#217 PR③（MinerU sidecar 仓内化）交付，当前版本尚未提供"
+[[ "$VISUAL_MODE" == "off" || "$VISUAL_MODE" == "local" || "$VISUAL_MODE" == "cloud" ]] || err "--visual 只接受 cloud"
 
 # ---- 真机显存探测（先于互斥校验：判据按实际显存算）-------------------------
 vram_free_mb() {
@@ -72,6 +74,9 @@ else
 fi
 
 # ---- 互斥与显存预算（验收 A9④）-------------------------------------------
+if [[ "$MINERU_MODE" == "local" && "$VISUAL_MODE" == "local" ]]; then
+  err "本地 MinerU（≈3-4GB）与本地 LA（≈9GB）叠加 NER 超出 ${VRAM_GB}GB 显存——MinerU 改用 --mineru cloud，或去掉 --with-visual"
+fi
 if [[ "$VISUAL_MODE" == "local" && "$OCR_MODE" == "gpu" ]]; then
   err "本地 LA（≈9GB）与本地 GPU OCR（≈3GB）叠加 NER（≈2GB）超出 ${VRAM_GB}GB 显存——改用 --ocr cloud，或去掉 --with-visual"
 fi
@@ -92,6 +97,7 @@ PORTS=(8000 3000)
 [[ "$NER_MODE" == "gpu" ]] && PORTS+=(8080)
 [[ "$OCR_MODE" == "gpu" ]] && PORTS+=(8082)
 [[ "$VISUAL_MODE" == "local" ]] && PORTS+=(8090)
+[[ "$MINERU_MODE" == "local" ]] && PORTS+=(16581)
 for p in "${PORTS[@]}"; do
   if ss -ltnH "sport = :$p" 2>/dev/null | grep -q .; then
     err "端口 $p 已被占用——先停占用方或 ./stop_local.sh"
@@ -138,16 +144,21 @@ if [[ "$VISUAL_MODE" == "cloud" ]]; then
   CLOUD_ADDR_VISUAL="$(resolve_cloud_addr VISUAL_FEATURES_BASE_URL "LA")"
   health_probe "$CLOUD_ADDR_VISUAL/health" || warn "LA 云端地址暂不可达（隧道没开？）——backend/frontend 照常启动，勾视觉项的任务会秒级失败"
 fi
+if [[ "$MINERU_MODE" == "cloud" ]]; then
+  CLOUD_ADDR_MINERU="$(resolve_cloud_addr MINERU_API_BASE_URL "MinerU 喂料")"
+  health_probe "$CLOUD_ADDR_MINERU/health" || warn "MinerU 云端地址暂不可达（隧道没开？）——供料模式任务会失败"
+fi
 
 # ---- 组装 profiles 并起栈 -------------------------------------------------
 PROFILES=(ner ocr-gpu)
 [[ "$NER_MODE" == "gpu" ]]    || PROFILES=("${PROFILES[@]/ner/}")
 [[ "$OCR_MODE" == "gpu" ]]    || PROFILES=("${PROFILES[@]/ocr-gpu/}")
 [[ "$VISUAL_MODE" == "local" ]] && PROFILES+=("visual")
+[[ "$MINERU_MODE" == "local" ]] && PROFILES+=("mineru")
 COMPOSE_PROFILES_ARGS=()
 for p in "${PROFILES[@]}"; do [[ -n "$p" ]] && COMPOSE_PROFILES_ARGS+=(--profile "$p"); done
 
-info "启动档位：NER=${NER_MODE} OCR=${OCR_MODE} LA=${VISUAL_MODE}"
+info "启动档位：NER=${NER_MODE} OCR=${OCR_MODE} LA=${VISUAL_MODE} MinerU=${MINERU_MODE}"
 [[ -n "$CLOUD_ADDR_NER" ]]    && info "  NER 云端 → $CLOUD_ADDR_NER"
 [[ -n "$CLOUD_ADDR_OCR" ]]    && info "  OCR 云端 → $CLOUD_ADDR_OCR"
 [[ -n "$CLOUD_ADDR_VISUAL" ]] && info "  LA  云端 → $CLOUD_ADDR_VISUAL"

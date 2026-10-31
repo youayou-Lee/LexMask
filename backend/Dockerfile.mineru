@@ -1,0 +1,36 @@
+# MinerU sidecar 容器（Issue#217 PR③）——喂料通道的 GPU 形态。
+#
+# 原则（Issue#217 拍板）：推理一律 GPU，CPU 推理形态不进部署档——
+# 因此这里按 MinerU 官方 china/Dockerfile 的组合装 mineru[torch]（CUDA），
+# 模型源用 ModelScope（国内直连，见私有仓 2026-10-31 模型源裁定）。
+#
+# 结构：官方 china 版（vLLM 基底 + mineru[torch] + 模型预下）之上加一层
+# sidecar 脚本（任务式 REST，契约见 mineru_sidecar.py 模块注释）。
+# 官方参照：https://github.com/opendatalab/MinerU/blob/master/docker/china/Dockerfile
+
+# DaoCloud 镜像的 vLLM 基底（Volta..Blackwell，cc 7.0-12.1；本机 4070=cc 8.9 ✓）
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.21.0
+
+# opencv 依赖（与官方 china 版一致）
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libgl1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# MinerU 4 + torch（复用基底的 vLLM）；pip 走阿里源（pypi 直连在构建环境不可用）
+RUN python3 -m pip install -U 'mineru[torch]>=4.0,<5' python-multipart \
+        -i https://mirrors.aliyun.com/pypi/simple --break-system-packages && \
+    python3 -m pip cache purge
+
+# build 时预下模型（ModelScope 直连），运行时 MINERU_MODEL_SOURCE=local
+ENV MINERU_MODEL_SMALL_BACKEND=torch \
+    MINERU_MODEL_VLM_ENGINE=vllm
+RUN /bin/bash -c "mineru-kit models download --tier standard --small-backend torch --vlm-engine vllm -s modelscope"
+
+COPY scripts/mineru_sidecar.py /app/mineru_sidecar.py
+
+EXPOSE 16581
+
+ENTRYPOINT ["/bin/bash", "-c", "export MINERU_MODEL_SOURCE=local && exec \"$@\"", "--"]
+
+CMD ["python3", "/app/mineru_sidecar.py"]

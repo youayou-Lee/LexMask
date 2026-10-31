@@ -48,6 +48,8 @@ services:
       - HAS_TEXT_VLLM_BASE_URL=${HAS_TEXT_VLLM_BASE_URL:-http://ner:8080/v1}
       - HAS_TEXT_MODEL_NAME=${HAS_TEXT_MODEL_NAME:-HaS_Text_0209_0.6B}
       - VISUAL_FEATURES_BASE_URL=${VISUAL_FEATURES_BASE_URL:-http://visual-features:8090}
+      # Issue#217 PR③：MinerU 喂料地址（mineru profile 起容器名；云端档走隧道）
+      - MINERU_API_BASE_URL=${MINERU_API_BASE_URL:-http://mineru:16581}
       - CORS_ORIGINS=${CORS_ORIGINS:-["http://localhost:${FRONTEND_PORT:-3000}","http://127.0.0.1:${FRONTEND_PORT:-3000}"]}
     volumes:
       - backend-data:/app/data
@@ -227,10 +229,45 @@ services:
       - visual
     restart: unless-stopped
 
+  mineru:
+    # Issue#217 PR③：MinerU 喂料通道（sidecar 容器，GPU 形态）。
+    # sidecar 契约与 backend/app/services/mineru_parse_client.py 对齐；
+    # 脚本=backend/scripts/mineru_sidecar.py（仓内化，实例侧 #75 底稿缺 → 按契约重写）。
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.mineru
+    ports:
+      - "${MINERU_PORT:-16581}:16581"
+    environment:
+      - MINERU_SIDECAR_PORT=16581
+      - MINERU_SIDECAR_WORKDIR=/tmp/mineru-sidecar
+      - MINERU_MODEL_SOURCE=local
+    volumes:
+      - mineru-cache:/home/appuser/.paddlex
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - redaction-net
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:16581/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    profiles:
+      - mineru
+
 volumes:
   backend-data:
   backend-uploads:
   backend-outputs:
+  mineru-cache:
 
 networks:
   redaction-net:
