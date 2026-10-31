@@ -8,6 +8,7 @@
 块内无 page_idx；v1 则是扁平 ``{type,text,page_idx,...}``。``normalize_content_list``
 把两种形态统一成扁平 v1 形态再喂 ``clean_segments``。
 """
+import json
 import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -277,3 +278,134 @@ def enrich_image_blocks(
             warns.append(f"image ocr empty: {path}")
             out.append(Seg(text="[图片]", page_idx=seg.page_idx, source="sentinel"))
     return out, warns
+
+
+# ---- Issue#219：MinerU 4.x docvortex.middle schema 分流与归一 ----
+
+# 4.x 文档级形状判定值（上游 schema 字段全等，不做前缀/包含匹配——形似值
+# （如 "docvortex.middle.v3"）必须落到 unknown 走显式失败，见 AC1 负例）
+_DOCVORTEX_SCHEMA = "docvortex.middle"
+# 4.x 块 type → v1 名：paragraph_title 同 v2 title→text 口径（level 丢弃）
+_DOCVORTEX_TEXT_BLOCK_TYPES = {"text", "paragraph_title"}
+
+
+def detect_schema(raw: Any) -> str:
+    """产物形状判定（Issue#219 分流的判据本体，客户端拆包与管线选择共用）。
+
+    - dict 且 ``schema`` 严格等于 docvortex.middle → "v4"；
+    - list 且首元素是 list → "v2"（外层按页嵌套）；
+    - list（含空表）→ "v1"（扁平）；
+    - 其余（非 list 非 docvortex 的 dict、标量、None）→ "unknown"。
+    """
+    if isinstance(raw, dict) and raw.get("schema") == _DOCVORTEX_SCHEMA:
+        return "v4"
+    if isinstance(raw, list):
+        if raw and isinstance(raw[0], list):
+            return "v2"
+        return "v1"
+    return "unknown"
+
+
+def normalize_docvortex(docs: list[dict]) -> tuple[list[dict], list[str]]:
+    """4.x docvortex.middle 文档列表 → (扁平 v1 形态列表, 告警)，喂 clean_segments。
+
+    映射对照表见设计文档 §2（workspace acceptance/2026-11-01-issue219）：
+    text/paragraph_title→text（text 部件 "\n" 拼接，同 v2 口径）；table 的
+    table_body 部件上浮、text 部件作 table_caption（实测未出现，防御映射）；
+    image 不带 img_path（4.x zip 无 images/，enrich 降级 [图片] 哨兵）；
+    未知块/部件 type 透传并告警（不静默）。
+
+    去重（R1/C1）：doclib 双文件是 4.x 常态（探针两份逐字节相同），键取
+    ``pages`` 数组 + ``schema_version`` 的 canonical 序列化——metadata 带时间戳
+    等差异但 pages 相同时必须去重成功；去重后 pages 仍不同 ⇒ 告警
+    ``mineru4_multiple_docs``（调用方 fail-closed，盲拼会把导出 md 全文翻倍）。
+    """
+    warns: list[str] = []
+    unique: list[dict] = []
+    seen_pages: set[str] = set()
+    for doc in docs or []:
+        if not isinstance(doc, dict):
+            continue
+        key = json.dumps(
+            {"schema_version": doc.get("schema_version"), "pages": doc.get("pages")},
+            sort_keys=True, ensure_ascii=False,
+        )
+        if key in seen_pages:
+            continue
+        seen_pages.add(key)
+        unique.append(doc)
+    if len(unique) > 1:
+        warns.append(f"mineru4_multiple_docs: {len(unique)} 份 docvortex 文档 pages 不同")
+    flat: list[dict] = []
+    for doc in unique:
+        pages = doc.get("pages")
+        if not isinstance(pages, list):
+            continue
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            page_idx = page.get("page_idx")
+            page_idx = int(page_idx) if isinstance(page_idx, (int, float)) else 0
+            blocks = page.get("blocks")
+            if not isinstance(blocks, list):
+                continue
+            for block in blocks:
+                if isinstance(block, dict):
+                    flat.append(_docvortex_block_to_flat(block, page_idx, warns))
+    return flat, warns
+
+
+def _docvortex_block_to_flat(block: dict, page_idx: int, warns: list[str]) -> dict:
+    """单个 4.x 块 → 扁平 v1 形态字典（保序、page_idx setdefault 不覆写块自带值）。"""
+    out: dict = {"page_idx": page_idx}
+    if block.get("page_idx") is not None:
+        out["page_idx"] = block["page_idx"]
+    btype = block.get("type")
+    out["type"] = str(btype) if btype is not None else "unknown"
+    texts: list[str] = []
+    table_body: str | None = None
+    content = block.get("content")
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type")
+            pval = part.get("content")
+            if ptype == "text":
+                if isinstance(pval, str) and pval.strip():
+                    texts.append(pval)
+            elif ptype == "table_body":
+                if isinstance(pval, str) and pval.strip():
+                    table_body = pval
+            elif ptype == "image_body":
+                pass  # 4.x 图块正文恒空（实测），语义由块 type=image 承载
+            elif ptype is not None:
+                warns.append(f"unhandled docvortex part type: {ptype}")
+    if btype in _DOCVORTEX_TEXT_BLOCK_TYPES:
+        out["type"] = "text"
+        if texts:
+            out["text"] = "\n".join(texts)
+    elif btype == "table":
+        if table_body:
+            out["table_body"] = table_body
+        if texts:  # 防御映射：实测 table 块只有 table_body 部件；text 部件按表名/脚注处理
+            out["table_caption"] = "\n".join(texts)
+    # 其余 type（image/未知）原样透传：clean_segments 按 v1 语义处理并计数告警
+    return out
+
+
+def markdown_body_chars(md_text: str) -> int:
+    """zip 内官方 .md 的正文字符参照口径（I2 docvortex_shortfall 守卫的锚）。
+
+    剥 markdown 标记：表格 HTML（表格字符由 v4 table_body 侧计入）、图片/链接
+    语法、标题井号、行内强调符；页注释 ``<!-- -->`` 剥除；空白不计数。
+    探针锚点：canary-issue219 三页样本 v4=429 / md=443 → ratio 0.9684。
+    """
+    text = md_text or ""
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    text = re.sub(r"<table>.*?</table>", "", text, flags=re.S)
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.M)
+    text = re.sub(r"[*`_>|]", "", text)
+    return len(re.sub(r"\s", "", text))

@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from app.core.config import settings
+from app.services.agent_md_adapter import detect_schema
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,11 @@ class MineruResult:
     # Issue#212：v1 扁平表示（表格正文在 table_body）——第二来源，用于一致性校验/
     # 回退；MinerU 实测同一次任务的 zip 里两版都会给，此前被整体丢弃。
     content_list_v1: list[dict] = field(default_factory=list)
+    # Issue#219：4.x docvortex.middle 文档列表（拆包按 detect_schema 形状收集）；
+    # 非上市 3.x 产物为空。zip 内 json 形状不可识别时记 unknown_jsons（只记文件名，
+    # 供管线显式失败点名——产物内容不进任何告警）。
+    mineru4_docs: list[dict] = field(default_factory=list)
+    unknown_jsons: list[str] = field(default_factory=list)
 
 
 class MineruParseClient:
@@ -179,6 +185,12 @@ class MineruParseClient:
         zip 内同时存在 v1（*_content_list.json，扁平）与 v2（*_content_list_v2.json，
         list-of-lists）：两版都解出（Issue#212——v1 作第二来源，防某一版字段改名
         再次静默归零）；*_middle.json 忽略。
+
+        Issue#219：每个 ``*.json`` 先按 ``detect_schema`` 形状判定（**单一事实源，
+        判定优先于文件名**）——docvortex.middle 形状收进 ``mineru4_docs``（4.x
+        sidecar 产物，文件名 mineru4_<tier>_<name>.json）；其余非 list 的 json 记
+        ``unknown_jsons``（只记文件名，供管线显式失败点名；*_middle.json 是已知
+        无害副产物，维持忽略不进 unknown）。损坏 json 维持既有语义：整包「非法 zip」。
         """
         try:
             async with self._async_client() as client:
@@ -199,6 +211,8 @@ class MineruParseClient:
         if resp.status_code >= 400:
             self._raise(resp.status_code, resp.text[:200], task_id)
         md, content_list_v2, content_list_v1, images = "", [], [], {}
+        mineru4_docs: list[dict] = []
+        unknown_jsons: list[str] = []
         try:
             with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
                 entries = zf.namelist()
@@ -206,10 +220,19 @@ class MineruParseClient:
                     if name.endswith("/"):
                         continue
                     blob = zf.read(name)
-                    if name.endswith("_content_list_v2.json"):
-                        content_list_v2 = json.loads(blob)
-                    elif name.endswith("_content_list.json"):
-                        content_list_v1 = json.loads(blob)
+                    if name.endswith(".json"):
+                        raw = json.loads(blob)
+                        if detect_schema(raw) == "v4":
+                            mineru4_docs.append(raw)
+                            continue
+                        if name.endswith("_content_list_v2.json"):
+                            content_list_v2 = raw
+                        elif name.endswith("_content_list.json"):
+                            content_list_v1 = raw
+                        elif name.endswith("_middle.json"):
+                            continue
+                        else:
+                            unknown_jsons.append(name)
                     elif name.endswith(".md") and not md:
                         md = blob.decode("utf-8")
                     elif "images/" in name:
@@ -220,15 +243,20 @@ class MineruParseClient:
             ) from exc
         if not md:
             logger.warning("mineru result zip 缺 .md: task=%s entries=%d", task_id, len(entries))
-        if not content_list_v2:
+        if not content_list_v2 and not mineru4_docs:
             logger.warning("mineru result zip 缺 *_content_list_v2.json: task=%s", task_id)
-        if not content_list_v1:
+        if not content_list_v1 and not mineru4_docs:
             logger.warning("mineru result zip 缺 *_content_list.json(v1): task=%s", task_id)
+        if unknown_jsons:
+            logger.warning("mineru result zip 含未知形状 json: task=%s names=%s",
+                           task_id, unknown_jsons)
         return MineruResult(
             md=md,
             content_list_v2=content_list_v2,
             images=images,
             content_list_v1=content_list_v1,
+            mineru4_docs=mineru4_docs,
+            unknown_jsons=unknown_jsons,
         )
 
     @staticmethod

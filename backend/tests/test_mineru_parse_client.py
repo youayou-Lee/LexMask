@@ -213,3 +213,91 @@ async def test_wait_result_without_v1_yields_empty_v1_not_failure():
 
     assert result.content_list_v2  # 主表示仍在
     assert result.content_list_v1 == []
+
+
+# ---- Issue#219：4.x docvortex 产物拆包（形状判定优先于文件名；接线判据）----
+
+def _v4_doc(title: str = "唯一正文") -> dict:
+    return {
+        "schema": "docvortex.middle", "schema_version": "2.0",
+        "metadata": {"producer": {"name": "mineru", "version": "4.1.3"},
+                     "document": {"title": title}},
+        "pages": [{"page_idx": 0, "blocks": [
+            {"type": "text", "index": 0, "bbox": [0, 0, 1, 1],
+             "content": [{"type": "text", "content": title}]},
+        ]}],
+        "is_full_document": True,
+    }
+
+
+def _v4_zip(entries: dict) -> bytes:
+    """entries: zip 内路径 → 内容（str 走 utf-8，bytes 原样）。"""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, blob in entries.items():
+            zf.writestr(name, blob if isinstance(blob, bytes) else str(blob))
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_v4_zip_yields_mineru4_docs_wiring():
+    """接线判据（I1/AC1）：docvortex 形状 zip 必须走生产拆包路径进 mineru4_docs。"""
+    zip_bytes = _v4_zip({
+        "case01.md": "# 合成\n正文",
+        "mineru4_flash_1.json": json.dumps(_v4_doc()),
+        "mineru4_flash_2.json": json.dumps(_v4_doc()),  # doclib 双文件常态
+    })
+    result = await _client(_transport(states=[{"status": "completed"}],
+                                      result=zip_bytes)).wait_result("job-1")
+    assert len(result.mineru4_docs) == 2
+    assert result.mineru4_docs[0]["pages"][0]["blocks"][0]["content"][0]["content"] == "唯一正文"
+    assert result.content_list_v1 == [] and result.content_list_v2 == []
+    assert result.unknown_jsons == []
+
+
+@pytest.mark.asyncio
+async def test_v4_shape_wins_over_content_list_filename():
+    """形状判定优先于文件名：docvortex 形状即便叫 *_content_list.json 也进 v4。"""
+    zip_bytes = _v4_zip({
+        "case01.md": "x",
+        "case01_content_list.json": json.dumps(_v4_doc()),
+    })
+    result = await _client(_transport(states=[{"status": "completed"}],
+                                      result=zip_bytes)).wait_result("job-1")
+    assert len(result.mineru4_docs) == 1 and result.content_list_v1 == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_dict_json_recorded_middle_json_ignored():
+    """非 list 非 docvortex 的 dict 记 unknown_jsons；*_middle.json 维持既有忽略。"""
+    zip_bytes = _v4_zip({
+        "case01.md": "x",
+        "mineru4_flash_1.json": json.dumps(_v4_doc()),
+        "case01_weird.json": json.dumps({"hello": "world"}),
+        "case01_middle.json": json.dumps({"middle": True}),
+    })
+    result = await _client(_transport(states=[{"status": "completed"}],
+                                      result=zip_bytes)).wait_result("job-1")
+    assert len(result.mineru4_docs) == 1
+    assert result.unknown_jsons == ["case01_weird.json"]  # middle.json 不进 unknown
+
+
+@pytest.mark.asyncio
+async def test_v3_zip_unchanged_no_v4_no_unknown():
+    """3.x 回归：既有 v1/v2/middle zip 拆包结果与 Issue#212 语义逐字一致。"""
+    result = await _client(_transport(states=[{"status": "completed"}])).wait_result("job-1")
+    assert result.content_list_v1 and result.content_list_v2
+    assert result.mineru4_docs == [] and result.unknown_jsons == []
+
+
+@pytest.mark.asyncio
+async def test_corrupt_json_blob_still_fails_whole_zip():
+    """损坏 json 维持既有语义：整包「非法 zip」显式失败（M3③）。"""
+    zip_bytes = _v4_zip({
+        "case01.md": "x",
+        "case01_broken.json": "{not-json",
+    })
+    with pytest.raises(MineruParseError) as ei:
+        await _client(_transport(states=[{"status": "completed"}],
+                                 result=zip_bytes)).wait_result("job-1")
+    assert "非法 zip" in str(ei.value)
