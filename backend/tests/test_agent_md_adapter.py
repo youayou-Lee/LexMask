@@ -296,6 +296,8 @@ class TestDetectSchema:
         from app.services.agent_md_adapter import detect_schema
         assert detect_schema({"middle": True}) == "unknown"
         assert detect_schema({"schema": "docvortex.other"}) == "unknown"
+        # R2 形似负例：判等放宽为 startswith("docvortex.middle") 时此例必须仍 unknown
+        assert detect_schema({"schema": "docvortex.middle.v3"}) == "unknown"
         assert detect_schema("text") == "unknown"
         assert detect_schema(None) == "unknown"
 
@@ -430,3 +432,38 @@ def test_markdown_body_chars_probe_anchor_ratio():
           "案号:（2026）示0101民初219号\n")
     expected = len("示例市示例区人民法院 民事判决书案号:（2026）示0101民初219号".replace(" ", ""))
     assert markdown_body_chars(md) == expected
+
+
+def test_markdown_body_chars_freezes_probe_anchor_401():
+    # 门⑥ M-5：探针 md（全合成 canary，可入公开树）原文嵌入，字面冻结可复算
+    # （现行口径真值 401；粗口径 443 未剥页注释，已弃用——见设计文档 I2 锚定更新）
+    from app.services.agent_md_adapter import markdown_body_chars
+    probe_md = '<!-- page 1 of 3 -->\n\n## 示例市示例区人民法院 民事判决书\n\n案号:（2026）示0101民初219号（虚构案号，仅供格式探针）原告:张示例，男，1970年1月1日出生，住示例市示例区示例街道1号。\n\n被告:李演示，男，1980年2月2日出生，住示例市示例区演示路2号。\n\n本院于2026年3月1日立案受理，依法适用普通程序，公开开庭进行了审理。\n\n<!-- page 2 of 3 -->\n\n证据清单\n\n| 序号 | 证据名称 | 页码 | 证明目的 |\n| --- | --- | --- | --- |\n| 1 | 借条一份 | 1-2 | 证明借款关系成立 |\n| 2 | 银行流水 | 3-5 | 证明款项交付 |\n| 3 | 微信聊天记录 | 6-9 | 证明催讨事实 |\n\n<!-- page 3 of 3 -->\n\n## 审理查明\n\n经审理查明:2025年6月1日，被告向原告借款人民币壹拾万元整，约定2025年12月31日前归还。\n\n上述事实，有原告提交的借条、银行流水及庭审笔录在卷佐证，本院予以确认。\n\n依照《中华人民共和国民法典》第六百七十五条之规定，判决如下:\n\n被告李演示于本判决生效之日起十日内偿还原告张示例借款本金人民币壹拾万元整。\n\n[图形占位:示例印章轮廓，非真实印章]'
+    assert markdown_body_chars(probe_md) == 401
+def test_unknown_part_type_warns_not_absorbed():
+    # 门⑥ I-2：R5「未知部件 type → 告警」的接线判据——删该分支全量必须红
+    from app.services.agent_md_adapter import normalize_docvortex
+    doc = _v4_doc([(0, [{"type": "text", "index": 0,
+                         "content": [{"type": "text", "content": "正常正文"},
+                                      {"type": "equation", "content": "E=mc2"}]}])])
+    flat, warns = normalize_docvortex([doc])
+    assert any("unhandled docvortex part type: equation" in w for w in warns)
+    assert flat[0]["text"] == "正常正文"  # 未知部件不被 text 吸收
+
+
+def test_malformed_structure_warns_not_silent():
+    # 门⑥ I-3：畸形结构（schema 漂移）跳过必须留痕，不静默蒸发
+    from app.services.agent_md_adapter import normalize_docvortex
+    flat, warns = normalize_docvortex(["not-a-doc"])
+    assert flat == [] and any("mineru4_malformed" in w for w in warns)
+    flat, warns = normalize_docvortex([{"schema": "docvortex.middle", "pages": "oops"}])
+    assert flat == [] and any("mineru4_malformed" in w for w in warns)
+    doc = {"schema": "docvortex.middle", "pages": [
+        {"page_idx": 0, "blocks": "oops"},
+        {"page_idx": 1, "blocks": [{"type": "text", "content": [
+            {"type": "text", "content": "后页正常"}]}]},
+        "not-a-page",
+    ]}
+    flat, warns = normalize_docvortex([doc])
+    assert len(flat) == 1 and flat[0]["page_idx"] == 1
+    assert any("mineru4_malformed" in w for w in warns)

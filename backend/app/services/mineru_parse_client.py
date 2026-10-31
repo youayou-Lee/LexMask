@@ -187,7 +187,7 @@ class MineruParseClient:
         再次静默归零）；*_middle.json 忽略。
 
         Issue#219：每个 ``*.json`` 先按 ``detect_schema`` 形状判定（**单一事实源，
-        判定优先于文件名**）——docvortex.middle 形状收进 ``mineru4_docs``（4.x
+        v4 形状判定优先于文件名**；v1/v2 维持纯文件名落槽）——docvortex.middle 形状收进 ``mineru4_docs``（4.x
         sidecar 产物，文件名 mineru4_<tier>_<name>.json）；其余非 list 的 json 记
         ``unknown_jsons``（只记文件名，供管线显式失败点名；*_middle.json 是已知
         无害副产物，维持忽略不进 unknown）。损坏 json 维持既有语义：整包「非法 zip」。
@@ -220,8 +220,13 @@ class MineruParseClient:
                     if name.endswith("/"):
                         continue
                     blob = zf.read(name)
+                    if name.endswith("_middle.json"):
+                        # 3.x 既有语义：middle.json 从不解析（Issue#212 起忽略），
+                        # 维持「损坏 middle.json 不炸整包」且不进 unknown
+                        continue
                     if name.endswith(".json"):
                         raw = json.loads(blob)
+                        # Issue#219：v4 形状判定优先于文件名（v1/v2 仍按文件名落槽）
                         if detect_schema(raw) == "v4":
                             mineru4_docs.append(raw)
                             continue
@@ -229,8 +234,6 @@ class MineruParseClient:
                             content_list_v2 = raw
                         elif name.endswith("_content_list.json"):
                             content_list_v1 = raw
-                        elif name.endswith("_middle.json"):
-                            continue
                         else:
                             unknown_jsons.append(name)
                     elif name.endswith(".md") and not md:
@@ -248,8 +251,9 @@ class MineruParseClient:
         if not content_list_v1 and not mineru4_docs:
             logger.warning("mineru result zip 缺 *_content_list.json(v1): task=%s", task_id)
         if unknown_jsons:
-            logger.warning("mineru result zip 含未知形状 json: task=%s names=%s",
-                           task_id, unknown_jsons)
+            # 文件名含用户上传 stem（可能即案卷名）——按 M5 边界不进日志，点名职责在 task.warnings
+            logger.warning("mineru result zip 含未知形状 json: task=%s unknown=%d",
+                           task_id, len(unknown_jsons))
         return MineruResult(
             md=md,
             content_list_v2=content_list_v2,

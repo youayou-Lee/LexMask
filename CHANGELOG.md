@@ -6,10 +6,10 @@
 
 - **为什么**：#217 后本地 MinerU 4.1.3 容器与生产实例 3.4.5 并存（刻意设计），但 4.x 大重构后的产物 schema（`docvortex.middle`：`metadata/pages/is_full_document`）与 3.x `content_list`（v1 扁平/v2 按页嵌套）完全不同——适配层读不出 4.x 文本，喂料全链在本地形态直接 `parse_no_text` 失败（fail-closed 守卫在位，无泄漏风险）。
 - **改了什么**（三文件，3.x 路径逐字不动）：
-  1. `agent_md_adapter.py`：`detect_schema`（形状判定判据本体：v4/v2/v1/unknown，schema 全等不做前缀匹配）+ `normalize_docvortex`（4.x→扁平 v1 归一，映射对照表实测锚定：text/paragraph_title→text（`\n` 拼接）、table 的 table_body 部件上浮、image 无 img_path 走既有 `[图片]` 哨兵降级、未知块/部件计数告警不静默；**pages 内容级去重**——doclib 双文件是 4.x 常态，pages 相同 metadata 不同必须去重成功，pages 不同 ⇒ fail-closed 防导出 md 全文翻倍）+ `markdown_body_chars`（比值守卫参照口径）。
+  1. `agent_md_adapter.py`：`detect_schema`（形状判定判据本体：v4/v2/v1/unknown，schema 全等不做前缀匹配）+ `normalize_docvortex`（4.x→扁平 v1 归一，映射对照表实测锚定：text/paragraph_title→text（`\n` 拼接）、table 的 table_body 部件上浮、image 无 img_path 走既有 `[图片]` 哨兵降级、未知块/部件计数告警不静默；**pages 内容级去重**——doclib 双文件是 4.x 常态，pages 相同 metadata 不同必须去重成功，pages 不同 ⇒ fail-closed 防导出 md 全文翻倍；畸形结构（pages 非 list 等）跳过留痕不静默）+ `markdown_body_chars`（比值守卫参照口径）。
   2. `mineru_parse_client.py`：拆包按 `detect_schema` 形状分流（**单一事实源、形状优先于文件名**）；`MineruResult` 增 `mineru4_docs`/`unknown_jsons`；损坏 json 维持整包「非法 zip」。
-  3. `agent_md_pipeline_service.py`：`_choose_representation` 起手探 v4（单表示，不走 #212 双表示守卫）；4.x 对 zip 内官方 .md 做比值守卫 `docvortex_shortfall`（`DOC_VORTEX_MD_RATIO=0.7`，探针锚点 0.9684）+ 缺 md 显式 `docvortex_md_missing`；混合产物 v4 优先并告警 `mixed_schema_v4_wins`；未知形状 json 出稿/失败两态均点名文件（owner 自见面，产物内容不进告警）；`parse_no_text` 失败消息按三形态区分（3.x 双路空 / 4.x 单路空 / 未知形状点名），机读原因码不变（前端零改动）。
-- **测试**：后端 +43 例（adapter detect/normalize 逐字段钉、客户端拆包接线判据、管线 v4 分支与 AC5 失败形态矩阵）；全量 2563 passed 零回归；变异 6/6 KILLED（page_idx 赋值/未知型吞并/schema 前缀化/删去重/删比值守卫/客户端 v4 分支删行）。
+  3. `agent_md_pipeline_service.py`：`_choose_representation` 起手探 v4（单表示，不走 #212 双表示守卫）；4.x 对 zip 内官方 .md 做比值守卫 `docvortex_shortfall`（`DOC_VORTEX_MD_RATIO=0.7`，锚点按发布口径重锚：markdown_body_chars 剥页注释后 md=401，v4=429，ratio 1.0698；探针 md 全文以合成数据入测试字面冻结）+ 缺 md 显式 `docvortex_md_missing`；混合产物 v4 优先并告警 `mixed_schema_v4_wins`；未知形状 json 出稿/失败两态均点名文件（owner 自见面，产物内容不进告警）；`parse_no_text` 失败消息按三形态区分（3.x 双路空 / 4.x 单路空 / 未知形状点名），机读原因码不变（前端零改动）。
+- **测试**：后端净 +39 例（adapter detect/normalize 逐字段钉、客户端拆包接线判据、管线 v4 分支与 AC5 失败形态矩阵）；全量 2570 passed 零回归；变异 9/9 KILLED（page_idx 赋值/未知型吞并/schema 前缀化/删去重/删比值守卫/客户端 v4 分支删行/删部件告警/删畸形告警/日志点名）。
 - **探针留档**：`testdata/canary-issue219-mineru4-schema.pdf`（3 页合成全假数据，生成器在私有仓 `scripts/issue219/`）；设计文档与门①.5 两轮评审回执在私有仓 `docs/acceptance/2026-11-01-issue219-mineru4-schema适配-设计与验收方案.md`。
 - **边界**：不改 sidecar 契约/部署形态（#218 钉死）；4.x flash 档无 seal 标记 ⇒ 公章哨兵在 4.x 暂无来源（记录在案，留待上游演进）；识别主链（OCR+HaS+LA）无关。
 

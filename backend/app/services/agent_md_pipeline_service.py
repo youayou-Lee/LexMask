@@ -248,11 +248,16 @@ class AgentMdPipelineService:
             flat, norm_warns = normalize_docvortex(result.mineru4_docs)
             v4_stats = CleanStats()
             v4_segs, v4_warns = clean_segments(flat, stats=v4_stats)
-            warns = list(norm_warns)
+            # 门⑥ M-4：归一层告警与 clean 层告警统一 v4: 前缀（grep 取数一个口径）
+            warns = [f"v4: {w}" for w in norm_warns]
             if getattr(result, "unknown_jsons", None):
                 warns.append(f"schema_unknown_json: {', '.join(result.unknown_jsons)}")
+            if getattr(result, "content_list_v1", None) or getattr(result, "content_list_v2", None):
+                warns.append("mixed_schema_v4_wins: zip 同时含 4.x 与 3.x 表示，已按 4.x 解析")
             if any("mineru4_multiple_docs" in w for w in norm_warns):
-                # pages 去重后仍 >1 份（R1）：fail-closed，盲拼会把导出 md 全文翻倍
+                # pages 去重后仍 >1 份（R1）：fail-closed，盲拼会把导出 md 全文翻倍；
+                # 门⑥ M-1：失败路径也要带上 clean 层告警（观测面不缺一截）
+                warns.extend(f"v4: {w}" for w in v4_warns)
                 return None, warns, v4_stats, "docvortex_middle"
             if getattr(result, "content_list_v1", None) or getattr(result, "content_list_v2", None):
                 warns.append("mixed_schema_v4_wins: zip 同时含 4.x 与 3.x 表示，已按 4.x 解析")
@@ -261,11 +266,11 @@ class AgentMdPipelineService:
                 warns.extend(f"v4: {w}" for w in v4_warns)
                 return None, warns, v4_stats, "docvortex_middle"
             md = getattr(result, "md", "") or ""
-            if not md.strip():
-                warns.append("docvortex_md_missing: zip 缺 .md，比值守卫跳过（R4）")
-            else:
-                md_chars = markdown_body_chars(md)
-                if md_chars > 0 and v4_chars < DOC_VORTEX_MD_RATIO * md_chars:
+            md_chars = markdown_body_chars(md) if md.strip() else 0
+            if md_chars == 0:
+                # R4 + 门⑥ M-2：md 缺位与 md 无正文同一显式语义——守卫跳过必须留痕
+                warns.append("docvortex_md_missing: zip 内 .md 缺失或无正文字符，比值守卫跳过")
+            elif v4_chars < DOC_VORTEX_MD_RATIO * md_chars:
                     warns.append("docvortex_shortfall: v4 正文显著少于 zip 内官方 md "
                                  f"v4={v4_chars} md={md_chars}")
             warns.extend(f"v4: {w}" for w in v4_warns)

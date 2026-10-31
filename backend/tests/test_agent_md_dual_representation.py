@@ -446,3 +446,34 @@ def test_unknown_json_with_valid_3x_warns_but_completes(sample_pdf, tmp_path):
     assert task.state == TaskState.MAPPING_READY
     assert "6222020200012345678" in _body(task)
     assert any("mystery.json" in w for w in task.warnings)
+
+
+# ---- 门⑥ fix 钉子：M-1 / M-2 / I-4 ----
+
+
+def test_v4_fail_closed_keeps_mixed_and_clean_warnings(sample_pdf, tmp_path):
+    """门⑥ M-1：多份文档 fail-closed 路径不得丢 mixed 线索与 clean 层告警。"""
+    d1 = _v4_doc([(0, [_v4_text_block("甲")])])
+    d2 = _v4_doc([(0, [_v4_text_block("乙")])])
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4([d1, d2], md="x",
+                                                       v2=_v2_page(), v1=_v1_flat()))
+    assert task.state == TaskState.FAILED
+    assert any("mineru4_multiple_docs" in w for w in task.warnings)
+    assert any("mixed_schema_v4_wins" in w for w in task.warnings)
+    assert any(w.startswith("v4: ") for w in task.warnings)  # clean 层告警带同前缀
+
+
+def test_v4_md_no_body_guard_skips_loudly(sample_pdf, tmp_path):
+    """门⑥ M-2：md 在但正文字符为 0（如仅一张表）——守卫跳过同样显式留痕。"""
+    doc = _v4_doc([(0, [_v4_text_block("原告：张示例")])])
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4([doc], md="<table><tr><td>1</td></tr></table>"))
+    assert task.state == TaskState.MAPPING_READY
+    assert any("docvortex_md_missing" in w for w in task.warnings)
+
+
+def test_v4_norm_warnings_carry_v4_prefix(sample_pdf, tmp_path):
+    """门⑥ M-4：归一层告警与 clean 层告警统一 v4: 前缀。"""
+    d1 = _v4_doc([(0, [_v4_text_block("甲")])])
+    d2 = _v4_doc([(0, [_v4_text_block("乙")])])
+    task = _run_v4(sample_pdf, tmp_path, _FakeMineruV4([d1, d2], md="x"))
+    assert any(w.startswith("v4: mineru4_multiple_docs") for w in task.warnings)

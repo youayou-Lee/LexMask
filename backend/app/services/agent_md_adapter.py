@@ -325,6 +325,8 @@ def normalize_docvortex(docs: list[dict]) -> tuple[list[dict], list[str]]:
     seen_pages: set[str] = set()
     for doc in docs or []:
         if not isinstance(doc, dict):
+            # 门⑥ I-3：畸形结构跳过必须留痕——schema 漂移时的静默蒸发即事故
+            warns.append("mineru4_malformed: 非 dict 文档，已跳过")
             continue
         key = json.dumps(
             {"schema_version": doc.get("schema_version"), "pages": doc.get("pages")},
@@ -340,14 +342,17 @@ def normalize_docvortex(docs: list[dict]) -> tuple[list[dict], list[str]]:
     for doc in unique:
         pages = doc.get("pages")
         if not isinstance(pages, list):
+            warns.append("mineru4_malformed: doc pages 非 list，已跳过")
             continue
         for page in pages:
             if not isinstance(page, dict):
+                warns.append("mineru4_malformed: page 非 dict，已跳过")
                 continue
             page_idx = page.get("page_idx")
             page_idx = int(page_idx) if isinstance(page_idx, (int, float)) else 0
             blocks = page.get("blocks")
             if not isinstance(blocks, list):
+                warns.append(f"mineru4_malformed: page {page_idx} blocks 非 list，已跳过")
                 continue
             for block in blocks:
                 if isinstance(block, dict):

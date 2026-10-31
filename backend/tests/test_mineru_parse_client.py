@@ -301,3 +301,21 @@ async def test_corrupt_json_blob_still_fails_whole_zip():
         await _client(_transport(states=[{"status": "completed"}],
                                  result=zip_bytes)).wait_result("job-1")
     assert "非法 zip" in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_unknown_json_names_not_logged(caplog):
+    """门⑥ I-4：unknown json 文件名（含用户 stem）不进日志，只报条数。"""
+    import logging
+    zip_bytes = _v4_zip({
+        "卷宗机密名.md": "x",
+        "mineru4_flash_1.json": json.dumps(_v4_doc()),
+        "卷宗机密名_weird.json": json.dumps({"hello": "world"}),
+    })
+    with caplog.at_level(logging.WARNING, logger="app.services.mineru_parse_client"):
+        result = await _client(_transport(states=[{"status": "completed"}],
+                                          result=zip_bytes)).wait_result("job-1")
+    assert result.unknown_jsons == ["卷宗机密名_weird.json"]
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert "卷宗机密名" not in joined and "weird" not in joined
+    assert "unknown=1" in joined
