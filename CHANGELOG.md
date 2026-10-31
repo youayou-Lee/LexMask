@@ -2,6 +2,18 @@
 
 ## 2026-10-31
 
+### 新增（Issue#217 PR③）MinerU sidecar 仓内化 + GPU 容器形态 + 喂料通道接入
+
+- **为什么**：喂料通道（供料模式）的 MinerU 解析服务此前只在云实例侧（#75），仓内只有客户端——本地开发/小显存部署无法独立启用；且实例关机即不可用。
+- **改了什么**：
+  1. **sidecar 收编**（`backend/scripts/mineru_sidecar.py`）：按 `mineru_parse_client.py` 已钉契约重写（POST /tasks multipart→202→轮询 status→GET result zip；/health）。任务表内存+meta.json 落盘（重启后 completed 任务仍可取）。执行形态=to_thread+同步 subprocess（asyncio 子进程在 uvicorn 非主线程收不到退出回调）+后台协程强引用集（create_task 无引用会被 GC——任务卡 pending 的真因）。
+  2. **GPU 容器**（`backend/Dockerfile.mineru`）：官方 china 版组合——daocloud vLLM 0.21.0 基底 + mineru[torch]（阿里源）+ ModelScope 模型预下（`mineru-kit models download -s modelscope`）+ sidecar 层；推理一律 GPU 原则。
+  3. **4.x CLI/server 适配**：4.x 移除 `mineru -p`（改 `mineru parse --json --tier T -o <md> PATH`）；standard 档走本地 parse-server（managed 模式）。**显存现实**：12GB 全栈（NER+OCR≈5GB）下 standard 的 vLLM 引擎起不来 ⇒ sidecar 默认 tier=**flash**（实测 5s 完成真解析、无需 server、显存轻）；standard 留 `MINERU_SIDECAR_TIER` 可选。
+  4. **接入**：compose `mineru` profile（16581/GPU/健康检查/缓存卷）+ backend `MINERU_API_BASE_URL` 插值；`start_local.sh --with-mineru`（本地 GPU，与 `--with-visual` 互斥校验）/`--mineru cloud`/`--cloud` 全含。
+- **测试**：契约单测 +4 例（health/全生命周期/404-409 状态机/failed 带原因；fake CLI 同步 4.x 形态）。A5 端到端实测：canary PDF 经真 MinerU 4.x（GPU flash）→ **completed 5s** → zip 双产物（markdown + 4.x 结构 JSON）。
+- **挂账**：4.x schema（metadata/pages）与 3.x content_list 形状不同——backend 供料适配层的 4.x 支持另案（现役生产实例 3.4.5 产物不受影响）；standard 档显存调优（mem-fraction）同案。
+- **红线**：sidecar/容器不内嵌任何地址口令；ModelScope 为模型默认源。
+
 ### 新增（Issue#217 PR②）可选服务双层知情：任务入口秒级预检 + 上传页识别项旁状态徽标
 
 - **为什么**：改前勾选视觉识别项而 LA 不在场时，任务直接发起调用——挂起场景（模型加载中/隧道半开）实测单次 240.2s、全链 ≈723s；拒绝场景虽快（3.1s）但报错无指引。用户裁定：不能等任务跑起来才知道——上传页就要看见（双层知情的用户侧），任务入口预检兜底（机器侧）。
