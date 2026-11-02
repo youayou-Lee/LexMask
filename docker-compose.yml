@@ -254,8 +254,11 @@ services:
       # (≈6.5GB engine) is gated by the start script's VRAM budget checks.
       - MINERU_SIDECAR_TIER=${MINERU_SIDECAR_TIER:-flash}
     volumes:
-      # 模型库与解析缓存（容器以 root 跑，持久挂 MinerU 的家目录——评审 M7 修正路径）
-      - mineru-cache:mineru-home
+      # 模型库与解析缓存（容器以 root 跑，持久挂 MinerU 的家目录——评审 M7 修正路径）。
+      # Issue#226 实测修正：挂载目标必须是绝对路径（曾误写相对路径 mineru-home，
+      # Docker 拒绝创建容器：invalid mount path: 'mineru-home' mount path must be
+      # absolute——#217 门④ 未暴露因当时 mineru profile 未实际起容器）。
+      - mineru-cache:/mineru-home
     deploy:
       resources:
         reservations:
