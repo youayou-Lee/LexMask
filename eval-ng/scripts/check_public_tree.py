@@ -45,10 +45,31 @@ from __future__ import annotations
 
 from collections import Counter
 import argparse
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+
+
+def _temp_repo_git_env() -> dict[str, str]:
+    """自检临时仓专用的 git 环境：摘掉继承的 GIT_* 再给提交者身份。
+
+    2026-11-03 实测（pre-push 门禁）：钩子/git 链路进程携带 GIT_DIR 等变量时，
+    `git -C <tmp> init/add/commit` 会被劫持到宿主仓——夹具提交直接落在开发者
+    当前检出的分支上（与 tests/test_public_tree_scanner.py `_git_env` 的冷审
+    M-8 同款教训；本脚本此前只在测试侧清了、自检侧没清）。
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "probe",
+            "GIT_AUTHOR_EMAIL": "probe@example.com",
+            "GIT_COMMITTER_NAME": "probe",
+            "GIT_COMMITTER_EMAIL": "probe@example.com",
+        }
+    )
+    return env
 
 
 class GitError(RuntimeError):
@@ -532,6 +553,15 @@ def scan_source(name: str, text: str, *, denylist: list[str], allow_prefixes: li
     return lines
 
 
+def _git_env() -> dict[str, str]:
+    """git 子进程环境：摘掉继承的 GIT_*（`-C repo_root` 已显式指仓）。
+
+    钩子/git 链路进程携带 GIT_DIR 等变量时会覆盖 `-C` 的仓定位（2026-11-03
+    pre-push 门禁实测），读目标仓的 diff/ls-files 全部错位。
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
 def _git_lines(repo_root: Path, args: list[str]) -> list[str]:
     """跑 git 并返回路径项；带 `-z` 时按 NUL 切分（原始字节口径，不经 git 的 shell 转义）。
 
@@ -550,6 +580,7 @@ def _git_lines(repo_root: Path, args: list[str]) -> list[str]:
             text=True,
             encoding="utf-8",
             errors="surrogateescape",
+            env=_git_env(),
         ).stdout
     except FileNotFoundError as exc:  # 环境里没有 git
         raise GitError(f"找不到 git 可执行文件：{exc}") from exc
@@ -586,7 +617,7 @@ def _git_text(repo_root: Path, args: list[str]) -> str:
     try:
         return subprocess.run(
             cmd, check=True, capture_output=True, text=True,
-            encoding="utf-8", errors="surrogateescape",
+            encoding="utf-8", errors="surrogateescape", env=_git_env(),
         ).stdout
     except FileNotFoundError as exc:
         raise GitError(f"找不到 git 可执行文件：{exc}") from exc
@@ -713,11 +744,7 @@ def _end_to_end_scope_check() -> list[str]:
 
     problems: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
-        env = {
-            **os.environ,
-            "GIT_AUTHOR_NAME": "probe", "GIT_AUTHOR_EMAIL": "probe@example.com",
-            "GIT_COMMITTER_NAME": "probe", "GIT_COMMITTER_EMAIL": "probe@example.com",
-        }
+        env = _temp_repo_git_env()
 
         def git(*args: str) -> None:
             subprocess.run(["git", "-C", tmp, *args], capture_output=True, text=True, env=env, check=True)
@@ -768,11 +795,7 @@ def _extension_coverage_check() -> list[str]:
     payload = 'cfg password = "Hunter2Hunter2"\n'
     problems: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
-        env = {
-            **os.environ,
-            "GIT_AUTHOR_NAME": "probe", "GIT_AUTHOR_EMAIL": "probe@example.com",
-            "GIT_COMMITTER_NAME": "probe", "GIT_COMMITTER_EMAIL": "probe@example.com",
-        }
+        env = _temp_repo_git_env()
 
         def git(*args: str) -> None:
             subprocess.run(["git", "-C", tmp, *args], capture_output=True, text=True, env=env, check=True)
