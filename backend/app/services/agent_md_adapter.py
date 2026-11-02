@@ -75,10 +75,34 @@ class _TableText(HTMLParser):
             self._cell.append(data)
 
 
+_HTML_TABLE_TAG = re.compile(r"<\s*/?\s*(table|tr|td|th)\b", re.IGNORECASE)
+
+
 def table_to_text(table_body: str) -> str:
+    """表格正文 → 按行纯文本。两种输入形态（Issue#224 实测）：
+
+    - HTML 表格（#212 契约：3.x content["html"]、4.x 部分 Output）：剥单元格拼接，
+      结果非空则**原样返回**——既有行为逐字节不变；
+    - 纯文本版面（4.x flash 对扫描表格实测形态：OCR 文字、无任何标签）：HTML 解析
+      0 行，此前全量丢失 → 回落「按行拆分 + 行内空白折叠 + strip_inline」；
+    - 含表格标签但解析不出行（畸形 HTML）**不回落**——维持返回空，由
+      ``clean_segments`` 记 ``empty table block``，不把标签碎片喂给 NER，
+      并守住 #212 双表示守卫「丢表 ⇒ empty_table_blocks>0」的语义链。
+    """
+    html = table_body or ""
     p = _TableText()
-    p.feed(table_body or "")
-    return "\n".join(" | ".join(cells) for cells in p.rows if cells)
+    p.feed(html)
+    rendered = "\n".join(" | ".join(cells) for cells in p.rows if cells)
+    if rendered:
+        return rendered
+    if _HTML_TABLE_TAG.search(html):
+        return ""
+    lines = []
+    for raw_line in html.splitlines():
+        line = strip_inline(re.sub(r"\s+", " ", raw_line))
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def strip_inline(text: str) -> str:
