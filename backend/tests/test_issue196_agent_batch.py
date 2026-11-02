@@ -600,3 +600,154 @@ def test_get_agent_md_mapping_conflict_when_not_ready(tmp_path, monkeypatch):
     from app.models.errors import ConflictError
     with pytest.raises(ConflictError):
         jms.get_agent_md_mapping(store, jid, item_ids[0])
+
+
+# ---------------------------------------------------------------------------
+# #220（4.x schema 适配）× #196 交叉：批量线的 4.x 归一与空稿 fail-closed
+#
+# 背景（本地 4.x 栈验收实测）：#220 的 detect_schema/normalize_docvortex 只接进
+# 单文件线（_choose_representation），批量线 build_mineru_segments 仍只读
+# content_list_v2（3.x 口径）⇒ 4.x 形态下 segs=[]、mapping=0、成品 md 空且
+# 任务照常 awaiting_review（fail-open）。同一 PDF A/B：单文件 8 实体 / 批量 0。
+# 注：生产实例 MinerU 3.4.5 有 content_list_v2，云冒烟测不出——这是双 schema
+# 并存（#217/#219）刻意设计要抓的形态差异。
+# ---------------------------------------------------------------------------
+
+
+def _v4_doc(blocks_by_page):
+    """docvortex.middle 形状合成（与 test_agent_md_adapter 同构，全合成文本）。"""
+    return {
+        "schema": "docvortex.middle", "schema_version": "2.0",
+        "metadata": {"producer": {"name": "mineru", "version": "4.1.3"}},
+        "pages": [
+            {"page_idx": idx, "blocks": blocks}
+            for idx, blocks in blocks_by_page
+        ],
+        "is_full_document": True,
+    }
+
+
+class _FakeMineruResult:
+    """duck-typed mineru_parse_client.MineruResult。"""
+
+    def __init__(self, *, md="", content_list_v1=None, content_list_v2=None,
+                 images=None, mineru4_docs=None, unknown_jsons=None):
+        self.md = md
+        self.content_list_v1 = content_list_v1 or []
+        self.content_list_v2 = content_list_v2 or []
+        self.images = images or {}
+        self.mineru4_docs = mineru4_docs or []
+        self.unknown_jsons = unknown_jsons or []
+
+
+class _FakeMineruClient:
+    """submit/wait_result 契约最小实现（不发起网络）。"""
+
+    def __init__(self, result):
+        self._result = result
+        self.submitted = 0
+
+    async def submit(self, *, file_bytes, filename):
+        self.submitted += 1
+        return "task-1"
+
+    async def wait_result(self, job_id, on_progress=None):
+        if on_progress:
+            on_progress(1, 1)
+        return self._result
+
+
+class _NopOCR:
+    """images 为空时 enrich_image_blocks 不得调用 OCR（断言见 4.x 用例）。"""
+
+
+def _mineru_pdf(tmp_path: Path) -> dict:
+    doc = tmp_path / "x.pdf"
+    doc.write_bytes(b"%PDF-1.4 fake")
+    return {
+        "file_id": "file-pdf", "filename": "x.pdf", "original_filename": "x.pdf",
+        "file_path": str(doc), "file_type": "pdf", "owner_id": "u1",
+    }
+
+
+def _patch_mineru(monkeypatch, result: _FakeMineruResult) -> _FakeMineruClient:
+    from app.services import mineru_parse_client as mpc
+
+    client = _FakeMineruClient(result)
+    monkeypatch.setattr(mpc, "MineruParseClient", lambda *a, **k: client)
+    return client
+
+
+def test_mineru_batch_uses_v4_docvortex_representation(tmp_path, monkeypatch):
+    """4.x docvortex.middle 产物经批量线必须出段（单文件线同款归一）。
+
+    变异对照：若批量线退回只读 content_list_v2（回归原样），本测红——
+    segs 为空即【验收化名】锚文本不出现。
+    """
+    from app.services.agent_md_batch import build_mineru_segments
+
+    doc = _v4_doc([(0, [
+        {"type": "text", "index": 0, "bbox": [0, 0, 1, 1],
+         "content": [{"type": "text", "content": "被继承人张三于2020年去世"}]},
+        {"type": "paragraph_title", "index": 1, "level": 2,
+         "content": [{"type": "text", "content": "遗产分割"}]},
+    ])])
+    _patch_mineru(monkeypatch, _FakeMineruResult(mineru4_docs=[doc], md="# 遗产分割\n被继承人张三"))
+    fi = _mineru_pdf(tmp_path)
+    segs = asyncio.run(build_mineru_segments(fi, ocr=_NopOCR()))
+    joined = "\n".join(s.text for s in segs)
+    assert "张三" in joined
+    assert "遗产分割" in joined
+
+
+def test_mineru_batch_3x_content_list_still_works(tmp_path, monkeypatch):
+    """3.x content_list_v2 路径不回归（生产实例 3.4.5 的现役形态）。"""
+    from app.services.agent_md_batch import build_mineru_segments
+
+    _patch_mineru(monkeypatch, _FakeMineruResult(
+        content_list_v2=[{"type": "text", "text": "李四与王五的借款合同", "page_idx": 0}]))
+    fi = _mineru_pdf(tmp_path)
+    segs = asyncio.run(build_mineru_segments(fi, ocr=_NopOCR()))
+    assert any("李四" in s.text for s in segs)
+
+
+def test_mineru_batch_empty_parse_fails_closed(tmp_path, monkeypatch):
+    """解析出空（4.x 空正文形态）必须显式失败，禁 0 映射静默就绪。
+
+    变异对照：删掉 fail-closed 守卫（回归原样：空 segs 照常返回草稿）即红。
+    """
+    from app.services.agent_md_batch import build_mineru_segments
+
+    _patch_mineru(monkeypatch, _FakeMineruResult())  # 全空产物
+    fi = _mineru_pdf(tmp_path)
+    with pytest.raises(RuntimeError, match="parse_no_text"):
+        asyncio.run(build_mineru_segments(fi, ocr=_NopOCR()))
+
+
+def test_mineru_batch_unknown_schema_fails_closed_and_names_files(tmp_path, monkeypatch):
+    """未知形状（AC5③ 同源）：显式失败并点名文件，不静默。"""
+    from app.services.agent_md_batch import build_mineru_segments
+
+    _patch_mineru(monkeypatch, _FakeMineruResult(unknown_jsons=["weird.json"]))
+    fi = _mineru_pdf(tmp_path)
+    with pytest.raises(RuntimeError, match="weird.json"):
+        asyncio.run(build_mineru_segments(fi, ocr=_NopOCR()))
+
+
+def test_worker_fails_item_when_mineru_parse_is_empty(tmp_path, monkeypatch):
+    """端到端：空解析 → item FAILED（带 parse_no_text），不进 awaiting_review。"""
+
+    async def empty_parse(file_info, **kw):
+        raise RuntimeError("parse_no_text: MinerU 未解析出任何正文（v1/v2 两路均 0 字符）")
+
+    monkeypatch.setattr("app.services.agent_md_batch.build_mineru_segments", empty_parse)
+    store = _store(tmp_path)
+    fs = _fake_file_store(tmp_path, monkeypatch)
+    doc = tmp_path / "s.pdf"
+    doc.write_bytes(b"%PDF-1.4 fake")
+    _register_file(fs, "file-0", doc, file_type="pdf")
+    jid, item_ids = _make_agent_job(store, items=1)
+    _run_item(_queue_with_store(store), jid, item_ids[0], "file-0")
+    item = store.get_item(item_ids[0])
+    assert item["status"] == JobItemStatus.FAILED.value, item["status"]
+    assert "parse_no_text" in (item.get("error_message") or "")

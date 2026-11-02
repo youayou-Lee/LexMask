@@ -147,6 +147,7 @@
 - **更名（D1 拍板）**：模式定名**供料模式**——只改用户可见文案（zh/en i18n、README、接口基线标题），接口路径 `/agent-md`、内部标识 `agent_md_*`/`agentMd.*` key、占位符枚举 `placeholder` 零变化（改名判据进 CI：zh「喂Agent」/en「Feed Agent」旧词清零，可删即红）。
 - **批量第四通道（`agent_batch`）**：批量入口新增供料卡；五步向导按需裁剪——step1 只选文本识别项（替换方式锁定占位符，隐藏图像打码/水印）；step2 全格式放行（pdf/扫描/图片走 MinerU 解析，docx/doc/txt/md/rtf/html 文本直取，D3 拍板）；step3 队列逐份解析+NER（阶段进度 parsing/ner）；**step4 为逐份映射表确认**（保留原文/自定义替换值/缺省占位符，D2 拍板不做页面级预览；一键确认沿用 bulk_confirm 权限门控）；step5 导出 ZIP 含每份 脱敏MD+映射表+保留清单。
 - **后端**：新增 `JobType.AGENT_BATCH`（DDL CHECK 探针迁移至 `agent_batch`，旧库启动自动重建、幂等）；识别工人新增供料分支（草稿落 file_store `agent_md_draft`，watchdog 重入队幂等短路）；`commit_review`/`commit_all_reviews` 供料分支（渲染三产物替代 Redactor，同步完成不入队 redaction）；`reject` 语义=清草稿重识别；新增 `GET /jobs/{id}/items/{item_id}/agent-md-mapping`（与单文件 mapping 契约同构）；导出 `vl_md_meta` 附加入包。化名门控三入口对供料批同样生效。
+- **修正（本地 4.x 栈验收实测，2026-11-03）**：批量供料线的 MinerU 表示选择改接单文件线同款 `_choose_representation`——#220 的 4.x 归一（docvortex.middle）此前只接进单文件线，批量线只读 3.x `content_list_v2`，4.x 形态下静默出空稿（同一 PDF 单文件 8 实体/批量 0 实体 A/B 实证；生产实例 3.4.5 有 content_list_v2，云冒烟测不出，#217/#219 双 schema 并存设计所抓的形态差异）；并补 fail-closed 守卫——解析不出正文时 item 显式 FAILED（`parse_no_text` 三形态措辞与单文件一致），禁「0 映射静默就绪」。后端净 +5 例（4.x 经批量线出段 / 3.x 不回归 / 空稿 fail-closed / 未知形状点名 / 工人端到端 FAILED），专项 26/26 绿、全量失败集与基线逐字节一致（零回归）；端到端复验：canary-issue219 批量线 8 实体/成品 md 451 字符（修前 0/0）。
 - **边界**：单文件供料动线零改动（仅文案更名）；既有三条批量通道与 `vl_md` 直通分支零改动。
 
 ## 2026-10-18

@@ -56,8 +56,17 @@ async def build_mineru_segments(
     ocr=None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> list[Seg]:
-    """MinerU 解析 → 清洁段（与单文件供料 Stage1 同一套适配器）。"""
-    from app.services.agent_md_adapter import clean_segments, enrich_image_blocks, normalize_content_list
+    """MinerU 解析 → 清洁段（与单文件供料 Stage1 同一套适配器）。
+
+    #220×#196 交叉：表示选择复用单文件线 ``_choose_representation``——
+    4.x docvortex.middle 归一（含 pages 去重与 md 比值守卫）+ 3.x 双表示守卫。
+    此前只读 content_list_v2（3.x 口径），4.x 形态下静默出空稿（本地 4.x 栈
+    验收实测；生产 3.4.5 有 content_list_v2，云冒烟测不出）。
+    解析不出正文时显式 fail-closed（RuntimeError，措辞与单文件 parse_no_text
+    三形态一致），由批量工人 except 链落 item FAILED，禁「0 映射静默就绪」。
+    """
+    from app.services.agent_md_adapter import enrich_image_blocks
+    from app.services.agent_md_pipeline_service import AgentMdPipelineService
     from app.services.mineru_parse_client import MineruParseClient
 
     file_bytes = Path(str(file_info.get("file_path") or "")).read_bytes()
@@ -70,13 +79,30 @@ async def build_mineru_segments(
             on_progress(done, total)
 
     result = await mineru.wait_result(job_id, on_progress=_cb)
-    segs, warns = clean_segments(normalize_content_list(result.content_list_v2))
+    segs, warns, _stats, source = AgentMdPipelineService._choose_representation(result)
+    if segs is None:
+        raise RuntimeError(_parse_no_text_message(result, source))
     if ocr is None:
         from app.services.ocr_service import ocr_service as ocr
     segs, more = enrich_image_blocks(segs, result.images, ocr)
     for w in (*warns, *more):
         logger.warning("[agent-md-batch] adapter warning: %s", w)
     return segs
+
+
+def _parse_no_text_message(result: Any, source: str) -> str:
+    """解析空稿的失败消息（措辞与单文件线 parse_no_text 三形态对齐）。
+
+    与 agent_md_pipeline_service 的分支文案刻意同文——机读原因码统一
+    parse_no_text，owner 看到的失败原因不因单件/批量而异。
+    """
+    if source == "docvortex_middle" or getattr(result, "mineru4_docs", None):
+        return ("parse_no_text: MinerU 4.x 产物未解析出任何正文"
+                "（docvortex_middle 路 0 字符或文档 pages 不一致）")
+    if getattr(result, "unknown_jsons", None):
+        return ("parse_no_text: MinerU 产物 schema 无法识别"
+                f"（未知 JSON: {', '.join(result.unknown_jsons)}）")
+    return "parse_no_text: MinerU 未解析出任何正文（v1/v2 两路均 0 字符）"
 
 
 def resolve_agent_md_entity_types(entity_type_ids: list[str] | None, owner_id: str | None) -> list:
