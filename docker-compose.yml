@@ -249,6 +249,10 @@ services:
       - MINERU_SIDECAR_PORT=16581
       - MINERU_SIDECAR_WORKDIR=work/mineru-sidecar
       - MINERU_MODEL_SOURCE=local
+      # Issue#226: tier is selected by start_local.sh (--mineru-tier flash|standard);
+      # flash is the default — no resident vLLM engine, light VRAM. standard
+      # (≈6.5GB engine) is gated by the start script's VRAM budget checks.
+      - MINERU_SIDECAR_TIER=${MINERU_SIDECAR_TIER:-flash}
     volumes:
       # 模型库与解析缓存（容器以 root 跑，持久挂 MinerU 的家目录——评审 M7 修正路径）
       - mineru-cache:mineru-home

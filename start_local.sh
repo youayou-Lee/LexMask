@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# LexMask 本地 NVIDIA 开发环境启动脚本（Issue#217）
+# LexMask 本地 NVIDIA 开发环境启动脚本（Issue#217；MinerU 默认启用=Issue#226）
 #
-# 三档预设 + 三模型引擎（NER/OCR/LA）各自「本地 GPU / 云端自有实例隧道」二选：
-#   ./start_local.sh                       # 默认档：NER+OCR 本地 GPU，LA 关
-#   ./start_local.sh --with-visual         # 视觉档：+ 本地 LA（本地 OCR 不起，显存放不下）
+# 三档预设 + 模型引擎（NER/OCR/LA/MinerU）各自「本地 GPU / 云端自有实例隧道」二选：
+#   ./start_local.sh                       # 默认档：NER+OCR+MinerU(flash) 本地 GPU，LA 关
+#   ./start_local.sh --with-visual         # 视觉档：+ 本地 LA（本地 OCR/MinerU 让位，显存放不下）
 #   ./start_local.sh --cloud               # 全云档：仅界面+后端，模型全走云端隧道
 #
 # 引擎细粒度开关：
@@ -11,11 +11,17 @@
 #   --ocr gpu|cloud        OCR（PaddleOCR-VL 8082）默认 gpu
 #   --with-visual          本地 LA 视觉检测（8090），默认关
 #   --visual cloud         LA 走云端隧道，默认关
+#   --mineru-tier f|s      MinerU 档位 flash|standard，默认 flash（Issue#226）
+#                          standard≈6.5GB（含 vLLM 引擎）：与本地 OCR 互斥，表格型
+#                          硬骨头/质量优先场景用；更重负载上云实例（48GB）
+#   --no-mineru            不起 MinerU（显存极紧时）
+#   --mineru cloud         MinerU 走云端隧道
 #
 # 云端 = 自有实例的 SSH 隧道（转发现役端口），不是第三方云 API。
 # 隧道由你自己开（命令见私有辅仓 deploy 文档）；本脚本只做连通性预检。
 # 地址来源：环境变量或仓库根 .env 的 OCR_BASE_URL / VISUAL_FEATURES_BASE_URL /
-# HAS_TEXT_VLLM_BASE_URL；--xx cloud 而对应地址未配置时立即报错，不起半残栈。
+# HAS_TEXT_VLLM_BASE_URL / MINERU_API_BASE_URL；--xx cloud 而对应地址未配置时
+# 立即报错，不起半残栈。
 #
 # 红线（Issue#217）：脚本不内嵌任何地址/口令；真实案卷禁止发往第三方云服务。
 
@@ -27,8 +33,8 @@ cd "$REPO_ROOT"
 NER_MODE="gpu"
 OCR_MODE="gpu"
 VISUAL_MODE="off"   # off | local | cloud
-MINERU_MODE="off"   # off | local | cloud
-WITH_MINERU=0
+MINERU_MODE="local" # off | local | cloud（Issue#226：默认 local，flash 档）
+MINERU_TIER="flash" # flash | standard
 VRAM_GB="${LEXMASK_VRAM_GB:-12}"
 
 err()  { echo "[start_local] 错误：$*" >&2; exit 1; }
@@ -44,8 +50,10 @@ while [[ $# -gt 0 ]]; do
     --with-visual) VISUAL_MODE="local"; shift ;;
     --visual)      VISUAL_MODE="${2:?--visual 只接受 cloud（本地 LA 用 --with-visual）}"; [[ "$VISUAL_MODE" == "cloud" ]] || err "--visual 只接受 cloud"; shift 2 ;;
     --cloud)       NER_MODE="cloud"; OCR_MODE="cloud"; VISUAL_MODE="cloud"; MINERU_MODE="cloud"; shift ;;
-    --with-mineru) MINERU_MODE="local"; shift ;;
-    --mineru)      MINERU_MODE="${2:?--mineru 只接受 cloud（本地用 --with-mineru）}"; [[ "$MINERU_MODE" == "cloud" ]] || err "--mineru 只接受 cloud"; shift 2 ;;
+    --with-mineru) MINERU_MODE="local"; shift ;;  # Issue#226 起为默认，保留仅作向后兼容
+    --no-mineru)   MINERU_MODE="off"; shift ;;
+    --mineru)      MINERU_MODE="${2:?--mineru 只接受 cloud（本地默认已启用，关闭用 --no-mineru）}"; [[ "$MINERU_MODE" == "cloud" ]] || err "--mineru 只接受 cloud"; shift 2 ;;
+    --mineru-tier) MINERU_TIER="${2:?--mineru-tier 需要 flash|standard}"; shift 2 ;;
     -h|--help)     usage ;;
     *) echo "未知参数: $1（--help 查看用法）" >&2; exit 2 ;;
   esac
@@ -54,6 +62,10 @@ done
 [[ "$NER_MODE" == "gpu" || "$NER_MODE" == "cloud" ]] || err "--ner 只接受 gpu|cloud"
 [[ "$OCR_MODE" == "gpu" || "$OCR_MODE" == "cloud" ]] || err "--ocr 只接受 gpu|cloud"
 [[ "$VISUAL_MODE" == "off" || "$VISUAL_MODE" == "local" || "$VISUAL_MODE" == "cloud" ]] || err "VISUAL_MODE 非法"
+[[ "$MINERU_TIER" == "flash" || "$MINERU_TIER" == "standard" ]] || err "--mineru-tier 只接受 flash|standard"
+if [[ "$MINERU_MODE" == "cloud" && "$MINERU_TIER" != "flash" ]]; then
+  warn "--mineru-tier 只作用于本地 MinerU，云端档忽略（云端档位由实例侧决定）"
+fi
 
 # ---- 真机显存探测（先于互斥校验：判据按实际显存算）-------------------------
 vram_free_mb() {
@@ -72,21 +84,29 @@ else
   warn "未检测到 nvidia-smi——本地 GPU 档可能在无 NVIDIA 环境误用"
 fi
 
-# ---- 互斥与显存预算（验收 A9④）-------------------------------------------
+# ---- 互斥与显存预算（验收 A9④；MinerU 档位预算=Issue#226）-----------------
+# MinerU 预估：flash ≈2GB（无 vLLM 引擎，#217 实测）；standard ≈6.5GB
+# （vLLM 引擎 5.4GB + api/doclib ≈1GB，2026-11-02 实测 196 栈）
 if [[ "$MINERU_MODE" == "local" && "$VISUAL_MODE" == "local" ]]; then
-  err "本地 MinerU（≈3-4GB）与本地 LA（≈9GB）叠加 NER 超出 ${VRAM_GB}GB 显存——MinerU 改用 --mineru cloud，或去掉 --with-visual"
+  err "本地 MinerU（flash≈2GB/standard≈6.5GB）与本地 LA（≈9GB）叠加 NER 超出 ${VRAM_GB}GB 显存——MinerU 改用 --mineru cloud，或去掉 --with-visual"
 fi
 if [[ "$VISUAL_MODE" == "local" && "$OCR_MODE" == "gpu" ]]; then
   err "本地 LA（≈9GB）与本地 GPU OCR（≈3GB）叠加 NER（≈2GB）超出 ${VRAM_GB}GB 显存——改用 --ocr cloud，或去掉 --with-visual"
+fi
+if [[ "$MINERU_MODE" == "local" && "$MINERU_TIER" == "standard" && "$OCR_MODE" == "gpu" ]]; then
+  err "本地 MinerU standard（≈6.5GB，含 vLLM 引擎）与本地 GPU OCR（≈3GB）叠加 NER 超出 ${VRAM_GB}GB 显存——OCR 改用 --ocr cloud，或用默认 flash 档；standard 的完整形态建议上云实例"
 fi
 if [[ "$VISUAL_MODE" == "local" ]]; then
   warn "视觉档：本地 OCR 不启动（要 OCR 请叠加 --ocr cloud）"
 fi
 
-# 预估：NER 2.2 / OCR 3 / LA 9（Issue#217 设计 §5 资源账）
+# 预估：NER 2.2 / OCR 3 / LA 9 / MinerU flash 2 / standard 6.5（Issue#217 设计 §5 资源账 + #226 实测）
 NEED_MB=2200
 [[ "$OCR_MODE" == "gpu" ]] && NEED_MB=$((NEED_MB + 3000))
 [[ "$VISUAL_MODE" == "local" ]] && NEED_MB=$((NEED_MB + 9000))
+if [[ "$MINERU_MODE" == "local" ]]; then
+  [[ "$MINERU_TIER" == "flash" ]] && NEED_MB=$((NEED_MB + 2000)) || NEED_MB=$((NEED_MB + 6500))
+fi
 if [[ "$FREE_MB" -gt 0 && "$FREE_MB" -lt "$NEED_MB" ]]; then
   warn "显存吃紧：预估需要 $((NEED_MB / 1024))GB，当前空闲 $((FREE_MB / 1024))GB——继续启动，但可能 OOM（验收判据 A2 会盯 restart 计数与日志）"
 fi
@@ -165,7 +185,12 @@ PROFILES=()
 COMPOSE_PROFILES_ARGS=()
 for p in "${PROFILES[@]}"; do [[ -n "$p" ]] && COMPOSE_PROFILES_ARGS+=(--profile "$p"); done
 
-info "启动档位：NER=${NER_MODE} OCR=${OCR_MODE} LA=${VISUAL_MODE} MinerU=${MINERU_MODE}"
+# Issue#226：档位透传给 compose（mineru 服务按 MINERU_SIDECAR_TIER 选档）
+if [[ "$MINERU_MODE" == "local" ]]; then
+  export MINERU_SIDECAR_TIER="$MINERU_TIER"
+fi
+
+info "启动档位：NER=${NER_MODE} OCR=${OCR_MODE} LA=${VISUAL_MODE} MinerU=${MINERU_MODE}$( [[ "$MINERU_MODE" == "local" ]] && echo "(${MINERU_TIER})" )"
 [[ -n "$CLOUD_ADDR_NER" ]]    && info "  NER 云端 → $CLOUD_ADDR_NER"
 [[ -n "$CLOUD_ADDR_OCR" ]]    && info "  OCR 云端 → $CLOUD_ADDR_OCR"
 [[ -n "$CLOUD_ADDR_VISUAL" ]] && info "  LA  云端 → $CLOUD_ADDR_VISUAL"
