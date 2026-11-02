@@ -1523,7 +1523,7 @@ const enOverrides: Record<string, string> = {
     'This deployment is protected. Set the first admin password to continue.',
   'auth.setup.submit': 'Create password',
   'auth.setup.hint':
-    'Use a password of 6-16 characters.',
+    'Password must be 6-16 characters.',
   'auth.username': 'Username',
   'auth.username.placeholder': 'Enter username',
   'auth.password': 'Password',
