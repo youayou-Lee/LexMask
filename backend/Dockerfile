@@ -7,16 +7,21 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Runtime dependencies for the lightweight API image.
-# Issue#217: LibreOffice is NOT baked into this image. dpkg's unpack of the
-# LibreOffice package set peaks at ~12.4GB RSS (swap exhausted, earlyoom kills
-# apt on small dev hosts; DocumentFoundation mirrors also block bulk GET), so
-# the runtime mounts the host's soffice read-only instead (see compose):
-#   /usr/lib/libreoffice + /usr/bin/soffice + /etc/libreoffice
-# Hosts running this Docker deployment therefore need:
-#   sudo apt-get install --no-install-recommends libreoffice-writer-nogui
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 libxinerama1 libpng16-16t64 \
-    && rm -rf /var/lib/apt/lists/*
+# LibreOffice is baked in (full dpkg install). History: Issue#217 recorded a
+# ~12.4GB RSS peak during dpkg unpack and switched to mounting the HOST's
+# soffice read-only instead; that mount broke on hosts whose libc/ICU don't
+# match the image's Debian base (2026-11-03: on Ubuntu 25.x hosts soffice
+# forks die on ~30 missing host-only libs and .doc conversion returns
+# placeholder error text). A 2026-11-03 measurement on python:3.11-slim
+# (trixie, LO 25.2) put the whole install's peak dpkg/apt RSS at ~73MB and
+# `soffice --version` passes in-image — so we bake it properly. If a future
+# base changes this picture, re-measure before reintroducing hacks.
+RUN set -eux; \
+    sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        libgl1 libglib2.0-0 libxinerama1 libpng16-16t64 libreoffice-writer-nogui; \
+    rm -rf /var/lib/apt/lists/*
 
 # Keep model-serving stacks out of the default backend image. GPU/OCR/vision
 # dependencies are installed by their profile-gated service images instead.
@@ -26,10 +31,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # missing runtime deps this image needs (SQLAlchemy, PyMySQL, psycopg,
 # numpy, opencv-python-headless, openpyxl).
 COPY requirements-ci.txt .
-# Issue#217: the mounted /usr/bin/soffice wrapper resolves its launcher
-# relative to its own directory (/usr/bin/oosplash); symlink it to the real
-# launcher inside the mounted LibreOffice tree.
-RUN ln -s /usr/lib/libreoffice/program/oosplash /usr/bin/oosplash
 # Issue#217: pip index is overridable at build time. Default = Aliyun mirror
 # (direct domestic connection — the image build environment may not inherit
 # the host's SOCKS proxy, where a direct pypi.org route stalls/hangs; TUNA's

@@ -2,6 +2,15 @@
 
 ## 2026-11-03
 
+### 修正（Issue#217）LibreOffice 烘焙进 backend 镜像——废弃宿主 soffice 挂载
+
+- **为什么**：#217 因「dpkg 解包 LO 峰值 12.4GB RSS」改挂宿主 soffice；实测该方案在新宿主机（Ubuntu 25.x）上因 ABI 代差失效——单文件 bind mount 丢符号链接（容器内 `$0` 解析错位找不到 pagein-common），补 wrapper 后仍缺 30+ 宿主系统库（icu74/glibc 2.41 vs 容器 Debian 基座），.doc 转换产出占位错误文案（真实案卷冒烟 2026-11-03 抓出）。
+- **改了什么**：`backend/Dockerfile` 直接 `apt-get install libreoffice-writer-nogui` 烘焙进镜像（**2026-11-03 实测整装 dpkg/apt 峰值 RSS ≈73MB，推翻 12.4GB 旧记录**——旧值系当时基镜像版本的环境产物，Record 已在注释中留痕）；`docker-compose.yml` 删宿主三挂载；`start_local.sh` 删宿主 LibreOffice 预检警告（不再依赖宿主）。
+- **测试**：镜像内 `soffice --version` 通过；本地栈端到端——.doc 真卷走 agent_batch 供料线，映射表 8 条（修前 0 条）、三产物齐全、映射原文值零残留；CI docker-build 即构建验证。
+- **边界**：镜像体积增大（LO nogui ≈+500MB）；云端部署同镜像受益，无需宿主预装。
+
+=======
+
 ### 修正（Issue#224）MinerU 4.x 纯文本 table_body 全量丢失——表格型案卷 0 实体
 
 - **为什么**：真卷验收发现（表格型扫描 PDF 走供料模式报「未识别到任何敏感实体」）：4.x flash 对扫描表格输出的 `table_body` 是**纯文本版面文字（无 HTML 标签）**，`table_to_text` 只收集 `<td>/<th>` 单元格 → 解析 0 行返回空 → `clean_segments` 记 `empty table block`，表格正文（真卷实测 47,256 字符）fail-open 全量丢弃，NER 只见 23 字符。既有夹具的 `table_body` 全是合成 HTML，与真实 4.x 形态不同源，测试未覆盖。#219 已知边界「4.x 比值守卫 warning-only 无回落」是同一风险另一面；本例在更上游（归一层有货、清洁层扔光）。
