@@ -420,18 +420,10 @@ def revoke_token(token: str) -> None:
 
 
 def validate_password_strength(password: str) -> list[str]:
-    """Validate password complexity. Returns a list of error messages."""
+    """Validate password. Only length is enforced (6-16 chars). Returns error messages."""
     errors: list[str] = []
-    if len(password) < 8:
-        errors.append("Password must be at least 8 characters long.")
-    if not any(c.isupper() for c in password):
-        errors.append("Password must include at least one uppercase letter.")
-    if not any(c.islower() for c in password):
-        errors.append("Password must include at least one lowercase letter.")
-    if not any(c.isdigit() for c in password):
-        errors.append("Password must include at least one number.")
-    if not any(not c.isalnum() for c in password):
-        errors.append("Password must include at least one symbol.")
+    if not 6 <= len(password) <= 16:
+        errors.append("Password must be 6-16 characters long.")
     return errors
 
 

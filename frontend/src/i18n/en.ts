@@ -1535,7 +1535,7 @@ const enOverrides: Record<string, string> = {
     'This deployment is protected. Set the first admin password to continue.',
   'auth.setup.submit': 'Create password',
   'auth.setup.hint':
-    'Use a strong password with uppercase, lowercase, number, and special character.',
+    'Password must be 6-16 characters.',
   'auth.username': 'Username',
   'auth.username.placeholder': 'Enter username',
   'auth.password': 'Password',
@@ -1548,7 +1548,7 @@ const enOverrides: Record<string, string> = {
   'auth.changePassword.old': 'Current password',
   'auth.changePassword.new': 'New password',
   'auth.changePassword.policy':
-    'At least 8 characters with upper/lowercase letters, a number and a symbol.',
+    'Password must be 6-16 characters.',
   'auth.changePassword.mismatch': 'The two new passwords do not match.',
   'auth.changePassword.failed': 'Change failed. Please try again.',
   'auth.changePassword.saving': 'Submitting...',
