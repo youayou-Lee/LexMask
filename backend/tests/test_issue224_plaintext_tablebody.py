@@ -15,8 +15,6 @@
 """
 from __future__ import annotations
 
-import asyncio
-
 from app.models.schemas import Entity
 from app.services.agent_md_adapter import (
     CleanStats,
@@ -172,53 +170,55 @@ def test_choose_representation_keeps_plaintext_tables():
 
 
 def test_stage1_mapping_contains_table_entities(tmp_path, monkeypatch):
-    """run_agent_md_stage1：纯文本表格内容进 NER → 映射表含表格内实体。"""
+    """管线级：纯文本表格内容经单文件供料 Stage1 进 NER → 映射表含表格内实体。
 
-    from app.services.agent_md_batch import run_agent_md_stage1
-    from tests.test_issue196_agent_batch import FakeNER  # 复用既有假件
+    走 AgentMdPipelineService（单文件线，preview 自洽）；批量线复用同一
+    _choose_representation/clean_segments（AC4 已在真栈端到端覆盖接线）。
+    """
+    import fitz
 
-    class _FakeClient:
-        def __init__(self, result):
-            self._result = result
-
-        async def submit(self, *, file_bytes, filename):
-            return "task-1"
-
-        async def wait_result(self, job_id, on_progress=None):
-            return self._result
+    from app.services.agent_md_pipeline_service import AgentMdPipelineService
+    from app.services.agent_md_types import TaskState
+    from app.services.mineru_parse_client import MineruResult
 
     doc = _v4_doc([(0, [{
         "type": "table", "index": 0, "bbox": [0, 0, 1, 1],
         "content": [{"type": "table_body", "content":
             "被查询对象  张某某\n证件号  110101199001011234\n电话  13800001234"}],
     }])])
-    pdf = tmp_path / "probe.pdf"
-    pdf.write_bytes(b"%PDF-1.4 fake")
-    file_info = {"file_id": "f1", "filename": "probe.pdf", "original_filename": "probe.pdf",
-                 "file_path": str(pdf), "file_type": "pdf", "owner_id": "u1"}
-    monkeypatch.setattr(
-        "app.services.mineru_parse_client.MineruParseClient",
-        lambda *a, **k: _FakeClient(_FakeMineruResult(mineru4_docs=[doc])),
-    )
 
-    class _NopNER(FakeNER):
-        def __init__(self):
-            super().__init__([[("PERSON", "", 0, 3), ("PHONE", "", 0, 11)]])
+    class _FakeMineru224:
+        async def submit(self, file_bytes, filename):
+            return "job-1"
 
+        async def wait_result(self, task_id, on_progress=None):
+            if on_progress:
+                on_progress(1, 1)
+            return MineruResult(md="", mineru4_docs=[doc])
+
+    class _FakeOcr224:
+        def extract_text_boxes(self, image_bytes):
+            return []
+
+    class _FakeNer224:
         async def extract(self, text, entity_types):
-            self.calls.append(text)
             ents = []
-            if "张某某" in text:
-                s = text.index("张某某")
-                ents.append(Entity(id="e1", text="张某某", type="PERSON", start=s, end=s + 3, page=1))
-            if "13800001234" in text:
-                s = text.index("13800001234")
-                ents.append(Entity(id="e2", text="13800001234", type="PHONE", start=s, end=s + 11, page=1))
+            for name, typ in (("张某某", "PERSON"), ("13800001234", "PHONE")):
+                idx = text.find(name)
+                if idx >= 0:
+                    ents.append(Entity(id=name, text=name, type=typ, start=idx, end=idx + len(name)))
             return ents
 
-    monkeypatch.setattr(
-        "app.services.hybrid_ner_service.HybridNERService", lambda: _NopNER())
-    draft = asyncio.run(run_agent_md_stage1(file_info, {}, owner_id="u1"))
-    texts = [m["original_text"] for m in draft["mapping"]]
+    pdf = tmp_path / "probe.pdf"
+    fdoc = fitz.open()
+    fdoc.new_page()
+    fdoc.save(str(pdf))
+    fdoc.close()
+    svc = AgentMdPipelineService(
+        mineru_client=_FakeMineru224(), ocr=_FakeOcr224(), ner=_FakeNer224(),
+        entity_types=[], output_dir=str(tmp_path),
+    )
+    task = svc.create_task_nowait(str(pdf), "probe.pdf")
+    assert task.state == TaskState.MAPPING_READY
+    texts = [m.original_text for m in task.mapping]
     assert "张某某" in texts and "13800001234" in texts
-    assert draft["carrier"] == "mineru"
