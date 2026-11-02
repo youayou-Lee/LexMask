@@ -27,11 +27,12 @@ import {
 
 import {
   buildJobConfigForWorker,
-  deriveReviewConfirmed,
   effectiveWizardFurthestStep,
+  buildRowsFromJobDetailItems,
   isBatchWizardMode,
+  isHydratableBatchJobType,
   isJobConfigLockedError,
-  mapBackendStatus,
+  jobTypeNavForHydrate,
   mergeJobConfigIntoWizardCfg,
   readLocalWizardMaxStep,
   toBatchJobType,
@@ -47,9 +48,7 @@ import { useBatchPolling } from './use-batch-polling';
 import { useBatchReview } from './use-batch-review';
 import { useBatchSubmit } from './use-batch-submit';
 import {
-  isBatchImageMode,
   isMaskModeSupportedFileType,
-  resolveBatchFileType,
 } from '../utils/file-type';
 
 export function useBatchWizard() {
@@ -477,8 +476,7 @@ export function useBatchWizard() {
       try {
         const detail = await getJob(jobId, { performance: false });
         if (hydrateGen !== batchHydrateGenRef.current) return;
-        const validTypes: string[] = ['smart_batch', 'text_batch', 'image_batch'];
-        if (!validTypes.includes(detail.job_type)) {
+        if (!isHydratableBatchJobType(detail.job_type)) {
           setMsg({ text: t('batchWizard.jobTypeMismatch'), tone: 'warn' });
           return;
         }
@@ -487,11 +485,7 @@ export function useBatchWizard() {
         const jc = detail.config as Record<string, unknown>;
         const mergedCfg = mergeJobConfigIntoWizardCfg(cfg, jc);
 
-        const jobTypeNav = (
-          ['smart_batch', 'text_batch', 'image_batch'].includes(detail.job_type)
-            ? detail.job_type
-            : 'smart_batch'
-        ) as 'smart_batch' | 'text_batch' | 'image_batch';
+        const jobTypeNav = jobTypeNavForHydrate(detail.job_type);
         const restoredFurthest: Step | null = effectiveWizardFurthestStep({
           jobConfig: jc,
           navHints: detail.nav_hints,
@@ -584,38 +578,10 @@ export function useBatchWizard() {
         const fileIdToItemId = Object.fromEntries(
           hydratedItems.map((entry) => [entry.item.file_id, entry.item.id]),
         );
-        const rowsFromJob: BatchRow[] = hydratedItems.map((entry) => {
-          const rowInfo = entry.info;
-          const isScanned = Boolean(rowInfo.is_scanned);
-          const rowFileType = resolveBatchFileType(
-            entry.item.file_type ?? rowInfo.file_type,
-            isScanned,
-          );
-          return {
-            file_id: entry.item.file_id,
-            original_filename: String(
-              rowInfo.original_filename ?? entry.item.filename ?? entry.item.file_id,
-            ),
-            file_size: Number(rowInfo.file_size ?? 0),
-            file_type: rowFileType,
-            created_at: String(rowInfo.created_at ?? entry.item.created_at ?? ''),
-            has_output: Boolean(rowInfo.output_path ?? entry.item.has_output),
-            reviewConfirmed: deriveReviewConfirmed(entry.item),
-            hasReviewDraft: Boolean(entry.item.has_review_draft),
-            entity_count:
-              typeof entry.item.entity_count === 'number'
-                ? entry.item.entity_count
-                : Array.isArray(rowInfo.entities)
-                  ? rowInfo.entities.length
-                  : 0,
-            analyzeStatus: mapBackendStatus(entry.item.status),
-            analyzeError:
-              entry.item.status === 'failed' || entry.item.status === 'cancelled'
-                ? entry.item.error_message || t('batchWizard.actionFailed')
-                : undefined,
-            isImageMode: isBatchImageMode(rowFileType),
-          };
-        });
+        const rowsFromJob: BatchRow[] = buildRowsFromJobDetailItems(
+          detail.items,
+          { analyzeErrorFallback: t('batchWizard.actionFailed') },
+        );
 
         const reviewableRows = rowsFromJob.filter((row) =>
           RECOGNITION_DONE_STATUSES.has(row.analyzeStatus),

@@ -117,3 +117,80 @@ describe('供料模式改名（Issue#196 D1）：用户可见文案旧词清零'
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 向导任务恢复白名单（浏览器验收发现的缺口）：任务中心「继续审阅」深链对
+// agent_batch 必须可用——use-batch-wizard 的 hydrate 白名单此前漏了
+// agent_batch，恢复时误报「当前任务类型与这个流程不匹配」并退回 step1。
+// ---------------------------------------------------------------------------
+
+describe('供料批向导恢复（hydrate 白名单）', () => {
+  it('isHydratableBatchJobType：agent_batch 可恢复，四通道齐、非批拒', async () => {
+    const { isHydratableBatchJobType } = await import('./hooks/use-batch-wizard-utils');
+    expect(isHydratableBatchJobType('agent_batch')).toBe(true);
+    expect(isHydratableBatchJobType('smart_batch')).toBe(true);
+    expect(isHydratableBatchJobType('text_batch')).toBe(true);
+    expect(isHydratableBatchJobType('image_batch')).toBe(true);
+    expect(isHydratableBatchJobType('single')).toBe(false);
+    expect(isHydratableBatchJobType('structured_batch')).toBe(false);
+    expect(isHydratableBatchJobType('')).toBe(false);
+  });
+
+  it('jobTypeNavForHydrate：agent_batch 原样透传，不回落 smart_batch', async () => {
+    const { jobTypeNavForHydrate } = await import('./hooks/use-batch-wizard-utils');
+    expect(jobTypeNavForHydrate('agent_batch')).toBe('agent_batch');
+    expect(jobTypeNavForHydrate('smart_batch')).toBe('smart_batch');
+    expect(jobTypeNavForHydrate('single')).toBe('smart_batch');
+  });
+});
+
+describe('供料批向导恢复（hydrate 行装载带 item_id）', () => {
+  // 缺口同源：use-batch-wizard hydrate 重建的 BatchRow 未带 item_id，刷新后
+  // step4 的 reviewableAgentRows 按 Boolean(row.item_id) 过滤 → 供料审阅页空。
+  // 正常流程行来自文件列表 API（自带 item_id），所以「初进可用、刷新必坏」。
+  const ITEMS = [
+    {
+      id: 'item-1',
+      file_id: 'file-1',
+      filename: 'a.pdf',
+      file_type: 'pdf',
+      status: 'awaiting_review',
+      has_output: false,
+      entity_count: 8,
+      created_at: '2026-11-03T01:00:00',
+      has_review_draft: false,
+      error_message: null,
+    },
+    {
+      id: 'item-2',
+      file_id: 'file-2',
+      filename: 'b.txt',
+      file_type: 'txt',
+      status: 'completed',
+      has_output: true,
+      entity_count: 3,
+      created_at: '2026-11-03T01:01:00',
+      has_review_draft: true,
+      error_message: null,
+    },
+  ];
+
+  it('buildRowsFromJobDetailItems：行带 item_id 且状态映射正确', async () => {
+    const { buildRowsFromJobDetailItems } = await import('./hooks/use-batch-wizard-utils');
+    const rows = buildRowsFromJobDetailItems(ITEMS, { analyzeErrorFallback: '失败' });
+    expect(rows.map((r) => r.item_id)).toEqual(['item-1', 'item-2']);
+    expect(rows.map((r) => r.analyzeStatus)).toEqual(['awaiting_review', 'completed']);
+    expect(rows[0].file_id).toBe('file-1');
+    expect(rows[1].reviewConfirmed).toBe(true);
+  });
+
+  it('失败行带错误消息，未失败行不带', async () => {
+    const { buildRowsFromJobDetailItems } = await import('./hooks/use-batch-wizard-utils');
+    const rows = buildRowsFromJobDetailItems(
+      ITEMS.map((i) => ({ ...i, status: 'failed', error_message: 'boom' })),
+      { analyzeErrorFallback: '失败' },
+    );
+    expect(rows[0].analyzeStatus).toBe('failed');
+    expect(rows[0].analyzeError).toBe('boom');
+  });
+});

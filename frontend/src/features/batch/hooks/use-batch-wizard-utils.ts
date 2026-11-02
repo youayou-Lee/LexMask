@@ -15,6 +15,7 @@ import { buildFallbackPreviewEntityMap } from '@/utils/textRedactionSegments';
 import { queryClient } from '@/lib/query-client';
 import { queryKeys } from '@/lib/query-keys';
 
+import { isBatchImageMode, resolveBatchFileType } from '../utils/file-type';
 import type { BatchRow, PipelineCfg, ReviewEntity, Step, TextEntityType } from '../types';
 
 // ── Pure helpers ──
@@ -30,6 +31,65 @@ export function toBatchJobType(mode: BatchWizardMode): BatchJobType {
   if (mode === 'image') return 'image_batch';
   if (mode === 'agent') return 'agent_batch';
   return 'smart_batch';
+}
+
+// 任务中心深链恢复（use-batch-wizard hydrate）可接管的 job_type 白名单。
+// 供料批（agent_batch）必须在列——此前漏掉，任务中心「继续审阅」对供料批
+// 误报「任务类型不匹配」并退回 step1（浏览器验收发现的缺口）。
+const HYDRATABLE_BATCH_JOB_TYPES: readonly BatchJobType[] = [
+  'smart_batch',
+  'text_batch',
+  'image_batch',
+  'agent_batch',
+];
+
+export function isHydratableBatchJobType(jobType: string): boolean {
+  return (HYDRATABLE_BATCH_JOB_TYPES as readonly string[]).includes(jobType);
+}
+
+export function jobTypeNavForHydrate(jobType: string): BatchJobType {
+  return isHydratableBatchJobType(jobType) ? (jobType as BatchJobType) : 'smart_batch';
+}
+
+export function buildRowsFromJobDetailItems(
+  items: Array<{
+    id: string;
+    file_id: string;
+    filename?: string | null;
+    file_type?: string | null;
+    status?: string | null;
+    has_output?: boolean | null;
+    entity_count?: number | unknown;
+    created_at?: string | null;
+    has_review_draft?: boolean | null;
+    error_message?: string | null;
+  }>,
+  opts: { analyzeErrorFallback: string },
+): BatchRow[] {
+  // 任务中心深链恢复（hydrate）的行装载。item_id 必须带上——step4 供料审阅按
+  // Boolean(row.item_id) 过滤，缺了它「初进可用、刷新必坏」（浏览器验收发现的缺口）。
+  // hydrate 载荷缺 file_size/is_scanned：安全缺省（与既有 fan-out 砍除后的行为一致）。
+  return items.map((item) => {
+    const rowFileType = resolveBatchFileType(item.file_type, false);
+    return {
+      file_id: item.file_id,
+      original_filename: String(item.filename ?? item.file_id),
+      file_size: 0,
+      file_type: rowFileType,
+      created_at: String(item.created_at ?? ''),
+      has_output: Boolean(item.has_output),
+      reviewConfirmed: deriveReviewConfirmed({ status: String(item.status ?? ''), has_output: item.has_output }),
+      hasReviewDraft: Boolean(item.has_review_draft),
+      entity_count: typeof item.entity_count === 'number' ? item.entity_count : 0,
+      analyzeStatus: mapBackendStatus(item.status ?? ''),
+      analyzeError:
+        item.status === 'failed' || item.status === 'cancelled'
+          ? item.error_message || opts.analyzeErrorFallback
+          : undefined,
+      isImageMode: isBatchImageMode(rowFileType),
+      item_id: item.id,
+    };
+  });
 }
 
 export function mapBackendStatus(status: string): BatchRow['analyzeStatus'] {
