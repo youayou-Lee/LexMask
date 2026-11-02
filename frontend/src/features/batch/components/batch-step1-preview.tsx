@@ -53,7 +53,9 @@ function BatchStep1PreviewCardsInner({
 }: BatchStep1PreviewCardsProps) {
   const t = useT();
   const showTextPreview = mode !== 'image';
-  const showImagePreview = mode !== 'text';
+  // 供料模式（Issue#196）与文本模式同口径：无图像打码配置，图像总览卡一并隐藏
+  //（配置卡在 BatchStep1PresetCards 已门控，本处补总览卡——本地浏览器验收发现的缺口）。
+  const showImagePreview = mode !== 'text' && mode !== 'agent';
 
   const previewDialogConfig: PreviewDialogConfig | null =
     previewDialog === 'text'

@@ -24,6 +24,10 @@ def is_file_type_allowed_for_job_type(job_type: JobType | str, file_type: Any) -
         return ft in {FileType.IMAGE.value, FileType.PDF.value, FileType.PDF_SCANNED.value}
     if jt == JobType.SINGLE.value:
         return True
+    # Issue#196 供料批量：与 smart 同口径全放行——MinerU 件（pdf/扫描/图片）走解析，
+    # 文本件（docx/doc/txt/md/rtf/html）直取，混合批次允许。
+    if jt == JobType.AGENT_BATCH.value:
+        return True
     return False
 
 

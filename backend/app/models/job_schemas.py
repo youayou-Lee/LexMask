@@ -73,7 +73,7 @@ class JobEmbedSummary(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     status: str
-    job_type: Literal["text_batch", "image_batch", "smart_batch", "structured_batch"]
+    job_type: Literal["text_batch", "image_batch", "smart_batch", "structured_batch", "agent_batch"]
     items: list[JobItemMini] = Field(default_factory=list)
     progress: JobProgress = Field(default_factory=JobProgress)
     wizard_furthest_step: int | None = Field(
@@ -803,7 +803,7 @@ class ReviewDraftResponse(BaseModel):
 # ─── Job Request Models ───
 
 class JobCreateBody(BaseModel):
-    job_type: Literal["text_batch", "image_batch", "smart_batch", "structured_batch"]
+    job_type: Literal["text_batch", "image_batch", "smart_batch", "structured_batch", "agent_batch"]
     title: str = ""
     config: dict[str, Any] = Field(default_factory=dict)
     skip_item_review: bool = False
@@ -819,6 +819,9 @@ class ReviewDraftBody(BaseModel):
     entities: list[Entity] = Field(default_factory=list)
     bounding_boxes: list[BoundingBox] = Field(default_factory=list)
     updated_at: str | None = None
+    # Issue#196 供料批量：映射表决策（[{id, action: keep|exclude|custom, replacement?}]）。
+    # 供料 item 的审阅对象是映射表而非实体勾选；普通批量该键恒缺省，行为不变。
+    agent_md_decisions: list[dict[str, Any]] | None = None
 
 
 class ReviewCommitBody(ReviewDraftBody):

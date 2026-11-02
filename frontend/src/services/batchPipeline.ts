@@ -54,7 +54,7 @@ export function flattenBoundingBoxesFromStore(raw: unknown): Array<Record<string
   return [];
 }
 
-export type BatchWizardMode = 'text' | 'image' | 'smart';
+export type BatchWizardMode = 'text' | 'image' | 'smart' | 'agent';
 
 const LEGACY_BATCH_WIZARD_KEY = 'batchWizard:config:v1';
 

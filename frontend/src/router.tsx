@@ -208,7 +208,7 @@ function AuthRoute() {
 
 function BatchRoute() {
   const { batchMode } = useParams();
-  if (batchMode !== 'smart') {
+  if (batchMode !== 'smart' && batchMode !== 'agent') {
     return <Navigate to="/batch" replace />;
   }
   return (

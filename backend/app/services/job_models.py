@@ -21,6 +21,7 @@ class JobType(str, Enum):
     IMAGE_BATCH = "image_batch"
     SMART_BATCH = "smart_batch"
     STRUCTURED_BATCH = "structured_batch"
+    AGENT_BATCH = "agent_batch"      # 供料模式（原「喂Agent」，Issue#196）：逐份产出脱敏 MD+映射表+保留清单
     SINGLE = "single"
 
 
@@ -143,7 +144,7 @@ def _deep_merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, A
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
-  job_type TEXT NOT NULL CHECK(job_type IN ('text_batch','image_batch','smart_batch','structured_batch','single')),
+  job_type TEXT NOT NULL CHECK(job_type IN ('text_batch','image_batch','smart_batch','structured_batch','agent_batch','single')),
   title TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL,
   skip_item_review INTEGER NOT NULL DEFAULT 0,

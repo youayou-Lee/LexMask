@@ -13,6 +13,7 @@ import { tonePanelClass } from '@/utils/toneClasses';
 import { useBatchWizardContext } from '../batch-wizard-context';
 import { getNextRequiredReviewPageTarget, getNextReviewIndex } from '../lib/review-navigation';
 import { RECOGNITION_DONE_STATUSES, type BatchRow } from '../types';
+import { BatchStep4AgentReview } from './batch-step4-agent-review';
 import { ReviewImageContent } from './review-image-content';
 import { ReviewTextContent } from './review-text-content';
 
@@ -240,6 +241,11 @@ export function BatchStep4Review() {
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
   }, []);
+
+  // 供料模式（Issue#196）：审阅对象是映射表而非实体/页面，整块走专用组件。
+  if (w.mode === 'agent') {
+    return <BatchStep4AgentReview />;
+  }
 
   if (!doneRows.length) {
     return (

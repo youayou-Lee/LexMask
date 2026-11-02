@@ -2,7 +2,12 @@
 
 import type { JobSummary, JobTypeApi } from '@/services/jobsApi';
 
-export type JobTypeForNav = 'text_batch' | 'image_batch' | 'smart_batch' | 'structured_batch';
+export type JobTypeForNav =
+  | 'text_batch'
+  | 'image_batch'
+  | 'smart_batch'
+  | 'structured_batch'
+  | 'agent_batch';
 
 /**
  * 批量向导导航的 job_type 边界。JobTypeApi 含 'single'，但批量向导路由不接收
@@ -18,7 +23,7 @@ export type PrimaryNavAction =
   | { kind: 'link'; label: string; to: string }
   | { kind: 'none'; reason?: string };
 
-type BatchRouteMode = 'text' | 'image' | 'smart';
+type BatchRouteMode = 'text' | 'image' | 'smart' | 'agent';
 
 export type JobPrimaryNavigationLabels = {
   continueConfig: string;
@@ -80,11 +85,12 @@ function resolveBatchRouteMode(
   jobConfig?: Record<string, unknown> | null,
 ): BatchRouteMode {
   const wizardMode = jobConfig?.batch_wizard_mode;
-  if (wizardMode === 'text' || wizardMode === 'image' || wizardMode === 'smart') {
+  if (wizardMode === 'text' || wizardMode === 'image' || wizardMode === 'smart' || wizardMode === 'agent') {
     return wizardMode;
   }
   if (jobType === 'text_batch') return 'text';
   if (jobType === 'image_batch') return 'image';
+  if (jobType === 'agent_batch') return 'agent';
   return 'smart';
 }
 

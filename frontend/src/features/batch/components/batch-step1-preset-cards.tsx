@@ -61,8 +61,11 @@ function BatchStep1PresetCardsInner({
 }: BatchStep1PresetCardsProps) {
   const t = useT();
   const showTextConfig = mode !== 'image';
-  const showVisionConfig = mode !== 'text';
+  // 供料模式（Issue#196）：识别项只走文本实体清单（entity_type_ids），
+  // 无 OCR/视觉打码配置；替换方式固化为占位符，不可选。
+  const showVisionConfig = mode !== 'text' && mode !== 'agent';
   const showIndustryConfig = mode === 'smart';
+  const isAgentMode = mode === 'agent';
   const industryPresets = useMemo(() => {
     const byId = new Map<string, RecognitionPreset>();
     [...textPresets, ...visionPresets].forEach((preset) => {
@@ -193,9 +196,19 @@ function BatchStep1PresetCardsInner({
                     {t('batchWizard.step1.textRedactionMode')}
                   </p>
                   <span className="shrink-0 rounded-full border border-border/70 bg-background px-2.5 py-0.5 text-[11px] font-medium text-foreground">
-                    {textModeLabel}
+                    {isAgentMode
+                      ? t('batchWizard.step1Agent.modeLabel')
+                      : textModeLabel}
                   </span>
                 </div>
+                {isAgentMode ? (
+                  <p
+                    className="text-[11px] leading-4 text-muted-foreground"
+                    data-testid="agent-placeholder-note"
+                  >
+                    {t('batchWizard.step1Agent.placeholderNote')}
+                  </p>
+                ) : (
                 <Select
                   disabled={disabled}
                   value={textRedactionMode}
@@ -223,7 +236,8 @@ function BatchStep1PresetCardsInner({
                     </SelectItem>
                   </SelectContent>
                 </Select>
-                {textRedactionMode === 'pseudonym' && (
+                )}
+                {!isAgentMode && textRedactionMode === 'pseudonym' && (
                   <a
                     href="/settings/word-pools"
                     target="_blank"
@@ -234,6 +248,7 @@ function BatchStep1PresetCardsInner({
                     {t('batchWizard.step1.wordPoolLink')}
                   </a>
                 )}
+                {!isAgentMode && (
                 <ul className="mt-1.5 space-y-1 overflow-hidden">
                   {textModeBullets.map((bullet) => (
                     <li
@@ -250,6 +265,7 @@ function BatchStep1PresetCardsInner({
                     </li>
                   ))}
                 </ul>
+                )}
               </div>
             </CardContent>
           </Card>

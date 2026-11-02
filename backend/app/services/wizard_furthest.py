@@ -9,7 +9,8 @@ def infer_batch_step1_configured(config: dict[str, Any], job_type: str) -> bool:
     if job_type == "structured_batch":
         ids = config.get("dataset_ids") or []
         return isinstance(ids, list) and len(ids) > 0
-    if job_type == "text_batch":
+    if job_type in ("text_batch", "agent_batch"):
+        # agent_batch（供料批量）step1 同样以识别项清单为准（Issue#196）
         ids = config.get("entity_type_ids") or []
         return isinstance(ids, list) and len(ids) > 0
     ocr = config.get("ocr_has_types") or []

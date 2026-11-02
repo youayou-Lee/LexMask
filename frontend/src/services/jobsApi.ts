@@ -13,7 +13,13 @@ import type {
   JobExportReportRedactedZip,
 } from '../types';
 
-export type JobTypeApi = 'text_batch' | 'image_batch' | 'smart_batch' | 'structured_batch' | 'single';
+export type JobTypeApi =
+  | 'text_batch'
+  | 'image_batch'
+  | 'smart_batch'
+  | 'structured_batch'
+  | 'agent_batch'
+  | 'single';
 export type JobStatusFilterApi =
   | 'active'
   | 'awaiting_review'
@@ -206,6 +212,7 @@ function normalizeJobType(raw: unknown): JobTypeApi {
     raw === 'image_batch' ||
     raw === 'smart_batch' ||
     raw === 'structured_batch' ||
+    raw === 'agent_batch' ||
     raw === 'single'
   )
     return raw;
@@ -213,6 +220,7 @@ function normalizeJobType(raw: unknown): JobTypeApi {
   if (raw === 'image') return 'image_batch';
   if (raw === 'smart') return 'smart_batch';
   if (raw === 'structured') return 'structured_batch';
+  if (raw === 'agent') return 'agent_batch';
   return 'text_batch';
 }
 
@@ -620,12 +628,31 @@ export function getItemReviewDraft(jobId: string, itemId: string): Promise<JobIt
   );
 }
 
+/** 供料批量（Issue#196）：映射表决策（只送改动项，与单文件 buildDecisions 同构）。 */
+export type AgentMdDecision = { id: string; action: 'keep' | 'exclude' | 'custom'; replacement?: string };
+
+export type AgentMdMappingItem = {
+  id: string;
+  original_text: string;
+  entity_type: string;
+  replacement: string;
+  excluded: boolean;
+};
+
+/** 供料批量：读 item 的映射表（后端已就地套用已保存的草稿决策）。 */
+export function getAgentMdMapping(jobId: string, itemId: string): Promise<{ items: AgentMdMappingItem[] }> {
+  return get<{ items: AgentMdMappingItem[] }>(
+    `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/agent-md-mapping`,
+  );
+}
+
 export function putItemReviewDraft(
   jobId: string,
   itemId: string,
   body: {
     entities: Array<Record<string, unknown>>;
     bounding_boxes: Array<Record<string, unknown>>;
+    agent_md_decisions?: AgentMdDecision[];
   },
 ): Promise<JobItemReviewDraft> {
   return put<JobItemReviewDraft>(
@@ -640,6 +667,7 @@ export function commitItemReview(
   body: {
     entities: Array<Record<string, unknown>>;
     bounding_boxes: Array<Record<string, unknown>>;
+    agent_md_decisions?: AgentMdDecision[];
   },
 ): Promise<JobItemRow> {
   return post<JobItemRow>(
