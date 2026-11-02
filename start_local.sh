@@ -123,6 +123,13 @@ for p in "${PORTS[@]}"; do
   fi
 done
 
+# ---- NER 权重预检（Issue#226 实测补）---------------------------------------
+# 权重不入 git（gitignore）：主检出有，worktree 检出没有。缺失时 vLLM 会把空目录
+# 当 HF repo id 拉取 → 容器无限重启，表象极难排查——起栈前显式拦下并给修法。
+if [[ "$NER_MODE" == "gpu" && ! -f backend/models/has/HaS_Text_0209_0.6B/config.json ]]; then
+  err "NER 权重缺失（backend/models/has/HaS_Text_0209_0.6B/）——权重不入 git：主检出软链即可：ln -sfn <主检出>/LexMask/backend/models/has/HaS_Text_0209_0.6B backend/models/has/HaS_Text_0209_0.6B；新机器首次下载见 README（ModelScope）"
+fi
+
 # ---- 云端地址解析与改写（验收 A9⑤；容器内经 host.docker.internal 访问宿主隧道）----
 resolve_cloud_addr() { # $1=变量名 $2=用途
   local var="$1" val=""
