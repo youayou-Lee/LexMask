@@ -47,8 +47,8 @@ cd frontend && npm run build && npm test && npm run lint
 
 | 档位 | 命令 | 起什么 | 本地显存 |
 |---|---|---|---|
-| 默认档 | `./start_local.sh` | 后端+前端+NER(GPU)+OCR(GPU)+**MinerU(GPU, flash 档)**；LA 关 | ≈9GB |
-| 视觉档 | `./start_local.sh --with-visual` | 再加本地 LA；本地 OCR/MinerU 让位（放不下），要 OCR 叠加 `--ocr cloud` | ≈11GB |
+| 默认档 | `./start_local.sh` | 后端+前端+NER(GPU)+OCR(GPU)+**MinerU(GPU, flash 档)**；LA 关 | ≈7GB（脚本预算口径 7.2GB） |
+| 视觉档 | `./start_local.sh --with-visual --no-mineru --ocr cloud` | 再加本地 LA（≈9GB）；12GB 卡装不下其余引擎——本地 MinerU/OCR 必须让位，漏给会**硬报错强制** | ≈11GB |
 | 全云档 | `./start_local.sh --cloud` | 只起后端+前端，NER/OCR/LA/MinerU 全走云端隧道 | ≈0 |
 
 - 引擎细粒度：`--ner gpu|cloud`、`--ocr gpu|cloud`、`--with-visual`（本地）/ `--visual cloud`（云端），LA 默认关（普通 Word 文档用不到它）。

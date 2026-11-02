@@ -3,7 +3,9 @@
 #
 # 三档预设 + 模型引擎（NER/OCR/LA/MinerU）各自「本地 GPU / 云端自有实例隧道」二选：
 #   ./start_local.sh                       # 默认档：NER+OCR+MinerU(flash) 本地 GPU，LA 关
-#   ./start_local.sh --with-visual         # 视觉档：+ 本地 LA（本地 OCR/MinerU 让位，显存放不下）
+#   ./start_local.sh --with-visual --no-mineru --ocr cloud
+#                                          # 视觉档：+ 本地 LA（≈9GB，12GB 卡装不下其余
+#                                          # 引擎——本地 OCR/MinerU 必须让位，脚本硬报错强制）
 #   ./start_local.sh --cloud               # 全云档：仅界面+后端，模型全走云端隧道
 #
 # 引擎细粒度开关：
@@ -11,10 +13,10 @@
 #   --ocr gpu|cloud        OCR（PaddleOCR-VL 8082）默认 gpu
 #   --with-visual          本地 LA 视觉检测（8090），默认关
 #   --visual cloud         LA 走云端隧道，默认关
-#   --mineru-tier f|s      MinerU 档位 flash|standard，默认 flash（Issue#226）
+#   --mineru-tier flash|standard   MinerU 档位，默认 flash（Issue#226）
 #                          standard≈6.5GB（含 vLLM 引擎）：与本地 OCR 互斥，表格型
 #                          硬骨头/质量优先场景用；更重负载上云实例（48GB）
-#   --no-mineru            不起 MinerU（显存极紧时）
+#   --no-mineru            不起 MinerU（视觉档必需；显存极紧时也可单独用）
 #   --mineru cloud         MinerU 走云端隧道
 #
 # 云端 = 自有实例的 SSH 隧道（转发现役端口），不是第三方云 API。
@@ -35,6 +37,8 @@ OCR_MODE="gpu"
 VISUAL_MODE="off"   # off | local | cloud
 MINERU_MODE="local" # off | local | cloud（Issue#226：默认 local，flash 档）
 MINERU_TIER="flash" # flash | standard
+WITH_MINERU_FLAG=0
+NO_MINERU_FLAG=0
 VRAM_GB="${LEXMASK_VRAM_GB:-12}"
 
 err()  { echo "[start_local] 错误：$*" >&2; exit 1; }
@@ -50,8 +54,8 @@ while [[ $# -gt 0 ]]; do
     --with-visual) VISUAL_MODE="local"; shift ;;
     --visual)      VISUAL_MODE="${2:?--visual 只接受 cloud（本地 LA 用 --with-visual）}"; [[ "$VISUAL_MODE" == "cloud" ]] || err "--visual 只接受 cloud"; shift 2 ;;
     --cloud)       NER_MODE="cloud"; OCR_MODE="cloud"; VISUAL_MODE="cloud"; MINERU_MODE="cloud"; shift ;;
-    --with-mineru) MINERU_MODE="local"; shift ;;  # Issue#226 起为默认，保留仅作向后兼容
-    --no-mineru)   MINERU_MODE="off"; shift ;;
+    --with-mineru) MINERU_MODE="local"; WITH_MINERU_FLAG=1; shift ;;  # Issue#226 起为默认，保留仅作向后兼容
+    --no-mineru)   MINERU_MODE="off"; NO_MINERU_FLAG=1; shift ;;
     --mineru)      MINERU_MODE="${2:?--mineru 只接受 cloud（本地默认已启用，关闭用 --no-mineru）}"; [[ "$MINERU_MODE" == "cloud" ]] || err "--mineru 只接受 cloud"; shift 2 ;;
     --mineru-tier) MINERU_TIER="${2:?--mineru-tier 需要 flash|standard}"; shift 2 ;;
     -h|--help)     usage ;;
@@ -63,8 +67,11 @@ done
 [[ "$OCR_MODE" == "gpu" || "$OCR_MODE" == "cloud" ]] || err "--ocr 只接受 gpu|cloud"
 [[ "$VISUAL_MODE" == "off" || "$VISUAL_MODE" == "local" || "$VISUAL_MODE" == "cloud" ]] || err "VISUAL_MODE 非法"
 [[ "$MINERU_TIER" == "flash" || "$MINERU_TIER" == "standard" ]] || err "--mineru-tier 只接受 flash|standard"
-if [[ "$MINERU_MODE" == "cloud" && "$MINERU_TIER" != "flash" ]]; then
-  warn "--mineru-tier 只作用于本地 MinerU，云端档忽略（云端档位由实例侧决定）"
+if [[ "$WITH_MINERU_FLAG" == 1 && "$NO_MINERU_FLAG" == 1 ]]; then
+  warn "--with-mineru 与 --no-mineru 同给：以 --no-mineru 为准"
+fi
+if [[ "$MINERU_MODE" != "local" && "$MINERU_TIER" != "flash" ]]; then
+  warn "--mineru-tier 只作用于本地 MinerU，${MINERU_MODE} 档忽略（档位由实例侧决定）"
 fi
 
 # ---- 真机显存探测（先于互斥校验：判据按实际显存算）-------------------------
@@ -88,7 +95,7 @@ fi
 # MinerU 预估：flash ≈2GB（无 vLLM 引擎，#217 实测）；standard ≈6.5GB
 # （vLLM 引擎 5.4GB + api/doclib ≈1GB，2026-11-02 实测 196 栈）
 if [[ "$MINERU_MODE" == "local" && "$VISUAL_MODE" == "local" ]]; then
-  err "本地 MinerU（flash≈2GB/standard≈6.5GB）与本地 LA（≈9GB）叠加 NER 超出 ${VRAM_GB}GB 显存——MinerU 改用 --mineru cloud，或去掉 --with-visual"
+  err "本地 MinerU（flash≈2GB/standard≈6.5GB）与本地 LA（≈9GB）叠加 NER 超出 ${VRAM_GB}GB 显存——最小修法：叠加 --no-mineru（视觉档必需）；或 MinerU 改用 --mineru cloud；或去掉 --with-visual"
 fi
 if [[ "$VISUAL_MODE" == "local" && "$OCR_MODE" == "gpu" ]]; then
   err "本地 LA（≈9GB）与本地 GPU OCR（≈3GB）叠加 NER（≈2GB）超出 ${VRAM_GB}GB 显存——改用 --ocr cloud，或去掉 --with-visual"
@@ -123,11 +130,14 @@ for p in "${PORTS[@]}"; do
   fi
 done
 
-# ---- NER 权重预检（Issue#226 实测补）---------------------------------------
-# 权重不入 git（gitignore）：主检出有，worktree 检出没有。缺失时 vLLM 会把空目录
-# 当 HF repo id 拉取 → 容器无限重启，表象极难排查——起栈前显式拦下并给修法。
+# ---- NER/LA 权重预检（Issue#226 实测补）------------------------------------
+# 权重不入 git（gitignore）：主检出有，worktree 检出没有。缺失时 vLLM/transformers
+# 会把空目录当 HF repo id 拉取 → 容器无限重启，表象极难排查——起栈前显式拦下并给修法。
 if [[ "$NER_MODE" == "gpu" && ! -f backend/models/has/HaS_Text_0209_0.6B/config.json ]]; then
   err "NER 权重缺失（backend/models/has/HaS_Text_0209_0.6B/）——权重不入 git：主检出软链即可：ln -sfn <主检出>/LexMask/backend/models/has/HaS_Text_0209_0.6B backend/models/has/HaS_Text_0209_0.6B；新机器首次下载见 README（ModelScope）"
+fi
+if [[ "$VISUAL_MODE" == "local" && ! -f backend/models/locateanything/LocateAnything-3B-HF/config.json ]]; then
+  err "LA 权重缺失（backend/models/locateanything/LocateAnything-3B-HF/）——权重不入 git：本机从未下载过 LA 权重；下载来源见 README（ModelScope），或改用 --visual cloud 走云端隧道"
 fi
 
 # ---- 云端地址解析与改写（验收 A9⑤；容器内经 host.docker.internal 访问宿主隧道）----

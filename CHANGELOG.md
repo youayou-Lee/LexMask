@@ -16,7 +16,7 @@
   1. `start_local.sh`：MinerU 默认 local + **flash 档**（无常驻 vLLM 引擎，显存 ≈2GB，单文件秒级）；新增 `--mineru-tier flash|standard`（standard ≈6.5GB 含引擎，与本地 OCR 互斥——硬报错带指引：`--ocr cloud` / 降回 flash / 上云实例）；新增 `--no-mineru`；`--with-mineru` 保留为向后兼容 no-op；显存预算账补 MinerU 两档（flash 2 / standard 6.5，standard 数值取自 196 栈实测）；档位打印含 tier；usage 同步。
   2. `docker-compose.yml`：mineru 服务透传 `MINERU_SIDECAR_TIER=${MINERU_SIDECAR_TIER:-flash}`（sidecar 本就按此变量选档，此前 compose 未透传、恒为默认 flash）。
   3. `README.md`：启动档位表同步（默认档含 MinerU flash ≈9GB；tier 参数与互斥说明）。
-- **测试**：`bash -n` / `docker compose config` 过；互斥与端口占用判据本地实测（见 PR 评论）；flash 档全链起栈实测。
+- **测试**：`bash -n` / `docker compose config` 过；互斥与端口占用判据本地实测（见 PR 评论）；flash 档全链起栈实测（canary → mapping_ready，8 条实体）。门⑥冷审 APPROVE with fixes：I1 CI 绑 head / I2 视觉档文档「让位」改为硬报错实态并给可用命令 / M1-M4（usage 简写、显存口径对齐、off 档 warn、LA 权重预检）——已全部处置。
 - **红线**：脚本不内嵌任何地址/口令；模型源=ModelScope 不变。
 
 ### 变更（PR#223）密码规则放宽为仅 6-16 位长度校验
