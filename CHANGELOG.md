@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-11-03
+
+### 变更（PR#223）密码规则放宽为仅 6-16 位长度校验
+
+- **为什么**：用户裁定——密码不再要求大小写/数字/符号复杂度，只要 6-16 位即可；旧规则（≥8 位 + 四要素全查）对内部部署场景过严，弱密码经常被拒。
+- **改了什么**：`validate_password_strength` 仅保留 6-16 位长度判断（4 个调用点 setup/register/change-password/auth-users 走同一函数，一处改全生效）；前端设置页与改密弹窗提示文案同步（en/zh）；`docs/交付清单.md` 与 `docs/性能与质量白皮书.md` 的「密码四要素」宣称对齐新规则。
+- **影响面**：已有账号老密码不受影响（校验只在设置/改密时发生）；LDAP 登录路径不做复杂度校验（策略归目录），本地 break-glass 改密走新规则。
+- **测试**：新增 `tests/test_password_policy.py` 13 例（纯函数表驱动 + setup/change-password 端点行为 + fail-closed 判据）；后端全量 2583 passed 零回归；本地浏览器验收 7/7（记录在 PR 评论区）。
+- **边界**：长度按 Unicode 码点计数；纯空格密码在长度合法时可通过（产品口径，记账）；拒绝原因的本地化优化（机读 error_code）另案跟进。
+
 ## 2026-11-01
 
 ### 新增（Issue#219）MinerU 产物双 schema 适配：3.x content_list 与 4.x docvortex.middle 自动分流
