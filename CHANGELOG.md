@@ -8,6 +8,16 @@
 - **改了什么**（单函数，`agent_md_adapter.table_to_text`）：HTML 解析结果非空 ⇒ 原样返回（既有行为逐字节不变）；**解析结果为空且输入不含 HTML 表格标签** ⇒ 纯文本回落（按行拆分/行内空白折叠/`strip_inline`）；**含表格标签但解析不出行（畸形 HTML）不回落**——维持空 + `empty table block` 告警，不把标签碎片喂给 NER，并守住 #212 双表示守卫「丢表 ⇒ empty_table_blocks>0 ⇒ 回落 v1」语义链（独立冷审 B2 钉）。方案与验收过独立冷审（需修订 2 项已处置），根因报告/方案存私有仓 `docs/acceptance/2026-11-03-mineru4-plaintext-tablebody-*.md`。
 - **测试**：净 +13 例（table_to_text 直测 8 + clean_segments 集成 3 + 管线级 2：表示选择出段且无 `docvortex_shortfall`、stage1 映射表含表格内实体），先红后绿；变异双杀（删回落分支 7 红、删标签守卫 2 红）；单文件与批量供料两线共用该函数同时受益。
 - **边界**：不做表格结构还原（列对齐/表头语义），NER 与脱敏只需文本可见，结构化还原属效果线另案；3.x 路径（content["html"] 恒 HTML）行为逐字节不变；空表格告警语义不变。
+=======
+### 变更（Issue#226）本地启动默认启用 MinerU（flash 档）+ 档位参数化
+
+- **为什么**：用户裁定「默认栈要所有功能可用」——#217 当时因 12GB 显存预算把 MinerU 设为隐藏开关（`--with-mineru`），导致默认启动后供料模式不可用；同时 2026-11-02 实测隔离栈的 MinerU standard 档 vLLM 引擎常驻吃 5.4GB，本地不该常态跑 standard。
+- **改了什么**（纯启动编排，无后端/模型栈改动）：
+  1. `start_local.sh`：MinerU 默认 local + **flash 档**（无常驻 vLLM 引擎，显存 ≈2GB，单文件秒级）；新增 `--mineru-tier flash|standard`（standard ≈6.5GB 含引擎，与本地 OCR 互斥——硬报错带指引：`--ocr cloud` / 降回 flash / 上云实例）；新增 `--no-mineru`；`--with-mineru` 保留为向后兼容 no-op；显存预算账补 MinerU 两档（flash 2 / standard 6.5，standard 数值取自 196 栈实测）；档位打印含 tier；usage 同步。
+  2. `docker-compose.yml`：mineru 服务透传 `MINERU_SIDECAR_TIER=${MINERU_SIDECAR_TIER:-flash}`（sidecar 本就按此变量选档，此前 compose 未透传、恒为默认 flash）。
+  3. `README.md`：启动档位表同步（默认档含 MinerU flash ≈9GB；tier 参数与互斥说明）。
+- **测试**：`bash -n` / `docker compose config` 过；互斥与端口占用判据本地实测（见 PR 评论）；flash 档全链起栈实测（canary → mapping_ready，8 条实体）。门⑥冷审 APPROVE with fixes：I1 CI 绑 head / I2 视觉档文档「让位」改为硬报错实态并给可用命令 / M1-M4（usage 简写、显存口径对齐、off 档 warn、LA 权重预检）——已全部处置。
+- **红线**：脚本不内嵌任何地址/口令；模型源=ModelScope 不变。
 
 ### 变更（PR#223）密码规则放宽为仅 6-16 位长度校验
 
