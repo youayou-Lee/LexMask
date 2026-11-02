@@ -1179,10 +1179,10 @@ def approve_review(store: JobStore, job_id: str, item_id: str, reviewer: str = "
     return item_to_out(ir)
 
 
-def reject_review(store: JobStore, job_id: str, item_id: str, reviewer: str = "local") -> dict[str, Any]:
+async def reject_review(store: JobStore, job_id: str, item_id: str, reviewer: str = "local") -> dict[str, Any]:
     """Reject an item review and re-enqueue recognition. Raises ValueError on errors."""
     from app.services.agent_md_batch import AGENT_MD_DRAFT_KEY
-    from app.services.file_management_service import file_store
+    from app.services.file_management_service import _file_store_lock, file_store
 
     job, _item = get_job_and_item(store, job_id, item_id)
     try:
@@ -1195,10 +1195,12 @@ def reject_review(store: JobStore, job_id: str, item_id: str, reviewer: str = "l
     # 供料件（Issue#196）：reject 语义 = 重识别——清掉映射草稿，否则工人幂等短路
     # 会原样送回 AWAITING_REVIEW，reject 成为空转。
     if str(job.get("job_type") or "") == JobType.AGENT_BATCH.value:
-        info = file_store.get(str(ir["file_id"]))
-        if isinstance(info, dict) and info.get(AGENT_MD_DRAFT_KEY):
-            info.pop(AGENT_MD_DRAFT_KEY, None)
-            file_store.set(str(ir["file_id"]), info)
+        # 门⑥ I3：与其余 agent RMW 同锁——不持锁可与在飞 stage1 写互相覆盖
+        async with _file_store_lock:
+            info = file_store.get(str(ir["file_id"]))
+            if isinstance(info, dict) and info.get(AGENT_MD_DRAFT_KEY):
+                info.pop(AGENT_MD_DRAFT_KEY, None)
+                file_store.set(str(ir["file_id"]), info)
     store.touch_job_updated(job_id)
     refresh_job_status(store, job_id)
     enqueue_task("recognition", job_id, item_id, ir["file_id"])
@@ -1320,7 +1322,8 @@ async def commit_agent_md_review(
     async with _file_store_lock:
         file_info = file_store.get(file_id)
     if not file_info:
-        store.update_item_status(item["id"], JobItemStatus.AWAITING_REVIEW, error_message="file not found")
+        # 门⑥ I1：同状态迁移是 no-op，error_message 须走 #199 权威载体
+        store.set_item_error_message(item["id"], "file not found")
         refresh_job_status(store, str(job["id"]))
         raise NotFoundError("file not found")
 
@@ -1328,7 +1331,7 @@ async def commit_agent_md_review(
         patch = commit_agent_md_item(file_info, decisions)
     except Exception as exc:
         logger.error("agent_md commit failed for item %s: %s", item["id"][:8], exc)
-        store.update_item_status(item["id"], JobItemStatus.AWAITING_REVIEW, error_message=str(exc)[:500])
+        store.set_item_error_message(item["id"], str(exc)[:500])
         refresh_job_status(store, str(job["id"]))
         raise ValidationError(f"agent_md commit failed: {exc}") from exc
 
@@ -1396,13 +1399,20 @@ async def commit_all_agent_md_reviews(
             async with _file_store_lock:
                 info = file_store.get(str(item["file_id"])) or dict(file_info)
                 info.update(patch)
+                # 门⑥ M5：一键确认与单件 confirm 同留痕（决策计数摘要，不含原文）
+                info["agent_md_commit_meta"] = {
+                    "decisions_count": len(decisions or []),
+                    "excluded": sum(1 for d in (decisions or []) if d.get("action") == "exclude"),
+                    "custom": sum(1 for d in (decisions or []) if d.get("action") == "custom"),
+                }
                 file_store.set(str(item["file_id"]), info)
             store.complete_item_review(item_id, reviewer=reviewer)
             confirmed += 1
         except Exception as exc:
             logger.warning("commit_all_agent_md_reviews: item %s failed: %s", item_id[:8], exc)
+            # 门⑥ I1：同状态迁移是 no-op，走 set_item_error_message（#199 载体）
             try:
-                store.update_item_status(item_id, JobItemStatus.AWAITING_REVIEW, error_message=str(exc)[:500])
+                store.set_item_error_message(item_id, str(exc)[:500])
             except (KeyError, ValueError):
                 pass
             failed.append({"item_id": item_id, "error": str(exc)[:200]})
@@ -1450,8 +1460,6 @@ async def commit_review(
             store, job, item, payload.get("agent_md_decisions") or [], reviewer=reviewer,
         )
 
-    if item["status"] == JobItemStatus.PENDING.value:
-        store.update_item_status(item_id, JobItemStatus.AWAITING_REVIEW)
     store.mark_item_redacting(item_id)
     store.touch_job_updated(job_id)
     refresh_job_status(store, job_id)

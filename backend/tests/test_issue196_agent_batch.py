@@ -397,7 +397,11 @@ def test_commit_review_missing_draft_raises_and_keeps_awaiting(tmp_path, monkeyp
             store=store, job_id=jid, item_id=item_ids[0],
             entities=[], bounding_boxes=[], payload={},
         ))
-    assert store.get_item(item_ids[0])["status"] == "awaiting_review"
+    it = store.get_item(item_ids[0])
+    assert it["status"] == "awaiting_review"
+    # 门⑥ I1：失败摘要必须真的落库——update_item_status 同状态迁移是 no-op，
+    # 走 set_item_error_message（#199 权威载体），否则用户看不到失败原因。
+    assert it.get("error_message"), "error_message 未落库（假绿判据）"
 
 
 def test_commit_review_idempotent_after_completed(tmp_path, monkeypatch):
@@ -450,7 +454,7 @@ def test_reject_review_clears_draft_and_reenqueues(tmp_path, monkeypatch):
 
     enqueued: list[tuple] = []
     monkeypatch.setattr(jms, "enqueue_task", lambda *a, **k: enqueued.append(a))
-    jms.reject_review(store, jid, item_ids[0], reviewer="u1")
+    asyncio.run(jms.reject_review(store, jid, item_ids[0], reviewer="u1"))
     assert load_draft(fs.get("file-0")) is None  # 草稿已清 → 重跑 stage1
     assert enqueued and enqueued[0][0] == "recognition"
     assert store.get_item(item_ids[0])["status"] in ("pending", "queued")  # 重识别队列态

@@ -965,6 +965,7 @@ const zhOverrides: Record<string, string> = {
   'batchWizard.step1Agent.placeholderNote': '敏感信息将替换为 [类型_N] / [姓某] 占位符，并随成品附映射表与保留清单，可在还原工具中回溯。',
   'batchWizard.step4Agent.hint': '逐份确认映射表：可保留原文、自定义替换值；缺省按占位符替换。确认后生成脱敏 Markdown。',
   'batchWizard.step4Agent.confirmGenerate': '确认生成',
+  'batchWizard.step4Agent.bulkFlushFailed': '一键确认前同步未保存的修改失败，请重试或逐份确认。',
   'jobs.filters.kicker': '操作',
   'jobs.filters.title': '任务控制台',
   'jobs.filters.desc': '把队列进度、复核积压和已完成任务放在一个地方查看。',

@@ -191,6 +191,13 @@ export function BatchStep4AgentReview() {
     if (!activeJobId) return;
     setBulkConfirmLoading(true);
     try {
+      // 门⑥ I2：一键确认按已存草稿渲染——先冲刷自动保存窗口内未落的决策，
+      // 否则 UI 显示刚改的决策、成品却按陈旧/缺省决策渲染（态与交付物分叉）。
+      const flushed = await flushDraft();
+      if (!flushed) {
+        setSaveError(t('batchWizard.step4Agent.bulkFlushFailed'));
+        return;
+      }
       await commitAllReviews(activeJobId);
       await refreshRowsFromActiveJob(activeJobId);
     } catch (error) {
@@ -198,7 +205,7 @@ export function BatchStep4AgentReview() {
     } finally {
       setBulkConfirmLoading(false);
     }
-  }, [activeJobId, refreshRowsFromActiveJob]);
+  }, [activeJobId, flushDraft, refreshRowsFromActiveJob]);
 
   // 审阅键盘流与普通批量一致：← / → 切文件，Ctrl+Enter 确认当前份。
   const keyRef = useRef<(event: KeyboardEvent) => void>(() => {});

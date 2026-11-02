@@ -1049,6 +1049,7 @@ const enOverrides: Record<string, string> = {
   'batchWizard.step4Agent.hint':
     'Confirm the mapping per file: keep original text or set custom replacements; unset rows use placeholders. Confirming generates sanitized Markdown.',
   'batchWizard.step4Agent.confirmGenerate': 'Confirm & generate',
+  'batchWizard.step4Agent.bulkFlushFailed': 'Failed to sync unsaved edits before bulk confirm. Retry or confirm per item.',
   'jobs.filters.kicker': 'Operations',
   'jobs.filters.title': 'Jobs Console',
   'jobs.filters.desc': 'Keep queue progress, review backlog, and completed runs in one place.',

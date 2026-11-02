@@ -485,7 +485,7 @@ async def reject_item_review(
 ) -> dict[str, Any]:
     try:
         _jms.assert_job_owner(store.get_job(job_id), owner_id)
-        return _jms.reject_review(store, job_id, item_id, reviewer=owner_id or reviewer)
+        return await _jms.reject_review(store, job_id, item_id, reviewer=owner_id or reviewer)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
