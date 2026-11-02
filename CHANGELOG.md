@@ -9,8 +9,15 @@
 - **测试**：镜像内 `soffice --version` 通过；本地栈端到端——.doc 真卷走 agent_batch 供料线，映射表 8 条（修前 0 条）、三产物齐全、映射原文值零残留；CI docker-build 即构建验证。
 - **边界**：镜像体积增大（LO nogui ≈+500MB）；云端部署同镜像受益，无需宿主预装。
 
+
 =======
 
+### 修正（用户反馈）上传被拒只见「文件上传失败」——报错说清实际格式并持久展示
+
+- **为什么**：用户传 UTF-8 文本伪装的 .doc（acceptance-53.doc 真实情形）被防伪校验拒绝，但页面上只看到一闪而过的通用 toast，误以为产品坏了。根因是两处叠加：①后端文案是开发者黑话（「可能是伪造文件」）且不带实际检测格式；②前端 `responseErrorMessage` 用 `detail ?? message` 取信封文案，被后端统一信封里的**空对象 `detail:{}` 短路**（`??` 只挡 nullish），`message` 里的具体原因永远取不到。
+- **改了什么**：后端 `file_validation.py` 新增 `detect_content_type`/`spoof_reject_message`——报错改为「文件内容实际是纯文本，与扩展名 .doc 不匹配——……请用原始文件重新导出/另存为后再上传」，单文件上传与 inbox 批量两条线同款；前端 use-playground-file（单文件）与 agent-md/api（供料）两处信封解析改「取第一个非空字符串」，上传/解析失败原因同时进 toast 与上传面板 `uploadIssue` 持久展示。
+- **测试**：后端 +5 例（detect 四形态 + 文案断言：含实际格式与指引、不再出现「伪造」）；前端 +1 例（taskflow (k)：400 信封 → uploadIssue 持久展示 + toast，先红后绿证实遮蔽根因）；前端全量 319 过、后端防伪族 25 过。
+- **验收**：本地栈浏览器实传伪造 .doc——上传面板持久显示完整原因（截图留痕私有仓记忆）；API 层新文案实证。 (fix: 上传被拒说清实际格式并持久展示——修信封空 detail 短路吞掉具体原因)
 ### 修正（Issue#224）MinerU 4.x 纯文本 table_body 全量丢失——表格型案卷 0 实体
 
 - **为什么**：真卷验收发现（表格型扫描 PDF 走供料模式报「未识别到任何敏感实体」）：4.x flash 对扫描表格输出的 `table_body` 是**纯文本版面文字（无 HTML 标签）**，`table_to_text` 只收集 `<td>/<th>` 单元格 → 解析 0 行返回空 → `clean_segments` 记 `empty table block`，表格正文（真卷实测 47,256 字符）fail-open 全量丢弃，NER 只见 23 字符。既有夹具的 `table_body` 全是合成 HTML，与真实 4.x 形态不同源，测试未覆盖。#219 已知边界「4.x 比值守卫 warning-only 无回落」是同一风险另一面；本例在更上游（归一层有货、清洁层扔光）。

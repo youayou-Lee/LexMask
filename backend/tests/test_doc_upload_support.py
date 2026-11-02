@@ -10,7 +10,9 @@ import tempfile
 
 from app.core.config import settings
 from app.core.file_validation import (
+    detect_content_type,
     get_file_type,
+    spoof_reject_message,
     validate_extension,
     validate_magic_bytes,
 )
@@ -52,3 +54,33 @@ def test_docx_bytes_under_doc_extension_pass():
 
 def test_doc_maps_to_doc_file_type():
     assert get_file_type("合同.doc") is not None
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-03 用户试用反馈：报错必须说清「实际检测到的格式」——用户传了
+# UTF-8 文本伪装的 .doc，只看到「可能是伪造文件」黑话，误以为产品坏了。
+# ---------------------------------------------------------------------------
+
+def test_detect_content_type_utf8_text():
+    assert detect_content_type(_write(UTF8_TEXT, "x.bin")) == "纯文本"
+
+
+def test_detect_content_type_ole_doc():
+    assert "Word" in detect_content_type(_write(OLE_DOC, "x.bin"))
+
+
+def test_detect_content_type_pdf():
+    assert detect_content_type(_write(b"%PDF-1.7\nrest", "x.bin")) == "PDF 文档"
+
+
+def test_detect_content_type_unknown_binary():
+    assert detect_content_type(_write(b"\x00\x01\x02\x03\x04\x05\x06\x07\x08", "x.bin")) == "未知二进制格式"
+
+
+def test_spoof_reject_message_names_actual_type_and_action():
+    msg = spoof_reject_message(_write(UTF8_TEXT, "x.doc"), ".doc")
+    assert "纯文本" in msg
+    assert ".doc" in msg
+    # 必须给可操作指引，且不再出现「伪造文件」这类开发者黑话
+    assert "另存" in msg or "重新" in msg
+    assert "伪造" not in msg
