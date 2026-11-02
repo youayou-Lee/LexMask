@@ -6,6 +6,13 @@ import type { Decision, MappingItemDto } from './lib/agent-md-flow';
 
 /** Issue#75 /agent-md 后端 HTTP 契约的前端 API client（fetch 走 authFetch 自动带 cookie+CSRF）。 */
 
+/** 解析阶段的丢弃计数（Issue#212）：源为 MinerU v2 主表示，source 指明实际出稿来源。 */
+export interface AgentMdDroppedBlocks {
+  empty_table?: number;
+  unhandled?: Record<string, number>;
+  source?: string;
+}
+
 /** GET /agent-md/{id}/status 的返回体。 */
 export interface AgentMdStatus {
   task_id: string;
@@ -15,6 +22,18 @@ export interface AgentMdStatus {
   pages_total: number;
   message: string;
   warnings_count: number;
+  /** 解析告警原文（后端截断前 20 条，Issue#212）。 */
+  warnings?: string[];
+  warnings_total?: number;
+  dropped_blocks?: AgentMdDroppedBlocks;
+  /** 选中表示的正文（text/table）字符数。 */
+  chars?: number;
+}
+
+/** confirm 的可选参数：0 实体出稿需显式知情确认（Issue#212 安全闸）。 */
+export interface ConfirmOptions {
+  /** 映射表为空（一个敏感实体都没识别到）时，后端要求显式确认才出稿。 */
+  acknowledgeZeroEntities?: boolean;
 }
 
 /** 上传进度回调载荷（loadedBytes/totalBytes 为 XHR 原始字节计数）。 */
@@ -158,11 +177,19 @@ export const agentMdApi = {
     return res.json();
   },
 
-  async confirm(taskId: string, decisions: Decision[]): Promise<ConfirmResult> {
+  async confirm(
+    taskId: string,
+    decisions: Decision[],
+    options?: ConfirmOptions,
+  ): Promise<ConfirmResult> {
+    const body = {
+      decisions,
+      ...(options?.acknowledgeZeroEntities ? { acknowledge_zero_entities: true } : {}),
+    };
     const res = await authFetch(`/api/v1/agent-md/${taskId}/confirm`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decisions }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) await readError(res, 'agentMd.confirmFailed');
     return res.json();

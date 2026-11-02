@@ -161,9 +161,9 @@ export function AgentMd() {
       {step === 'review' && taskId && (
         <StepReview
           items={items}
-          onConfirm={async (edits: ItemEdits) => {
+          onConfirm={async (edits: ItemEdits, options) => {
             const decisions = buildDecisions(items, edits);
-            await agentMdApi.confirm(taskId, decisions);
+            await agentMdApi.confirm(taskId, decisions, options);
             setStep('result');
           }}
         />

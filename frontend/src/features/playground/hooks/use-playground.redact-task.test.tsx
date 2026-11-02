@@ -497,6 +497,9 @@ async function seedRefreshedPreview() {
     serializeDraft(buildDraftSnapshot(snapshot)) ?? '',
     'tester',
   );
+  // Issue#199（门⑥ 二段 F8 起）：打码前必查 performance 判定失败页，而该查询失败是
+  // fail-closed（中止本次提交）⇒ 未铺「查询成功」的用例会被中止；这里铺无失败页现场。
+  vi.mocked(getJob).mockResolvedValue(makeDetail('awaiting_review', 'awaiting_review'));
   renderHarness();
   await waitFor(() => expect(screen.getByTestId('stage').textContent).toBe('preview'));
   await waitFor(() => expect(harness.pg!.entities.length).toBe(2));
@@ -746,5 +749,55 @@ describe('Issue#194 终审 C：打码在途刷新后结果页恢复', () => {
     expect(screen.getByTestId('entity-map').textContent).toContain('张三=张某某');
     // 失败文案不出现：全程没有 error toast（完成提示是 info 级）
     expect(vi.mocked(showToast).mock.calls.some(([, kind]) => kind === 'error')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue#199 门⑥ 二段 F8：打码前失败页知情确认必须 fail-closed
+// ---------------------------------------------------------------------------
+describe('Issue#199 门⑥ 二段 F8：失败页知情确认 fail-closed', () => {
+  it('(a) performance 查询失败 → 中止提交并提示重试（旧实现静默放行）', async () => {
+    await seedPreview();
+    vi.mocked(getJob).mockRejectedValue(new Error('perf lookup down'));
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.stringContaining('未能确认'), 'error'),
+    );
+    expect(submitRedactionTask).not.toHaveBeenCalled();
+    expect(screen.getByTestId('stage').textContent).toBe('preview');
+  });
+
+  it('(b) 存在失败页 → 弹确认；用户取消则不提交', async () => {
+    await seedPreview();
+    const detail = makeDetail('awaiting_review', 'awaiting_review');
+    detail.items[0].performance = { recognition: { failed_pages: { '3': 'timeout' } } };
+    vi.mocked(getJob).mockResolvedValue(detail);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1));
+    expect(String(confirmSpy.mock.calls[0][0])).toContain('3');
+    expect(submitRedactionTask).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it('(c) 无失败页 → 不弹确认、照常提交（既有成功路径零变化）', async () => {
+    await seedPreview();
+    const confirmSpy = vi.spyOn(window, 'confirm');
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+
+    await waitFor(() => expect(submitRedactionTask).toHaveBeenCalledTimes(1));
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
   });
 });

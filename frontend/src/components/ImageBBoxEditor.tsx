@@ -42,6 +42,10 @@ interface ImageBBoxEditorProps {
   viewportTopSlot?: React.ReactNode;
 
   viewportBottomSlot?: React.ReactNode;
+
+  /** Issue#207：当前页内容在飞（缓存未命中）——画布角落叠加轻量加载指示，
+   * 不清空旧图（保留既有防闪白语义）。 */
+  pageLoading?: boolean;
 }
 
 const BOX_STROKE = '#94a3b8';
@@ -225,6 +229,7 @@ const BBoxOverlayBox = memo(BBoxOverlayBoxInner, (prev, next) => {
 
 function ImageBBoxEditor({
   imageSrc,
+  pageLoading = false,
   boxes,
   onBoxesChange,
   onBoxesCommit,
@@ -682,6 +687,15 @@ function ImageBBoxEditor({
               draggable={false}
             />
             <div className="pointer-events-none absolute inset-0 z-[1]">{renderBoxes(true)}</div>
+            {pageLoading && (
+              <div
+                data-testid="preview-page-loading"
+                className="pointer-events-none absolute right-2 top-2 z-30 flex items-center gap-1.5 rounded-full border border-border/70 bg-background/85 px-2.5 py-1 text-xs text-muted-foreground shadow-sm"
+              >
+                <span className="size-3 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground" />
+                <span>{t('playground.previewPageLoading')}</span>
+              </div>
+            )}
           </div>
         ) : (
           <div
@@ -721,6 +735,15 @@ function ImageBBoxEditor({
               draggable={false}
             />
 
+            {pageLoading && (
+              <div
+                data-testid="preview-page-loading"
+                className="pointer-events-none absolute right-2 top-2 z-30 flex items-center gap-1.5 rounded-full border border-border/70 bg-background/85 px-2.5 py-1 text-xs text-muted-foreground shadow-sm"
+              >
+                <span className="size-3 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground" />
+                <span>{t('playground.previewPageLoading')}</span>
+              </div>
+            )}
             {renderBoxes(false)}
 
             {drawingBox && drawingBox.width > 5 && drawingBox.height > 5 && (

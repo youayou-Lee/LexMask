@@ -836,7 +836,7 @@ const zhBase: Record<string, string> = {
   'batchWizard.previewJobLabel': '预览任务',
 
   'error.visionTimeout':
-    '图像识别超时（超过 3 分钟）。可换更小图片，或检查视觉特征服务（GLM-4.6V/vLLM）是否正常、显存是否充足。',
+    '图像识别超时（超过 5 分钟）。可换更小图片，或检查视觉特征服务（GLM-4.6V/vLLM）是否正常、显存是否充足。',
   'error.visionDetectionFailed': '图像识别失败',
   'error.reRecognizeFailed': '重新识别失败',
 
@@ -1052,10 +1052,10 @@ const zhOverrides: Record<string, string> = {
     '当前主服务已连接，但识别模型未全部启动；仍可上传文件，受影响的识别能力会在服务恢复前失败或返回空结果。',
   'playground.upload.affectedServices': '受影响服务：',
   'playground.upload.nextAction': '下一步：',
-  'playground.upload.offlineAction': '先运行 npm run doctor，再重启后端或连接已有本地服务栈。',
+  'playground.upload.offlineAction': 'Docker 本地栈：./start_local.sh（含视觉加 --with-visual，云端 --visual cloud）；npm dev 形态：先 npm run doctor 再重启后端。',
   'playground.upload.checkingAction': '如果该提示长时间不消失，请在另一个终端运行 npm run doctor。',
   'playground.upload.modelOfflineAction':
-    '先运行 npm run doctor，再启动 npm run dev:models 或重启上面列出的服务。',
+    'Docker 本地栈：./start_local.sh --with-visual（或 --visual cloud 走云端实例）；npm dev 形态：npm run doctor + npm run dev:models。',
   'playground.dropHere': '把文件拖到这里上传',
   'playground.supportedFormats':
     '支持 .doc、.docx、.txt、.md、.html、.pdf、.jpg、.png 等格式',
@@ -1069,6 +1069,7 @@ const zhOverrides: Record<string, string> = {
   'playground.ocrShort': 'OCR+HaS',
   'playground.imageTextRange': '文本视觉',
   'playground.visualRegionRange': '图像视觉',
+  'playground.visualServiceDown': '服务未启动',
   'playground.selected': '已选',
   'playground.textPresetLabel': '文本配置清单',
   'playground.saveAsTextPreset': '保存文本清单',
@@ -1131,6 +1132,8 @@ const zhOverrides: Record<string, string> = {
   'playground.cancelled': '\u5df2\u53d6\u6d88\u5f53\u524d\u5904\u7406\u3002',
   'playground.recognizeFailed': '识别失败。',
   'playground.redactFailed': '匿名化失败。',
+  'playground.redactFailedPagesConfirm': '第 {pages} 页识别失败：这些页不会被脱敏（未识别 ≠ 无敏感内容）。确定继续吗？可先取消并单独重试失败页。',
+  'playground.redactPagesUnknownRetry': '未能确认是否有识别失败的页（查询失败）。为避免把未脱敏页当干净页提交，本次打码已停止；请稍后重试。',
   'playground.redactAlreadyDone': '该文件已完成匿名化，已为你打开结果。',
   'playground.restored': '已恢复上次单文件处理现场',
   'playground.restoredFromServer': '已从服务端恢复上次识别结果',
@@ -1221,6 +1224,7 @@ const zhOverrides: Record<string, string> = {
   'playground.locateMissed': '{n} 个实体未能自动定位（跨行断开等），可在页面上手动拉框兜底。',
   'playground.locateFailed': '实体定位失败，可手动拉框兜底或稍后重试。',
   'playground.previewHint.text': '查看高亮、选取文本并修正标注后再导出。',
+  'playground.previewPageLoading': '页面加载中…',
   'playground.updateAnnotation': '更新标注',
   'playground.addAnnotation': '添加标注',
   'playground.customType': '自定义',
@@ -1967,6 +1971,7 @@ Object.assign(zhOverrides, {
 
 Object.assign(zhOverrides, {
   'playground.visualRegionRange': '图像视觉',
+  'playground.visualServiceDown': '服务未启动',
   'playground.visualFeatureShort': '视觉特征',
   'playground.sourceImage': '视觉特征',
   'job.statusDesc.vision': '正在识别视觉特征。',
@@ -2138,6 +2143,7 @@ Object.assign(zhOverrides, {
   'processingDetails.redaction': '打码渲染',
   'processingDetails.failedChunks': '有 {n} 处识别失败，已自动回落',
   'processingDetails.textDirect': '文本直读，无需 OCR',
+  'processingDetails.failedPages': '第 {pages} 页识别失败：这些页未做敏感信息识别，不会被自动脱敏，请单独重试或人工复核。',
   'processingDetails.pages': '{n} 页',
   'processingDetails.perPage': '均 {s}/页',
   'processingDetails.entityCount': '{n} 个实体',
@@ -2584,6 +2590,12 @@ Object.assign(zhOverrides, {
   'agentMd.include': '恢复替换',
   'agentMd.customPlaceholder': '自定义替换值',
   'agentMd.confirmGenerate': '确认生成',
+  'agentMd.zeroEntitiesWarning':
+    '本次未识别到任何敏感实体。若直接生成，文稿将与原文一致（等于未脱敏），请确认文档内容或稍后重试。',
+  'agentMd.zeroEntitiesAck': '我已知晓：本次未识别到敏感实体，仍要生成',
+  'agentMd.parseWarningsTitle': '解析提示（不影响继续使用）',
+  'agentMd.droppedEmptyTable': '空表格块',
+  'agentMd.parseWarningsMore': '其余告警条数',
   'agentMd.resultTitle': '脱敏 Markdown 已生成',
   'agentMd.copyMd': '一键复制喂 AI',
   'agentMd.copied': '已复制',

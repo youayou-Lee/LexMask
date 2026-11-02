@@ -913,7 +913,7 @@ const enBase: Record<string, string> = {
   'safety.cleanup.failed': 'Cleanup failed',
 
   'error.visionTimeout':
-    'Vision detection timed out (over 3 min). Try a smaller image, or check that the vision service (GLM-4.6V/vLLM) is healthy and has enough free GPU memory.',
+    'Vision detection timed out (over 5 min). Try a smaller image, or check that the vision service (GLM-4.6V/vLLM) is healthy and has enough free GPU memory.',
   'error.visionDetectionFailed': 'Vision detection failed',
   'error.reRecognizeFailed': 'Re-recognition failed',
 
@@ -1140,11 +1140,11 @@ const enOverrides: Record<string, string> = {
   'playground.upload.affectedServices': 'Affected services:',
   'playground.upload.nextAction': 'Next action:',
   'playground.upload.offlineAction':
-    'Run npm run doctor, then restart the backend or attach to the existing local stack.',
+    'Docker local stack: ./start_local.sh (add --with-visual for vision, --visual cloud for remote); npm dev: run npm run doctor then restart the backend.',
   'playground.upload.checkingAction':
     'If this message stays visible, run npm run doctor in another terminal.',
   'playground.upload.modelOfflineAction':
-    'Run npm run doctor, then start npm run dev:models or restart the listed services.',
+    'Docker local stack: ./start_local.sh --with-visual (or --visual cloud for remote); npm dev: npm run doctor + npm run dev:models.',
   'playground.dropHere': 'Drop a file here to upload',
   'playground.supportedFormats':
     'Supports .doc, .docx, .txt, .md, .html, .pdf, .jpg, .png, and more',
@@ -1159,6 +1159,7 @@ const enOverrides: Record<string, string> = {
   'playground.ocrShort': 'OCR+HaS',
   'playground.imageTextRange': 'Text vision',
   'playground.visualRegionRange': 'Image vision',
+  'playground.visualServiceDown': 'Service not running',
   'playground.selected': 'selected',
   'playground.textPresetLabel': 'Text recognition list',
   'playground.saveAsTextPreset': 'Save text list',
@@ -1227,6 +1228,8 @@ const enOverrides: Record<string, string> = {
   'playground.recognitionPausedModelServices':
     'Recognition is paused because required model services are unavailable: {services}. Start the services, then run recognition again.',
   'playground.redactFailed': 'Redaction failed.',
+  'playground.redactFailedPagesConfirm': 'Page(s) {pages} failed recognition: they will NOT be redacted (not recognized ≠ no sensitive content). Continue anyway? Cancel to retry the failed pages first.',
+  'playground.redactPagesUnknownRetry': 'Could not verify whether any pages failed recognition (lookup failed). Redaction was stopped to avoid treating un-redacted pages as clean; please retry.',
   'playground.redactAlreadyDone': 'Already redacted — opened the result view for you.',
   'playground.restored': 'Last single-file session restored',
   'playground.restoredFromServer': 'Restored last recognition from server',
@@ -1325,6 +1328,7 @@ const enOverrides: Record<string, string> = {
   'playground.locateFailed': 'Entity location failed; draw boxes manually or retry later.',
   'playground.previewHint.text':
     'Review highlights, select text, and refine annotations before export.',
+  'playground.previewPageLoading': 'Loading page…',
   'playground.updateAnnotation': 'Update annotation',
   'playground.addAnnotation': 'Add annotation',
   'playground.customType': 'Custom',
@@ -1793,6 +1797,7 @@ Object.assign(enOverrides, {
 
 Object.assign(enOverrides, {
   'playground.visualRegionRange': 'Image vision',
+  'playground.visualServiceDown': 'Service not running',
   'playground.visualFeatureShort': 'Visual features',
   'health.service.visual_features': 'Visual feature service',
   'history.previewImageRegion': 'Visual feature',
@@ -2172,6 +2177,7 @@ Object.assign(enOverrides, {
   'processingDetails.redaction': 'Redaction rendering',
   'processingDetails.failedChunks': '{n} page(s) failed recognition and fell back automatically',
   'processingDetails.textDirect': 'Direct text input — no OCR needed',
+  'processingDetails.failedPages': 'Page(s) {pages} failed recognition: they were NOT scanned for sensitive data and will not be redacted. Retry them separately or review manually.',
   'processingDetails.pages': '{n} pages',
   'processingDetails.perPage': '{s}/page',
   'processingDetails.entityCount': '{n} entities',
@@ -2644,6 +2650,12 @@ Object.assign(enOverrides, {
   'agentMd.include': 'Restore replacement',
   'agentMd.customPlaceholder': 'Custom replacement',
   'agentMd.confirmGenerate': 'Confirm & generate',
+  'agentMd.zeroEntitiesWarning':
+    'No sensitive entity was recognized. Generating now yields the original text unredacted — please double-check the document or retry later.',
+  'agentMd.zeroEntitiesAck': 'I understand no entity was found and still want to generate',
+  'agentMd.parseWarningsTitle': 'Parsing notes (you can continue)',
+  'agentMd.droppedEmptyTable': 'Empty table blocks',
+  'agentMd.parseWarningsMore': 'More warnings',
   'agentMd.resultTitle': 'Redacted Markdown generated',
   'agentMd.copyMd': 'Copy for AI',
   'agentMd.copied': 'Copied',

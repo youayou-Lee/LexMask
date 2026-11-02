@@ -16,6 +16,9 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
+
+from app.core.errors import AppError
 from app.core.persistence import to_jsonable
 from app.core.visual_feature_categories import has_only_ocr_fallback_visual_slugs
 from app.models.common import ReplacementMode
@@ -439,6 +442,60 @@ def _text_layer_doc_status(doc_boxes, doc_memo: dict, page: int) -> dict:
     }
 
 
+# ---- Issue#217 PR②：视觉检测服务任务入口秒级预检（fail-closed）----
+# 勾选视觉项而 LA 不在场时立即明确失败+三选指引，替代 240s 超时长挂
+# （探针实测：挂起场景全链 ≈723s；拒绝场景虽快但报错无指引且 transient 会被上层放大）。
+# 绝不静默跳过——印章是打码对象，漏检=泄漏（承 #199/#203 fail-closed 原则）。
+_VISUAL_SERVICE_DOWN_TTL_SEC = 5.0  # 负结果缓存，与 HaS _HAS_NEGATIVE_HEALTH_TTL_SEC 同源模式
+_VISUAL_SERVICE_UP_TTL_SEC = 5.0  # 正结果缓存（评审 M10：健康时免每页重复探测，隧道下累计秒级）
+_visual_down_until: float = 0.0
+_visual_up_until: float = 0.0
+
+
+def _visual_service_unavailable() -> AppError:
+    return AppError(
+        status_code=503,
+        error_code="visual_service_unavailable",
+        message=(
+            "视觉检测服务（LocateAnything）未启动：本地请运行 ./start_local.sh --with-visual，"
+            "或以云端模式启动（--visual cloud，隧道指向自有实例）；"
+            "若本次任务不需要印章/签字检测，请取消勾选对应视觉识别项。"
+        ),
+    )
+
+
+async def _probe_visual_service() -> None:
+    """Ping LA /health（短超时）。可达即返回；任何异常向上抛给预检判定。"""
+    from app.services import model_config_service
+
+    base = model_config_service.get_visual_features_base_url()
+    async with httpx.AsyncClient(timeout=3.0, trust_env=False) as client:
+        resp = await client.get(f"{base.rstrip('/')}/health")
+        resp.raise_for_status()
+
+
+async def ensure_visual_service_available() -> None:
+    """任务入口预检：LA 不可达 ⇒ 立即 AppError(visual_service_unavailable)。
+
+    负结果缓存 ``_VISUAL_SERVICE_DOWN_TTL_SEC`` 秒：TTL 内不重复发探测
+    （探测本身是毫秒级，但密集页会每页触发一次——缓存挡住重复网络抖动）。
+    """
+    global _visual_down_until, _visual_up_until
+    now = time.monotonic()
+    if now < _visual_down_until:
+        raise _visual_service_unavailable()
+    if now < _visual_up_until:
+        return  # 正结果 TTL 内免重复探测（隧道下每页几十 ms 会累计挤占页预算）
+    try:
+        await _probe_visual_service()
+        _visual_up_until = now + _VISUAL_SERVICE_UP_TTL_SEC
+    except Exception:
+        _visual_down_until = now + _VISUAL_SERVICE_DOWN_TTL_SEC
+        raise _visual_service_unavailable()
+    # 注意：预检位于 vision 缓存判定之前——LA down 时连缓存可命的页也 503。
+    # 这是有意的 fail-closed（印章页不允许「静默跳过视觉」），勿当 bug 修。
+
+
 async def detect_vision(
     file_id: str,
     page: int = 1,
@@ -555,6 +612,18 @@ async def detect_vision(
 
     effective_ocr_types = ocr_has_types if ocr_has_enabled else None
     effective_visual_feature_types = visual_feature_types if visual_features_enabled else None
+
+    # Issue#217 PR②：任务入口秒级预检（fail-closed）。勾了视觉项而 LA 不在场时，
+    # 立即明确失败并给三选指引，替代此前 240s 超时长挂（挂起场景全链实测 ≈723s）。
+    # 顺序：先跑文档可访问性校验（PDF 加密错优先于环境错——文件本身的错误先报，
+    # 钉子= test_pdf_encryption::test_vision_endpoint_400_code_not_404）。
+    if visual_features_enabled:
+        _vision_file_path = str(snapshot.get("file_path") or "")
+        if _vision_file_path.lower().endswith(".pdf"):
+            from app.services.file_parser import ensure_pdf_accessible
+
+            ensure_pdf_accessible(_vision_file_path)
+        await ensure_visual_service_available()
 
     signature_ocr_types = effective_ocr_types
     signature_visual_feature_types = effective_visual_feature_types

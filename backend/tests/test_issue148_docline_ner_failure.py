@@ -274,6 +274,9 @@ def test_b5_deduplicated_request_without_cacheable_result_is_failure(monkeypatch
 
 def test_b6_rebatch_aggregation_flip_is_failure(monkeypatch):
     """>24 类 + 长文本 ⇒ 顶层单批、解析失败后重分批，聚合结果必须翻转 ok。"""
+    # Issue#209①：默认帽 4096 下 30 型不再触发"顶层单批后重分批"；本用例要打
+    # 的正是 :1124 那个分支，故钉回 2048 保前提。
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
     types = [f"类型{index:02d}" for index in range(1, 31)]
     long_text = "被告人陈述事实。" * 800
 

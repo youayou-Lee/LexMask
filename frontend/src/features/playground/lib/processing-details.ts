@@ -147,6 +147,21 @@ export function isTextDirectMode(perf: Perf | null | undefined): boolean {
 }
 
 /**
+ * 识别失败页号（升序），来源 = performance.recognition.failed_pages（Issue#199）。
+ * 后端无条件写该键（空对象 = 无失败）；缺键/坏形一律视为无失败。
+ */
+export function recognitionFailedPages(perf: Perf | null | undefined): number[] {
+  const raw = asRecord(asRecord(perf).recognition).failed_pages;
+  if (!isRecord(raw)) return [];
+  const out: number[] = [];
+  for (const key of Object.keys(raw)) {
+    const page = Number.parseInt(key, 10);
+    if (Number.isFinite(page)) out.push(page);
+  }
+  return out.sort((a, b) => a - b);
+}
+
+/**
  * 文本件的 page_count 组件层合并：workers 文本流不写 page_count，spec 要求
  * counts=page_count 时取 GET /files/{id} 的 page_count 补充——调用方（组件）把
  * 文件记录页数传进来，后端已写的 recognition.page_count 优先。

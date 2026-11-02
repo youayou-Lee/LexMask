@@ -11,9 +11,11 @@ import logging
 import time
 from collections import Counter
 from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any
 
 from app.core.config import settings
+from app.services.has_client import NerDeadlineExceeded
 from app.services.ocr_has_vision_service import OCRTextBlock
 from app.services.vision.has_text_payload import (
     _build_has_text_payload,
@@ -153,6 +155,7 @@ async def _run_has_text_ner_groups(
     chinese_types: list[str],
     *,
     context_tokens: int | None = None,
+    deadline: float | None = None,
 ) -> tuple[dict[str, list[str]], int]:
     """逐组派发 HaS 主查（Issue#104 C3/C5）。
 
@@ -165,6 +168,12 @@ async def _run_has_text_ner_groups(
       失败——组级静默漏检（本 Issue 的病）不得在组上复发（C5/D-cm）。
     - context_tokens：规划时钉住的生效上下文，透传给 ner()（冷审 I1）——
       否则 ner() 自行重探，TTL 到期后规划与实发会漂移到两套上下文。
+    - deadline（Issue#209）：页级 NER 预算的单调钟死线。耗尽后**不再开新组**
+      （在飞组跑完即可），并把 `has_text_ner_budget_exceeded` /
+      `has_text_ner_budget_skipped_groups` 记进 stage_status——返回 None 的组
+      既不进合并、也不算失败组（失败组语义是"该页判失败"，预算语义是"该页
+      只扫了一部分"，由调用方按 HAS_NER_PAGE_BUDGET_STRICT_FAIL 决定是否落成
+      页级失败）。默认 None = 无预算，与历史逐字等价。
 
     Returns ``(merged_union, failed_group_count)``；失败组不参与合并（调用方
     据此整页判失败）。
@@ -177,7 +186,28 @@ async def _run_has_text_ner_groups(
         max(1, min(int(settings.HAS_VISION_MAX_GROUPS_INFLIGHT), len(group_texts)))
     )
 
-    async def _run_group(group_text: str) -> dict[str, list[str]]:
+    def _budget_skip() -> None:
+        """记一次「因预算耗尽而跳过一组」。
+
+        Issue#209：返回 None 而不是 {}——{} 会被下游当成"这组合法地答无实体"
+        （C5 的病），None 则被 ``merge_group_ner_results`` 与失败过滤天然排除。
+        """
+        _record_has_text_metric(stage_status, "has_text_ner_budget_exceeded", 1)
+        # 门⑥ F11：这是**计数组**（跳过几组），不能借 `_add_has_text_duration`
+        # （ms 累加器）记——同名键会被下游按毫秒读。
+        stage_status["has_text_ner_budget_skipped_groups"] = (
+            int(stage_status.get("has_text_ner_budget_skipped_groups", 0) or 0) + 1
+        )
+        logger.warning(
+            "HaS page NER budget exhausted (deadline=%s); skipping remaining group(s)",
+            deadline,
+        )
+
+    async def _run_group(group_text: str) -> dict[str, list[str]] | None:
+        if deadline is not None and time.monotonic() >= deadline:
+            # 进队时已超预算：不再开新组（在飞组跑完即可）。
+            _budget_skip()
+            return None
         cached = _get_cached_has_text_ner(has_client, group_text, chinese_types)
         if cached is not None:
             return cached
@@ -187,43 +217,112 @@ async def _run_has_text_ner_groups(
             # 同组文本的兄弟页：等 owner 落定（与旧整页 inflight 语义一致）。
             return await asyncio.shield(inflight_future)
         result: dict[str, list[str]] | None = None
+        budget_skipped = False
         try:
             async with group_sem:
-                queue_start = time.perf_counter()
-                async with shared_gpu_inference_slot("OCR HaS Text NER"):
-                    queue_ms = round((time.perf_counter() - queue_start) * 1000)
-                    _add_has_text_duration(stage_status, "has_text_slot_wait_ms", queue_ms)
-                    cached = _get_cached_has_text_ner(has_client, group_text, chinese_types)
-                    if cached is not None:
-                        _record_has_text_metric(stage_status, "has_text_cache_status", "hit_after_slot")
-                        result = cached
-                    else:
-                        model_start = time.perf_counter()
+                # 排队等槽位/等 GPU 闸也可能把预算耗掉——必须在**真发请求之前**
+                # 复检，否则"停发剩余组"只是队列长度决定的运气。
+                if deadline is not None and time.monotonic() >= deadline:
+                    _budget_skip()
+                    budget_skipped = True
+                else:
+                    queue_start = time.perf_counter()
+                    async with shared_gpu_inference_slot("OCR HaS Text NER"):
+                        queue_ms = round((time.perf_counter() - queue_start) * 1000)
+                        _add_has_text_duration(stage_status, "has_text_slot_wait_ms", queue_ms)
+                        cached = _get_cached_has_text_ner(has_client, group_text, chinese_types)
+                        if cached is not None:
+                            _record_has_text_metric(stage_status, "has_text_cache_status", "hit_after_slot")
+                            result = cached
+                        else:
+                            model_start = time.perf_counter()
 
-                        def _ner_sample(pass_index: int) -> Any:
-                            return has_client.ner(
-                                group_text,
-                                chinese_types,
-                                temperature=(0.0 if pass_index == 0 else sample_temp),
-                                sample_index=pass_index,
-                                raise_on_error=True,
-                                context_tokens=context_tokens,
+                            def _ner_sample(pass_index: int) -> Any:
+                                return has_client.ner(
+                                    group_text,
+                                    chinese_types,
+                                    temperature=(0.0 if pass_index == 0 else sample_temp),
+                                    sample_index=pass_index,
+                                    raise_on_error=True,
+                                    context_tokens=context_tokens,
+                                    deadline=deadline,
+                                )
+
+                            # Issue#209 C：预算必须是**硬墙**。上面两处复检只在
+                            # 阶段边界，而单次 ner() 内部还可能走「截断→按缺失类型
+                            # 切 9~12 段补查→残差重发」的长链（页 133 实测 160s+，
+                            # 病态组合 300s+），门④ 实测该页因此仍然撞 300s 页墙、
+                            # 预算一次都没触发。这里用剩余预算 wait_for 兜住整条链，
+                            # 超时即丢该组（partial 语义与跳过一致，strict 时由
+                            # 调用方抛 HasTextNerPageBudgetExceeded）。
+                            remaining = (
+                                None
+                                if deadline is None
+                                else deadline - time.monotonic()
                             )
-
-                        result, passes_run = await asyncio.to_thread(
-                            aggregate_ner_samples, _ner_sample, k_samples
-                        )
-                        _record_has_text_metric(stage_status, "has_text_cache_status", "model_call")
-                        _add_has_text_duration(
-                            stage_status,
-                            "has_text_self_consist_passes",
-                            passes_run,
-                        )
-                        _add_has_text_duration(
-                            stage_status,
-                            "has_text_model_ms",
-                            round((time.perf_counter() - model_start) * 1000),
-                        )
+                            if remaining is not None and remaining <= 0:
+                                _budget_skip()
+                                budget_skipped = True
+                            else:
+                                try:
+                                    if remaining is None:
+                                        result, passes_run = await asyncio.to_thread(
+                                            aggregate_ner_samples, _ner_sample, k_samples
+                                        )
+                                    else:
+                                        # 硬墙要点：`asyncio.to_thread` 里的模型调用
+                                        # 在同步 HTTP 里跑，取消不了；`wait_for` 会
+                                        # **等它自然结束**再抛 TimeoutError（实测 2s
+                                        # 预算量出 3.05s），等于没有墙。用 asyncio.wait
+                                        # 超时就直接放手：页不再被它拖住，但**线程会
+                                        # 在后台跑完**——它会继续占用 GPU、并且**可能
+                                        # 把自己的结果写进 HaS 共享缓存**（门⑥ F4：
+                                        # 早先注释写的"结果无人消费"不准确）。因此
+                                        # 这里记账 `has_text_ner_orphan_threads`，让
+                                        # 这种"页已放行、模型还在跑"的形态可观测。
+                                        task = asyncio.ensure_future(
+                                            asyncio.to_thread(
+                                                aggregate_ner_samples, _ner_sample, k_samples
+                                            )
+                                        )
+                                        done, _pending = await asyncio.wait(
+                                            {task}, timeout=remaining
+                                        )
+                                        if task not in done:
+                                            task.add_done_callback(
+                                                lambda t: t.cancelled() or t.exception()
+                                            )
+                                            stage_status["has_text_ner_orphan_threads"] = int(
+                                                stage_status.get("has_text_ner_orphan_threads", 0) or 0
+                                            ) + 1
+                                            raise TimeoutError
+                                        result, passes_run = task.result()
+                                except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041
+                                    _budget_skip()
+                                    budget_skipped = True
+                                except NerDeadlineExceeded:
+                                    # 补查链在死线处拒绝继续发请求 ⇒ 该组只拿到部分
+                                    # 结论，按预算跳过语义处理（不当作组失败）。
+                                    _budget_skip()
+                                    budget_skipped = True
+                                else:
+                                    _record_has_text_metric(
+                                        stage_status, "has_text_cache_status", "model_call"
+                                    )
+                                    _add_has_text_duration(
+                                        stage_status,
+                                        "has_text_self_consist_passes",
+                                        passes_run,
+                                    )
+                                    _add_has_text_duration(
+                                        stage_status,
+                                        "has_text_model_ms",
+                                        round((time.perf_counter() - model_start) * 1000),
+                                    )
+            if budget_skipped:
+                # 不填 {}（那会被当成"该组答无实体"），填 None 让等待方同样判跳过。
+                _finish_has_text_ner_inflight(inflight_key, inflight_future, None)
+                return None
             _finish_has_text_ner_inflight(inflight_key, inflight_future, result)
             return result if isinstance(result, dict) else {}
         except BaseException as exc:
@@ -267,7 +366,9 @@ def aggregate_ner_samples(
         matcher is the leak-safe gate — it yields 0 region for any value that
         does not occur in the OCR blocks. Growing the union cannot uncover PII.
 
-    接线 TODO (human GPU main loop): drive ``sample_fn`` as
+    接线现状 (2026-10-29)：本函数已由 ``_run_has_text_ner_groups`` 真实驱动，
+    ``sample_fn`` 即该处的 ``_ner_sample``（走 shared_gpu_inference_slot +
+    HAS_VISION_MAX_GROUPS_INFLIGHT 组闸 + 页级死线）。以下为实现契约备忘：drive ``sample_fn`` as
     ``lambda i: has_client.ner(text, types, temperature=(0.0 if i == 0 else T),
     sample_index=i)`` inside shared_gpu_inference_slot; read ``max_passes`` from
     a config knob; cache ONLY the returned union under the canonical
@@ -428,11 +529,55 @@ def _block_residual_ink(block_compact: str, consumed_values: list[str]) -> str |
     return leftover if has_value_sized_run else None
 
 
+# Issue#209：页级 HaS NER 死线。同一页会多次调用 NER（语义组、文本块组…），
+# 每次各自从"现在"起算预算会把总时长拼爆（门④ 实测：单页 280s 的 NER 分若干
+# 次调用，没有一次超过预算，页门限 300s 照旧杀页）。用 ContextVar 把死线钉在
+# **页的上下文**上：页级入口 reset 一次，之后本页所有 NER 调用共用同一条墙；
+# asyncio 每个页任务有独立上下文，并发页之间互不串味。
+_PAGE_NER_DEADLINE: ContextVar[float | None] = ContextVar(
+    "has_text_page_ner_deadline", default=None
+)
+
+
+def reset_page_ner_deadline() -> None:
+    """页级入口调用：本页从「现在」重新起算一条真实死线。
+
+    门⑥ F5（2026-10-29）：死线必须从**页入口**起算，而不是「首次 NER 调用」起算
+    ——否则 OCR 慢的页（OCR 120s + NER 200s = 320s）仍会先撞 300s 页墙，页级预算
+    这条保命闸永远触发不了。预算关闸（<=0）时置 None。
+    """
+    budget = float(getattr(settings, "HAS_NER_PAGE_BUDGET_SEC", 0.0) or 0.0)
+    _PAGE_NER_DEADLINE.set(time.monotonic() + budget if budget > 0 else None)
+
+
+def has_text_page_deadline() -> float | None:
+    """本页的 HaS NER 死线（页入口建立；未建则首次调用兜底建立，后续复用）。"""
+    deadline = _PAGE_NER_DEADLINE.get()
+    if deadline is not None:
+        return deadline
+    budget = float(getattr(settings, "HAS_NER_PAGE_BUDGET_SEC", 0.0) or 0.0)
+    if budget <= 0:
+        return None
+    deadline = time.monotonic() + budget
+    _PAGE_NER_DEADLINE.set(deadline)
+    return deadline
+
+
+class HasTextNerPageBudgetExceeded(RuntimeError):
+    """页级 HaS NER 预算耗尽（Issue#209）。
+
+    语气与「页超时」同级：该页**只被扫了一部分**，不得当整页完成看待。由
+    HAS_NER_PAGE_BUDGET_STRICT_FAIL 决定是否抛出——抛出后由页级 stage 捕获并
+    记入 `recognition.failed_pages`（页级隔离，不连坐整卷）。
+    """
+
+
 async def run_has_text_analysis(
     ocr_blocks: list[OCRTextBlock],
     has_client: Any,
     vision_types: list | None = None,
     stage_status: dict[str, Any] | None = None,
+    page_deadline: float | None = None,
 ) -> list[dict[str, str]]:
     """
     Analyse OCR text with HaS local NER model to identify sensitive entities.
@@ -442,11 +587,53 @@ async def run_has_text_analysis(
         ocr_blocks: OCR text blocks.
         has_client: HaSClient instance (may be None).
         vision_types: User-enabled vision type configs.
+        page_deadline: 调用方给的**页级**死线（``time.monotonic()`` 口径）。页内会
+            多次调用本函数（语义组、文本块组…），各自从"现在"起算预算会把这些
+            调用拼成远超页门限的总时长——门④ 实测 2 页夹具里页 133 正是这样跑满
+            300s 而预算一次没触发。传了死线就以它为准（预算秒数仍用于记账文案）。
 
     Returns:
         [{type: "PERSON", text: "张三"}, ...]
     """
     total_start = time.perf_counter()
+    # Issue#209：页级 NER 预算。真实案卷 133 页实测「主查枚举复读 83.4s + 9~12 段
+    # 补查 + 外层整页重发」在 NER 上烧掉 >420s，撞 300s 页墙后整页清零。给 NER
+    # 一条自己的墙：超预算后停发剩余阶段，用已聚合的部分结果收尾并显式记账；
+    # strict=True 时把「只扫了一部分」落成页级失败（语气与页超时一致：进
+    # failed_pages ⇒ 交付面拦截 + 界面可查），而不是伪装成完成的整页结果。
+    page_budget_sec = float(getattr(settings, "HAS_NER_PAGE_BUDGET_SEC", 0.0) or 0.0)
+    if page_budget_sec > 0:
+        own_deadline: float | None = time.monotonic() + page_budget_sec
+    else:
+        own_deadline = None
+    # 调用方（页级 stage）给的死线优先：同一页的多次 NER 调用共用一条墙。
+    page_deadline = page_deadline if page_deadline is not None else own_deadline
+    budget_strict = bool(getattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True))
+
+    def _budget_exhausted() -> bool:
+        return page_deadline is not None and time.monotonic() >= page_deadline
+
+    def _note_budget_exceeded(reason: str) -> None:
+        """记预算突破 + 记账；strict 时落成页级失败（Issue#209）。"""
+        _record_has_text_metric(stage_status, "has_text_ner_budget_exceeded", 1)
+        elapsed_ms = round((time.perf_counter() - total_start) * 1000)
+        _record_has_text_metric(stage_status, "has_text_ner_budget_elapsed_ms", elapsed_ms)
+        logger.warning(
+            "HaS page NER budget exceeded after %.1fs (budget=%.1fs): %s",
+            elapsed_ms / 1000,
+            page_budget_sec,
+            reason,
+        )
+        if budget_strict:
+            raise HasTextNerPageBudgetExceeded(
+                f"HaS NER budget exceeded after {elapsed_ms / 1000:.1f}s "
+                f"(budget {page_budget_sec:.0f}s): {reason}; page scanned only partially"
+            )
+        # 门⑥ F8（2026-10-29）：非 strict 时页仍按 completed 收尾，交付面
+        # （ready_for_delivery / ZIP 409 闸）看不出「只扫了一部分」。至少留一个
+        # 与 failed_pages 并列的显式标记，供交付面/审计面区分部分扫描。
+        _record_has_text_metric(stage_status, "has_text_partial_scan", 1)
+
     _record_has_text_metric(stage_status, "has_text_cache_status", "not_started")
     _record_has_text_metric(stage_status, "has_text_slot_wait_ms", 0)
     _record_has_text_metric(stage_status, "has_text_duplicate_wait_ms", 0)
@@ -619,7 +806,16 @@ async def run_has_text_analysis(
                 group_texts,
                 chinese_types,
                 context_tokens=context_tokens,
+                deadline=page_deadline,
             )
+            if (stage_status or {}).get("has_text_ner_budget_exceeded"):
+                # Issue#209：主查阶段已有组被预算跳过 ⇒ 该页只被扫了一部分。
+                # strict（默认）⇒ 落成页级失败；否则用部分结果收尾并留痕。
+                _note_budget_exceeded(
+                    "main NER phase stopped early: "
+                    f"{(stage_status or {}).get('has_text_ner_budget_skipped_groups', 0)}"
+                    f"/{len(group_texts)} group(s) skipped"
+                )
             if groups_failed:
                 # Issue#104 C5：任一组失败 ⇒ 该页主查整体判失败——组级部分结果
                 # 不得伪装成「该页无实体」静默通过（那正是本 Issue 在修的病）。
@@ -768,7 +964,47 @@ async def run_has_text_analysis(
                 max_block_chars=settings.HAS_VISION_MAX_BLOCK_CHARS,
             )
             residual_text = residual_payload.content
-            if residual_text.strip() and residual_text != text_content:
+            # Issue#209（成本结构修复②）：截断会让 `_block_residual_ink` 判定
+            # "几乎整页墨迹都未被解释"，于是残差 payload ≈ 整页（实测 3928 →
+            # 5372 字符），用 32000 上限再发一次全类型 ⇒ 又截断 ⇒ 又分块补查。
+            # 这就是页内"两次整页请求"的来源，单页 300s 页墙装不下。
+            # 判据：残差 ≤ 主查 payload 的 RATIO 才允许发；超过即判定为「截断
+            # 而非遗漏」（真遗漏的墨迹是零散小段），跳过整页重发 —— 缺失类型
+            # 由 `ner_checked` 的类型级补查链负责，而不是再烧一次整页生成。
+            residual_ratio = float(
+                getattr(settings, "HAS_NER_RESIDUAL_MAX_PAYLOAD_RATIO", 0.35) or 0.0
+            )
+            # 必须"绝对量大 + 相对主查也大"才算整页重发：小页的残差占比天然偏高
+            # （单块两列 → 残差≈40%），但只有几十字符，照旧发不影响成本。
+            residual_min_chars = int(
+                getattr(settings, "HAS_NER_RESIDUAL_MIN_CHARS", 2000) or 0
+            )
+            main_chars = len(text_content or "")
+            residual_chars = len(residual_text or "")
+            residual_limit = max(
+                residual_min_chars, int(main_chars * residual_ratio)
+            )
+            residual_oversize = bool(
+                residual_ratio > 0.0
+                and main_chars > 0
+                and residual_chars >= residual_limit
+            )
+            if residual_oversize:
+                stage_status["has_text_residual_skipped_oversize"] = 1
+                stage_status["has_text_residual_skipped_chars"] = residual_chars
+                stage_status["has_text_residual_max_chars"] = residual_limit
+                logger.warning(
+                    "HaS residual payload %.0f chars > %.0f%% of main payload "
+                    "(%d chars); skipping whole-page re-ask (Issue#209)",
+                    residual_chars,
+                    residual_ratio * 100,
+                    main_chars,
+                )
+            if (
+                residual_text.strip()
+                and residual_text != text_content
+                and not residual_oversize
+            ):
                 residual_ner_result = _get_cached_has_text_ner(has_client, residual_text, chinese_types)
                 if residual_ner_result is None:
                     from app.core.gpu_inference_gate import shared_gpu_inference_slot
@@ -792,6 +1028,10 @@ async def run_has_text_analysis(
                     )
                     residual_group_results: list[Any] = []
                     for residual_group_text in residual_group_texts:
+                        if _budget_exhausted():
+                            # Issue#209：预算耗尽即停发残差组（strict ⇒ 页失败）。
+                            _note_budget_exceeded("residual NER phase stopped early")
+                            break
                         cached_group = _get_cached_has_text_ner(has_client, residual_group_text, chinese_types)
                         if cached_group is not None:
                             residual_group_results.append(cached_group)
@@ -836,6 +1076,12 @@ async def run_has_text_analysis(
                             bucket = residual_new.setdefault(entity_type, [])
                             if clean_text not in bucket:
                                 bucket.append(clean_text)
+                if residual_new and _budget_exhausted():
+                    # Issue#209：预算耗尽 ⇒ 不再进入逐值自证（strict ⇒ 页级失败）。
+                    # 非 strict：未自证的值按「自证未确认」同一保守语义**不采纳**
+                    # （不新增假阳性），只用主查+残差已聚合的部分结果收尾。
+                    _note_budget_exceeded("residual verify phase skipped")
+                    residual_new = {}
                 if residual_new:
                     from app.core.config import settings as verify_settings
                     from app.core.gpu_inference_gate import shared_gpu_inference_slot
@@ -1055,6 +1301,17 @@ async def run_has_text_analysis(
         )
         return entities
 
+    except HasTextNerPageBudgetExceeded:
+        # Issue#209：预算突破必须冒到页级 stage ⇒ 记入 recognition.failed_pages
+        # （与页超时同一条交付拦截链）。若被下面的宽 except 吞成 []，"只扫了一
+        # 部分"就被洗成"该页无实体"——正是本件要防的静默半结果。
+        _record_has_text_metric(stage_status, "has_text_cache_status", "page_budget_exceeded")
+        _record_has_text_metric(
+            stage_status,
+            "has_text_total_ms",
+            round((time.perf_counter() - total_start) * 1000),
+        )
+        raise
     except Exception as e:
         logger.exception("HaS text analysis failed: %s", e)
         _record_has_text_metric(stage_status, "has_text_cache_status", "failed")

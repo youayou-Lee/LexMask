@@ -1,0 +1,39 @@
+[
+  {
+    "type": "text",
+    "text": "某市某区人民法院财产查询反馈信息表",
+    "page_idx": 0,
+    "bbox": [0, 0, 1000, 60]
+  },
+  {
+    "type": "table",
+    "table_body": "<table><tr><td colspan=\"2\">案号：（2026）某0102执恢100号</td><td>查询日期：2026-10-01</td></tr><tr><td>户名</td><td>张某某</td><td>证件号码</td></tr><tr><td>账号</td><td>6222020200012345678</td><td>余额</td></tr><tr><td>开户行</td><td>某银行某支行</td><td>134.37</td></tr></table>",
+    "img_path": "images/aaaa1111.jpg",
+    "page_idx": 0,
+    "bbox": [0, 60, 1000, 700]
+  },
+  {
+    "type": "text",
+    "text": "上述财产查询结果由协执单位于 2026 年 10 月 1 日反馈。",
+    "page_idx": 0,
+    "bbox": [0, 700, 1000, 760]
+  },
+  {
+    "type": "page_number",
+    "text": "第1页",
+    "page_idx": 0,
+    "bbox": [0, 760, 1000, 800]
+  },
+  {
+    "type": "table",
+    "table_body": "<table><tr><td>序号</td><td>开户行</td><td>账号</td><td>余额（元）</td></tr><tr><td>1</td><td>某银行某支行</td><td>6222020200098765432</td><td>0.00</td></tr><tr><td>2</td><td>某银行某分行</td><td>6217000011112222333</td><td>52.10</td></tr></table>",
+    "page_idx": 1,
+    "bbox": [0, 0, 1000, 640]
+  },
+  {
+    "type": "page_number",
+    "text": "第2页",
+    "page_idx": 1,
+    "bbox": [0, 640, 1000, 800]
+  }
+]

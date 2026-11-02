@@ -9,6 +9,7 @@
 
 import json
 
+from app.core.config import settings
 from app.services.has_client import HaSClient
 
 FLOOD_TRUNCATED = (
@@ -39,10 +40,16 @@ def test_truncated_flood_requeries_missing_types_and_merges():
     client, calls = make_client([FLOOD_TRUNCATED, CLEAN_TAIL])
     result = client.ner(TEXT + " t1", TYPES, type_guidance=[])
 
-    assert len(calls) == 2, f"expected exactly one retry, got {len(calls)} calls"
-    # 补查的 prompt 只带缺失类型
-    assert "薪酬" in calls[1] and "年龄（岁）" in calls[1]
-    assert '"姓名"' not in calls[1]
+    # Issue#209③：一轮补查沿类型轴切成 ≤2 型/请求的子批，故"1 次主查 + N 次补查"
+    assert len(calls) >= 2, f"必须发生补查，got {len(calls)} calls"
+    assert len(calls[1:]) <= -(-len(TYPES) // settings.HAS_NER_REQUERY_MAX_TYPES_PER_CALL), (
+        f"补查轮必须封顶：{len(calls) - 1} 个子请求"
+    )
+    # 补查的 prompt 只带缺失类型（跨子批合并看并集）
+    requery_prompts = calls[1:]
+    assert any("薪酬" in c for c in requery_prompts)
+    assert any("年龄（岁）" in c for c in requery_prompts)
+    assert all('"姓名"' not in c for c in requery_prompts)
     # 合并结果包含被截断丢失的桶
     assert result.get("薪酬") == ["10K-15K/月", "2.8万-3.5万/月"]
     assert result.get("年龄（岁）") == ["36岁"]
@@ -65,7 +72,10 @@ def test_truncation_retry_happens_at_most_once():
     client, calls = make_client([FLOOD_TRUNCATED, truncated_again])
     client.ner(TEXT + " t3", TYPES, type_guidance=[])
 
-    assert len(calls) == 2, f"retry must be capped at one, got {len(calls)} calls"
+    assert len(calls) >= 2, f"必须发生一轮补查，got {len(calls)} calls"
+    assert len(calls[1:]) <= -(-len(TYPES) // settings.HAS_NER_REQUERY_MAX_TYPES_PER_CALL), (
+        f"补查不得递归，轮内子请求数封顶：{len(calls) - 1}"
+    )
 
 
 def test_trim_keeps_tail_value_that_is_not_a_repetition_prefix():

@@ -25,6 +25,7 @@ import {
   formatDurationMs,
   isTextDirectMode,
   mergeFilePageCount,
+  recognitionFailedPages,
   type ProcessingRow,
 } from '../lib/processing-details';
 import { useSingleTask } from '@/features/single-task/single-task-context';
@@ -83,6 +84,8 @@ export const ProcessingDetailsCard: FC<{
   const rows = useMemo(() => buildProcessingRows(mergedPerf), [mergedPerf, t]);
   const totalMs = useMemo(() => buildProcessingTotalMs(mergedPerf), [mergedPerf]);
   const textDirect = useMemo(() => isTextDirectMode(mergedPerf), [mergedPerf]);
+  // Issue#199：识别失败页清单（泄漏安全——失败页零区域，必须明示「未识别」而非「无敏感内容」）。
+  const failedPages = useMemo(() => recognitionFailedPages(mergedPerf), [mergedPerf]);
 
   if (failed) {
     return (
@@ -101,8 +104,8 @@ export const ProcessingDetailsCard: FC<{
     );
   }
 
-  // AC3 旧文件条款：无任何阶段数据 → 不渲染卡。
-  if (rows.length === 0 && totalMs === null) return null;
+  // AC3 旧文件条款：无任何阶段数据且无失败页 → 不渲染卡。
+  if (rows.length === 0 && totalMs === null && failedPages.length === 0) return null;
 
   return (
     <Card className="mb-3 flex-shrink-0 px-4 py-3" data-testid="processing-details-card">
@@ -124,6 +127,20 @@ export const ProcessingDetailsCard: FC<{
           )}
         </div>
         <ProcessingRowsList rows={rows} testId="processing-details-rows" />
+        {failedPages.length > 0 && (
+          <div
+            className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400"
+            data-testid="processing-details-failed-pages"
+          >
+            <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+            <p className="min-w-0 break-words">
+              {t('processingDetails.failedPages').replace(
+                '{pages}',
+                failedPages.join(', '),
+              )}
+            </p>
+          </div>
+        )}
         {textDirect && (
           <p className="text-xs text-muted-foreground" data-testid="processing-details-text-direct">
             {t('processingDetails.textDirect')}

@@ -60,5 +60,9 @@ class AgentMdTask:
     entities: list[Entity] = field(default_factory=list)
     mapping: list[MappingItem] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Issue#212：解析丢弃的可观测性（恒含 empty_table/unhandled 两键，0 也显式）
+    dropped_blocks: dict = field(default_factory=dict)
+    chars: int = 0  # 选中表示的正文（text/table）字符数
+    entity_types_used: list[str] = field(default_factory=list)  # 本任务启用的实体类型
     output_file_id: str | None = None
     owner_id: str = "local_user"

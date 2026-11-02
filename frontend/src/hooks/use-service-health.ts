@@ -259,6 +259,11 @@ function subscribe(listener: HealthListener) {
   };
 }
 
+/** Issue#217 PR②：服务状态是否处于存活档（徽标三态之一）。 */
+export function isServiceLive(status: string | undefined | null): boolean {
+  return typeof status === 'string' && LIVE_SERVICE_STATUSES.has(status);
+}
+
 export function useServiceHealth() {
   useEffect(() => {
     ensureHealthPolling();

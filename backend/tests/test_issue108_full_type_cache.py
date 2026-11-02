@@ -59,6 +59,7 @@ import threading
 
 import pytest
 
+from app.core.config import settings
 from app.services.has_client import HaSClient
 from app.services.has_service import HaSService
 from app.services.ocr_has_vision_service import OCRTextBlock
@@ -67,6 +68,14 @@ from app.services.vision.has_text_payload import (
     _build_has_text_type_names,
 )
 from app.services.vision.ocr_cache import _get_cached_has_text_ner
+
+
+@pytest.fixture(autouse=True)
+def _legacy_completion_cap(monkeypatch):
+    """Issue#209① 把默认完成帽 2048 → 4096 后，"19 型 / 1577 字必须预分批"的
+    前提消失（预算 19×160+788=3828 装得进 4096）。本文件钉的是**预分批路径**
+    下的整类型缓存语义，故显式钉回 2048 保前提。"""
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
 
 # 19 型 × 160 token/型 + 1577 字 ⇒ capacity=(2048-788)//160=7 ⇒ 7+7+5 三个子批
 _TEXT_1577 = "字" * 1577

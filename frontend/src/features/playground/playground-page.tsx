@@ -102,6 +102,7 @@ const PlaygroundInner: FC = () => {
     redactedImageError,
     currentPage,
     setCurrentPage,
+    previewPageLoading,
     totalPages,
     mergeVisibleBoxes,
     openPopout,
@@ -416,6 +417,7 @@ const PlaygroundInner: FC = () => {
                     {fileInfo && (
                       <ImageBBoxEditor
                         imageSrc={isImageMode ? imageUrl : staticPageUrl}
+                        pageLoading={previewPageLoading}
                         boxes={replacePageView ? replacePreviewBoxes : visibleBoxes}
                         lockDraw={replacePageView || progressiveRecognition}
                         onBoxesChange={

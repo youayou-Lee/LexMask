@@ -35,6 +35,14 @@ export function nextStepFromStatus(state: string): FlowStep {
 }
 
 /**
+ * Issue#212：映射表为空 = 一个敏感实体都没识别到，出稿等于交付未脱敏原文。
+ * 后端默认 409 拒绝，前端必须先让用户勾选知情框（0 实体闸的前端判据）。
+ */
+export function needsZeroEntityAck(items: MappingItemDto[]): boolean {
+  return items.length === 0;
+}
+
+/**
  * 只为用户改过的项生成决策：按映射项顺序输出（而非 edits 插入序），
  * 并丢弃映射表里已不存在的陈旧编辑 id（映射刷新后的残留）。
  */

@@ -1,0 +1,19 @@
+[
+  [
+    {
+      "type": "table",
+      "content": {
+        "html": "<table><tr><td>户名</td><td>张某某</td></tr><tr><td>账号</td><td>6222020200012345678</td></tr></table>",
+        "image_source": {"path": "images/cccc3333.jpg"},
+        "table_caption": [{"type": "text", "content": "表1 财产查询结果"}],
+        "table_footnote": [{"type": "text", "content": "数据来源：协执单位"}]
+      },
+      "bbox": [0, 0, 1000, 500]
+    },
+    {
+      "type": "page_number",
+      "content": {"page_number_content": [{"type": "text", "content": "第1页"}]},
+      "bbox": [0, 500, 1000, 800]
+    }
+  ]
+]

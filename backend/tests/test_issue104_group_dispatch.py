@@ -458,6 +458,9 @@ def test_c5_split_batch_sub_request_failure_is_not_swallowed(monkeypatch):
     ——正是本 Issue 在修的病。
     """
     monkeypatch.setattr(settings, "HAS_NER_SELF_CONSIST_SAMPLES", 1)
+    # Issue#209：默认完成帽 2048 → 4096 后，1200 密字符/12 型预算 2520 装得下
+    # 单批 ⇒ 不再分批，本用例的"子请求"前提消失。显式钉回 2048 保住前提。
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
     seen = {"n": 0}
 
     def reply(text, types):
@@ -646,7 +649,9 @@ def test_i1_pinned_planning_context_reaches_every_dispatched_request(monkeypatch
 
     monkeypatch.setattr(client, "_effective_context_tokens", counting_probe)
 
-    lines = [_unique_dense(800, f"pin块{i}") for i in range(8)]
+    # Issue#209：装填余量与 max_tokens 同源后，8 行恰好压线装进一组（6723+1245
+    # == fill），判据「≥2 组」失去前提；加到 12 行让它稳定分成 2 组。
+    lines = [_unique_dense(800, f"pin块{i}") for i in range(12)]
     stage: dict = {}
     asyncio.run(run_has_text_analysis(_blocks(*lines), client, [_VT("ID_CARD", "身份证号")], stage))
 

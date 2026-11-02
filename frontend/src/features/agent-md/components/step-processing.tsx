@@ -61,6 +61,10 @@ export function StepProcessing({ status, pollOnce, onError, onFail }: StepProces
   const failMessage = pollIssue ?? status?.message ?? '';
   const nerRunning = status?.stage === 'ner' || status?.state === 'ner_running';
   const pagesTotal = status?.pages_total ?? 0;
+  const droppedEmptyTable = status?.dropped_blocks?.empty_table ?? 0;
+  const warnings = status?.warnings ?? [];
+  const warningsShown = Math.min(warnings.length, 3);
+  const warningsTotal = status?.warnings_total ?? 0;
   const remainingMinutes =
     pagesTotal > 0
       ? Math.max(0, Math.ceil((pagesTotal * PARSE_SECONDS_PER_PAGE) / 60) - Math.floor(elapsed / 60))
@@ -108,6 +112,33 @@ export function StepProcessing({ status, pollOnce, onError, onFail }: StepProces
           <div className="h-2 w-full overflow-hidden rounded-full bg-muted" aria-hidden="true">
             <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
           </div>
+        </div>
+      )}
+
+      {/* Issue#212：解析阶段的丢弃/告警必须可见，不能再"静默 0 识别" */}
+      {(droppedEmptyTable > 0 || warningsTotal > 0) && (
+        <div
+          className="mt-2 w-full max-w-xl rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-left text-xs text-amber-700 dark:text-amber-400"
+          data-testid="agent-md-parse-warnings"
+        >
+          <p className="font-medium">{t('agentMd.parseWarningsTitle')}</p>
+          {droppedEmptyTable > 0 && (
+            <p data-testid="agent-md-dropped-empty-table">
+              {`${t('agentMd.droppedEmptyTable')}: ${droppedEmptyTable}`}
+            </p>
+          )}
+          {warningsTotal > warningsShown && (
+            <p className="text-muted-foreground">
+              {`${t('agentMd.parseWarningsMore')} ${warningsTotal - warningsShown}`}
+            </p>
+          )}
+          {warningsShown > 0 && (
+            <ul className="mt-1 list-disc pl-4 text-muted-foreground">
+              {warnings.slice(0, warningsShown).map((w, i) => (
+                <li key={`${i}-${w}`}>{w}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
     </section>

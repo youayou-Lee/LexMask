@@ -1,5 +1,145 @@
 # CHANGELOG
 
+## 2026-11-01
+
+### 新增（Issue#219）MinerU 产物双 schema 适配：3.x content_list 与 4.x docvortex.middle 自动分流
+
+- **为什么**：#217 后本地 MinerU 4.1.3 容器与生产实例 3.4.5 并存（刻意设计），但 4.x 大重构后的产物 schema（`docvortex.middle`：`metadata/pages/is_full_document`）与 3.x `content_list`（v1 扁平/v2 按页嵌套）完全不同——适配层读不出 4.x 文本，喂料全链在本地形态直接 `parse_no_text` 失败（fail-closed 守卫在位，无泄漏风险）。
+- **改了什么**（三文件，3.x 路径逐字不动）：
+  1. `agent_md_adapter.py`：`detect_schema`（形状判定判据本体：v4/v2/v1/unknown，schema 全等不做前缀匹配）+ `normalize_docvortex`（4.x→扁平 v1 归一，映射对照表实测锚定：text/paragraph_title→text（`\n` 拼接）、table 的 table_body 部件上浮、image 无 img_path 走既有 `[图片]` 哨兵降级、未知块/部件计数告警不静默；**pages 内容级去重**——doclib 双文件是 4.x 常态，pages 相同 metadata 不同必须去重成功，pages 不同 ⇒ fail-closed 防导出 md 全文翻倍；畸形结构（pages 非 list 等）跳过留痕不静默）+ `markdown_body_chars`（比值守卫参照口径）。
+  2. `mineru_parse_client.py`：拆包按 `detect_schema` 形状分流（**单一事实源、形状优先于文件名**）；`MineruResult` 增 `mineru4_docs`/`unknown_jsons`；损坏 json 维持整包「非法 zip」。
+  3. `agent_md_pipeline_service.py`：`_choose_representation` 起手探 v4（单表示，不走 #212 双表示守卫）；4.x 对 zip 内官方 .md 做比值守卫 `docvortex_shortfall`（`DOC_VORTEX_MD_RATIO=0.7`，锚点按发布口径重锚：markdown_body_chars 剥页注释后 md=401，v4=429，ratio 1.0698；探针 md 全文以合成数据入测试字面冻结）+ 缺 md 显式 `docvortex_md_missing`；混合产物 v4 优先并告警 `mixed_schema_v4_wins`；未知形状 json 出稿/失败两态均点名文件（owner 自见面，产物内容不进告警）；`parse_no_text` 失败消息按三形态区分（3.x 双路空 / 4.x 单路空 / 未知形状点名），机读原因码不变（前端零改动）。
+- **测试**：后端净 +39 例（adapter detect/normalize 逐字段钉、客户端拆包接线判据、管线 v4 分支与 AC5 失败形态矩阵）；全量 2570 passed 零回归；变异 9/9 KILLED（page_idx 赋值/未知型吞并/schema 前缀化/删去重/删比值守卫/客户端 v4 分支删行/删部件告警/删畸形告警/日志点名）。
+- **探针留档**：`testdata/canary-issue219-mineru4-schema.pdf`（3 页合成全假数据，生成器在私有仓 `scripts/issue219/`）；设计文档与门①.5 两轮评审回执在私有仓 `docs/acceptance/2026-11-01-issue219-mineru4-schema适配-设计与验收方案.md`。
+- **边界**：不改 sidecar 契约/部署形态（#218 钉死）；4.x flash 档无 seal 标记 ⇒ 公章哨兵在 4.x 暂无来源（记录在案，留待上游演进）；识别主链（OCR+HaS+LA）无关。
+
+## 2026-10-31
+
+### 新增（Issue#217 PR③）MinerU sidecar 仓内化 + GPU 容器形态 + 喂料通道接入
+
+- **为什么**：喂料通道（供料模式）的 MinerU 解析服务此前只在云实例侧（#75），仓内只有客户端——本地开发/小显存部署无法独立启用；且实例关机即不可用。
+- **改了什么**：
+  1. **sidecar 收编**（`backend/scripts/mineru_sidecar.py`）：按 `mineru_parse_client.py` 已钉契约重写（POST /tasks multipart→202→轮询 status→GET result zip；/health）。任务表内存+meta.json 落盘（重启后 completed 任务仍可取）。执行形态=to_thread+同步 subprocess（asyncio 子进程在 uvicorn 非主线程收不到退出回调）+后台协程强引用集（create_task 无引用会被 GC——任务卡 pending 的真因）。
+  2. **GPU 容器**（`backend/Dockerfile.mineru`）：官方 china 版组合——daocloud vLLM 0.21.0 基底 + mineru[torch]（阿里源）+ ModelScope 模型预下（`mineru-kit models download -s modelscope`）+ sidecar 层；推理一律 GPU 原则。
+  3. **4.x CLI/server 适配**：4.x 移除 `mineru -p`（改 `mineru parse --json --tier T -o <md> PATH`）；standard 档走本地 parse-server（managed 模式）。**显存现实**：12GB 全栈（NER+OCR≈5GB）下 standard 的 vLLM 引擎起不来 ⇒ sidecar 默认 tier=**flash**（实测 5s 完成真解析、无需 server、显存轻）；standard 留 `MINERU_SIDECAR_TIER` 可选。
+  4. **接入**：compose `mineru` profile（16581/GPU/健康检查/缓存卷）+ backend `MINERU_API_BASE_URL` 插值；`start_local.sh --with-mineru`（本地 GPU，与 `--with-visual` 互斥校验）/`--mineru cloud`/`--cloud` 全含。
+- **测试**：契约单测 +4 例（health/全生命周期/404-409 状态机/failed 带原因；fake CLI 同步 4.x 形态）。A5 端到端实测：canary PDF 经真 MinerU 4.x（GPU flash）→ **completed 5s** → zip 双产物（markdown + 4.x 结构 JSON）。
+- **挂账**：4.x schema（metadata/pages）与 3.x content_list 形状不同——backend 供料适配层的 4.x 支持另案（现役生产实例 3.4.5 产物不受影响）；standard 档显存调优（mem-fraction）同案。
+- **红线**：sidecar/容器不内嵌任何地址口令；ModelScope 为模型默认源。
+
+### 新增（Issue#217 PR②）可选服务双层知情：任务入口秒级预检 + 上传页识别项旁状态徽标
+
+- **为什么**：改前勾选视觉识别项而 LA 不在场时，任务直接发起调用——挂起场景（模型加载中/隧道半开）实测单次 240.2s、全链 ≈723s；拒绝场景虽快（3.1s）但报错无指引。用户裁定：不能等任务跑起来才知道——上传页就要看见（双层知情的用户侧），任务入口预检兜底（机器侧）。
+- **改了什么**：
+  1. **任务入口秒级预检（后端）**：`detect_vision` 在视觉管线启用时先探 LA `/health`（3s 短超时 + 负结果 5s TTL 缓存，与 HaS 负健康同源模式）；不可达立即 `AppError(503, "visual_service_unavailable")`，文案给三选指引（本地 `--with-visual` / 云端 `--visual cloud` / 取消勾选）。**绝不静默跳过**——印章是打码对象，漏检=泄漏（承 #199/#203 fail-closed 原则）。canary-217 改后对照实测：**0.0s 秒级失败**（对照改前挂起 240.2s）。
+  2. **上传页识别项旁徽标（前端）**：`VisualServiceBadge` 三态组件（在线=干净不渲染 / 未启动=琥珀徽标含怎么开 / 快照未知=不渲染防闪误报），挂在 playground 视觉识别项卡片头；消费既有 `/health/services` 轮询（`useServiceHealth`），新增 `isServiceLive` 导出。语义边界：快照是「拉取那一刻」，以任务执行时预检为准——两层知情互不替代。
+- **测试**：后端 +5 例（预检通过/秒级失败/负缓存 TTL/成功重置/AST 接线钉）；前端 +6 例（三态钉子）。canary-217 样本（testdata `697b7a8`）双向留证：改前 240.2s 长挂 / 改后 0.0s。
+- **兼容性**：不改变任何既有 API 形状；预检仅在视觉管线启用时触发，OCR+HaS 主线零影响。
+
+### 新增（Issue#217 PR①）本地 NVIDIA 开发环境基建：三模型引擎本地/云端可选 + 启动脚本
+
+- **为什么**：开发期大量 bug 并非云端独有，却每次都要上按小时计费的 DCU 实例复现。本机 NVIDIA（12GB 级）足够跑完整功能栈调试；云实例收敛到验收（门④）/性能调优/DCU 特有确认三类场景。分支模型不变——差异由运行环境承载。
+- **改了什么**（纯部署面，无模型栈代码改动）：
+  1. `docker-compose.yml`：backend 三个模型服务地址（`OCR_BASE_URL`/`VISUAL_FEATURES_BASE_URL`/`HAS_TEXT_VLLM_BASE_URL`）由硬编码改为 `${VAR:-默认}` 插值——缺省值与原硬编码逐字节相同（既有用户零变化）；backend 补 `extra_hosts: host.docker.internal:host-gateway`（云端隧道地址在容器内可达）；`ner`/`ocr`/`visual-features` 在既有 `gpu` profile 之外各加独立 profile（`ner`/`ocr-gpu`/`visual`），`--profile gpu` 服务集合经比对零差异。
+  2. `start_local.sh`：三档预设（默认=NER+OCR 本地 GPU、LA 关；`--with-visual` 视觉档，与本地 GPU OCR 互斥硬校验；`--cloud` 全云档=只起界面+后端）+ 引擎细粒度 `--ner gpu|cloud` / `--ocr gpu|cloud` / `--with-visual` / `--visual cloud`；真机显存探测与按档预警（`LEXMASK_VRAM_GB` 可覆盖）；端口冲突探测；云端档地址必须由环境变量/根 `.env` 提供（未配置立即报错不起半残栈），容器内自动改写 `127.0.0.1`→`host.docker.internal`；隧道连通性预检（不通=警告继续，任务级预检兜底）。
+  3. `stop_local.sh`：覆盖全部 profile 落栈，数据卷保留。
+  4. 文档：README 新增「本地 NVIDIA 开发环境」章节（哪个环节/给谁用/三档怎么选）；WORKFLOW.md §3.5 本/云分工规则与不对称判据成文。
+- **红线**：云端只指自有实例（SSH 隧道转发，非第三方云 API）；脚本不内嵌任何地址/口令；真实案卷禁止发往第三方云服务；推理一律 GPU（CPU 推理形态不进部署档）。
+- **探针锚定（P0，规则 A）**：LA 不可用两场景实测——连接拒绝（服务未启动）全真实调用链 3.1s 失败（含 2 次重试+退避）；挂起（TCP 通但不响应，如模型加载中/隧道黑洞）单次 240.2s 烧满 `VISUAL_FEATURES_TIMEOUT`，全链推演 ≈723s（重试 2 次为代码常量）——「240s 长挂」实锤属于挂起场景，PR② 的秒级预检阈值按此锚定（实测×5 且 ≤30s 封顶）。
+- **兼容性（评审 I2 修正措辞——「行为变化明细」而非笼统「不变」）**：B 方案 venv 线（`cloud-deploy/`）与 DCU 实例线文件零改动；**Docker 既有线有两处有意行为变化**：① backend 镜像不再内嵌 LibreOffice——.doc 老格式转换改为运行时挂载宿主 `/usr/lib/libreoffice`（宿主需 `sudo apt-get install --no-install-recommends libreoffice-writer-nogui`，缺失时 Docker 会把挂载点建成空目录→.doc 转换失败；`.docx`/PDF 不受影响；start_local.sh 已加宿主检测警告）；② ocr 容器从裸 uvicorn（init_ocr 从不执行、全端点 503 的坏形态）改为脚本直跑+结构模式 env（修复，GPU 占用 +~3GB、健康语义变化）；③ 根 `.env` 里已配置的三个 BASE_URL 键现在开始对 compose backend 生效（旧版被硬编码压制）。`--profile gpu` 服务集合不变。
+
+## 2026-10-29
+
+### 修复（Issue#212）供料模式对表格型扫描件静默零识别：v2 表格正文在 content.html、适配层只认 table_body
+
+- **现象**：生产账号上传 80 页扫描件「财产查询反馈信息表」（MinerU 3.4.5 解析 7 分 18 秒成功），喂 Agent 模式回 0 实体、空映射，UI 无任何告警；同账号 3 页文本型「执行裁定书」同流程正常出 52 实体。
+- **根因**（真实产物逐层坐实）：MinerU 产出的 v2 `_content_list_v2.json` 里表格正文在 `content.html`（79 个 table 块），而 `agent_md_adapter._v2_block_to_flat` 只上浮 `table_body`（v1 键名），`clean_segments` 取不到正文即静默跳过——同产物 v1 表示 33 段/187,119 字符，v2 表示只剩 6 段/138 字符，喂给 NER 的是 143 字符（含分块分隔符）⇒ 必然 0 实体。另 8 个 `title` 块因 `_V2_TYPE_TO_V1` 缺映射被当未知块整块丢弃（机构名/表名在里面）。
+- **改法**（5 面）：
+  1. **适配层**（`agent_md_adapter.py`）：表格 `table_body` 缺失时回落 `content["html"]`，上浮 `table_caption`/`table_footnote`（`_parts_text` 拼入正文）；`title` → `text` 映射（`title_content`）；新增 `CleanStats{empty_table_blocks, dropped_block_types}`，空表格与未知块型不再静默——各计一数并出 warn（`empty table block: page=N` / `unhandled block type: X`）。
+  2. **第二表示来源**（`mineru_parse_client.py`）：`MineruResult.content_list_v1` 同时解 `*_content_list.json`（此前只认 v2、v1 从未被读）；缺 v1 不失败。
+  3. **双表示守卫**（`agent_md_pipeline_service.py`）：`GUARD_RATIO=0.95` + `_choose_representation` 八行判据（v1 缺失→v2；两路 0 字符→显式 FAILED `parse_no_text`；v1 空→v2；v2 空→v1；v2 偏少或有空表→v1；v1 被水印撑大（`short` 但 v2 无空表）→v2；其余→v2），warn 带 `winner=` 与两路字符数 `v1=N v2=M`。
+  4. **可观测**（`agent_md.py` status）：恒返 `warnings`（前 20）、`warnings_total`、`dropped_blocks{empty_table,unhandled,source}`、`chars`；四端点补 owner 校验（此前 status/mapping/confirm/artifacts 完全不校验，新增字段会跨用户泄露解析细节）。
+  5. **零实体安全闸**：空映射时 confirm 默认 409 `ZERO_ENTITIES_NOT_ACKNOWLEDGED`（否则等于交付未脱敏原文），须显式 `acknowledge_zero_entities=true` 并写审计 `agent_md_confirm_zero_entities`（含 actor/chars/pages/entity_types）；用户主动停用全部实体类型（`entity_types_used` 为空）豁免。前端评审步空映射时显示告警 + 知情勾选（未勾选按钮禁用），处理步显示解析告警与空表计数。
+- **测试**：后端 +33 例（v2 真形态 golden 逐段 258 字、80 页同形状 79 表全解析、title/caption/footnote、空表计数与页码、双表示守卫 13 例含 watermark 撑大/两路皆空/部分丢表回落/0.95 边界/并发、API 12 例含非零 79/owner 隔离含 file_id 入口/零实体闸/豁免/审计/正向对照、客户端 12 例）；前端 +18 例（helper 2、零实体组件 2、ack 载荷 2、解析告警面板 2、页面接线契约 1 等；40 文件 297 例）。红性由探针实测（未修时 v2 夹具 1 段 33 字、`unhandled block type: title`）。
+- **影响面**：所有表格为主的扫描件（银行流水、财产查询反馈表、对账单、协执清单）在供料模式下此前必然 0 实体且零提示；#197 `agent_batch` 复用同一适配器，合入后自动获益。
+
+### 修复（Issue#209）单页 HaS NER 超越 300s 页墙：完成帽按实体值需求放开 + 残差禁整页重发 + 补查切文本 + 页级预算硬墙
+
+- **现象**：真实案卷「第四卷.pdf」149 页，逐页识别时**第 133 页单页 NER >420s 不收敛**（页墙 300s 一到整页清零）⇒ 整卷 148/149、失败页显式记账（#199 行为正常，但该页永远救不回来）。同卷其余 148 页 8–52s 全过。
+- **根因（云侧闭环实测）**：`HAS_NER_COMPLETION_HARD_CAP=2048` 与该页真实输出需求（≈200 个实体值）正面撞车 ⇒ 主查必截断（单请求 65–124s 烧满帽）；截断后**残差逻辑**用「未被解释的墨迹」重算整页（`max_chars=32000`，主查只用 6000）⇒ `types=20 text_chars=5372` 再问一遍 ⇒ 又截断 ⇒ 再 9–12 段补查。页内排两轮整页生成 + 补查链 ⇒ 300–427s。隔离实验：同一页只跑 NER = 148s 一轮通过；跑流水线入口 = 25 次请求 427s。
+- **改法**：① 完成帽 2048→4096（按实体值需求），并把 `_resolve_ner_budget` 的 `context_room` 与派发侧装填判据同源（扣满 reserve+safety，否则抬帽即破 D2 不变式）；② 残差**双闸**（比例 ≥35% **且** 绝对 ≥2000 字符 ⇒ 判定为截断，禁止整页重发，改走类型补查）；③ 补查成本轴定稿为**切文本**（整段 3924 字符 × 2 类型单请求实测 72.6s，比 450 字符块慢一个数量级），类型轴只在整批真装不下完成帽时才切；④ 页级 NER 预算硬墙（`HAS_NER_PAGE_BUDGET_SEC=255`，从**页入口**起算、`asyncio.wait` 真截断不可取消的 `to_thread`、`NerDeadlineExceeded` 拒发死线后的新请求）；⑤ C2：被 max_tokens 切断的桶并入补查集合（原 `missing` 不含"存在但被切"的桶 ⇒ 尾值静默丢失）。
+- **门④云实测（单页 133）**：修前 >420s 不收敛 / 页墙清零；修后 **163.30s 完成、`failed_pages={}`、entities=206**——主查 `types=13 max_tokens=3648` 59.8s 一次直出 13 桶（无截断），补查 1 批 × 9 文本块各 5.7–8.0s，残差 `7827 chars > 35% of 3924` 被闸住不重发。
+- **测试**：后端 +52 例（净；含门⑥ 两轮处置新增）（完成帽装填不变式 / 残差双闸 / 补查成本轴 / 页级预算与硬墙 / 补全被切断类型 / 近重复折叠）；既有 6 例按新默认修订（#103/#104 fill-budget 算术、#198 温度逃逸、截断治理）；全量 2449 passed / 18 failed（与 preview 基线同集合的 date/safe_regex 环境性失败）/ 54 skipped。
+- **门⑥ 独立评审（REVISE → 处置）**：F1 Critical（近重复折叠在「标签+不同数字」真实列上删真值：实测 120 行只剩 5 行）⇒ 默认改 **关** + 加两条判别器（含字段分隔符的行、非「CJK 碎片+结尾数字」形状的行一律不折）+ 正控用例；F2/F3（C2 并入闸按类型基数近似、残缺结果仍 `confirmed=True` 污染共享缓存）⇒ 改按「是否真的同 payload 重发」判定 + 未并入时 `confirmed=False`；F5（死线首次 NER 才起算，OCR 耗时不入预算）⇒ 页入口起算；F6（`context_room ∈ (0,64]` 时不变量可超 64 token）⇒ 取 room 本身 + 带内扫描用例；F7/F9/F10/F11 同步处置（`.env.example` 15 键登记、词法级括号扫描、装填边常量化、docstring/计数口径订正）。
+- **未决/边界**：A（近重复折叠）本件目标页实测折叠 0 行 ⇒ 定位为默认关的辅助能力；`HAS_NER_COMPLETION_HARD_CAP` 的实际上限受 8k 上下文约束（≈3.6k）；`to_thread` 超时后孤儿线程仍会跑完并写缓存（已记录，未做闸位回收）。
+
+### 性能（Issue#207）预览翻页响应滞后——前端翻页 abort+加载态 + 后端渲染链移出事件循环
+
+- **现象**：单次处理识别进行中/完成后，预览台快速连点上下页，页码即时跳变但画面滞后且无反馈；识别期间更明显（用户实测反馈）。
+- **根因**（本地 canary 实测三重证实）：①前端翻页不取消在飞预览请求、加载期间旧图驻留且无加载态、连点跑赢空闲预取；②后端预览渲染链（`file_parser.get_pdf_page_image` 的 PyMuPDF 150dpi 渲染 + `vision_service.preview_redaction` 的 PIL 编码）在 async def 内裸跑同步 CPU 活——渲染跑在事件循环线程上、渲染期间循环对一切请求无响应（`call_soon` 探针 + `asyncio.run(debug=True)` 实测 5 页连渲染单步 0.259s），每次未命中缓存的翻页冻结整个后端，识别期间叠加放大。
+- **改法**：前端 `use-playground-image` 新增页代 AbortController（换页/卸载掐掉上一代在飞预览请求，含预取与 redacted）+ `previewPageLoading` 加载态（`ImageBBoxEditor` 画布角落叠加指示，保留旧图不清空、防闪白语义不变）+ i18n 中英键；后端渲染/编码移入 `asyncio.to_thread`（fitz 每调用独立 Document，与仓库既有 to_thread 先例同构）+ 同键单飞（并发同页只渲染一次，连点风暴服务端成本钉在每唯一页一次；客户端 abort 不终止已进线程池的渲染）。不改任何识别产出（响应字节与改前逐字节一致，pytest 参考序列比对钉住）。
+- **测试**：后端 +5 例（事件循环不阻塞 call_soon 探针改前红/改后绿、字节一致、缓存幂等、singleflight 并发单渲染）；前端 +8 例（连点 abort、卸载 abort、redacted 同掐、加载态出现/清除/失败保留旧图、abort 竞窗晚到不生效、预取晚到只进缓存、预取回归、共享页状态力学）。门④：云实例改前基线探针 + 部署后识别中/空闲两态连点取证（详见 PR）。
+
+### 修复（Issue#203/#199）门⑥ 二段独立复核（APPROVE with fixes，Critical=0）发现项处置
+
+- **复核对象**：门⑥ 第二段（只读 diff/源码与自跑判据，不看会话历史）所评 head `07ce1fa`；留痕 PR#205 评论 [6475545797](https://github.com/youayou-Lee/LexMask/pull/205#issuecomment-6475545797)。两轮变异在旧测下 SURVIVED（`>`↔`>=` 边界、去分母守卫）⇒ 判据缺口坐实，本条目即其处置。
+- **F1 判据口径失真**（Important）：`measure_repeated_fragment_coverage` 的覆盖分子原含**全部** `qualifying` 长词、`spanning` 只用于判空，与 docstring 及 PR 文案「≥k 次 **且** 跨 ≥m 页」不符；实测页内高频长 token 可把 coverage 放大 **7.5×**（0.0311→0.2325），出厂阈值 0.15 下会把正常卷误拒。**改法**：分子只标 `spanning` 长词（`text_layer_docline_service.py`），新增 2 枚判据（单页不跨页 = 不可见；页内高频长词只能稀释分母、不得放大分子——回到 `qualifying` 口径即判红：0.1944 > 0.15）。**AC0 名义值不变（推导，非重测）**：真实第四卷 6 种长 token 全部横跨 149 页，分子集合不变、分母不变 ⇒ coverage 仍为 0.3827；旁证 = 云侧逐页 reason 码只读取证（`fragment_kinds=6`、`max_fragment_pages=149`）。真卷不在本地，未再跑一遍完整 AC0。
+- **F2 边界钉名不副实**（Important）：`test_near_threshold_volume_passes_gate` 实测 coverage 0.1232、测试阈值 0.30（差 2.44×）且不断言数值。**改法**：夹具降为 `stamp_repeats=5`（实测 0.1466）、阈值改用冻结默认 0.15、显式断言 `0.65×阈值 < coverage < 阈值`，并新增「coverage == 阈值放行」判据（封死 `>`↔`>=`）。
+- **F3 新配置键无文档**（Important）：4 个 `TEXT_LAYER_REPEATED_*` 键未登记 `.env.example`。**改法**：补 4 键 + 判据口径（≥min_token_chars 的长词出现 ≥min_repeats 次 **且** 跨 ≥min_pages 页，覆盖占比 > max 即拒绝）+「0=关闸（不推荐）」+ 已知边界（只认 ≥10 字整词、约有 1 分片漏判、召回侧代价）。
+- **F4 交付裁定与展示面脱节**（Important）：带失败页的条目仍报 `ready_for_delivery=True` / `action_required=False` / `blocking=False`，失败页会随 ZIP 出厂。**改法**：新增 `_is_ready_for_delivery()` 单一真源（含 `recognition_failed_pages`），`_delivery_blocking_reasons()` 增 `recognition_failed_pages` 阻塞原因，`build_export_report` 与 `iter_report_file_rows` 两处共用（旧实现各复制一份条件、易漂移）。3 枚新测（含交付摘要由 `ready` → `action_required` 的端到端翻转）；变异：摘掉失败页条件 ⇒ 3 例判红。
+- **F7 假阳性警示**（Minor）：AWAITING_REVIEW 迁移原样回写既有 `error_message` ⇒ 陈旧摘要会带到干净条目。**改法**：摘要只从权威清单派生（`_failed_pages_error_summary`），空清单显式写 `None`；并让 `_FakeStore.update_item_performance` 建模真实深合并列语义（否则「写 performance → 回读 item 行」的接线在测试里断裂）。2 枚新测；变异 2 例判红。
+- **F8 护栏 fail-open**（Minor）：打码前失败页知情确认在 `getJob` 失败时静默放行（一次网络抖动即可绕过最后一道人工确认）。**改法**：查询失败 **fail-closed**（中止本次提交 + 提示重试，新 key `playground.redactPagesUnknownRetry` zh/en）。3 枚新测（查询失败中止 / 有失败页弹确认且取消不提交 / 无失败页不弹确认）。
+- **F9 终态无钉**（Minor）：全失败卷条目终态无断言。**改法**：新测钉「全失败卷停在 AWAITING_REVIEW + `recognition.failed_pages` 清单 + 摘要 `all N page(s)` 措辞 + skip_review 抑制」。
+- **F6 证据链补齐**（Important，云侧只读取证）：①逐页 `fallback_reason_code` 清单——148 页全为 `repeated_fragment_coverage`（页 133 无该块，因 `status=timeout`），与日志唯一 WARNING（coverage 0.383 > 0.15）及 `text_layer_docline built`=0 三方互证；②区域数记录项——`file_store.data_json` 的 `bounding_boxes` 共 **7560**（148 页，与日志逐页 `Vision detect stored` 求和一致；注意 `performance_json.pipeline_status.*.region_count` 求和 41/0 **与它不同源**，不可混用）；③**显式豁免**两项——3 页人工核对（本轮止于识别、打码未执行，无可观测面）与「页 133 补查复核请求笔数」（逐页线无 docline 补查概念，N/A）。取证全程只读（未写云、未重启/停止服务、未动 `.env`）；证据文本随 PR 评论留痕。
+- **F5 状态档偏差留痕**（Important）：`completed_with_failures` → `AWAITING_REVIEW` 的口径偏差在 PR 描述与 Issue 评论留痕；不新增状态档的理由 = 免 DDL CHECK 迁移 + 前端枚举 + 导出消费者三面扩散，且安全性等价或更强（AWAITING_REVIEW 强制人停 + skip_review 抑制 + 卡片/弹窗/导出三面可见）。
+- **F13 已知边界**（Minor）：判据只认 ≥10 字整词 ⇒ 5~9 字水印碎片维度不可见，已在 `.env.example` 与 Issue#203 留痕（水印专用维度登记为后续项）。
+- **F14 边界写明**（Minor）：`agent_md_pipeline_service.py`（#196 供料通道）不共享 `run_page`、无单页门限，故不适用 #199 的失败页记账——已在 PR 描述写明。
+- **F12 数字绑 head**（Minor）：PR 描述按 `07ce1fa` 复跑数字重写（旧描述三处互不一致且仍是 #203-only 口径）。
+- **AC2 措辞纠正**：真实第四卷实测为 **148 completed + 1 timeout（页 133）**，即 #199 的设计意图，非「149 页全 completed」；口径改为「无整卷作废 + 失败页经 `recognition.failed_pages` 显式记账」。
+
+## 2026-10-28
+
+### 修复（Issue#199）页级失败隔离——单页超时/失败不再作废整卷
+
+- **根因**（真实第四卷门④实证）：页 133 密集表格页单页耗尽 300s（单笔主查烧帽 72s + 补查/复核 211 笔请求）→ run_page TimeoutError 上抛 → 全部兄弟页被取消 → 整 item failed、149 页成果清零。单页失败=整卷作废是 #199 立案的韧性缺口，被 #203 的 docline 接管长期掩盖。
+- **改法**（`task_queue_pipelines.py`、`job_store.py`、`job_management_service.py`、前端 playground，2 commits）：
+  1. **页级隔离**：run_page 只捕 Exception 系就地记失败（timeout/failed + 原因），不再上抛取消兄弟页；`asyncio.CancelledError`/`KeyboardInterrupt`/`SystemExit` 照常穿透（t6 契约钉保持绿）；`MemoryError` 显式上抛（OOM 不放大，冷审 I2）；
+  2. **失败清单无条件写**：`recognition.failed_pages` 深合并在重跑全成功后清空旧键（冷审 I1）；新增 `JobStore.set_item_error_message`（同状态迁移是 no-op 不能带错误，冷审 I4 核实）挂 AWAITING_REVIEW 条目的失败摘要；
+  3. **两阶段调度**：视觉特征合并阶段跳过一阶段失败页（页账保留第一阶段结论，reason 带阶段标签，冷审 I3）；
+  4. **skip_review 守卫**（冷审 C1a）：带失败页的条目不 honor skip_item_review，强制停审阅——封死「无人在环直通打码、失败页当干净页出厂」路径；
+  5. **导出报告**（冷审 C1b）：per-file `recognition_failed_pages` + 警示文案（error_message 会活不过打码完成，结构化 performance 才是权威载体）；
+  6. **前端**：任务详情卡失败页警示行（amber）+ 打码提交确认弹窗明示「这些页不会被脱敏」（zh/en）。
+- **有效性**：22 例新测/重写全绿（12 隔离 + 1 导出 + 4 个 139 契约钉反转重写 + 5 前端）；变异：摘除隔离判据 6 例判红、还原回绿；139 的 t6（CancelledError 穿透）/t3（基础设施超时上抛）保持绿。
+- **门④真实第四卷实测（隔离臂 a88745c，AC2-r2）**：docline 水印闸拒绝 1 次（coverage 0.383>0.15、permanent memo 生效、零建链）→ 逐页线接管 → **条目终态 awaiting_review、148/149 页 completed、页 133 显式标记 timeout**、`recognition.failed_pages={'133': 'OCR+HaS识别 page timeout after 300s'}` 落库（无条件清单 ✓、reason 带阶段标签 ✓）；全程 3814s，无卡死、无整卷作废。实测另抓出并修复一处覆盖洗白：AWAITING_REVIEW 迁移会整列覆盖 error_message（洗掉失败摘要）——已改为显式保留并加回归钉。
+- **诚实边界**：①失败页=零识别区域，打码后该页无脱敏——可见性由任务卡/确认弹窗/导出报告承载，**成品 PDF 页内无印记**（水印/印记方案登记为开放项）；②页 133 的单页成本（复核风暴+帽子燃烧，#136 家族）未压缩——本 Issue 只保证它不再拖死整卷（该页会以 timeout 标记出现在失败清单，等待人工复核/单独重试）；③error_message 是短命展示面（打码完成即清），跨迁移权威 = performance.failed_pages。
+
+### 修复（Issue#203）水印打散字形支配的文本层卷被文档级链接管 → 整卷建链撞单页 300s 门限整卷作废
+
+- **根因**（真实案卷 149 页卷两次独立复现，页 1 分别存活 300.004s/300.007s）：该卷每页带内嵌文本层且大量为防泄漏水印的打散碎片词（同一 17 位工号长词逐页重复上千次；真实正文极薄——卷封页图像 OCR 仅 252 字符）。文档级链（#115/#129）预建链闸（墨迹对齐+文本质量五指标+页数预算）**无重复串维度**放行 → 整卷 9 万字符切 51 块跑 NER（204 笔请求、累计模型时间 1180s、docline 并发 4）→ 建链 await 被 `run_page` 的单页 300s `wait_for` 看管 → 页 1 到点取消整卷 → 149 页成果清零；且建链被 CancelledError 打断不落 memo，重试从零再建（必然复现）。
+- **改法**（`text_layer_docline_service.py`、`text_layer_doc_source.py`、`core/config.py`）：
+  1. **新度量** `measure_repeated_fragment_coverage`：字符数 ≥`TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS`(10) 的**长词**出现 ≥8 次且跨越 ≥5 个不同页，其覆盖字符占文档流比例。判据用**长词**而非跨词 n-gram——红测实证真实卷模板样板（「讯问笔录第X页…」行行共享前后缀）会把跨词精确重复率推到 ~0.99 淹没水印信号，而模板词因数字变化各不相同，长词级重复只属于水印/印章类高熵 token；
+  2. **预建链闸**：覆盖率 > `TEXT_LAYER_MAX_REPEATED_FRAGMENT_COVERAGE`（默认 0.15）在 **`run_document_ner` 之前**拒绝（冷审 Minor-2：卷级质量门在建链后才跑，门在后杀在前），机读原因码 `repeated_fragment_coverage`、**permanent 负缓存**（重试不重建、不再撞墙，AC4）；**PII 最小化**：reason/detail 只带计数与占比，不带命中片段字面量（水印串含真实姓名+编号）；
+  3. 阈值语义向「宁可错拒」偏置：错拒代价=回落逐页线（慢、召回不降），漏拒代价=整卷作废。
+- **AC0 测量（真实数据，AST 逐字同源抽取的度量实现）**：水印卷 coverage=**0.3827**（6 种长 token 横跨全部 149 页）；真实干净文本层卷（eval37-real 有层两份）coverage=**0.0**；判别间隔 ≫5×。权威块数 51（修正 Issue 正文 "~117 块"——117 笔 types=6 主查行是主查+残差全标签复调的叠加形态）。
+- **有效性**：9 例新测全绿（拒绝支路：零 NER 调用断言 + permanent 负缓存 + PII 无字面量；放行支路：页眉/模板样板卷、贴阈值卷、混合卷 `covered_pages` 语义不受影响）。
+- **诚实边界**：①本修复只修路由与预算，**不提升水印文本本身的识别与脱敏覆盖**（逐页线对水印串的处理是既有行为且未经验证，现场观测逐页 OCR 仅读出约 8 处水印实例）——已知限制登记于 #203/#204；②#204（O(整卷) 建链受 O(单页) 门限 + 取消不落负缓存，不依赖水印）仍开放，干净的大页数文本层卷同处风险区；③AC0 干净侧样本量有限（真实干净文本层卷 2 份 + 单元级模板样板夹具），阈值 0.15 基于实测 0.3827 下方 2.5× 余量冻结，后续新形态卷若误伤/漏杀以 AC0 同款测量复核。
+- **零回归与评审**：全量 pytest `comm -3` 与 preview 基线对比（见 PR 证据评论）；验收方案经门①.5 冷审 r1 REVISE（9 条发现全采纳）→ r2 APPROVE 后开工。
+
+## 2026-10-27
+
+### 修复（Issue#198/#202）高重复表格页触发模型复读 → 单页 180s 超时整卷作废
+
+- **根因**（真实案卷 134 页卷第 34 页两次复现实证）：「免税购货记录」高重复表格页使 temp=0 贪心解码走进复读循环，主请求烧满 max_tokens=1992（84s，finish_reason=length）；截断补查**继承温度 0** 对同文本同轨重发 → 又复读（76s）。双循环 160s 撞 `BATCH_RECOGNITION_PAGE_TIMEOUT=180` 单页门限（实测贴线 179.99s vs 180.0s）⇒ **任一页超时即整卷作废**，134 页成果清零。
+- **改法**（`backend/app/services/has_client.py`、`vision/has_text_analysis.py` 关联、`core/config.py`、`frontend/src/i18n/{zh,en}.ts`，4+2 commits）：
+  1. **补查温度下限** `HAS_NER_TRUNCATION_RETRY_TEMPERATURE=0.7`（max 只升不降，自洽趟不拉低）；
+  2. **补查按行边界分块**（>600 字符切 450/块，逐块补查并合并）——门④实测**温度逃逸不充分**（temp=0.7 补查同文本仍复读，观测面抓到 `finish_reason=length confirmed=False recovered=1/7`）后追加；
+  3. **补查逃逸观测面** `HaS NER re-query finished: finish_reason=… confirmed=… recovered=n/n`（区分「逃逸」与「被封顶」，正是它抓出了温度层不足）；
+  4. **流式复读掐断**（Issue#202）：`_call_model` 改流式增量解码，每 256 字符检测循环签名（尾部 1KB 内 ≥24 字符片段 ≥3 次）命中即断连——种子复读 66-84s → ~5-10s 掐断；非 SSE 应答直接采纳响应体、HTTP 状态/传输错误原样上抛、流处理缺陷回落非流式；`HAS_STREAM_LOOP_ABORT` 开关默认开；
+  5. **单页门限 180→300s**（修复后病理页实测 245→133s，180 无尾部余量）+ i18n「3 分钟→5 分钟」。
+- **有效性（门④云实测，scnet-main 隔离臂）**：基线红跑复现事故全环（84s+54s 双循环 → 180s 超时整卷作废）；修复臂**5×绿跑全部完成**（231-286s）；追加流式层后病理页 **133s（-45%）**、100 实体/198 区域（恢复更全）；30-40 页 11 页合卷 **262s（-37%）** 零超时；正常页零变化、掐断零误伤（16 次全部命中表格页真复读）。
+- **零回归**：全量 pytest FAILED 集合与基线 `3e362df` `comm -3` **0 行**（14 个失败均为本地环境性：SOCKS 代理/evalng ImportError）；新增 14 例专测全绿（温度 6 + 分块 3 + 流式 5）；变异验证：摘除补查温度/检测调用均判红。
+- **评审**：验收方案经独立冷审「需修订」后并入 2 Critical 判据修订（补查自身三断言 + 5×重跑防假pass；终态产物比对防「漏检换幻觉」）再实施；门④ A/B 全程生产 6 服务零扰动。
+- **诚实边界**：①合成 canary 在基线未复发（合成表 OCR 分组形态与真实页不同），病理红/绿证据以真实第 34 页 A/B 为准，样本保留为 GT 召回回归样本；②流式层 AC3「<120s」实测 133s 未达，余量属恢复链固有成本，挂账观察；③「解析失败分批递归」路径同样继承温度，本期不改（无实证案例 + 分批自带缓解），Follow-up #200 + 特征化测试钉住；④单页超时仍整卷作废（本次仅放宽门限），页级韧性改造在 #199。
 ## 2026-10-19
 
 ### 新增（Issue#196）供料模式（原「喂Agent」）加入批量 + 全站更名

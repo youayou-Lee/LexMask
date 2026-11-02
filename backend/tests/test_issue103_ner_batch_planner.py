@@ -14,12 +14,23 @@ import asyncio
 import threading
 import time
 
+import pytest
+
 from app.core.config import settings
 from app.services.has_client import HaSClient
 from app.services.has_service import HaSService
 
 # 19 型 + 1577 字 = 生产实测形状（capacity=7 → 7+7+5）
 _TEXT_1577 = "字" * 1577
+
+
+@pytest.fixture(autouse=True)
+def _legacy_completion_cap(monkeypatch):
+    """Issue#209 把默认完成帽 2048 → 4096 后，本文件的形状钉（capacity=7 →
+    7+7+5、19 型切 3 批）改用**显式 2048** 保持原口径：这里测的是 capacity
+    算术与并发派发，不是默认帽值；默认 4096 下的切分由
+    ``tests/test_issue209_completion_cap.py`` 另钉。"""
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
 
 
 class _TypeStub:

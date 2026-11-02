@@ -647,6 +647,20 @@ async def services_health():
         ),
         "detail": visual_detail,
     }
+
+    # Issue#217 PR③（评审 I3）：MinerU 喂料通道也是可选服务——状态透出供
+    # 前端徽标/横幅消费（供料入口的双层知情与 LA 对齐）。
+    mineru_url = settings.MINERU_API_BASE_URL
+    mineru_result = await loop.run_in_executor(
+        None,
+        lambda: check_service_health_sync(
+            f"{mineru_url.rstrip('/')}/health",
+            "MinerU sidecar",
+            timeout=3.0,
+            service_kind="mineru",
+        ),
+    )
+    services["mineru"] = mineru_result.as_service_payload()
     all_online = all(
         services[key]["status"] == "online"
         for key in ("paddle_ocr", "has_ner", "visual_features")
