@@ -446,6 +446,29 @@ async def boxes_for_page(
             if memo is None:
                 try:
                     built = await _build(file_id, snapshot, labels, ocr_has_types, regex_types)
+                except asyncio.CancelledError:
+                    # Issue#204 缺陷 B：CancelledError 继承 BaseException，下面两个
+                    # handler 都接不住 ⇒ memo 不写 ⇒ 重试从零再建（#203 两次复现的
+                    # 放大机制，且对一切取消原因成立：页超时只是其一）。落短 TTL
+                    # 负缓存后**必须 re-raise**——取消传播不能吞。
+                    logger.warning(
+                        "text_layer_docline build cancelled file=%s; negative-cache %.0fs",
+                        file_id[:8], float(settings.TEXT_LAYER_DOCLINE_CANCEL_NEGATIVE_TTL_SEC),
+                    )
+                    marker = {
+                        "unusable": True,
+                        "retry_at": time.monotonic() + float(
+                            settings.TEXT_LAYER_DOCLINE_CANCEL_NEGATIVE_TTL_SEC
+                        ),
+                        "reason": "cancelled",
+                        "reason_code": "cancelled",
+                        "reason_detail": {},
+                    }
+                    async with _LOCK:
+                        _MEMO[key] = marker
+                        if len(_MEMO) > 16:
+                            _MEMO.pop(next(iter(_MEMO)))
+                    raise
                 except _TransientIneligible as exc:
                     built = None
                     marker = {

@@ -10,14 +10,13 @@
 - **边界**：镜像体积增大（LO nogui ≈+500MB）；云端部署同镜像受益，无需宿主预装。
 
 
-=======
 
-### 修正（用户反馈）上传被拒只见「文件上传失败」——报错说清实际格式并持久展示
-
-- **为什么**：用户传 UTF-8 文本伪装的 .doc（acceptance-53.doc 真实情形）被防伪校验拒绝，但页面上只看到一闪而过的通用 toast，误以为产品坏了。根因是两处叠加：①后端文案是开发者黑话（「可能是伪造文件」）且不带实际检测格式；②前端 `responseErrorMessage` 用 `detail ?? message` 取信封文案，被后端统一信封里的**空对象 `detail:{}` 短路**（`??` 只挡 nullish），`message` 里的具体原因永远取不到。
-- **改了什么**：后端 `file_validation.py` 新增 `detect_content_type`/`spoof_reject_message`——报错改为「文件内容实际是纯文本，与扩展名 .doc 不匹配——……请用原始文件重新导出/另存为后再上传」，单文件上传与 inbox 批量两条线同款；前端 use-playground-file（单文件）与 agent-md/api（供料）两处信封解析改「取第一个非空字符串」，上传/解析失败原因同时进 toast 与上传面板 `uploadIssue` 持久展示。
-- **测试**：后端 +5 例（detect 四形态 + 文案断言：含实际格式与指引、不再出现「伪造」）；前端 +1 例（taskflow (k)：400 信封 → uploadIssue 持久展示 + toast，先红后绿证实遮蔽根因）；前端全量 319 过、后端防伪族 25 过。
-- **验收**：本地栈浏览器实传伪造 .doc——上传面板持久显示完整原因（截图留痕私有仓记忆）；API 层新文案实证。 (fix: 上传被拒说清实际格式并持久展示——修信封空 detail 短路吞掉具体原因)
+- **为什么**：两处「失败/取消后不换策略」的同族健壮性缺陷。①#200：解析失败分批递归把外层温度原样传给子批——若不可解析的根因是复读产生的垃圾输出，同温度重发=同贪心轨迹复发（#198 同源家族，工单处置条件即「评估换采样」）；②#204 缺陷 B 取消侧：文档级建链被取消（页超时/用户取消等一切取消原因）时 `CancelledError`（BaseException）穿透 `except _TransientIneligible`/`except Exception` 两个 handler ⇒ memo/负缓存零写入 ⇒ 重试从零再放 O(整卷) 建链，#203 两次真实复现的放大机制。
+- **改了什么**：
+  1. `has_client.py` 解析失败递归：子批温度 = `max(调用方温度, HAS_NER_TRUNCATION_RETRY_TEMPERATURE)`——与 #198 补查同款只升不降语义；帽驱动预分批（非失败驱动）两处调用点**不动**（预规划继承调用方温度是合法语义）。
+  2. `text_layer_doc_source.py`：建链取消 → 落短 TTL 负缓存（新 settings `TEXT_LAYER_DOCLINE_CANCEL_NEGATIVE_TTL_SEC=300`，reason_code=`cancelled`）→ **re-raise**（取消传播不能吞）；TTL 内重试直接短路，TTL 过后允许重建。
+- **测试**：#200 +2 例（温度升级 + max 语义不被拉低）；**修正了原特征化钉的误钉**——旧钉以为 25 型走解析失败递归（24+1），实际先被帽驱动预分批切成 [12,12,1] 且 `type_guidance=[]` 不满足递归门槛（`is None`），钉的一直是预分批点；新测试 monkeypatch 预分批单批 + guidance=None 真正进入递归分支。#204-B +4 例（取消落 memo+re-raise / TTL 内重试零重建 / TTL 过后重建 / settings 口径钉）。变异双杀（#200 还原继承语义 1 红；#204-B 吞 re-raise 3 红）。全量 2627 passed 零回归。
+- **边界**：#204 缺陷 A（建链 O(整卷) 受单页 300s 看管的预算解耦）不在本 PR，另行设计讨论；水印资格闸（#203 主修）行为不变。
 ### 修正（Issue#224）MinerU 4.x 纯文本 table_body 全量丢失——表格型案卷 0 实体
 
 - **为什么**：真卷验收发现（表格型扫描 PDF 走供料模式报「未识别到任何敏感实体」）：4.x flash 对扫描表格输出的 `table_body` 是**纯文本版面文字（无 HTML 标签）**，`table_to_text` 只收集 `<td>/<th>` 单元格 → 解析 0 行返回空 → `clean_segments` 记 `empty table block`，表格正文（真卷实测 47,256 字符）fail-open 全量丢弃，NER 只见 23 字符。既有夹具的 `table_body` 全是合成 HTML，与真实 4.x 形态不同源，测试未覆盖。#219 已知边界「4.x 比值守卫 warning-only 无回落」是同一风险另一面；本例在更上游（归一层有货、清洁层扔光）。

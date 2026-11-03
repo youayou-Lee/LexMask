@@ -1487,12 +1487,17 @@ If nothing matches, return {{}}.
             parse_mode, result = self._try_parse_json_object(response)
             if result is None:
                 logger.warning("HaS NER response could not be parsed as JSON: %.200s", response)
-                # Issue#200（#198 同源边界）：本递归同样把外层温度原样传给子批。
-                # 不可解析 ≠ 截断复读（当前无实证复发案例），且按类型分批本身
-                # 缩减了单次输出规模，属天然缓解；采样逃逸策略随 #200 决策，
-                # 本期不动（特征化测试钉住现状行为）。
+                # Issue#200（#198 同源）：解析失败分批递归同属失败驱动的重试——
+                # 若不可解析的根因是复读产生的垃圾输出，同温度重发=同贪心轨迹
+                # 复发。与 #198 补查同款 max 语义：子批温度只升不降，调用方已传
+                # 更高温度的自洽趟不被拉低。按类型分批缩减单次输出规模仍是天然
+                # 缓解，此处换的是采样轨迹而非再切一轴。
                 if type_guidance is None and len(types) > _NER_REBATCH_TYPE_THRESHOLD:
                     from app.core.config import settings
+                    rebatch_temperature = max(
+                        _MODEL_TEMPERATURE if temperature is None else float(temperature),
+                        settings.HAS_NER_TRUNCATION_RETRY_TEMPERATURE,
+                    )
                     target = max(_NER_TYPE_BATCH_TARGET_TOKENS_FLOOR, int(settings.HAS_NER_TYPE_BATCH_TARGET_TOKENS))
                     batch_size = max(_NER_BATCH_MIN_TYPES, min(_NER_BATCH_MAX_TYPES, target // _NER_BATCH_TOKENS_PER_TYPE))
                     merged: dict[str, list[str]] = {}
@@ -1502,7 +1507,7 @@ If nothing matches, return {{}}.
                             text,
                             types[start:start + batch_size],
                             None,
-                            temperature=temperature,
+                            temperature=rebatch_temperature,
                             sample_index=sample_index,
                             raise_on_error=raise_on_error,
                             context_tokens=context_tokens,
