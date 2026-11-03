@@ -29,6 +29,8 @@ export interface PlaygroundEntityPanelProps {
   replacementLocked?: boolean;
   isLoading: boolean;
   recognitionIssue?: string | null;
+  /** 本次识别跳过了视觉段（LA 未启动）的显式提示；非 null 时面板顶部展示 */
+  visualSkippedNotice?: string | null;
   entities: Entity[];
   /** 化名映射区用全量实体（跨页）：执行门槛按全文档判定，映射行必须同源，否则多页文档会出现"看不见的被阻塞" */
   mappingEntities?: Entity[];
@@ -69,6 +71,7 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
     replacementLocked = false,
     isLoading,
     recognitionIssue,
+    visualSkippedNotice,
     entities,
     mappingEntities,
     entityTypes = [],
@@ -138,6 +141,14 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
       >
         <Card className="overflow-hidden">
           <CardContent className="flex flex-col gap-2.5 p-3.5">
+            {visualSkippedNotice && (
+              <p
+                className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs leading-5 text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                data-testid="visual-skipped-notice"
+              >
+                {visualSkippedNotice}
+              </p>
+            )}
             <div className="space-y-0.5">
               <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 {t('playground.recognitionSection')}

@@ -56,6 +56,7 @@ const PlaygroundInner: FC = () => {
     taskPerformance,
     taskStageLabel,
     recognitionIssue,
+    visualSkippedNotice,
     entityMap,
     redactedCount,
     processingMode,
@@ -486,6 +487,7 @@ const PlaygroundInner: FC = () => {
               replacementLocked={isImageMode}
               isLoading={isLoading}
               recognitionIssue={recognitionIssue}
+              visualSkippedNotice={visualSkippedNotice}
               entities={pageFilteredEntities}
               mappingEntities={entities}
               entityTypes={entityTypes}

@@ -1226,6 +1226,8 @@ const enOverrides: Record<string, string> = {
   'playground.encryptedPdf.decrypting': 'Decrypting...',
   'playground.cancelled': 'Processing cancelled.',
   'playground.recognizeFailed': 'Recognition failed.',
+  'playground.visualSkippedNotice':
+    'Visual service is unavailable; seal/signature detection was skipped for this run. Start the service and re-recognize to include it.',
   'playground.recognitionPausedModelServices':
     'Recognition is paused because required model services are unavailable: {services}. Start the services, then run recognition again.',
   'playground.redactFailed': 'Redaction failed.',
