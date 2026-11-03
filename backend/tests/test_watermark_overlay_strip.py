@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import re
 import time
@@ -316,6 +317,52 @@ def test_build_strips_watermark_keeps_raster_and_original(tmp_path, env):
         doc.close()
 
 
+def test_logs_never_leak_watermark_text(tmp_path, env, caplog):
+    """B7 泄露面：全链日志不得出现水印原文（身份证号/令牌串），只允许计数与码。"""
+    uploads, _outputs = env
+    src = str(uploads / "log-hygiene.pdf")
+    build_pdf(src, pages=3)
+    with caplog.at_level(logging.DEBUG):
+        copy_path, status = wm.render_source(src)
+        assert status["source"] == "copy"
+        # 再跑一次失败路径，确保异常日志也不带原文
+        broken = str(uploads / "broken.pdf")
+        with open(broken, "wb") as fh:
+            fh.write(b"%PDF-1.4 not really a pdf")
+        assert wm.render_source(broken)[0] is None
+    text = caplog.text
+    assert WM_ID not in text, "日志泄露了水印令牌"
+    assert "450102199001011234" not in text, "日志泄露了身份证号"
+    assert copy_path
+
+
+def test_probe_on_already_stripped_copy_is_idempotent_noop(tmp_path, env):
+    """AC(A10) 幂等：对已摘除的副本再跑检测必须零命中、不再构建，
+    且副本内容逐字节不变（不得把扫描图流当小序号流二次摘除）。"""
+    uploads, _outputs = env
+    src = str(uploads / "idempotent.pdf")
+    build_pdf(src, pages=3)
+    copy_path, status = wm.render_source(src)
+    assert status["source"] == "copy"
+    before_sha = sha256(copy_path)
+    builds_before = wm.stats()["build_calls"]
+
+    again_code = wm.probe(copy_path, probes=3).code
+    assert again_code == "no_wm_spans", again_code
+    assert wm.stats()["build_calls"] == builds_before, "幂等重跑不得再构建副本"
+    assert sha256(copy_path) == before_sha
+
+    doc = fitz.open(copy_path)
+    try:
+        assert doc.page_count == 3
+        for index in range(doc.page_count):
+            page = doc.load_page(index)
+            assert len(_contents(doc, page.xref)) == 1, "正文流不得被二次摘除"
+            assert len(page.get_images()) == 1, "正文栅格图仍必须在"
+    finally:
+        doc.close()
+
+
 def test_render_memo_keeps_probe_and_build_at_one_per_volume(tmp_path, env):
     uploads, _outputs = env
     src = str(uploads / "memo.pdf")
@@ -385,6 +432,20 @@ def test_single_overlay_page_is_below_min_pages(tmp_path, env):
     copy_path, status = wm.render_source(path)
     assert copy_path is None and status["code"] == "below_min_pages"
     assert wm.stats()["build_calls"] == 0
+
+
+def _page_streams(path: str) -> list[bytes]:
+    """逐页内容流（解压后）原始字节，用于「未摘页逐字节不变」断言。"""
+    doc = fitz.open(path)
+    try:
+        out = []
+        for index in range(doc.page_count):
+            page = doc.load_page(index)
+            xrefs = _contents(doc, page.xref)
+            out.append(b"\n".join(doc.xref_stream(int(x)) or b"" for x in xrefs))
+        return out
+    finally:
+        doc.close()
 
 
 def test_partial_overlay_volume_reports_per_page_accounting(tmp_path, env):
