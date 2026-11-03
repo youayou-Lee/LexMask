@@ -643,6 +643,10 @@ class Settings(BaseSettings):
     # 开启代价：任一页**首次**请求须等整卷分块建流完成（60 页约 115s、189 页约 231s；
     # memo 命中后逐页秒级）。无可用文本层的页 / 卷级门不达标 / 建卷异常一律逐页回落旧视觉线。
     TEXT_LAYER_DOCLINE_ENABLED: bool = True
+    # Issue#204 缺陷 B：建链被取消（页超时/用户取消等一切取消原因）时落的负缓存
+    # TTL。取消是暂态（服务恢复/负载回落即可重试成功），与 `_NEGATIVE_TTL_SEC`
+    # 同口径取有限值；TTL 内重试直接短路，不再从零重放 O(整卷) 建链。
+    TEXT_LAYER_DOCLINE_CANCEL_NEGATIVE_TTL_SEC: float = 300.0
     # 文档级分块的段长。实测 2000 字档比 6000 字档**又快又全**（6000 字档
     # 6/30 块撞 2048 完成帽、召回只有页线的 40%，2000 字档 73%）。
     TEXT_LAYER_DOCLINE_CHUNK_CHARS: int = 2_000

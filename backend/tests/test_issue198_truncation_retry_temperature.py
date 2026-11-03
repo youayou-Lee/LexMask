@@ -142,13 +142,17 @@ def test_requery_retruncated_capped_confirmed_false(caplog):
     assert "re-query finished: finish_reason=length confirmed=False" in caplog.text
 
 
-def test_rebatch_recursion_inherits_caller_temperature_characterization(monkeypatch):
-    """Issue#200 特征化钉（冷审 I3b）：解析失败分批递归现状 = 子批继承调用方
-    温度。25 类型 > _NER_REBATCH_TYPE_THRESHOLD(24) → batch_size=24 → 首调用
-    不可解析后递归 2 个子批。#200 后续修改本行为时此钉可见。"""
-    # Issue#209① 把默认完成帽抬到 4096 后，25 型在该文本上不再超批（
-    # _NER_REBATCH_TYPE_THRESHOLD 的触发前提是"预算超帽"）；本钉要的是**递归
-    # 子批继承温度**这一特征，故显式钉回 2048。
+def test_rebatch_recursion_escalates_temperature(monkeypatch):
+    """Issue#200（#198 同源）：解析失败分批递归也是失败驱动的重试，必须换
+    采样轨迹。主查全类型不可解析后按类型轴递归子批；子批温度按 #198 同款
+    max 语义升级到 HAS_NER_TRUNCATION_RETRY_TEMPERATURE，调用方已传更高
+    温度不被拉低。
+
+    路径勘误（#200 修复时修正原特征化钉的误钉）：旧钉以为 25 型会走解析
+    失败递归（batch 24+1），实际 25 型在该文本上先被帽驱动预分批切成
+    [12,12,1]（预规划，非失败驱动，继承调用方温度是合法语义），旧钉实际
+    钉的是预分批调用点而非解析失败递归。本测试显式令预分批返回单批，
+    真正走进解析失败递归分支。"""
     monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
     types = [f"类型{i}" for i in range(25)]
     bodies = [
@@ -157,11 +161,17 @@ def test_rebatch_recursion_inherits_caller_temperature_characterization(monkeypa
         (json.dumps({"类型24": ["乙"]}, ensure_ascii=False), "stop"),
     ]
     client, calls = make_client(bodies)
-    merged = client.ner(TEXT + " t6", types, type_guidance=[], temperature=0.0)
+    # 预分批强制单批 ⇒ 主查全类型一发；不可解析后才进解析失败递归分支
+    monkeypatch.setattr(
+        type(client), "plan_completion_batches",
+        classmethod(lambda cls, t, text, **k: [list(t)]),
+        raising=False,
+    )
+    merged = client.ner(TEXT + " t6", types, type_guidance=None, temperature=0.0)
 
     assert len(calls) == 3, "首调用 + 2 个子批（24+1）"
-    assert calls[1]["temperature"] == 0.0, "现状：递归子批继承调用方温度（未升级）"
-    assert calls[2]["temperature"] == 0.0
+    assert calls[1]["temperature"] == 0.7, "递归子批温度升级到重查温度（max 语义）"
+    assert calls[2]["temperature"] == 0.7
     assert merged.get("类型0") == ["甲"]
     assert merged.get("类型24") == ["乙"]
 
@@ -223,3 +233,26 @@ def test_chunk_retruncated_confirmed_false(monkeypatch):
     main, requery = _split_calls(calls)
     assert len(requery) >= 3, "主查 1 次 + 分块补查"
     assert confirmed is False, "任一块再截断 ⇒ 整体 confirmed=False（不写缓存）"
+
+
+def test_rebatch_recursion_higher_caller_temp_not_pulled_down(monkeypatch):
+    """Issue#200 max 语义：调用方已传 > 重查温度的采样（自洽趟）不被拉低。"""
+    monkeypatch.setattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048, raising=False)
+    types = [f"类型{i}" for i in range(25)]
+    bodies = [
+        ("this is not json at all", None),
+        (json.dumps({"类型0": ["甲"]}, ensure_ascii=False), "stop"),
+        (json.dumps({"类型24": ["乙"]}, ensure_ascii=False), "stop"),
+    ]
+    client, calls = make_client(bodies)
+    monkeypatch.setattr(
+        type(client), "plan_completion_batches",
+        classmethod(lambda cls, t, text, **k: [list(t)]),
+        raising=False,
+    )
+    merged = client.ner(TEXT + " t7", types, type_guidance=None, temperature=0.9)
+
+    assert len(calls) == 3
+    assert calls[1]["temperature"] == 0.9, "子批继承调用方更高温度（只升不降）"
+    assert calls[2]["temperature"] == 0.9
+    assert merged.get("类型0") == ["甲"]
