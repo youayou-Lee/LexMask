@@ -560,16 +560,20 @@ class TestDocvortexCaptionsFootnotes:
         assert "table_caption" not in flat[0]
 
     def test_caption_parts_on_non_table_blocks_not_attached(self):
-        # v2 口径：caption 只在 table 块上上浮；text 块里的 table_caption 部件
-        # 是已知类型（不告警），但不上浮为表格语义
+        # 门⑥ M7：caption/footnote 部件上浮只在对应块型；出现在「错误块型」上是
+        # 结构异常信号——不上浮，但必须告警（不静默），点名部件与所在块型
         from app.services.agent_md_adapter import normalize_docvortex
         doc = _v4_doc([(0, [
             {"type": "text", "index": 0,
              "content": [{"type": "table_caption", "content": "错位表名"}]},
+            {"type": "image", "index": 1,
+             "content": [{"type": "table_footnote", "content": "错位脚注"}]},
         ])])
         flat, warns = normalize_docvortex([doc])
-        assert warns == []
         assert "table_caption" not in flat[0]
+        assert "table_footnote" not in flat[1]
+        assert any("table_caption" in w and "text" in w for w in warns)
+        assert any("table_footnote" in w and "image" in w for w in warns)
 
 
 
@@ -600,3 +604,13 @@ def test_caption_part_content_as_text_part_list():
     assert flat[1]["image_footnote"] == "图 3 现场照片"
     segs, _ = clean_segments(flat)
     assert "出口货物报关单统计表" in segs[0].text
+
+
+def test_enrich_success_keeps_footnote_before_ocr_lines():
+    # 门⑥ M8：enrich 成功路径（zip 有图 + OCR 有文本）也必须保留图注，且顺序
+    # = 图注在前、OCR 行在后（与哨兵降级路径同口径，不吞已见语义）
+    from app.services.agent_md_adapter import Seg, enrich_image_blocks
+    segs = [Seg(text="图 3 现场照片", page_idx=0, source="img_ocr", img_path="images/a.jpg")]
+    filled, _ = enrich_image_blocks(segs, {"images/a.jpg": b"jpg"}, _FakeOcr(texts=["勘验笔录一"]))
+    assert filled[0].text == "图 3 现场照片\n勘验笔录一"
+    assert filled[0].source == "img_ocr"

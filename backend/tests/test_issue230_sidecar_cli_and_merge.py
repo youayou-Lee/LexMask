@@ -115,6 +115,10 @@ def sidecar_mod(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MINERU_SIDECAR_BIN", str(tmp_path / "fake-mineru"))
     monkeypatch.setenv("MINERU_SIDECAR_HOME", str(tmp_path / "mineru-home"))
     monkeypatch.setenv("MINERU_SIDECAR_TIER", "flash")
+    # 门⑥ I1：TIMEOUT 必须用非缺省值并在 reload 前设置——reload 冻结模块级
+    # MINERU_TIMEOUT_SEC，测试体内 setenv 对已加载模块是死代码（缺省 7200 时
+    # 「4880」断言与纯缺省路径重合，把实现改读错变量名照样绿）。
+    monkeypatch.setenv("MINERU_SIDECAR_TIMEOUT", "5000")
     import importlib
 
     import scripts.mineru_sidecar as sidecar
@@ -154,18 +158,50 @@ class TestCliFlags:
         args = task["_cli_args"]
         assert args[args.index("--pages") + 1] == "all"
 
-    def test_pages_env_passthrough(self, sidecar_mod, tmp_path, monkeypatch):
+    def test_pages_env_passthrough_partial_range_relaxes_gate(self, sidecar_mod, tmp_path, monkeypatch):
+        # 门⑥ I2：部分 range 是开发调试旋钮——真实 MinerU 在 --pages 1-5 下只产
+        # 5 页窗口，与「残卷不许出厂」校验直接冲突。口径：pages != all 时截断
+        # 校验放宽为显式 warning（不静默、也不误杀故意的部分解析）。
         monkeypatch.setenv("MINERU_SIDECAR_PAGES", "1-5")
-        task = _run_task(sidecar_mod, tmp_path)
+        args_file = tmp_path / "cli-args.txt"
+        _make_fake_mineru(tmp_path, args_file)
+        _make_doclib(tmp_path / "mineru-home", [
+            _win(list(range(0, 5)), page_count=5),  # 窗口 5 页，metadata 也是 5
+        ])
+        inp = tmp_path / "in.pdf"
+        inp.write_bytes(b"%PDF-fake")
+        sidecar_mod._tasks["t3"] = {"status": "pending", "progress": 0,
+                                    "error": None, "warnings": [], "files": ["in.pdf"]}
+        sidecar_mod._run_mineru_sync("t3", [inp])
+        task = sidecar_mod._tasks["t3"]
         assert task["status"] == "completed", task.get("error")
+        task["_cli_args"] = args_file.read_text(encoding="utf-8").split()
         assert task["_cli_args"][task["_cli_args"].index("--pages") + 1] == "1-5"
 
+    def test_pages_env_partial_with_full_page_count_warns_not_fails(self, sidecar_mod, tmp_path, monkeypatch):
+        # 真实可达的最坏组合：用户传 1-5 但 metadata.page_count 报全文页数 ⇒
+        # 放宽为 warning，不许任务失败，也不许静默（warning 必须点名两者）
+        monkeypatch.setenv("MINERU_SIDECAR_PAGES", "1-5")
+        args_file = tmp_path / "cli-args.txt"
+        _make_fake_mineru(tmp_path, args_file)
+        _make_doclib(tmp_path / "mineru-home", [
+            _win(list(range(0, 5)), page_count=149),
+        ])
+        inp = tmp_path / "in.pdf"
+        inp.write_bytes(b"%PDF-fake")
+        sidecar_mod._tasks["t4"] = {"status": "pending", "progress": 0,
+                                    "error": None, "warnings": [], "files": ["in.pdf"]}
+        sidecar_mod._run_mineru_sync("t4", [inp])
+        task = sidecar_mod._tasks["t4"]
+        assert task["status"] == "completed", task.get("error")
+        assert any("1-5" in w and "149" in w for w in task["warnings"])
+
     def test_wait_default_follows_timeout_with_margin(self, sidecar_mod, tmp_path, monkeypatch):
-        monkeypatch.setenv("MINERU_SIDECAR_TIMEOUT", "7200")
         monkeypatch.delenv("MINERU_SIDECAR_WAIT", raising=False)
         task = _run_task(sidecar_mod, tmp_path)
         assert task["status"] == "completed", task.get("error")
-        assert task["_cli_args"][task["_cli_args"].index("--wait") + 1] == "7080"
+        # fixture 在 reload 前 setenv TIMEOUT=5000 ⇒ 缺省 wait = 5000-120 = 4880
+        assert task["_cli_args"][task["_cli_args"].index("--wait") + 1] == "4880"
 
 
 class TestMultiWindowEndToEnd:
@@ -205,3 +241,20 @@ class TestMultiWindowEndToEnd:
         task = sidecar._tasks["t2"]
         assert task["status"] == "failed"
         assert "149" in (task.get("error") or "") and "10" in (task.get("error") or "")
+
+    def test_missing_page_count_warns_not_silent(self, sidecar_mod, tmp_path):
+        # 门⑥ M3：metadata.page_count 缺失时校验跳过是 fail-open——必须留 warning
+        # 使「页数口径不可证」显式可见（不失败：下游 shortfall 守卫兜底）
+        args_file = tmp_path / "cli-args.txt"
+        _make_fake_mineru(tmp_path, args_file)
+        win = _win(list(range(0, 10)), page_count=149)
+        del win["metadata"]["page_count"]  # 4.1.3 部分产物实测缺失该字段
+        _make_doclib(tmp_path / "mineru-home", [win])
+        inp = tmp_path / "in.pdf"
+        inp.write_bytes(b"%PDF-fake")
+        sidecar_mod._tasks["t5"] = {"status": "pending", "progress": 0,
+                                    "error": None, "warnings": [], "files": ["in.pdf"]}
+        sidecar_mod._run_mineru_sync("t5", [inp])
+        task = sidecar_mod._tasks["t5"]
+        assert task["status"] == "completed", task.get("error")
+        assert any("page_count" in w for w in task["warnings"])

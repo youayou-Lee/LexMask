@@ -446,6 +446,14 @@ def _docvortex_block_to_flat(block: dict, page_idx: int, warns: list[str]) -> di
     elif btype == "image":
         if extras.get("image_footnote"):
             out["image_footnote"] = " | ".join(extras["image_footnote"])
+    # 门⑥ M7：已知部件落在错误块型上 = 结构异常信号——不上浮但必须点名告警
+    expected_on = {"table_caption": "table", "table_footnote": "table", "image_footnote": "image"}
+    for key, vals in extras.items():
+        if expected_on.get(key) not in (None, btype):
+            warns.append(
+                f"docvortex part type {key} on unexpected block type {btype}（未上浮）: "
+                + vals[0][:50]
+            )
     # 其余 type（未知）原样透传：clean_segments 按 v1 语义处理并计数告警
     return out
 

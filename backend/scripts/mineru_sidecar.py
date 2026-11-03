@@ -186,11 +186,17 @@ def _run_mineru_sync(task_id: str, inputs: list[Path]) -> None:
             except Exception:
                 parse_results.append({})
         # 收取 doclib 结构化产物（4.x schema；backend 侧 3.x content_list 适配另案）。
-        # Issue#230 缺陷③：>64 页文档按窗口拆多份 json，直接拷会撞后端
+        # Issue#230 缺陷③：大文档按窗口拆多份 json，直接拷会撞后端
         # mineru4_multiple_docs fail-closed（整单作废）⇒ 同 sha 窗口按 page_idx
         # 合并成单份；合并后 pages 数必须等于 metadata.page_count，否则任务显式
         # 失败（残卷不许静默出厂——缺陷②的静默截断就是事故本体）。
+        # 门⑥ I2：MINERU_SIDECAR_PAGES 传部分 range（如 1-5）是开发调试旋钮，
+        # 截断校验放宽为显式 warning——不静默、也不误杀故意的部分解析。
         home = Path(os.environ.get("MINERU_SIDECAR_HOME", str(Path.home() / ".mineru")))
+        partial_pages = os.environ.get("MINERU_SIDECAR_PAGES", "all") != "all"
+        # strict=False 是刻意的：CLI 失败项在 break 前不 append，len(parse_results)
+        # <= len(inputs) 是本控制流的不变式（前缀对齐，错位结构上不可能）；
+        # strict=True 反而炸掉失败路径（契约测试 test_failed_task_carries_error 实测）。
         for pr, input_path in zip(parse_results, inputs, strict=False):
             sha = (pr.get("parse") or {}).get("sha256") or ""
             tier = (pr.get("parse") or {}).get("tier") or os.environ.get("MINERU_SIDECAR_TIER", "flash")
@@ -211,9 +217,21 @@ def _run_mineru_sync(task_id: str, inputs: list[Path]) -> None:
             pages = doc.get("pages") or []
             page_count = (doc.get("metadata") or {}).get("page_count")
             if isinstance(page_count, int) and page_count != len(pages):
-                raise RuntimeError(
-                    f"mineru truncated: pages={len(pages)} metadata.page_count={page_count}"
-                    f"（输入 {input_path.name}；残卷不许出厂，请检查 --pages/窗口收取）"
+                if partial_pages:
+                    task.setdefault("warnings", []).append(
+                        f"partial pages requested ({os.environ['MINERU_SIDECAR_PAGES']}):"
+                        f" pages={len(pages)} metadata.page_count={page_count}（部分解析，非全卷）"
+                    )
+                else:
+                    raise RuntimeError(
+                        f"mineru truncated: pages={len(pages)} metadata.page_count={page_count}"
+                        f"（输入 {input_path.name}；残卷不许出厂，请检查 --pages/窗口收取）"
+                    )
+            elif not isinstance(page_count, int):
+                # 门⑥ M3：page_count 缺失 = 页数口径不可证（fail-open 缺口），
+                # 必须留痕让下游/值守可见，不许静默跳过
+                task.setdefault("warnings", []).append(
+                    f"mineru metadata.page_count missing: pages={len(pages)}（截断校验不可用）"
                 )
             dest = out_dir / f"mineru4_{tier}_{input_path.stem}.json"
             dest.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
