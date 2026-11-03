@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import fitz
 import pytest
@@ -315,6 +316,41 @@ def test_build_strips_watermark_keeps_raster_and_original(tmp_path, env):
             assert len(page.get_images()) == 1, "正文栅格图不得丢失"
     finally:
         doc.close()
+
+
+def test_encrypted_pdf_falls_back_with_explicit_code(tmp_path, env):
+    """B4：加密卷摘流会破坏签名/结构 ⇒ 必须显式回落原件并留码，且不产出副本。"""
+    uploads, _outputs = env
+    src = str(uploads / "encrypted.pdf")
+    build_pdf(src, pages=2)
+    doc = fitz.open(src)
+    try:
+        doc.save(src + ".enc.pdf", encryption=fitz.PDF_ENCRYPT_AES_256,
+                 owner_pw="owner-pw", user_pw="user-pw")
+    finally:
+        doc.close()
+    enc = src + ".enc.pdf"
+    before = sha256(enc)
+    copy_path, status = wm.render_source(enc)
+    assert copy_path is None
+    assert status["source"] == "original"
+    assert status["code"] == "encrypted", status
+    assert status["failed"] is False, "加密卷不是失败，是显式跳过"
+    assert sha256(enc) == before, "加密原件不得被触碰"
+
+
+def test_concurrent_render_builds_one_copy(tmp_path, env):
+    """B10：同一原件并发两次渲染 ⇒ 只构建一份副本、两个调用指向同一文件。"""
+    uploads, _outputs = env
+    src = str(uploads / "concurrent.pdf")
+    build_pdf(src, pages=3)
+    builds_before = wm.stats()["build_calls"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [f.result() for f in [pool.submit(wm.render_source, src) for _ in range(2)]]
+    paths = {r[0] for r in results}
+    assert len(paths) == 1 and None not in paths, results
+    assert wm.stats()["build_calls"] - builds_before == 1
+    assert sha256(src) == sha256(src)
 
 
 def test_logs_never_leak_watermark_text(tmp_path, env, caplog):
@@ -671,6 +707,29 @@ def _masked_delta(a: Image.Image, b: Image.Image, mask: Image.Image) -> float:
     if not total:
         return 0.0
     return sum(v * c for v, c in enumerate(inside.histogram())) / total
+
+
+def test_clean_render_changes_only_watermark_pixels(tmp_path, env):
+    """AC2-2c / B6：识别面（干净副本渲染）与原件渲染在**水印掩码之外必须逐像素相同**。
+
+    这是「矢量摘除」的核心承诺：不是像素修补，非水印区域的正文笔画/表格线/印章
+    不得发生任何变化。掩码由独立 oracle（只渲染被摘掉的那条流）产出。
+    """
+    uploads, _outputs = env
+    src = str(uploads / "clean-render.pdf")
+    build_pdf(src, pages=3)
+    copy_path, status = wm.render_source(src)
+    assert status["source"] == "copy"
+
+    original = _render_png(src, 0)
+    clean = _render_png(copy_path, 0)
+    assert original.size == clean.size
+    mask = _watermark_mask(src, 0)
+    outside = ImageChops.invert(mask)
+    inside_delta = _masked_delta(original, clean, mask)
+    outside_delta = _masked_delta(original, clean, outside)
+    assert inside_delta > 1.0, f"水印区必须真的变了（{inside_delta:.2f}）"
+    assert outside_delta == 0.0, f"非水印区必须逐像素不变（{outside_delta:.4f}）"
 
 
 def test_preview_renders_original_not_clean_copy(tmp_path, env):

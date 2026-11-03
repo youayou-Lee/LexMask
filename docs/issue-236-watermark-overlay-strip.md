@@ -87,7 +87,7 @@
 3. 对每条合格流做**差分 oracle**：临时把该流从 `/Contents` 摘掉 → `reload_page` → 取 span 列表，要求 **①摘后无水印 span** 且 **②摘后非水印 span 与摘前逐字段精确相等**（text/bbox/font/size/dir/alpha），随后恢复 `/Contents`。这是「锚定独立流而非重复文字」的判据：文字里重复的水印不会因摘掉某条流而消失（①不成立）；把正文或不可见文字层一并摘掉会让②不成立。
 4. 该页候选流**必须唯一**（0 个 ⇒ 未命中；≥2 个 ⇒ 该页弃权）。
 5. 卷级命中：`hit_pages ≥ MIN_HIT_PAGES(3)`，且各命中页签名一致——同字体、同旋转方向、`size` 极差比 ≤ `MAX_SIZE_SPREAD(1.5)`（实测 1.017）、`alpha` 极差比 ≤ `MAX_ALPHA_SPREAD(2.0)`（实测 1.0）、单页最高重复次数 ≥ `MIN_REPEATS(3)`（实测 6）。
-6. 输出：`code ∈ {hit, no_wm_spans, no_isolated_overlay, below_min_pages, signature_drift, capped_by_size, not_pdf, not_applicable, disabled, error}` + `pages_probed/pages_hit/slots/fonts/size_spread/alpha_spread/top_repeats/charset/tokens/elapsed_ms`。
+6. 输出：`code ∈ {hit, no_wm_spans, no_isolated_overlay, below_min_pages, signature_drift, capped_by_size, encrypted, not_pdf, not_applicable, disabled, error}`（`encrypted` = 需要口令/已加密 ⇒ 一律不摘，防破坏加密与签名，也防副本绕过原件访问控制） + `pages_probed/pages_hit/slots/fonts/size_spread/alpha_spread/top_repeats/charset/tokens/elapsed_ms`。
    - `not_pdf`：文件不是 PDF（docx/图片等，读取即失败）。
    - `not_applicable`：是 PDF 但形态明确不适用（0 页、加密不可读、页数 0 等）。
 
@@ -160,7 +160,7 @@
 ```
 
 - `source ∈ {copy, original}`：本页渲染实际吃了谁——**唯一机器可读证据**。
-- `code` 枚举见 3.1；阶段失败另有 `error_code ∈ {probe_error, copy_dir_unwritable, copy_verify_failed, build_error, capped_by_size, not_pdf, not_applicable}`。
+- `code` 枚举见 3.1（含 `encrypted`）；阶段失败另有 `error_code ∈ {probe_error, copy_dir_unwritable, copy_verify_failed, build_error, capped_by_size, encrypted, not_pdf, not_applicable}`。
 - 全局关闭时固定返回 `{"code":"disabled","source":"original","skipped":true,...}`（OFF 轮也可判定）。
 - 前端对 `pipeline_status` 通用遍历，新标签自动可见。
 
@@ -363,7 +363,7 @@ GT json 结构（每个夹具一份）：`{"page": 1, "orig_lines": n, "wm_lines
 | `backend/app/services/file_parser.py` | `get_pdf_page_image(..., allow_strip=True)`、clean/raw 变体缓存键、6 元组键类型同步 |
 | `backend/app/services/vision_service.py` | `pipeline_status["watermark_overlay"]`、预览 `allow_strip=False`、`_delivery_source()` + `_redact_pdf(source_path=)` |
 | `backend/app/api/files.py` | 预览端点 `allow_strip=False` |
-| `backend/tests/test_watermark_overlay_strip.py` | 新增 24 例（合成夹具手写内容流，零 testdata 依赖；含 F9/F10 两条变异可红夹具） |
+| `backend/tests/test_watermark_overlay_strip.py` | 新增 29 例（合成夹具手写内容流，零 testdata 依赖；含 F9/F10 两条变异可红夹具、幂等/未摘页流逐字节不变/日志零 PII/加密卷显式跳过/非水印区逐像素不变/并发单副本六条门⑥ 补强判据） |
 | `CHANGELOG.md` | 本轮登记 |
 
 ### 8.2 实现相对设计的偏离（均已在本轮固化）

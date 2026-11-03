@@ -203,6 +203,10 @@ def probe(
     doc = None
     try:
         doc = fitz.open(path)
+        # 加密/需要口令的卷一律不摘：摘流会破坏加密与可能的签名，且碳副本会绕过
+        # 原件的访问控制（B4）。显式留码，而不是让后续逻辑「碰巧」失败。
+        if getattr(doc, "needs_pass", 0) or getattr(doc, "is_encrypted", False):
+            return done("encrypted", pages_probed=0)
         page_count = len(doc)
         ids = _probe_indices(page_count, probes)
         if len(ids) < min_hit_pages:
