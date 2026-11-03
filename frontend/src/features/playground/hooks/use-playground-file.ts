@@ -9,7 +9,8 @@ import { useSingleTask } from '@/features/single-task/single-task-context';
 import { SINGLE_TASK_POLL_MS } from '@/constants/timing';
 import { showToast } from '@/components/Toast';
 import { t } from '@/i18n';
-import { localizeErrorMessage } from '@/utils/localizeError';
+import { localizeErrorMessage, messageFromEnvelope } from '@/utils/localizeError';
+import { errorCodeFromEnvelope, firstMessageText } from '@/utils/errorEnvelope';
 import { ACCEPTED_UPLOAD_FILE_TYPES } from '@/utils/fileUploadAccept';
 import { safeJson } from '../utils';
 import { boundingBoxesFromServerInfo, planServerCachedResume } from '../lib/playground-draft';
@@ -39,21 +40,20 @@ function toEntitiesWithDefaults(entities: Record<string, unknown>[]): Entity[] {
 /**
  * 2026-11-03 用户反馈：后端统一信封是 `{error_code, message, detail:{}}`，
  * 旧实现 `data.detail ?? data.message` 被空对象 detail 短路（?? 只挡 nullish），
- * message 里的具体原因永远取不到 ⇒ 一律兜底「文件上传失败」。改为取第一个
- * 非空字符串，字段顺序 detail→message→error 仅在同型时生效。
+ * message 里的具体原因永远取不到 ⇒ 一律兜底「文件上传失败」。#229 改取第一个
+ * 非空字符串；#232 起取错逻辑统一在 utils/errorEnvelope + localizeError.messageFromEnvelope。
  */
-function firstMessageText(...candidates: unknown[]): string | null {
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
-  }
-  return null;
-}
-
 async function responseErrorMessage(res: Response, fallbackKey: string) {
   try {
-    const data = await safeJson<{ detail?: unknown; message?: unknown; error?: unknown }>(res);
-    const message = firstMessageText(data.detail, data.message, data.error);
-    if (message) return message;
+    // #232：信封统一走 messageFromEnvelope——已知码出本地化文案（en 不再看中文原文），
+    // 未知码保持第一个非空字符串字段的既有行为。
+    const data = await safeJson<{
+      error_code?: unknown;
+      detail?: unknown;
+      message?: unknown;
+      error?: unknown;
+    }>(res);
+    return messageFromEnvelope(data, fallbackKey);
   } catch {
     // Keep the localized fallback when the response body is not JSON.
   }
@@ -71,8 +71,7 @@ async function readErrorEnvelope(
       message?: unknown;
       error?: unknown;
     }>(res);
-    const code =
-      typeof data?.error_code === 'string' && data.error_code ? data.error_code : null;
+    const code = errorCodeFromEnvelope(data);
     const message = firstMessageText(data?.detail, data?.message, data?.error);
     return { code, message };
   } catch {

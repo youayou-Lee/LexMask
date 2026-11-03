@@ -27,6 +27,8 @@ from app.api.files import _upload_throttle  # shared per-user upload rate limite
 from app.core.audit import audit_log
 from app.core.auth import require_auth
 from app.core.config import settings
+from app.core.errors import AppError
+from app.core.file_validation import FileContentMismatchError
 from app.core.idempotency import check_idempotency, save_idempotency
 
 logger = logging.getLogger(__name__)
@@ -244,6 +246,14 @@ async def resumable_upload_complete(
         )
     except ValueError as exc:
         await _fms.rollback_upload(file_id, file_path)
+        if isinstance(exc, FileContentMismatchError):
+            # #232 I-1：与单文件上传同形——拒收信封带机读码与结构化 detail
+            raise AppError(
+                status_code=400,
+                error_code=exc.error_code,
+                message=str(exc),
+                detail={"detected_format": exc.detected_format, "extension": exc.extension},
+            )
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception:
         logger.exception("Failed to register resumable upload %s, rolling back", file_id)

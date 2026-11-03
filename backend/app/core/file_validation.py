@@ -127,6 +127,72 @@ def spoof_reject_message(file_path: str, ext: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# #232 I-1：拒收信封机读化 —— 前端按码出本地化文案，中文原文不再跨语言泄漏
+# ---------------------------------------------------------------------------
+FILE_CONTENT_MISMATCH_ERROR_CODE = "FILE_CONTENT_MISMATCH"
+
+# 机读格式码（前端 i18n 文案键的原料；键与 MAGIC_BYTES/_MAGIC_TYPE_NAMES 对齐）
+_FORMAT_CODES: dict[bytes, str] = {
+    b"%PDF": "pdf",
+    b"PK\x03\x04": "zip",
+    b"\xd0\xcf\x11\xe0": "ole",
+    b"{\\rtf": "rtf",
+    b"\xff\xd8\xff": "jpeg",
+    b"\x89PNG": "png",
+    b"GIF8": "gif",
+    b"BM": "bmp",
+    b"RIFF": "webp",
+    b"II\x2a\x00": "tiff",
+    b"MM\x00\x2a": "tiff",
+}
+
+
+class FileContentMismatchError(ValueError):
+    """扩展名与内容不符的拒收异常（#232 I-1）。
+
+    仍是 ``ValueError`` 子类：既有 ``except ValueError`` 回滚路径全部照旧，
+    路由层按 ``isinstance`` 升格为带机读码的统一信封。
+    """
+
+    def __init__(self, message: str, *, detected_format: str, extension: str):
+        super().__init__(message)
+        self.error_code = FILE_CONTENT_MISMATCH_ERROR_CODE
+        self.detected_format = detected_format
+        self.extension = extension
+
+
+def detect_format_code(file_path: str) -> str:
+    """按文件头给出机读格式码（与 :func:`detect_content_type` 同判据，返回稳定 ASCII 码）。"""
+    try:
+        with open(file_path, "rb") as f:
+            header = f.read(8)
+    except OSError:
+        return "unknown"
+    for magic, code in _FORMAT_CODES.items():
+        if header.startswith(magic):
+            return code
+    try:
+        with open(file_path, "rb") as f:
+            data = f.read(4096)
+        if b"\x00" in data:
+            return "binary"
+        data.decode("utf-8")
+        return "text"
+    except (OSError, UnicodeDecodeError):
+        pass
+    return "binary"
+
+
+def spoof_reject_error(file_path: str, ext: str) -> FileContentMismatchError:
+    """伪造扩展名拒收异常：中文文案逐字不变，附机读码与结构化 detail（#232）。"""
+    return FileContentMismatchError(
+        spoof_reject_message(file_path, ext),
+        detected_format=detect_format_code(file_path),
+        extension=ext,
+    )
+
+
 def get_file_type(filename: str) -> FileType | None:
     """Infer :class:`FileType` from file extension. Returns ``None`` for
     unsupported types (caller should raise an appropriate error)."""
