@@ -612,8 +612,8 @@ describe('Issue#194 终审 A：待确认扫描件回场不重复提交', () => {
     // 页面停留上传态、loading 退出——留给用户一个可读的错误面板，而非空白页
     expect(harness.file!.stage).toBe('upload');
     expect(harness.file!.isLoading).toBe(false);
+  });
 
-=======
   it('(h2) LA 未启动：自动剔除视觉要素照常提交 + 显式提示（跳过而非拦截）', async () => {
     const fetchMock = vi.mocked(authFetch);
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
