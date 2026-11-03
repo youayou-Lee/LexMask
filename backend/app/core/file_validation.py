@@ -132,7 +132,10 @@ def spoof_reject_message(file_path: str, ext: str) -> str:
 # ---------------------------------------------------------------------------
 FILE_CONTENT_MISMATCH_ERROR_CODE = "FILE_CONTENT_MISMATCH"
 
-# 机读格式码（前端 i18n 文案键的原料；键与 MAGIC_BYTES/_MAGIC_TYPE_NAMES 对齐）
+# 机读格式码（前端 i18n 文案键的原料；键与 MAGIC_BYTES/_MAGIC_TYPE_NAMES 对齐）。
+# 门⑥ M-2 同步守卫（2026-11-04）：新增/删除码必须同步前端 zh.ts/en.ts 的
+# common.format<Pascal> 词包键（composeFileContentMismatch 按 t('common.format'+Cap) 取词，
+# 缺键时用户会看到字面 key），并跑 backend/tests/test_issue232_error_envelope.py 的码表钉。
 _FORMAT_CODES: dict[bytes, str] = {
     b"%PDF": "pdf",
     b"PK\x03\x04": "zip",

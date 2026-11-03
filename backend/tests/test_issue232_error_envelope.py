@@ -89,8 +89,12 @@ def test_upload_spoof_envelope_carries_error_code_and_detail():
     assert body["error_code"] == "FILE_CONTENT_MISMATCH"
     assert body["detail"]["detected_format"] == "pdf"
     assert body["detail"]["extension"] == ".doc"
-    # zh 文案逐字保留在 message（可见性不回退）
-    assert "PDF" in body["message"] and ".doc" in body["message"]
+    # zh 文案逐字保留在 message（可见性不回退）——门⑥ M-3：钉全字面量，
+    # 路由层未来对 message 做截断/拼接等改写时本测试必须红。
+    assert body["message"] == (
+        "文件内容实际是PDF 文档，与扩展名 .doc 不匹配——"
+        "文件可能在传输中损坏或被重命名过；请用原始文件重新导出/另存为后再上传"
+    )
 
 
 def test_upload_spoof_text_under_doc_extension():

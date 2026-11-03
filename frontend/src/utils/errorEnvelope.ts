@@ -1,12 +1,18 @@
 // Copyright 2026 LexMask Contributors
 
 /**
- * 后端错误信封的取错工具（#232 M-3 收口：全站一个具名函数）。
+ * 后端错误信封的取错工具（#232 M-3 收口：文案提取全站一个具名函数）。
  *
  * 2026-11-03 用户反馈的根因：旧实现 `data.detail ?? data.message` 被空对象
  * `detail:{}` 短路（`??` 只挡 nullish），message 里的具体原因永远取不到。
- * 这里是单一权威实现；playground / agent-md / 下载路径一律复用，禁止再写
- * 内联取法（评审 M-4）。
+ * 这里是文案提取的单一权威实现；playground / agent-md / 下载路径一律复用，
+ * 禁止再写内联取法（评审 M-4）。
+ *
+ * 豁免（门⑥ M-1 留痕，2026-11-04）：①按码路由类解析器不在此列——
+ * `use-playground-file.readErrorEnvelope` / `agent-md/api.parseUploadErrorEnvelope`
+ * 的职责是取 error_code 路由交互（PDF 密码框），顺带取文案但字段顺序独立维护；
+ * ②`dicomApi` 的 `error.message ?? error.detail` 属另一族（两路径均产不出
+ * FILE_CONTENT_MISMATCH，纯文案提取无行为差异），后续动到时再收口。
  */
 
 /** 返回第一个非空字符串候选（trim 后），全空时 null。 */
