@@ -158,6 +158,7 @@ function Probe({ onReady }: { onReady: (file: FileApi, task: TaskApi) => void })
     <div>
       <span data-testid="stage">{file.stage}</span>
       <span data-testid="issue">{file.recognitionIssue ?? ''}</span>
+      <span data-testid="visual-skipped">{file.visualSkippedNotice ?? ''}</span>
       <span data-testid="loading-message">{file.loadingMessage}</span>
       {file.isLoading && (
         <PlaygroundLoading
@@ -611,5 +612,41 @@ describe('Issue#194 终审 A：待确认扫描件回场不重复提交', () => {
     // 页面停留上传态、loading 退出——留给用户一个可读的错误面板，而非空白页
     expect(harness.file!.stage).toBe('upload');
     expect(harness.file!.isLoading).toBe(false);
+
+=======
+  it('(h2) LA 未启动：自动剔除视觉要素照常提交 + 显式提示（跳过而非拦截）', async () => {
+    const fetchMock = vi.mocked(authFetch);
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/files/upload')) {
+        return jsonResponse({ file_id: 'f1', filename: 'scan.pdf', file_size: 99, file_type: 'pdf' });
+      }
+      if (url.endsWith('/files/f1/parse')) {
+        return jsonResponse({ content: '', file_type: 'pdf_scanned', is_scanned: true, page_count: 2 });
+      }
+      throw new Error(`unexpected authFetch: ${url}`);
+    });
+    baseOptions.latestOcrHasTypesRef.current = ['ocr_seal'];
+    baseOptions.latestVisualFeatureTypesRef.current = ['visual_stamp'];
+    baseOptions.isVisualServiceBlocked = () => true;
+
+    try {
+      renderHarness();
+      await dropTextFile();
+      // 照常提交（不被拦截），但视觉段传空数组（后端语义=显式不跑该段）
+      await waitFor(() => expect(submitRecognitionTask).toHaveBeenCalledTimes(1));
+      expect(submitRecognitionTask).toHaveBeenCalledWith('f1', ['NAME'], {
+        ocrHasTypes: ['ocr_seal'],
+        visualFeatureTypes: [],
+      });
+      // 面板级显式提示（不静默丢功能）
+      await waitFor(() =>
+        expect(screen.getByTestId('visual-skipped').textContent).not.toBe(''),
+      );
+    } finally {
+      baseOptions.latestOcrHasTypesRef.current = [];
+      baseOptions.latestVisualFeatureTypesRef.current = [];
+      delete baseOptions.isVisualServiceBlocked;
+    }
   });
 });

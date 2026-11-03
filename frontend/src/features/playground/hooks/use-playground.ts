@@ -139,9 +139,9 @@ export function usePlayground() {
           requiredServices.add('paddle_ocr');
           requiredServices.add('has_ner');
         }
-        if (latestVisualFeatureTypesRef.current.length > 0) {
-          requiredServices.add('visual_features');
-        }
+        // visual_features（LA）**不拦**：服务未启动属「未部署」而非「故障」，
+        // 拦截会让本地小显存环境完全无法识别。跳过策略见 startTask 的
+        // visualServiceBlocked（自动剔除视觉要素并显式提示），而非静默丢功能。
       } else if (file.content && latestSelectedTypesRef.current.length > 0) {
         requiredServices.add('has_ner');
       }
@@ -155,6 +155,12 @@ export function usePlayground() {
       );
     },
     [health, healthChecking, latestSelectedTypesRef],
+  );
+
+  // 供提交侧决定「本次是否跳过视觉段」（与 blocker 同源判据，防两处漂移）
+  const isVisualServiceBlocked = useCallback(
+    () => Boolean(health && !healthChecking && isServiceBlocked(health, 'visual_features')),
+    [health, healthChecking],
   );
 
   // Issue#194 验收反馈：completed 单文件回场恢复结果页——实现在 fileCtx 之后
@@ -173,6 +179,7 @@ export function usePlayground() {
     setSelectedTypes: recognition.setSelectedTypes,
     setBoundingBoxes: (val) => imageCtx.setBoundingBoxes(val),
     getRecognitionBlocker,
+    isVisualServiceBlocked,
     resumeCompletedResult: (fileId, info) => resumeCompletedResultRef.current(fileId, info),
   });
 
@@ -1124,6 +1131,7 @@ export function usePlayground() {
     taskStageLabel: fileCtx.taskStageLabel,
     uploadIssue: fileCtx.uploadIssue,
     recognitionIssue: fileCtx.recognitionIssue,
+    visualSkippedNotice: fileCtx.visualSkippedNotice,
     entityMap,
     redactedCount,
     processingMode: recognition.processingMode,

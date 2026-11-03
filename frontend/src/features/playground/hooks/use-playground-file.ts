@@ -115,6 +115,12 @@ export interface UsePlaygroundFileOptions {
   /** Return a user-facing reason when automatic recognition should not run yet */
   getRecognitionBlocker?: (file: PendingFile) => string | null;
   /**
+   * LA（visual_features）服务当前是否不可用（blocker 同源判据）。True 时
+   * startTask 自动剔除视觉要素、照常提交识别，并置 visualSkippedNotice
+   * 显式提示——「未部署就跳过」而非拦截，但不静默丢功能。
+   */
+  isVisualServiceBlocked?: () => boolean;
+  /**
    * Issue#194 验收反馈：已完成打码的单文件（file 记录 output_path 在）回场时，
    * 直接恢复结果页（镜像打码完成订阅的数据组装）。返回 false 则继续旧路径。
    * 不提供时维持旧行为（会落 rerun 自动重跑识别——扫描件无实体被误判未识别）。
@@ -141,6 +147,8 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
   );
   const [uploadIssue, setUploadIssue] = useState<string | null>(null);
   const [recognitionIssue, setRecognitionIssue] = useState<string | null>(null);
+  // 本次识别跳过了视觉段（LA 未启动）时的显式提示；新任务开始/换文件即清
+  const [visualSkippedNotice, setVisualSkippedNotice] = useState<string | null>(null);
   // Issue #30：解析返回 PDF_ENCRYPTED_NEEDS_PASSWORD 时挂起流程，弹密码框
   const [encryptedPrompt, setEncryptedPrompt] = useState<EncryptedPdfPrompt | null>(null);
 
@@ -612,6 +620,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
 
     const startTask = async () => {
       setRecognitionIssue(null);
+      setVisualSkippedNotice(null);
       setVisionStream(null);
       setIsLoading(true);
       setLoadingMessage(t('playground.taskParsing'));
@@ -620,16 +629,25 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         // 识别工人视觉段按 ocr_has_types/visual_feature_types 读取）——不传则编排器
         // 恒按默认全类型集跑，用户勾选对任务化扫描件无效（老同步流的回归）。
         const isVisionFile = pendingFile.isScanned || pendingFile.fileType === 'image';
+        // LA 未部署 → 本次自动剔除视觉要素（后端空数组=显式不跑该段），照常识别；
+        // 显式提示不静默。服务恢复了下次任务自动恢复检测。
+        const skipVisual =
+          isVisionFile &&
+          opts.latestVisualFeatureTypesRef.current.length > 0 &&
+          Boolean(opts.isVisualServiceBlocked?.());
         const ref = await submitRecognitionTask(
           fileId,
           opts.latestSelectedTypesRef.current,
           isVisionFile
             ? {
                 ocrHasTypes: opts.latestOcrHasTypesRef.current,
-                visualFeatureTypes: opts.latestVisualFeatureTypesRef.current,
+                visualFeatureTypes: skipVisual
+                  ? []
+                  : opts.latestVisualFeatureTypesRef.current,
               }
             : undefined,
         );
+        if (skipVisual) setVisualSkippedNotice(t('playground.visualSkippedNotice'));
         if (fileInfoRef.current?.file_id !== fileId) return; // 提交期间用户已切走/重置
         watch(ref.job_id, fileId, fileInfoRef.current?.filename || fileId);
         cancelledJobsRef.current.delete(ref.job_id);
@@ -880,6 +898,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     uploadIssue,
     recognitionIssue,
     setRecognitionIssue,
+    visualSkippedNotice,
     isImageMode,
     dropzone,
     encryptedPrompt,
