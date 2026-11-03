@@ -123,7 +123,7 @@ def test_retry_after_ttl_rebuilds(monkeypatch, tmp_path):
     assert len(calls) == 2, "TTL 过期后必须允许重建"
 
 
-def test_settings_default_ttl_is_finite(monkeypatch):
+def test_settings_default_ttl_is_finite():
     """口径钉：取消负缓存必须有有限 TTL（走 settings 可调）。"""
     ttl = getattr(settings, "TEXT_LAYER_DOCLINE_CANCEL_NEGATIVE_TTL_SEC", None)
     assert ttl is not None, "TTL 必须是显式 settings 项（可观测、可调）"
