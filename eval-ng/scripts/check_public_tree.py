@@ -64,6 +64,14 @@ ABS_PATH_RE = re.compile(
     r"(?<![\w.\-/])(/(?:root|home|mnt|data|opt|srv|var|Users|tmp|workspace|media)/[^\s\"'`,)]*)"
 )
 WIN_PATH_RE = re.compile(r"(?<![\w])[A-Za-z]:\\[^\s\"'`,)]*")
+#: 容器构建卫生路径（内置窄白名单，2026-11-03）：Dockerfile 清理包管理缓存的行
+#: （`rm -rf /var/lib/apt/lists/*` 等）是通用基建写法，不是实例路径。PR#228 重排 RUN 链
+#: 使该基线既有行变成「新增行」而误伤，暴露了 abs_path 误伤面。只放行**字面量以 `*` 收尾**
+#: 的卫生行（`startswith` 前缀语义，`*` 是字面字符不是通配）；同前缀的具体子路径照报。
+BUILTIN_ABS_PATH_PREFIXES = (
+    "/var/lib/apt/lists/*",
+    "/var/cache/apt/archives/*",
+)
 # ── 凭据类：键名按 `_` / `-` / camelCase 切成词元后查词表 ──
 # R6 教训：旧式 `\b(?:secret|token|password)\b` 对 `api_secret` / `db_password` 这类「凭据词作后缀」的
 # 复合键**没有边界**（`_` 属 `\w`），整类漏网；而 `(?i)` 又不能与 camelCase 边界断言共存。
@@ -475,6 +483,8 @@ def scan(text: str, *, denylist: list[str], allow_prefixes: list[str]) -> list[t
         for match in regex.finditer(text):
             value = match.group(0)
             if any(value.startswith(prefix) for prefix in allow_prefixes):
+                continue
+            if any(value.startswith(prefix) for prefix in BUILTIN_ABS_PATH_PREFIXES):
                 continue
             findings.append((rule, value))
     findings.extend(credential_findings(text))
