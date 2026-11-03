@@ -464,3 +464,22 @@ GT json 结构（每个夹具一份）：`{"page": 1, "orig_lines": n, "wm_lines
 - `bounding_boxes` 149 页 **3,506** 框；`林映峰`/`14501201410363675`/`钦州市院` 均 **0**；`钦州` 61 次为正文。
 - `text_layer_doc.fallback_reason_code` 仍为 `repeated_fragment_coverage`（coverage 0.376），闸未因本次改动松动。
 - 预览 `page-image?page=1` → 4,493,427 B（原件 150dpi 视图）；未命中卷 `文本型-叶辉审查报告.pdf` → 副本目录 **2 → 2**（零新建）。
+
+### 9.5 门⑥ 二轮处置后的最终 head 重跑（`043c471`）
+
+二轮评审把熔断收窄为**页级**、改了码序与生命周期，属于会影响运行时行为的改动，故再次整卷重跑（本机 docker 栈，backend 镜像由本分支 `DOCKER_BUILDKIT=0 docker compose -p lexmask --profile gpu build backend` 重建，`/health` 200）：
+
+| 判据 | 观测值 |
+|---|---|
+| 上传原件 | file_id `a83bab61-…`，容器内 sha256 `336e449aed87728616afb55a4a0021e7414a85f914d92f582693c4be9fe321fc` = 本地原件（逐字节相同） |
+| 识别任务 | job `49b92422-…` → 终态 `awaiting_review`，149 页，`failed_pages=None` |
+| 净化标签 | 149/149 页 `{code:"hit", source:"copy", pages_probed:5, pages_hit:5, pages_stripped:149, pages_skipped:0, pages_guard_refused:0, duration_ms:782}`（**页级熔断改完仍 0 页被拒，真卷不受影响**） |
+| 副本 | `outputs/.watermark_overlay/9edfeb7b….pdf` 25,798,037 B、`0600`、目录 `0700`；149 页；原件 90,624 字符 → 副本 **47,253**；「林映峰」1,788 → **0**；空白页 16（与 §9.1 一致） |
+| 零水印残留 | `bounding_boxes` 149 页 **3,540** 框；`林映峰`/`14501201410363675`/`钦州市院` 计数 **0**；`钦州` 61 次全部是正文（钦州港海关等） |
+| #203 闸不变 | 149/149 页 `text_layer_doc.fallback_reason_code == "repeated_fragment_coverage"`（文本层入口仍吃原件、闸仍拒绝） |
+| 预览面 | `page-image?page=1` → **4,493,427 B**（原件 150 dpi 视图；副本 150 dpi 渲染为 4,162,084 B） |
+| 未命中卷 | `文本型-叶辉审查报告.pdf` → 预览 240,682 B；`.watermark_overlay` 文件数 **3 → 3**（零新建） |
+| 交付件（默认保留水印） | `POST /redaction/execute` → `output_file_id=99cbbc71-…`，**85,278,328 B / 149 页**；页 132 水印笔画带（掩码 4.06% 面积）平均通道差：**交付 vs 原件 6.91 < 交付 vs 副本 19.91**（原件 vs 副本 16.59）⇒ 交付件更接近原件，即水印仍在 |
+
+诚实边界（同 §9.3）：本轮仍在本机 docker 栈（DCU 云实例 `ksai.scnet.cn:10451` 今日 Connection refused）；`stats()` 是进程内计数器，容器内另起进程读到 0 属正常，判定以 `pipeline_status` + 副本文件为准；交付件为 JPEG 光栅，笔画带判据用相对比较而非绝对像素等值。
+
