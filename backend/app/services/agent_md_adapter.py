@@ -242,8 +242,10 @@ def clean_segments(
                 warns.append(f"empty table block: page={page_idx}")
         elif btype == "image":
             path = item.get("img_path", "")
+            # Issue#231：v4 图注（image_footnote）进段文本——enrich 哨兵降级时保留
+            footnote = (item.get("image_footnote") or "").strip()
             warns.append(f"image block pending ocr: {path}")
-            segs.append(Seg(text="", page_idx=page_idx, source="img_ocr", img_path=path))
+            segs.append(Seg(text=footnote, page_idx=page_idx, source="img_ocr", img_path=path))
         elif btype == "text":
             body = strip_inline(item.get("text", ""))
             if body:
@@ -294,13 +296,17 @@ def enrich_image_blocks(
             texts = [it.text.strip() for it in items if it.text and it.text.strip()]
         except Exception as exc:  # noqa: BLE001 —— 单图失败不拖垮整卷
             warns.append(f"image ocr failed: {path}: {exc}")
-            out.append(Seg(text="[图片]", page_idx=seg.page_idx, source="sentinel"))
+            # Issue#231：v4 图注（image_footnote）已在 seg.text 里，哨兵降级不得吞掉
+            out.append(Seg(text=seg.text or "[图片]", page_idx=seg.page_idx, source="sentinel"))
             continue
         if texts:
-            out.append(Seg(text="\n".join(texts), page_idx=seg.page_idx, source="img_ocr"))
+            out.append(Seg(
+                text="\n".join([seg.text] + texts) if seg.text else "\n".join(texts),
+                page_idx=seg.page_idx, source="img_ocr",
+            ))
         else:
             warns.append(f"image ocr empty: {path}")
-            out.append(Seg(text="[图片]", page_idx=seg.page_idx, source="sentinel"))
+            out.append(Seg(text=seg.text or "[图片]", page_idx=seg.page_idx, source="sentinel"))
     return out, warns
 
 
@@ -309,8 +315,12 @@ def enrich_image_blocks(
 # 4.x 文档级形状判定值（上游 schema 字段全等，不做前缀/包含匹配——形似值
 # （如 "docvortex.middle.v3"）必须落到 unknown 走显式失败，见 AC1 负例）
 _DOCVORTEX_SCHEMA = "docvortex.middle"
-# 4.x 块 type → v1 名：paragraph_title 同 v2 title→text 口径（level 丢弃）
-_DOCVORTEX_TEXT_BLOCK_TYPES = {"text", "paragraph_title"}
+# 4.x 块 type → v1 名：paragraph_title 同 v2 title→text 口径（level 丢弃）；
+# doc_title（文档大标题）按「标题→正文」口径处理（Issue#231，不许透传当未知）
+_DOCVORTEX_TEXT_BLOCK_TYPES = {"text", "paragraph_title", "doc_title"}
+# 4.x 已知 caption/footnote 部件 type（Issue#231）：映射到与 v2 同口径的字段，
+# 不许掉进未知告警桶；只在对应块型上上浮（table 块收前两个、image 块收图注）
+_DOCVORTEX_EXTRA_PART_TYPES = ("table_caption", "table_footnote", "image_footnote")
 
 
 def detect_schema(raw: Any) -> str:
@@ -393,6 +403,7 @@ def _docvortex_block_to_flat(block: dict, page_idx: int, warns: list[str]) -> di
     out["type"] = str(btype) if btype is not None else "unknown"
     texts: list[str] = []
     table_body: str | None = None
+    extras: dict[str, list[str]] = {}
     content = block.get("content")
     if isinstance(content, list):
         for part in content:
@@ -408,6 +419,16 @@ def _docvortex_block_to_flat(block: dict, page_idx: int, warns: list[str]) -> di
                     table_body = pval
             elif ptype == "image_body":
                 pass  # 4.x 图块正文恒空（实测），语义由块 type=image 承载
+            elif ptype in _DOCVORTEX_EXTRA_PART_TYPES:
+                # Issue#231：表名/表脚注/图注是独立部件——收集后在对应块型上上浮。
+                # 真卷实测（149 页卷）content 有两形态：纯字符串、文本部件列表
+                # （[{"type":"text","content":...}]，与 v2 _parts_text 输入同形）。
+                if isinstance(pval, str) and pval.strip():
+                    extras.setdefault(str(ptype), []).append(pval.strip())
+                elif isinstance(pval, list):
+                    joined = _parts_text(pval)
+                    if joined:
+                        extras.setdefault(str(ptype), []).append(joined)
             elif ptype is not None:
                 warns.append(f"unhandled docvortex part type: {ptype}")
     if btype in _DOCVORTEX_TEXT_BLOCK_TYPES:
@@ -419,7 +440,21 @@ def _docvortex_block_to_flat(block: dict, page_idx: int, warns: list[str]) -> di
             out["table_body"] = table_body
         if texts:  # 防御映射：实测 table 块只有 table_body 部件；text 部件按表名/脚注处理
             out["table_caption"] = "\n".join(texts)
-    # 其余 type（image/未知）原样透传：clean_segments 按 v1 语义处理并计数告警
+        for key in ("table_caption", "table_footnote"):  # v2 同字段同 " | " 连接口径
+            if extras.get(key):
+                out[key] = " | ".join(extras[key])
+    elif btype == "image":
+        if extras.get("image_footnote"):
+            out["image_footnote"] = " | ".join(extras["image_footnote"])
+    # 门⑥ M7：已知部件落在错误块型上 = 结构异常信号——不上浮但必须点名告警
+    expected_on = {"table_caption": "table", "table_footnote": "table", "image_footnote": "image"}
+    for key, vals in extras.items():
+        if expected_on.get(key) not in (None, btype):
+            warns.append(
+                f"docvortex part type {key} on unexpected block type {btype}（未上浮）: "
+                + vals[0][:50]
+            )
+    # 其余 type（未知）原样透传：clean_segments 按 v1 语义处理并计数告警
     return out
 
 
