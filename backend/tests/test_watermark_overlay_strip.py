@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import logging
 import os
 import re
@@ -63,14 +64,20 @@ class _Gfx:
             "/Encoding /WinAnsiEncoding >>",
         )
 
-    def watermark_ops(self, rect: fitz.Rect, rows: int = 3, cols: int = 3) -> str:
+    def watermark_ops(self, rect: fitz.Rect, rows: int = 3, cols: int = 3,
+                      rotation: float = -45.0) -> str:
+        """rotation=-45 ⇒ dir=(0.707,0.707)（与真卷一致）；0 ⇒ 水平（A5 负样本）。"""
+        import math
+
+        cos = round(math.cos(math.radians(rotation)), 5)
+        sin = round(math.sin(math.radians(rotation)), 5)
         ops: list[str] = []
         for row in range(rows):
             for col in range(cols):
                 x = 24 + col * (rect.width / cols)
                 y = 60 + row * (rect.height / rows)
                 ops.append(
-                    "q 0.70711 -0.70711 0.70711 0.70711 "
+                    f"q {cos} {sin} {-sin} {cos} "
                     f"{x:.2f} {y:.2f} cm BT /GS0 gs 0.25098 0.25098 0.25098 rg "
                     f"/HeBo 29.22 Tf 0 0 Td ({WM_TEXT}) Tj ET Q"
                 )
@@ -134,6 +141,8 @@ def build_pdf(
     legal_body_stream: bool = False,
     legal_ascii_pages: list[int] | None = None,
     paint_plus_wm_stream: bool = False,
+    residual_wm_pages: list[int] | None = None,
+    wm_rotation: float = -45.0,
     opacity: float = 0.25,
 ) -> None:
     """合成夹具。
@@ -148,6 +157,8 @@ def build_pdf(
     legal_ascii_pages: 这些页额外挂一条合法 ASCII 正文流、且不挂水印流
         （F9：只有「删掉的不全是水印字符」这条守卫能挡住误删正文）
     paint_plus_wm_stream: 水印与绘制 op 同流（F10：命中的 op 不允许绘制类 ⇒ 不可摘）
+    residual_wm_pages: 只有这些页的正文流里另有同形水印（C2：部分页摘不干净）
+    wm_rotation: 水印旋转角（-45 复现真卷；0 = 水平，A5 倾斜闸负样本）
     """
     overlay_pages = list(range(pages)) if overlay_pages is None else overlay_pages
     doc = fitz.open()
@@ -172,7 +183,7 @@ def build_pdf(
                 _append_stream(doc, pxref, _new_stream(doc, wm_ops))
                 wm_ops = ""
             elif index in overlay_pages:
-                wm_ops = gfx.watermark_ops(rect)
+                wm_ops = gfx.watermark_ops(rect, rotation=wm_rotation)
                 if inline_wm:
                     _append_stream(doc, pxref, _new_stream(doc, wm_ops))
                     # 并入主流：把水印 op 追加到第一条内容流尾部（W1 不可分离）
@@ -200,7 +211,7 @@ def build_pdf(
                 ops = "q 0.1 g 60 300 460 300 re f 0.5 G 1 w 60 400 m 520 400 l S Q"
                 _append_stream(doc, pxref, _new_stream(doc, ops))
 
-            if body_residual_wm:
+            if body_residual_wm or (residual_wm_pages and index in residual_wm_pages):
                 ops = f"BT /Helv 9 Tf 1 0 0 1 72 260 Tm ({WM_TEXT}) Tj ET"
                 _append_stream(doc, pxref, _new_stream(doc, ops))
 
@@ -345,12 +356,13 @@ def test_concurrent_render_builds_one_copy(tmp_path, env):
     src = str(uploads / "concurrent.pdf")
     build_pdf(src, pages=3)
     builds_before = wm.stats()["build_calls"]
+    before_sha = sha256(src)
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = [f.result() for f in [pool.submit(wm.render_source, src) for _ in range(2)]]
     paths = {r[0] for r in results}
     assert len(paths) == 1 and None not in paths, results
     assert wm.stats()["build_calls"] - builds_before == 1
-    assert sha256(src) == sha256(src)
+    assert sha256(src) == before_sha, "并发构建不得触碰原件"
 
 
 def test_logs_never_leak_watermark_text(tmp_path, env, caplog):
@@ -383,8 +395,10 @@ def test_probe_on_already_stripped_copy_is_idempotent_noop(tmp_path, env):
     before_sha = sha256(copy_path)
     builds_before = wm.stats()["build_calls"]
 
-    again_code = wm.probe(copy_path, probes=3).code
-    assert again_code == "no_wm_spans", again_code
+    # 走**真实入口**（render_source），而不是只证明 probe 不写文件
+    again_path, again_status = wm.render_source(copy_path)
+    assert again_status["code"] == "no_wm_spans", again_status
+    assert again_path is None
     assert wm.stats()["build_calls"] == builds_before, "幂等重跑不得再构建副本"
     assert sha256(copy_path) == before_sha
 
@@ -490,10 +504,17 @@ def test_partial_overlay_volume_reports_per_page_accounting(tmp_path, env):
     src = str(uploads / "partial.pdf")
     build_pdf(src, pages=5, overlay_pages=[0, 2, 4])
     gt = gt_for(src)
+    original_streams = _page_streams(src)
     copy_path, status = wm.render_source(src)
     assert status["code"] == "hit", status
     assert status["pages_stripped"] == 3
     assert status["pages_skipped"] == 2
+    # A4：未摘页（1、3）的内容流必须逐字节不变——异构卷不得整卷重写。
+    copy_streams = _page_streams(copy_path)
+    for index in (1, 3):
+        assert copy_streams[index] == original_streams[index], f"未摘页 {index} 的内容流被改写"
+        a, b = _render_png(src, index), _render_png(copy_path, index)
+        assert ImageChops.difference(a, b).getbbox() is None, f"未摘页 {index} 像素有变化"
     doc = fitz.open(copy_path)
     try:
         for index in range(doc.page_count):
@@ -555,7 +576,7 @@ def test_negative_volume_runs_probe_but_never_builds(tmp_path, env):
     assert copy_path is None
     assert status["code"] == "no_wm_spans"
     assert status["source"] == "original"
-    assert status["duration_ms"] >= 0
+    assert status["pages_probed"] >= 1, "检测必须真的抽了页（不是直接跳过）"
     assert wm.stats()["probe_calls"] == 1
     assert wm.stats()["build_calls"] == 0
     assert sha256(src) == before
@@ -669,6 +690,15 @@ def test_copy_verify_failure_falls_back_to_original(tmp_path, env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _render_png_bytes(path: str, page_index: int = 0, dpi: int = 150) -> bytes:
+    doc = fitz.open(path)
+    try:
+        pix = doc.load_page(page_index).get_pixmap(dpi=dpi, alpha=False)
+        return pix.tobytes("png")
+    finally:
+        doc.close()
+
+
 def _render_png(path: str, page_index: int = 0, dpi: int = 150) -> Image.Image:
     doc = fitz.open(path)
     try:
@@ -732,6 +762,109 @@ def test_clean_render_changes_only_watermark_pixels(tmp_path, env):
     assert outside_delta == 0.0, f"非水印区必须逐像素不变（{outside_delta:.4f}）"
 
 
+def test_copy_dir_unwritable_fails_open_without_breaking_recognition(tmp_path, env, monkeypatch):
+    """C1（AC10）：副本目录不可写 ⇒ 显式 code=copy_dir_unwritable、回落原件、
+    **不得抛异常**（识别面默认开启，模块故障不能把正常卷的识别整卷打掉）。"""
+    uploads, outputs = env
+    src = str(uploads / "readonly-dir.pdf")
+    build_pdf(src, pages=3)
+    ro = outputs / "ro"
+    ro.mkdir()
+    monkeypatch.setattr(settings, "OUTPUT_DIR", str(ro), raising=False)
+    os.chmod(ro, 0o500)
+    try:
+        copy_path, status = wm.render_source(src)
+    finally:
+        os.chmod(ro, 0o700)
+    assert copy_path is None
+    assert status["code"] == "copy_dir_unwritable", status
+    assert status["source"] == "original"
+    assert status["failed"] is False, "目录只读不是「卷坏了」"
+    assert status["error"] and "/" not in status["error"].replace("<path>", ""), status
+
+
+def test_memo_rebuilds_when_copy_was_swept(tmp_path, env):
+    """C3：副本被 TTL/外部删除后，memo 不能继续声称 source=copy 并返回死路径。"""
+    uploads, _outputs = env
+    src = str(uploads / "swept.pdf")
+    build_pdf(src, pages=3)
+    first, status = wm.render_source(src)
+    assert status["source"] == "copy" and first and os.path.exists(first)
+    os.remove(first)
+    second, again = wm.render_source(src)
+    assert second and os.path.exists(second), again
+    assert again["code"] == "hit"
+
+
+def test_sweep_never_deletes_in_use_copy(tmp_path, env):
+    """C3：清理只针对「未在使用」的副本；memo 持有的副本即使很旧也不能删。"""
+    uploads, outputs = env
+    src = str(uploads / "in-use.pdf")
+    build_pdf(src, pages=3)
+    copy_path, status = wm.render_source(src)
+    assert status["source"] == "copy"
+    os.utime(copy_path, (0, 0))  # 极旧
+    stale = os.path.join(os.path.dirname(copy_path), "stale-orphan.pdf")
+    with open(stale, "wb") as fh:
+        fh.write(b"%PDF-1.4 stale")
+    os.utime(stale, (0, 0))
+    wm._sweep(os.path.dirname(copy_path), 24)
+    assert os.path.exists(copy_path), "在用的副本被误删"
+    assert not os.path.exists(stale), "过期孤儿副本应被清掉"
+
+
+def test_partial_residual_watermark_refuses_whole_volume(tmp_path, env):
+    """C2：只有一页摘不干净 ⇒ 整卷弃权，绝不产出「还带水印」的副本。"""
+    uploads, _outputs = env
+    src = str(uploads / "partial-residual.pdf")
+    build_pdf(src, pages=4, residual_wm_pages=[2])
+    copy_path, status = wm.render_source(src)
+    assert copy_path is None, status
+    assert status["code"] == "guard_refused_pages", status
+    assert status["pages_guard_refused"] == 1, status
+    assert status["source"] == "original"
+
+
+def test_horizontal_translucent_stream_is_not_stripped(tmp_path, env):
+    """A5：半透明但**水平**的文字流不是覆盖水印 ⇒ 倾斜闸必须挡住。"""
+    uploads, _outputs = env
+    src = str(uploads / "horizontal.pdf")
+    build_pdf(src, pages=3, wm_rotation=0.0)
+    outcome = wm.probe(src)
+    assert outcome.code in {"no_wm_spans", "no_isolated_overlay"}, outcome
+    copy_path, status = wm.render_source(src)
+    assert copy_path is None and status["source"] == "original"
+
+
+def test_two_overlay_pages_below_threshold_is_not_stripped(tmp_path, env):
+    """B2：5 页卷 2 页有水印 = MIN_HIT_PAGES-1 ⇒ 卷级弃权（阈值边界两侧都可判）。"""
+    path = str(tmp_path / "two-pages.pdf")
+    build_pdf(path, pages=5, overlay_pages=[0, 3])
+    outcome = wm.probe(path)
+    assert outcome.code == "below_min_pages", outcome
+    assert wm.render_source(path)[0] is None
+
+
+def test_pipeline_status_watermark_label_is_machine_readable(tmp_path, env):
+    """I2（AC2-2a）：`pipeline_status.watermark_overlay` 必须带 code/source，
+    让前端与门④ 能从识别结果里判「这一页吃的是副本还是原件」。"""
+    from app.services.vision_service import watermark_overlay_label
+
+    src = str(env[0] / "label.pdf")
+    build_pdf(src, pages=3)
+    clean_path, clean_status = wm.render_source(src)
+    assert clean_path
+    label = watermark_overlay_label(clean_status)
+    assert label["code"] == "hit" and label["source"] == "copy"
+    assert label["pages_stripped"] >= 1
+
+    original_label = watermark_overlay_label(None)
+    assert original_label["code"] == "not_run" and original_label["source"] == "original"
+
+    monkeypatch_disable = {"code": "disabled", "source": "original", "ran": False}
+    assert watermark_overlay_label(monkeypatch_disable)["code"] == "disabled"
+
+
 def test_preview_renders_original_not_clean_copy(tmp_path, env):
     uploads, _outputs = env
     src = str(uploads / "preview.pdf")
@@ -749,6 +882,11 @@ def test_preview_renders_original_not_clean_copy(tmp_path, env):
     assert clean_status["source"] == "copy"
     assert raw_status is None, "预览（allow_strip=False）不得触发水印处理"
     assert clean != raw, "净化副本与原件渲染必须不同"
+    # AC5a：预览必须是**原件的 150 dpi 渲染字节**（不能只是「与副本不同」）
+    direct = Image.open(io.BytesIO(_render_png_bytes(src, 1, dpi=150))).convert("RGB")
+    preview = Image.open(io.BytesIO(raw)).convert("RGB")
+    assert preview.size == direct.size, "预览尺寸与原件 150 dpi 不一致"
+    assert ImageChops.difference(preview, direct).getbbox() is None, "预览像素不是原件渲染"
 
 
 def test_delivery_keeps_watermark_by_default(tmp_path, env):
@@ -860,10 +998,16 @@ def test_legal_ascii_body_stream_survives_charset_guard(tmp_path, env):
     outcome = wm.probe(src)
     assert outcome.code == "hit", outcome
     copy_path, status = wm.render_source(src)
-    assert copy_path, status
+    # 卷级熔断（门⑥ C2）：只要有一页被守卫判定「摘不干净」，整卷不产出副本——
+    # 否则那页的正文会随「水印流」一起消失，而状态面还报 hit。
+    assert copy_path is None, status
+    assert status["code"] == "guard_refused_pages", status
+    assert status["source"] == "original"
+    assert status["pages_guard_refused"] == 1, status
     assert status["pages_stripped"] == 3, status
-    assert status["pages_skipped"] == 1, status
-    doc = fitz.open(copy_path)
+    assert wm.stats()["build_calls"] >= 1
+    # 原件仍然完整可读（正文流没有被真的删掉）
+    doc = fitz.open(src)
     try:
         text = doc.load_page(3).get_text()
     finally:

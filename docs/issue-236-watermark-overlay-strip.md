@@ -160,7 +160,7 @@
 ```
 
 - `source ∈ {copy, original}`：本页渲染实际吃了谁——**唯一机器可读证据**。
-- `code` 枚举见 3.1（含 `encrypted`）；阶段失败另有 `error_code ∈ {probe_error, copy_dir_unwritable, copy_verify_failed, build_error, capped_by_size, encrypted, not_pdf, not_applicable}`。
+- `code` 枚举见 3.1（含 `encrypted`/`guard_refused_pages`/`no_strippable_pages`/`copy_dir_unwritable`）；阶段失败另有 `error_code ∈ {probe_error, copy_dir_unwritable, copy_verify_failed, build_error, capped_by_size, encrypted, not_pdf, not_applicable}`。
 - 全局关闭时固定返回 `{"code":"disabled","source":"original","skipped":true,...}`（OFF 轮也可判定）。
 - 前端对 `pipeline_status` 通用遍历，新标签自动可见。
 
@@ -261,6 +261,7 @@ GT json 结构（每个夹具一份）：`{"page": 1, "orig_lines": n, "wm_lines
 - 7a F3（异构卷）：`code=hit`、`pages_stripped=3`、`pages_skipped=2`；无水印页副本渲染 `max|Δ|=0`（逐像素相等）；水印页按 5.2 掩码判定；全卷副本文本行集合 = GT `copy_lines`。
 - 7b F7（仅 1 页有水印）：`below_min_pages`、`build_calls` 增量 0、无副本（`MIN_HIT_PAGES` 语义）。
 - 7c F5（重叠残留）：逐页 `skip`（`pages_skipped=3`），副本文件不产出或产出但 GT 令牌命中 >0 ⇒ 后者 FAIL —— 判据写死：**不得产出「仍含水印令牌」的副本**。
+- 7c′ 部分页残留（门⑥ C2 补强）：卷内只要有一页被逐页守卫判定「摘不干净」（字符闸/残余令牌/结构异常任一），**整卷熔断**：`code=guard_refused_pages`、`source=original`、`pages_guard_refused≥1`、无副本文件。理由：产出「大部分页干净、个别页还带水印」的副本会让下游 OCR/NER 继续吃水印，而状态面却是绿的。
 - 7d F4（双水印流）：`no_isolated_overlay`，不产出副本（候选不唯一必须弃权，不许「都摘」）。
 - 7e F6（双合格流）：只摘 B_wm；副本页文本 = GT 正文（B_body 全保留），水印令牌 0。
 
@@ -285,14 +286,17 @@ GT json 结构（每个夹具一份）：`{"page": 1, "orig_lines": n, "wm_lines
 | 输入 | 期望 `error_code` | 期望任务级行为 |
 |---|---|---|
 | 损坏 PDF | `probe_error` | 与基线一致（基线本来就失败的识别失败照旧；水印阶段 `failed=true`） |
-| 加密 PDF | `not_applicable` | 同上（基线 `open_pdf_checked` 拒绝/走既有加密路径） |
+| 加密 PDF | `encrypted`（实现码；`failed=false`，属显式跳过） | 同上（基线 `open_pdf_checked` 拒绝/走既有加密路径） |
 | 0 页 PDF | `not_applicable` | 同上 |
 | 非 PDF（docx/图片） | `not_pdf` | 同上（该文件本就不走 PDF 路径） |
 | 超大卷（> `MAX_FILE_MB`） | `capped_by_size` | 照常识别（原件） |
 | 副本目录不可写 | `copy_dir_unwritable` | 照常识别（原件），任务**成功** |
 | 落盘自检失败（注入：让 `save` 后自检读到页数不符，或直接替换 `xref` 断页数） | `copy_verify_failed` | 照常识别（原件），任务**成功** |
-- 通用判据：`source=original`、原件 sha256 不变、`failed=true` 且 `error_code` 属上表枚举；有效 PDF+可恢复故障（后两行）要求任务级 `COMPLETED` 且 `recognition.failed_pages` 不含该页；解析类故障要求任务级与基线逐项相同（用 OFF 轮同输入复跑做基线对照）。
+- 码名口径（门⑥ I1 对齐实现）：`probe_error` 对应实现里的 `code="error"`（阶段级异常统一码），`not_pdf`/`not_applicable`/`encrypted`/`copy_dir_unwritable`/`copy_verify_failed`/`guard_refused_pages`/`no_strippable_pages` 为实现直接产出的码。
+- 通用判据：`source=original`、原件 sha256 不变、`failed` 与「真失败」一致（后两行 + `capped_by_size`/`encrypted` 为 `failed=false` 的显式跳过），且码属上表枚举；有效 PDF+可恢复故障（后两行）要求任务级 `COMPLETED` 且 `recognition.failed_pages` 不含该页；解析类故障要求任务级与基线逐项相同（用 OFF 轮同输入复跑做基线对照）。
 - 红性：异常上抛 ⇒ 后两行任务级 FAIL；错误码写死/伪标（如一律 `not_applicable`）⇒ 表驱动映射 FAIL。
+
+- 显式边界（门⑥ B3）：页数 < `MIN_HIT_PAGES`(3) 的卷（含单页/两页卷）一律 `below_min_pages` 弃权——卷级抽样检测的样本不足，宁可不摘。该边界已由 `test_two_overlay_pages_below_threshold_is_not_stripped` 与 F7 双侧钉住。
 
 ### AC11 性能与「一次/卷」（云实例）
 - 判据：① 首次命中该卷 `duration_ms` < **1000 ms**（锚定 681 ms，单线程、warm page cache）；② `probe_calls`/`build_calls` 各增量 **1**、`pages_probed ≥ 3`、`pages_hit == pages_probed`（R1）；③ 同卷第二次渲染 `duration_ms ≤ 5 ms` 且两计数器不增。
@@ -363,7 +367,7 @@ GT json 结构（每个夹具一份）：`{"page": 1, "orig_lines": n, "wm_lines
 | `backend/app/services/file_parser.py` | `get_pdf_page_image(..., allow_strip=True)`、clean/raw 变体缓存键、6 元组键类型同步 |
 | `backend/app/services/vision_service.py` | `pipeline_status["watermark_overlay"]`、预览 `allow_strip=False`、`_delivery_source()` + `_redact_pdf(source_path=)` |
 | `backend/app/api/files.py` | 预览端点 `allow_strip=False` |
-| `backend/tests/test_watermark_overlay_strip.py` | 新增 29 例（合成夹具手写内容流，零 testdata 依赖；含 F9/F10 两条变异可红夹具、幂等/未摘页流逐字节不变/日志零 PII/加密卷显式跳过/非水印区逐像素不变/并发单副本六条门⑥ 补强判据） |
+| `backend/tests/test_watermark_overlay_strip.py` | 新增 36 例（合成夹具手写内容流，零 testdata 依赖；含 F9/F10 两条变异可红夹具、幂等/未摘页流逐字节不变+未摘页像素零差/日志零 PII/加密卷显式跳过/非水印区逐像素不变/并发单副本/副本目录不可写 fail-open/部分页残留整卷熔断/水平流不误杀/阈值 N−1/pipeline_status 标签 十一条门⑥ 补强判据） |
 | `CHANGELOG.md` | 本轮登记 |
 
 ### 8.2 实现相对设计的偏离（均已在本轮固化）

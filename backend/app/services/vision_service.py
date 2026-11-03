@@ -255,6 +255,38 @@ async def prime_pdf_text_layer_sparse_probe(
     return await probe_once()
 
 
+_WM_NOT_APPLICABLE = {
+    "ran": False,
+    "skipped": True,
+    "failed": False,
+    "region_count": 0,
+    "error": None,
+    "duration_ms": 0,
+    "code": "not_applicable",
+    "source": "original",
+}
+
+
+def watermark_overlay_label(status: dict | None) -> dict:
+    """把水印模块的卷级状态折成 pipeline_status 的标签值（AC2-2a 的唯一机读证据）。
+
+    * 有状态（含 disabled/各类弃权码）⇒ 原样透出，前端按 code/source 判读；
+    * 没有状态（非 PDF / 未走取图口）⇒ `code=not_run`，同样显式可查。
+    """
+    if isinstance(status, dict) and status:
+        return dict(status)
+    return {
+        "ran": False,
+        "skipped": True,
+        "failed": False,
+        "region_count": 0,
+        "error": None,
+        "duration_ms": 0,
+        "code": "not_run",
+        "source": "original",
+    }
+
+
 class VisionService:
     """Vision recognition orchestration."""
 
@@ -294,16 +326,7 @@ class VisionService:
             nonlocal image_data
             if file_type == FileType.IMAGE:
                 image_data = await self.file_parser.read_image(file_path)
-                pipeline_status["watermark_overlay"] = {
-                    "ran": False,
-                    "skipped": True,
-                    "failed": False,
-                    "region_count": 0,
-                    "error": None,
-                    "duration_ms": 0,
-                    "code": "not_applicable",
-                    "source": "original",
-                }
+                pipeline_status["watermark_overlay"] = dict(_WM_NOT_APPLICABLE)
                 return image_data
             render_start = time.perf_counter()
             image_data = await self.file_parser.get_pdf_page_image(file_path, page)
@@ -311,13 +334,9 @@ class VisionService:
             duration_ms["pdf_render_cache_hit"] = bool(
                 getattr(self.file_parser, "last_pdf_page_image_cache_hit", False)
             )
-            wm_status = getattr(self.file_parser, "last_watermark_overlay_status", None)
-            if isinstance(wm_status, dict) and wm_status:
-                pipeline_status["watermark_overlay"] = dict(wm_status)
-            else:
-                pipeline_status["watermark_overlay"].update(
-                    {"ran": False, "skipped": True, "duration_ms": 0, "code": "not_run"}
-                )
+            pipeline_status["watermark_overlay"] = watermark_overlay_label(
+                getattr(self.file_parser, "last_watermark_overlay_status", None)
+            )
             return image_data
 
         async def get_image_data() -> bytes:
@@ -389,16 +408,7 @@ class VisionService:
             },
             # Issue#236：识别取图用的是「水印净化副本」还是原件。IMAGE 走
             # not_applicable；PDF 未开启预处理时由 file_parser 返回 disabled。
-            "watermark_overlay": {
-                "ran": False,
-                "skipped": True,
-                "failed": False,
-                "region_count": 0,
-                "error": None,
-                "duration_ms": 0,
-                "code": "not_applicable",
-                "source": "original",
-            },
+            "watermark_overlay": dict(_WM_NOT_APPLICABLE),
         }
         self.last_pipeline_status = pipeline_status
         self.last_duration_ms = duration_ms
