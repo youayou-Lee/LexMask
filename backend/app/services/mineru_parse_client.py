@@ -130,7 +130,10 @@ class MineruParseClient:
         return task_id
 
     async def poll(self, task_id: str) -> dict:
-        """查询任务状态，归一化为 {"state", "done", "total"}。
+        """查询任务状态，归一化为 {"state", "done", "total", "warnings", "error"}。
+
+        warnings/error 为 sidecar 任务级信息（error 仅 failed 终态有值，warning
+        恒 list）；旧 sidecar 无这两个键时分别为空 list / None（向后兼容）。
 
         线上无进度字段（Task 0 §8.2），done/total 恒 0，页计数由管线层本地负责；
         state 映射：processing→running，completed→done，failed→failed，未知→running。
