@@ -363,7 +363,7 @@ GT json 结构（每个夹具一份）：`{"page": 1, "orig_lines": n, "wm_lines
 | `backend/app/services/file_parser.py` | `get_pdf_page_image(..., allow_strip=True)`、clean/raw 变体缓存键、6 元组键类型同步 |
 | `backend/app/services/vision_service.py` | `pipeline_status["watermark_overlay"]`、预览 `allow_strip=False`、`_delivery_source()` + `_redact_pdf(source_path=)` |
 | `backend/app/api/files.py` | 预览端点 `allow_strip=False` |
-| `backend/tests/test_watermark_overlay_strip.py` | 新增 21 例（合成夹具手写内容流，零 testdata 依赖） |
+| `backend/tests/test_watermark_overlay_strip.py` | 新增 24 例（合成夹具手写内容流，零 testdata 依赖；含 F9/F10 两条变异可红夹具） |
 | `CHANGELOG.md` | 本轮登记 |
 
 ### 8.2 实现相对设计的偏离（均已在本轮固化）
@@ -376,6 +376,54 @@ GT json 结构（每个夹具一份）：`{"page": 1, "orig_lines": n, "wm_lines
 
 ### 8.3 本地已跑通的判据（门③ 本地可判部分）
 
-自动化：`pytest backend/tests/test_watermark_overlay_strip.py` → **21 passed / 2.0s**，`ruff check` 干净。覆盖 AC1（命中+栅格保全+原件 sha）、AC4（W1 并入主流 / 合法不可见文字层 / 矢量表格三支暖负样本）、AC5（预览原件视图 / 交付默认保留 / 交付反向支路，像素掩码相对判据）、AC6（冷负样本零文件零构建 + 检测执行证据）、AC7（F4 双流歧义 / F5 残余弃权且不出副本 / F6 合法流不被摘 / F7 单页命中弃权 / F3 异构卷逐页记账）、AC9（0700/0600、页数与 rect、TTL 实清、关闭不探测）、AC10（损坏 / 超限 / 自检失败 fail-open 且不留半成品）、AC11（memo：探测 1 次、构建 1 次、二次调用 0 增量）。
+自动化：`pytest backend/tests/test_watermark_overlay_strip.py` → **24 passed / 2.1s**，`ruff check` 干净。覆盖 AC1（命中+栅格保全+原件 sha）、AC4（W1 并入主流 / 合法不可见文字层 / 矢量表格三支暖负样本）、AC5（预览原件视图 / 交付默认保留 / 交付反向支路，像素掩码相对判据）、AC6（冷负样本零文件零构建 + 检测执行证据）、AC7（F4 双流歧义 / F5 残余弃权且不出副本 / F6 合法流不被摘 / F7 单页命中弃权 / F3 异构卷逐页记账 / **F9 合法 ASCII 正文流被字符闸挡住** / **F10 水印与绘制 op 同流判不可摘**）、AC9（0700/0600、页数与 rect、TTL 实清、关闭不探测）、AC10（损坏 / 超限 / 自检失败 fail-open 且不留半成品）、AC11（memo：探测 1 次、构建 1 次、二次调用 0 增量）。
 
-待办（本轮未做，门④/⑤/⑥ 范畴）：真卷 R1 云实例整卷 E2E 与 AC2/AC3/AC12/AC13；testdata canary（F1–F7/W1–W4/C1–C3）与 `-gt.json` 由私有生成器产出；变异验证 10/10。
+**AC12 变异验证：10/10 KILLED**（每条变异都让具体用例转红，脚本落 `/tmp/mutate_i236.py` 形态）：
+
+| # | 变异（唯一改动） | 转红用例 |
+|---|---|---|
+| M1 | `_is_overlay_span` 恒 `False`（指纹判据失效） | `test_build_strips_watermark_keeps_raster_and_original` 等 17 例 |
+| M2 | op 白名单整体失效（`bad = False`） | `test_painted_stream_with_watermark_is_never_stripped`（F10） |
+| M3 | 残余水印令牌守卫失效 | `test_residual_watermark_in_body_textlayer_causes_skip` |
+| M4 | 逐页字符闸失效（删什么都放过） | `test_legal_ascii_body_stream_survives_charset_guard`（F9） |
+| M5 | `min_hit_pages` 门槛失效 | `test_double_watermark_streams_are_ambiguous` / `test_single_overlay_page_is_below_min_pages` / `test_negative_volume_runs_probe_but_never_builds` |
+| M6 | 构建为 0 页时不熔断（仍落副本） | `test_residual_watermark_in_body_textlayer_causes_skip` |
+| M7 | 关闭开关仍探测/构建 | `test_disabled_switch_does_not_probe` |
+| M8 | 构建错误不落 `failed`（静默回落） | `test_copy_verify_failure_falls_back_to_original` |
+| M9 | 交付开关失效（总用副本） | `test_delivery_keeps_watermark_by_default` |
+| M10 | 副本 TTL 清理失效 | `test_copy_ttl_sweeps_stale_files` |
+
+变异过程暴露的两条实现事实（都不是 bug，写清以免后人误读）：
+- `_PAINT_OPS` 属于**第二道冗余防线**：绘制类 op 本来就不在 `_SAFE_OPS` 白名单里，所以只删「`op in _PAINT_OPS`」这半条判据不会让任何用例转红（等价变异）；真正承重的是整条白名单，故 M2 定为「白名单整体失效」。
+- 字符闸（`removed` 的行必须全由水印字符组成）此前**没有任何用例单独依赖它**（残余令牌守卫会把同场景兜住）；F9 用「探测页有水印、正文页只有 ASCII 正文流」的异构卷把它单独钉住。
+
+## 9. 门④ 端到端实测（2026-11-04，本地 docker 栈整卷）
+
+环境口径：云实例不可用（`scnet-main` 连接被拒、`neo001-lan-wsl` 无路由），门④ 在**本机 docker compose 栈**（项目 `lexmask`，含 ocr/ner/frontend/backend/mineru，全部 healthy）执行；backend 镜像按本分支源码重建（`DOCKER_BUILDKIT=0`，buildx 在本机有 activity 目录权限问题）。逐条对应 §5.1 环境口径表：CPU 侧预处理（探针/摘除）本机 docker 可判；OCR/NER 走容器内既有服务（DCU 侧栈非本次改动，不涉及 GPU 栈差异）。
+
+### 9.1 真卷（第四卷.pdf，149 页，族 A）
+
+| 判据 | 实测 | 结论 |
+|---|---|---|
+| 上传未改原件 | 容器内 `uploads/44d544cc….pdf` sha256 = `336e449a…21fc`，与本地原件逐字节相同 | PASS（AC3） |
+| 识别任务终态 | job `af6d8bb4…` → `awaiting_review`，`page_count=149`，`failed_pages=None` | PASS（AC9 任务级） |
+| 每页阶段状态 | 149/149 页 `pipeline_status.watermark_overlay = {code:"hit", source:"copy", pages_probed:5, pages_hit:5, pages_stripped:149, pages_skipped:0, duration_ms:660}` | PASS（AC1/AC2） |
+| 副本落盘 | `outputs/.watermark_overlay/f0c35717….pdf`，25,798,037 B，`0600`，目录 `0700`，sha256 ≠ 原件 | PASS（AC1/AC9） |
+| 副本文本 | 原件 90,624 字符 → 副本 47,253；水印令牌「林映峰」1,788 次 → **0**；空白页 16；页 132 正文 1,151 → 860 字符 | PASS（AC2-2c） |
+| OCR/NER 残留 | `bounding_boxes` 149 页共 3,499 框；`林映峰`/`14501201410363675`/`钦州市院` 命中 **0**；`钦州` 61 次全为正文（钦州港海关等） | PASS（AC2-2b） |
+| #203 闸行为不变 | 149/149 页 `text_layer_doc.fallback_reason_code = "repeated_fragment_coverage"`（coverage 0.376 > 0.15）⇒ 建链仍弃用、走逐页 OCR，与今日路由一致 | PASS（AC2-d） |
+| 预览面原件视图 | `GET /files/{id}/page-image?page=1` → 4,493,427 B，与容器内原件 150dpi render 同尺寸；净化副本 render 为 4,162,084 B | PASS（AC5a） |
+| 卷级性能 | 探针+构建合计 **660 ms**（149 页），远低于 AC11 的 1s | PASS（AC11） |
+| 未命中卷 | 上传 `文本型-叶辉审查报告.pdf`（78 页）→ `page-image` 200 / 240,682 B；副本目录文件数处理前后 **1 → 1**（未新建） | PASS（AC6） |
+
+### 9.2 回归
+
+- 分支全量 `pytest tests/ -q -p no:randomly`：**18 failed / 2,681 passed / 54 skipped**；基线（未改动 `LexMask/backend`，preview `3dba572`）：**18 failed / 2,673 passed**。
+- 失败集合逐条 diff：**branch-only 0 / baseline-only 0**——全部为容器 `/dev/shm` 受限导致的 `multiprocessing/synchronize.py:57 PermissionError`（既有环境性失败）；基线多出的 13 例来自主检出上未提交的 `tests/test_issue238_progress_reporting.py`。⇒ **零回归**。
+
+### 9.3 诚实边界（云实例恢复后仍需补的项）
+
+1. 本次门④ 在**本机 docker 栈**完成，不是 DCU 云实例；`backend` 镜像按分支源码重建，OCR/NER 服务沿用既有镜像（本次未改其代码）。云实例恢复后建议按 §5.1 表重跑一遍整卷，作为「云侧同源」证据。
+2. `stats()` 是**进程内**计数器，`docker exec` 起的是新进程，读到 0 属正常；本次以 `pipeline_status` 与副本文件为判据。
+3. 预览端点与识别共用 `FileParser` 实例的页图缓存，clean/raw 变体键已隔离；本次以字节尺寸对照取证（未做逐像素 diff，因为预览请求与渲染请求是两条 HTTP 路径，jpg/png 编码不同）。
+4. 交付面（ZIP/PDF）本次只做了自动化像素判据（默认保留）；真卷「交付件仍带水印」未做人工目检，留待门⑤ 验收。

@@ -130,6 +130,8 @@ def build_pdf(
     table_stream: bool = False,
     body_residual_wm: bool = False,
     legal_body_stream: bool = False,
+    legal_ascii_pages: list[int] | None = None,
+    paint_plus_wm_stream: bool = False,
     opacity: float = 0.25,
 ) -> None:
     """合成夹具。
@@ -141,6 +143,9 @@ def build_pdf(
     table_stream: 额外矢量表格流（W3，命中 op 白名单拒绝）
     body_residual_wm: 水印文字也写进正文流（F5，摘 B 后仍残留）
     legal_body_stream: 额外合法不可见正文流（F6，与 B_wm 并列）
+    legal_ascii_pages: 这些页额外挂一条合法 ASCII 正文流、且不挂水印流
+        （F9：只有「删掉的不全是水印字符」这条守卫能挡住误删正文）
+    paint_plus_wm_stream: 水印与绘制 op 同流（F10：命中的 op 不允许绘制类 ⇒ 不可摘）
     """
     overlay_pages = list(range(pages)) if overlay_pages is None else overlay_pages
     doc = fitz.open()
@@ -158,7 +163,13 @@ def build_pdf(
             if not _contents(doc, pxref):
                 _append_stream(doc, pxref, _new_stream(doc, ""))
 
-            if index in overlay_pages:
+            if index in overlay_pages and paint_plus_wm_stream:
+                # F10：水印与「填色矩形」绘制 op 同处一条流。摘掉它会把栅格/底图一起抹掉，
+                # 因此 op 白名单必须把绘制类 op 判为不可摘（只捞文字不变是不够的）。
+                wm_ops = "q 0.9 0.9 0.9 rg 0 0 595 842 re f Q\n" + gfx.watermark_ops(rect)
+                _append_stream(doc, pxref, _new_stream(doc, wm_ops))
+                wm_ops = ""
+            elif index in overlay_pages:
                 wm_ops = gfx.watermark_ops(rect)
                 if inline_wm:
                     _append_stream(doc, pxref, _new_stream(doc, wm_ops))
@@ -170,6 +181,13 @@ def build_pdf(
                 else:
                     for _ in range(wm_streams):
                         _append_stream(doc, pxref, _new_stream(doc, wm_ops))
+
+            if legal_ascii_pages and index in legal_ascii_pages:
+                # F9：合法正文全部由 ASCII 组成（且不属于水印字符集），三段 BT 满足最小 BT 门槛。
+                ops = ("BT /Helv 9 Tf 1 0 0 1 72 640 Tm (SAMPLE BODY ONE) Tj ET\n"
+                       "BT /Helv 9 Tf 1 0 0 1 72 620 Tm (SAMPLE BODY TWO) Tj ET\n"
+                       "BT /Helv 9 Tf 1 0 0 1 72 600 Tm (SAMPLE BODY THREE) Tj ET")
+                _append_stream(doc, pxref, _new_stream(doc, ops))
 
             if legal_body_stream:
                 ops = ("BT /Helv 9 Tf 3 Tr 1 0 0 1 72 700 Tm "
@@ -685,3 +703,50 @@ def test_shipped_switch_defaults_follow_decision():
     assert shipped.WATERMARK_OVERLAY_PROBE_PAGES == 5
     assert shipped.WATERMARK_OVERLAY_MIN_HIT_PAGES == 3
     assert shipped.WATERMARK_OVERLAY_COPY_TTL_HOURS == 24
+
+# ---------------------------------------------------------------------------
+# AC7 fail-closed 夹具补强：M2/M4 变异可红（op 白名单的绘制类判据 + 字符闸）
+# ---------------------------------------------------------------------------
+
+
+def test_painted_stream_with_watermark_is_never_stripped(tmp_path, env):
+    """F10：水印 op 与绘制 op（填色）同流 ⇒ 只能判「无独立水印流」，不得摘除。
+
+    摘流式差分 oracle 只看文字 span 是否恢复，绘制 op 被一起摘掉它看不出来；
+    必须靠 op 白名单把绘制类 op 判死（AC1 栅格/底图保全的硬要求）。
+    """
+    uploads, _outputs = env
+    src = str(uploads / "painted-watermark.pdf")
+    build_pdf(src, pages=3, paint_plus_wm_stream=True)
+    outcome = wm.probe(src)
+    assert outcome.code == "no_isolated_overlay", outcome
+    before = _render_png(src, 0)
+    copy_path, status = wm.render_source(src)
+    assert copy_path is None
+    assert status["source"] == "original"
+    assert wm.stats()["build_calls"] == 0
+    assert _render_png(src, 0) == before, "原件渲染必须逐字节不变（底图不被抹）"
+
+
+def test_legal_ascii_body_stream_survives_charset_guard(tmp_path, env):
+    """F9：异构卷——探测页有水印，正文页只有合法 ASCII 正文流。
+
+    摘这条正文流之后「没有凭空多出行、确实删掉了行、也没有残留水印令牌」，
+    唯一能挡住它的是「删掉的行必须全由水印字符组成」这条闸（AC7 夹具）。
+    """
+    uploads, _outputs = env
+    src = str(uploads / "heterogeneous-ascii.pdf")
+    build_pdf(src, pages=4, overlay_pages=[0, 1, 2], legal_ascii_pages=[3])
+    outcome = wm.probe(src)
+    assert outcome.code == "hit", outcome
+    copy_path, status = wm.render_source(src)
+    assert copy_path, status
+    assert status["pages_stripped"] == 3, status
+    assert status["pages_skipped"] == 1, status
+    doc = fitz.open(copy_path)
+    try:
+        text = doc.load_page(3).get_text()
+    finally:
+        doc.close()
+    assert "SAMPLE BODY ONE" in text
+    assert "SAMPLE BODY THREE" in text
