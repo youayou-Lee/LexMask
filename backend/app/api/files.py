@@ -39,6 +39,7 @@ from app.core.audit import audit_log
 from app.core.auth import require_auth
 from app.core.config import settings
 from app.core.errors import AppError
+from app.core.file_validation import FileContentMismatchError
 from app.core.idempotency import check_idempotency, save_idempotency
 from app.core.rate_limit import RateLimiter, make_user_throttle
 from app.models.errors import NotFoundError
@@ -543,6 +544,14 @@ async def upload_file(
         response, jid = response_and_jid
     except ValueError as exc:
         await _fms.rollback_upload(file_id, file_path)
+        if isinstance(exc, FileContentMismatchError):
+            # #232 I-1：拒收信封带机读码与结构化 detail，前端按码出本地化文案
+            raise AppError(
+                status_code=400,
+                error_code=exc.error_code,
+                message=str(exc),
+                detail={"detected_format": exc.detected_format, "extension": exc.extension},
+            )
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception:
         logger.exception("Failed to register uploaded file metadata, rolling back %s", file_id)

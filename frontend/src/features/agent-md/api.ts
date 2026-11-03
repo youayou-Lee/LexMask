@@ -2,6 +2,7 @@
 
 import { authFetch, getCsrfToken } from '@/services/api-client';
 import { t } from '@/i18n';
+import { messageFromEnvelope } from '@/utils/localizeError';
 import type { Decision, MappingItemDto } from './lib/agent-md-flow';
 
 /** Issue#75 /agent-md 后端 HTTP 契约的前端 API client（fetch 走 authFetch 自动带 cookie+CSRF）。 */
@@ -52,16 +53,18 @@ export interface ConfirmResult {
 /**
  * 读取后端错误信封（AppError：{error_code, message, detail, request_id}）里的
  * 用户可读文案，取不到时回退 i18n key（key 由页面任务注册；缺 key 时 t() 原样返回 key）。
- * 与 playground 同款实现：取第一个**非空字符串**字段（2026-11-03 修正——旧
- * `detail ?? message` 被空对象 detail 短路，message 里的具体原因永远取不到）、
- * 响应体非 JSON 时走回退。
+ * 与 playground 同款实现；#232 起统一走 messageFromEnvelope——已知码出本地化文案，
+ * 未知码保持取第一个非空字符串字段的既有行为。
  */
 async function responseErrorMessage(res: Response, fallbackKey: string): Promise<string> {
   try {
-    const data = (await res.json()) as { detail?: unknown; message?: unknown; error?: unknown };
-    for (const candidate of [data.detail, data.message, data.error]) {
-      if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
-    }
+    const data = (await res.json()) as {
+      error_code?: unknown;
+      detail?: unknown;
+      message?: unknown;
+      error?: unknown;
+    };
+    return messageFromEnvelope(data, fallbackKey);
   } catch {
     // Keep the localized fallback when the response body is not JSON.
   }

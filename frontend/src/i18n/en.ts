@@ -1484,6 +1484,25 @@ const enOverrides: Record<string, string> = {
   'common.networkError': 'Network connection failed. Check that the service is running.',
   'common.pdfEncrypted': 'This PDF is encrypted. Enter its password to continue.',
   'common.pdfWrongPassword': 'Incorrect password. Please try again.',
+  // #232 I-1: localized rejection copy keyed off the machine-readable code
+  // (the zh template mirrors the backend spoof_reject_message verbatim).
+  'common.fileContentMismatch':
+    'The file content does not match its extension. The file may have been corrupted or renamed in transit; re-export or save it in its original format and upload again.',
+  'common.fileContentMismatchWithFormat':
+    'The file content is actually {format}, which does not match the extension {ext}. The file may have been corrupted or renamed in transit; re-export or save it in its original format and upload again.',
+  'common.formatPdf': 'a PDF document',
+  'common.formatZip': 'a zip container (docx or another newer Office format)',
+  'common.formatOle': 'a legacy Word/RTF compound document (OLE)',
+  'common.formatRtf': 'an RTF document',
+  'common.formatJpeg': 'a JPEG image',
+  'common.formatPng': 'a PNG image',
+  'common.formatGif': 'a GIF image',
+  'common.formatBmp': 'a BMP image',
+  'common.formatWebp': 'a WebP image',
+  'common.formatTiff': 'a TIFF image',
+  'common.formatText': 'plain text',
+  'common.formatBinary': 'an unknown binary format',
+  'common.formatUnknown': 'an unknown format',
   'common.downloadFailed': 'Download failed.',
   'common.downloadFailedWithStatus': 'Download failed ({status}).',
   'common.loadFailed': 'Failed to load the file.',

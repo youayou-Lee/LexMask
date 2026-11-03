@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## 2026-11-04
+
+### 修正（Issue#232/#237）错误信封机读化：拒收文案按码本地化 + 下载路径空 detail 出 "{}" + healthcheck 敲错门牌
+
+- **为什么**：#229 门⑥两处挂账（#232）——①I-1：伪造扩展名拒收文案只有中文自由文本、无机读码，en locale 前端按既有决策只能显示通用兜底，「实际格式+可操作指引」只对 zh 生效；②M-3：下载/批量打包路径（`api-client.ts` fetchBlob、`api.ts` downloadArchive）仍是 `detail ?? message` 旧短路，空 `detail:{}` 给用户看 "{}"。#237：frontend healthcheck 的 `wget localhost:8080` 先解析 `::1` 而 nginx 只监听 IPv4 ⇒ 本地所有栈 frontend 容器常年误显 unhealthy（服务本身正常）。
+- **改了什么**：
+  1. 后端：新增 `FileContentMismatchError`（`ValueError` 子类，既有回滚路径不动）与 `detect_format_code` 机读格式码；`process_upload` 拒收升格为该异常，单文件/断点续传两路由按 `isinstance` 出 `AppError` 信封（`error_code=FILE_CONTENT_MISMATCH` + `detail={detected_format, extension}`），中文 message 逐字不变；批量入库逐件明细附同款机读字段。
+  2. 前端：取错统一收口 `utils/errorEnvelope.ts`（`firstMessageText`/`errorEnvelopeMessage`/`errorCodeFromEnvelope`，playground、agent-md、下载路径全站一个具名函数，评审 M-4 落地）；`ApiError` 增 `detail` 字段；`localizeError` 增 `messageFromEnvelope`（已知码先映射：`FILE_CONTENT_MISMATCH` 按机读 detail 组合本地化文案，format 名走词包 13 键 × zh/en；未知码保持原行为）。
+  3. #237：`docker-compose.yml` 与 `frontend/Dockerfile` healthcheck 改 `http://127.0.0.1:8080/`。
+- **测试**：后端 +18 例（码表 12 形态 + unknown、单文件/断点续传信封两路径、常量契约锚、批量逐件明细），全量 2676 passed 零回归；前端 +15 例（envelope 取错 9、fetchBlob 信封 3、FILE_CONTENT_MISMATCH 组合/兜底/en 6），vitest 334 + tsc×2 + build 全绿；i18n parity 契约测试守键位。
+- **边界**：`_MAGIC_TYPE_NAMES` 标签失准（RIFF≠仅 WebP 等，#228 评审 M-1）不在本修；批量入库「不支持的类型/文件过大」仍为纯文本 reason（无机读码，触发时再议）；en 词包懒加载，en 组合文案由 parity 契约测试保障。
+
 ## 2026-11-03
 
 ### 修正（Issue#217）LibreOffice 烘焙进 backend 镜像——废弃宿主 soffice 挂载

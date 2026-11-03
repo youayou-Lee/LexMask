@@ -32,7 +32,7 @@ RUN adduser -D -u 1001 appuser && \
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget -qO /dev/null http://localhost:8080/ || exit 1
+    CMD wget -qO /dev/null http://127.0.0.1:8080/ || exit 1
 
 USER appuser
 
