@@ -51,9 +51,9 @@ def _body_chars(segs: list[Seg]) -> int:
     """正文量口径：只数真正进 NER 的 text/table 段（哨兵/OCR 占位不计）。"""
     return sum(len(s.text) for s in segs if s.source in ("text", "table"))
 
-
-
 logger = logging.getLogger(__name__)
+
+
 class AgentMdPipelineService:
     """喂Agent模式管线：解析（MinerU）→ NER → 映射草稿 → 确认 → 出稿落盘。"""
 

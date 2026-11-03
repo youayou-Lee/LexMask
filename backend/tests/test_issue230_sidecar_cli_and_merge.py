@@ -328,3 +328,47 @@ def test_invalid_wait_env_fails_task_readably(sidecar_mod, tmp_path, monkeypatch
     assert task["status"] == "failed"
     assert "MINERU_SIDECAR_WAIT" in (task.get("error") or "")
     assert "could not convert" not in (task.get("error") or "")
+
+
+def test_disambiguated_name_colliding_with_real_stem_no_overwrite(sidecar_mod, tmp_path):
+    # 门⑥ r2 M1：消歧名 a_1 恰撞上另一输入的真实 stem（a_1.rtf）⇒ 必须继续
+    # 递增到 a_2，第 2/3 输入的 md 与 mineru4 json 不许静默互相覆盖
+    args_file = tmp_path / "cli-args.txt"
+    _make_fake_mineru_input_aware(tmp_path, args_file)
+    _make_doclib(tmp_path / "mineru-home", [_win([0], page_count=1)])
+    files = []
+    for fn in ("a.pdf", "a.doc", "a_1.rtf"):
+        f = tmp_path / fn
+        f.write_bytes(b"X" + fn.encode())
+        files.append(f)
+    sidecar_mod._tasks["t8"] = {"status": "pending", "progress": 0,
+                                "error": None, "warnings": [],
+                                "files": [f.name for f in files]}
+    sidecar_mod._run_mineru_sync("t8", files)
+    task = sidecar_mod._tasks["t8"]
+    assert task["status"] == "completed", task.get("error")
+    import zipfile
+
+    with zipfile.ZipFile(sidecar_mod._task_zip("t8")) as zf:
+        names = sorted(zf.namelist())
+        mds = [n for n in names if n.endswith(".md")]
+        js = [n for n in names if n.startswith("mineru4_")]
+        assert len(mds) == 3 and len(set(mds)) == 3, names
+        assert len(js) == 3 and len(set(js)) == 3, names
+        body = {n: zf.read(n).decode("utf-8", "replace") for n in mds}
+        assert len(set(body.values())) == 3
+
+
+def test_invalid_wait_env_inf_also_named(sidecar_mod, tmp_path, monkeypatch):
+    # 门⑥ r2 M2：MINERU_SIDECAR_WAIT=inf 走 OverflowError，同样要点名变量
+    monkeypatch.setenv("MINERU_SIDECAR_WAIT", "inf")
+    args_file = tmp_path / "cli-args.txt"
+    _make_fake_mineru(tmp_path, args_file)
+    inp = tmp_path / "in.pdf"
+    inp.write_bytes(b"%PDF-fake")
+    sidecar_mod._tasks["t9"] = {"status": "pending", "progress": 0,
+                                "error": None, "warnings": [], "files": ["in.pdf"]}
+    sidecar_mod._run_mineru_sync("t9", [inp])
+    task = sidecar_mod._tasks["t9"]
+    assert task["status"] == "failed"
+    assert "MINERU_SIDECAR_WAIT" in (task.get("error") or "")

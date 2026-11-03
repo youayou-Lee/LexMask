@@ -22,7 +22,8 @@
 
 - **为什么**：PR #234 门⑥独立评审的 4 条 Minor 挂账，用户裁定全部当期收口。①sidecar 一任务多输入同 stem（供料批量含 PDF+doc）时 `-o` 的 md 与 `mineru4_*.json` 都按 stem 命名会互相覆盖；②sidecar 任务级 `warnings`（窗口去重/部分 range 放宽/page_count 缺失）到不了 backend（`poll()` 只读 status）；③`agent_md_pipeline_service` v4 分支 `mixed_schema_v4_wins` 在两处重复 append（基线既有）；④`MINERU_SIDECAR_WAIT` 非数字报错是裸 `could not convert`，定位性差。
 - **改了什么**：①`_run_mineru_sync` 建 per-task 消歧名（首现原名、重复 stem 加 `_1/_2` 序号），`-o` 与 mineru4 json 两处共用；②`MineruResult.warnings` 新字段 + `poll()` 归一化透出 + `wait_result` 终态塞入，单文件线与批量供料线各在 result 拿到处打 WARNING 日志（旧 sidecar 无键向后兼容为空 list）；③删第二处重复 append，mixed 线索只报一次；④`_mineru_wait_sec` 对非法值抛点名 `MINERU_SIDECAR_WAIT` 的 RuntimeError（经任务 error 可读透出）。
-- **测试**：净 +6 例（sidecar 2：同 stem 双输入 md/json 四文件互不覆盖且内容可区分、非法 WAIT 报错点名变量；client 2：warnings 透传/无键兼容——**附带发现并修正测试落点事故：这两例最初误追加到主检出后被还原抹掉，worktree 内从未存在过，变异复核时抓出**；dual_representation 1：mixed 条目 count==1 钉死；特征化钉 poll 响应随契约扩展补 `warnings` 键）。变异 4/4 KILLED；全量 2662 passed 零回归。
+- **门⑥ r2 处置（3 Minor 全修）**：M1 消歧名防撞（`a.pdf+a.doc+a_1.rtf` 曾把第 2/3 输入都算成 `a_1` 静默覆盖 ⇒ 生成名撞 taken/used 即递增，实弹判据钉死）；M2 `MINERU_SIDECAR_WAIT=inf` 走 OverflowError 逃逸 ⇒ `except (ValueError, OverflowError)` + 判据；M3 pipeline_service logger 区空行规整。
+- **测试**：净 +8 例（sidecar 2：同 stem 双输入 md/json 四文件互不覆盖且内容可区分、非法 WAIT 报错点名变量；client 2：warnings 透传/无键兼容——**附带发现并修正测试落点事故：这两例最初误追加到主检出后被还原抹掉，worktree 内从未存在过，变异复核时抓出**；dual_representation 1：mixed 条目 count==1 钉死；特征化钉 poll 响应随契约扩展补 `warnings` 键）。变异 6/6 KILLED（含 r2 两条新判据对旧实现各一杀）；全量 2664 passed 零回归。
 - **边界**：warnings 目前到日志面为止（前端展示不做，超范围）；`_transport` 特征化 3 断言随契约更新。
 
 ### 修正（Issue#230/#231）MinerU 4.x sidecar 三处 CLI 缺陷 + docvortex 表名/脚注/doc_title 静默丢失

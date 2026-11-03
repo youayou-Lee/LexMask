@@ -92,8 +92,8 @@ def _mineru_wait_sec() -> int:
         raw = os.environ["MINERU_SIDECAR_WAIT"]
         try:
             return max(60, int(float(raw)))
-        except ValueError as exc:
-            # 挂账④：fail-visible 且点名变量，不裸抛 "could not convert"
+        except (ValueError, OverflowError) as exc:
+            # 挂账④：fail-visible 且点名变量，不裸抛（inf 走 OverflowError 同样接住）
             raise RuntimeError(f"MINERU_SIDECAR_WAIT 非法: {raw!r}（须为秒数，如 7080）") from exc
     return max(60, int(MINERU_TIMEOUT_SEC) - 120)
 
@@ -163,13 +163,19 @@ def _run_mineru_sync(task_id: str, inputs: list[Path]) -> None:
         parse_results: list[dict] = []
         # 挂账①：同任务两输入同 stem（a.pdf + a.doc）时 -o 的 md 与 mineru4 json
         # 都会互相覆盖 ⇒ 首次出现用原名，重复 stem 加序号（_1/_2…），两处共用。
-        stem_seq: dict[str, int] = {}
+        taken = {p.stem for p in inputs}
+        used: set[str] = set()
         out_names: list[str] = []
         for i, input_path in enumerate(inputs):
             key = input_path.stem
-            n = stem_seq.get(key, 0)
-            stem_seq[key] = n + 1
-            out_names.append(key if n == 0 else f"{key}_{n}")
+            name, n = key, 0
+            # 门⑥ r2 M1：消歧名不许撞上同批其他输入的原名（a.pdf+a.doc+a_1.rtf
+            # 曾把第 2/3 输入都算成 a_1 静默覆盖）——递增到无人占用为止
+            while name in used or (name in taken and name != key):
+                n += 1
+                name = f"{key}_{n}"
+            out_names.append(name)
+            used.add(name)
             proc = subprocess.run(
                 [
                     MINERU_BIN,
