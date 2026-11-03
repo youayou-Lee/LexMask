@@ -10,6 +10,7 @@ import { PLAYGROUND_LOADING_TICK_MS, PLAYGROUND_LONG_RUNNING_HINT_MS } from '@/c
 import { useInteractionLock } from '@/hooks/use-interaction-lock';
 import {
   buildProcessingRows,
+  formatDurationMs,
   type ProcessingRow,
   type ProcessingRowKey,
 } from '../lib/processing-details';
@@ -28,6 +29,7 @@ export interface PlaygroundLoadingProps {
   /**
    * 真实进度（Issue#123 页流式 / Issue#194 任务轮询，均为 completed/total）。
    * total > 0 时进度条用真值；缺省回落到既有的时间 fake 公式。
+   * Issue#238：completed/total 语义 = **页完成数**（后端每页终态上报），不再是开跑页号。
    */
   progress?: { completed: number; total: number } | null;
   /**
@@ -42,60 +44,200 @@ export interface PlaygroundLoadingProps {
    * 不渲染段名行，清单不排除任何行。
    */
   stage?: string | null;
+  /**
+   * Issue#238 段信息（performance.recognition.current_segment）。
+   * total > 1 时段名行显示「第 X 段/共 Y 段」；单段（缺键）不编号。
+   */
+  segment?: { index: number; total: number } | null;
+  /** Issue#238 并行处理中页数 = min(该段页并发, 剩余页)；null/<=0 不显示。 */
+  inFlight?: number | null;
+  /** Issue#238 任务段 started_at（ISO）——已运行时长以后端起算，刷新不走表；缺省回落本地计时。 */
+  startedAt?: string | null;
+  /** Issue#238 文本件：无页级计数——数字行显示状态词、进度条不定态。 */
+  textMode?: boolean;
+  /** Issue#238 redaction = 打码段被动小卡（右下角，无清单/提示/取消，可离开本页语义）。 */
+  variant?: 'recognition' | 'redaction';
 }
 
 /** ✓ 清单固定顺序（用户验收④ mockup）；排队/打码/失败回落等行不上等待页。 */
 const CHECKLIST_ORDER: ProcessingRowKey[] = ['parse', 'ocr', 'ner', 'visual_features'];
 
 /**
- * 当前段人话段名 → 行键（两侧同走一个 t，locale 安全）；无对应行的段名
- * （泛「视觉识别」段、未知段）返回 null——清单不排除任何行。
+ * 当前段**进行中**的行集合（AC2：进行中的活不打 ✓）。
+ * - OCR+HaS 段：OCR 与 NER 两行都在跑（NER 逐页内嵌在 ocr_has 管线里）；
+ * - 视觉要素段：只视觉行在跑；
+ * - 泛「视觉识别」段（单段扫/单图）：OCR/NER/视觉一次合并跑完，三行都算进行中；
+ * - 文本件 NER 段：NER 行在跑；
+ * 无对应行的段名（未知段）返回空集——清单不排除任何行。
  */
-function currentStageRowKey(
+function currentStageRowKeys(
   stage: string | null | undefined,
   t: (key: string) => string,
-): ProcessingRowKey | null {
-  if (!stage) return null;
-  if (stage === t('playground.taskStage.visualFeatures')) return 'visual_features';
-  if (stage === t('playground.taskStage.ocrHas')) return 'ocr';
-  if (stage === t('playground.taskStage.text')) return 'ner';
-  return null;
+): Set<ProcessingRowKey> {
+  if (!stage) return new Set();
+  if (stage === t('playground.taskStage.visualFeatures')) return new Set(['visual_features']);
+  if (stage === t('playground.taskStage.ocrHas')) return new Set(['ocr', 'ner']);
+  if (stage === t('playground.taskStage.vision')) return new Set(['ocr', 'ner', 'visual_features']);
+  if (stage === t('playground.taskStage.text')) return new Set(['ner']);
+  return new Set();
+}
+
+/** i18n 模板 {param} 填充（processing-details 同款写法，组件本地小副本）。 */
+function fillTemplate(template: string, params: Record<string, string>): string {
+  return Object.entries(params).reduce(
+    (acc, [name, value]) => acc.split(`{${name}}`).join(value),
+    template,
+  );
 }
 
 export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
-  ({ loadingMessage, isImageMode, onCancel, overlay = 'blocking', progress = null, performance = null, stage = null }) => {
+  ({
+    loadingMessage,
+    isImageMode,
+    onCancel,
+    overlay = 'blocking',
+    progress = null,
+    performance = null,
+    stage = null,
+    segment = null,
+    inFlight = null,
+    startedAt = null,
+    textMode = false,
+    variant = 'recognition',
+  }) => {
     const t = useT();
     const panelRef = useRef<HTMLDivElement>(null);
-    const [elapsedMs, setElapsedMs] = useState(0);
+    const [localElapsedMs, setLocalElapsedMs] = useState(0);
+    const [nowMs, setNowMs] = useState(() => Date.now());
+    // Issue#238：已运行优先以后端任务 started_at 起算（刷新不走表）；缺键回落本地计时。
+    const parsedStartedMs = startedAt ? Date.parse(startedAt) : NaN;
+    const elapsedMs = Number.isFinite(parsedStartedMs)
+      ? Math.max(0, nowMs - parsedStartedMs)
+      : localElapsedMs;
     const elapsedSec = Math.floor(elapsedMs / 1_000);
     const safeElapsedSec = Math.max(0, elapsedSec);
-    // Issue#194：有真实 current/total 时进度条用真值；假公式仅作 fallback。
+    // Issue#194：有真实 current/total 时进度条用真值；文本件不定态；假公式仅作 vision 无计数段 fallback。
     const progressTotal = progress?.total ?? 0;
-    const progressValue =
-      progressTotal > 0
+    const barValue = textMode
+      ? null
+      : progressTotal > 0
         ? Math.min(100, Math.round(((progress?.completed ?? 0) / progressTotal) * 100))
         : Math.min(92, Math.round(12 + 80 * (1 - Math.exp(-safeElapsedSec / 90))));
     const showLongRunningHint = elapsedMs >= PLAYGROUND_LONG_RUNNING_HINT_MS;
     // Issue#123：passive 不锁交互——遮罩透明且 pointer-events:none，用户可滚动/缩放画布
     // （画布编辑由 lockDraw 单独置只读，避免识别中途改框）。
-    useInteractionLock(overlay === 'blocking', panelRef);
+    useInteractionLock(variant === 'recognition' && overlay === 'blocking', panelRef);
 
     useEffect(() => {
-      const startedAt = Date.now();
+      const startedAtLocal = Date.now();
       const timer = window.setInterval(() => {
-        setElapsedMs(Math.max(0, Date.now() - startedAt));
+        const now = Date.now();
+        setLocalElapsedMs(Math.max(0, now - startedAtLocal));
+        setNowMs(now);
       }, PLAYGROUND_LOADING_TICK_MS);
       return () => window.clearInterval(timer);
     }, []);
 
-    // 用户验收④：当前段行（段名 + 页码）是等待页唯一的活数字；已完成段进静态清单，
-    // 不再同时跳秒数计时 / 阶段耗时明细 / 两段式回零数字多处变化。
-    const stageLine =
-      stage && progressTotal > 0 ? `${stage} ${progress?.completed ?? 0}/${progressTotal}` : null;
-    const currentRowKey = currentStageRowKey(stage, t);
+    const elapsedLabel = fillTemplate(t('playground.taskProgress.elapsed'), {
+      time: formatDurationMs(elapsedMs),
+    });
+
+    if (variant === 'redaction') {
+      // Issue#238 打码段被动小卡：逐页数字（无页回调时回落不定态文案）+ 已运行，
+      // 不遮挡预览页（「点完打码即可离开」语义不变）。
+      const redTotal = progress?.total ?? 0;
+      // 打码卡不套识别段的假公式：有逐页数据用真值，无页级回调（文本/docx 快链路）走不定态
+      const redBarValue =
+        redTotal > 0 ? Math.min(100, Math.round(((progress?.completed ?? 0) / redTotal) * 100)) : null;
+      const redLine =
+        redTotal > 0
+          ? fillTemplate(t('playground.redactProgressLine'), {
+              completed: String(progress?.completed ?? 0),
+              total: String(redTotal),
+              time: formatDurationMs(elapsedMs),
+            })
+          : fillTemplate(t('playground.redactProgressIndeterminate'), {
+              time: formatDurationMs(elapsedMs),
+            });
+      return createPortal(
+        <div
+          className="pointer-events-none fixed inset-0 z-50 flex items-end justify-end p-3"
+          role="status"
+          aria-busy="true"
+          aria-label={loadingMessage || t('playground.taskRedacting')}
+          data-testid="playground-loading"
+          data-overlay={overlay}
+          data-variant="redaction"
+        >
+          <div
+            ref={panelRef}
+            tabIndex={-1}
+            className="pointer-events-auto w-full max-w-xs animate-scale-in cursor-default rounded-[20px] border border-border/70 bg-[var(--surface-overlay)] px-4 py-3.5 text-left shadow-[var(--shadow-floating)] outline-none"
+          >
+            <div className="mb-2 flex items-start gap-2.5">
+              <div className="mt-0.5 size-4 shrink-0 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-foreground">
+                  {loadingMessage || t('playground.taskRedacting')}
+                </p>
+                <p
+                  className="mt-1 text-xs tabular-nums text-muted-foreground"
+                  data-testid="playground-redact-line"
+                >
+                  {redLine}
+                </p>
+              </div>
+            </div>
+            {redBarValue === null ? (
+              <div
+                className="h-2 w-full overflow-hidden rounded-full bg-primary/20"
+                data-testid="playground-loading-progress"
+                data-indeterminate="true"
+              >
+                <div className="h-full w-1/3 animate-indeterminate-slide rounded-full bg-primary" />
+              </div>
+            ) : (
+              <Progress
+                value={redBarValue}
+                aria-label={t('playground.loadingProgress')}
+                data-testid="playground-loading-progress"
+              />
+            )}
+          </div>
+        </div>,
+        document.body,
+      );
+    }
+
+    // 数字行（AC1/AC3）：真完成数 + 并行处理中；文本件无页级计数 → 状态词 + 不定态条。
+    const numsLine = textMode
+      ? t('playground.taskProgress.textRunning')
+      : progressTotal > 0
+        ? fillTemplate(t('playground.taskProgress.completed'), {
+            completed: String(progress?.completed ?? 0),
+            total: String(progressTotal),
+          }) +
+          (inFlight !== null && inFlight > 0
+            ? ` · ${fillTemplate(t('playground.taskProgress.inFlight'), { n: String(inFlight) })}`
+            : '')
+        : null;
+
+    // 段名行（AC3）：两段才编号；单段/缺段信息只显示段名。
+    const stageLabel = stage ?? null;
+    const segmentLabel =
+      stageLabel && segment && segment.total > 1
+        ? fillTemplate(t('playground.taskProgress.segment'), {
+            index: String(segment.index),
+            total: String(segment.total),
+            stage: stageLabel,
+          })
+        : stageLabel;
+
+    // 用户验收④：当前段行（集合）从清单排除（AC2：进行中的活不打 ✓）；已完成段进静态清单。
+    const currentKeys = currentStageRowKeys(stage, t);
     const rows = buildProcessingRows(performance);
     const checklist = CHECKLIST_ORDER.map((key) => rows.find((row) => row.key === key)).filter(
-      (row): row is ProcessingRow => row !== undefined && row.key !== currentRowKey,
+      (row): row is ProcessingRow => row !== undefined && !currentKeys.has(row.key),
     );
 
     return createPortal(
@@ -111,6 +253,7 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
         aria-label={loadingMessage || t('playground.processing')}
         data-testid="playground-loading"
         data-overlay={overlay}
+        data-variant="recognition"
       >
         <div
           ref={panelRef}
@@ -127,24 +270,45 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
               <p className="truncate text-sm font-medium text-foreground">
                 {loadingMessage || t('playground.processing')}
               </p>
-              {stageLine && (
+              {numsLine && (
                 <p
                   className="mt-1 text-xs tabular-nums text-muted-foreground"
-                  data-testid="playground-loading-stage"
+                  data-testid="playground-loading-nums"
                 >
-                  {stageLine}
+                  {numsLine}
                 </p>
               )}
             </div>
           </div>
-          <Progress
-            value={progressValue}
-            className="mb-3"
-            aria-label={t('playground.loadingProgress')}
-            data-testid="playground-loading-progress"
-          />
+          {barValue === null ? (
+            <div
+              className="mb-3 h-2 w-full overflow-hidden rounded-full bg-primary/20"
+              data-testid="playground-loading-progress"
+              data-indeterminate="true"
+            >
+              <div className="h-full w-1/3 animate-indeterminate-slide rounded-full bg-primary" />
+            </div>
+          ) : (
+            <Progress
+              value={barValue}
+              className="mb-3"
+              aria-label={t('playground.loadingProgress')}
+              data-testid="playground-loading-progress"
+            />
+          )}
 
-          {/* 用户验收④：✓ 已完成清单——固定顺序、非当前段、不跳动 */}
+          {/* 段名 + 已运行（AC3/AC4）：段编号只在两段式出现；时长以后端 started_at 起算 */}
+          <p className="mb-3 text-xs tabular-nums text-muted-foreground">
+            {segmentLabel && (
+              <>
+                <span data-testid="playground-loading-stage">{segmentLabel}</span>
+                <span aria-hidden="true"> · </span>
+              </>
+            )}
+            <span data-testid="playground-loading-elapsed">{elapsedLabel}</span>
+          </p>
+
+          {/* 用户验收④：✓ 已完成清单——固定顺序、排除进行中段、不跳动 */}
           {checklist.length > 0 && (
             <div className="mb-3 space-y-1" data-testid="playground-loading-checklist">
               {checklist.map((row) => (

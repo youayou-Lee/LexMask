@@ -166,6 +166,12 @@ function Probe() {
       <button type="button" data-testid="redact-btn" onClick={() => void pg.handleRedact()}>
         redact
       </button>
+      <button type="button" data-testid="reset-btn" onClick={() => pg.confirmReset()}>
+        reset
+      </button>
+      <span data-testid="redact-progress">
+        {pg.redactProgress ? `${pg.redactProgress.completed}/${pg.redactProgress.total}` : 'none'}
+      </span>
     </div>
   );
 }
@@ -449,6 +455,136 @@ describe('Issue#194 打码走任务流第二段（T10）', () => {
     const fetchUrls = vi.mocked(authFetch).mock.calls.map((call) => String(call[0]));
     expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/report'))).toBe(false);
     expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/versions'))).toBe(false);
+  });
+
+  it('(f) Issue#238：打码在途 → redactProgress 逐页刷新（数字+started_at）；done → 小卡退场', async () => {
+    await seedPreview();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+    await waitFor(() => expect(submitRedactionTask).toHaveBeenCalledTimes(1));
+
+    // 打码在途：progress_message 带逐页数字；performance.redaction.started_at 供时长
+    const startedAt = new Date(Date.now() - 80_000).toISOString();
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'redacting', {
+        items: [
+          {
+            id: 'it1',
+            job_id: 'j1',
+            file_id: 'f1',
+            sort_order: 0,
+            status: 'redacting',
+            progress_stage: 'redaction',
+            progress_current: 92,
+            progress_total: 149,
+            progress_message: '打码 page 92/149',
+            error_message: null,
+            created_at: CREATED,
+            updated_at: CREATED,
+            performance: { redaction: { started_at: startedAt } },
+          },
+        ],
+      } as Partial<JobDetail>),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+
+    await waitFor(() =>
+      expect(harness.pg!.redactProgress).toEqual({
+        completed: 92,
+        total: 149,
+        startedAt,
+        filename: 'a.pdf',
+      }),
+    );
+    // 不定态分支：无逐页消息（redaction_started）→ total=0，卡片回落「打码处理中」
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'redacting', {
+        items: [
+          {
+            id: 'it1',
+            job_id: 'j1',
+            file_id: 'f1',
+            sort_order: 0,
+            status: 'redacting',
+            progress_stage: 'redaction',
+            progress_current: 0,
+            progress_total: 0,
+            progress_message: 'redaction_started',
+            error_message: null,
+            created_at: CREATED,
+            updated_at: CREATED,
+            performance: { redaction: { started_at: startedAt } },
+          },
+        ],
+      } as Partial<JobDetail>),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    await waitFor(() => expect(harness.pg!.redactProgress?.total).toBe(0));
+
+    // done：小卡退场 + 照旧收尾进结果页
+    vi.mocked(getJob).mockResolvedValue(makeDetail('completed', 'completed'));
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    await waitFor(() => expect(harness.pg!.redactProgress).toBeNull());
+    await waitFor(() => expect(screen.getByTestId('stage').textContent).toBe('result'));
+  });
+
+  it('(g) Issue#238 门⑥ I1：打码在途时重置会话 → 小卡立即退场（不残留冻结卡）', async () => {
+    await seedPreview();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+    await waitFor(() => expect(submitRedactionTask).toHaveBeenCalledTimes(1));
+
+    const startedAt = new Date(Date.now() - 80_000).toISOString();
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'redacting', {
+        items: [
+          {
+            id: 'it1',
+            job_id: 'j1',
+            file_id: 'f1',
+            sort_order: 0,
+            status: 'redacting',
+            progress_stage: 'redaction',
+            progress_current: 92,
+            progress_total: 149,
+            progress_message: '打码 page 92/149',
+            error_message: null,
+            created_at: CREATED,
+            updated_at: CREATED,
+            performance: { redaction: { started_at: startedAt } },
+          },
+        ],
+      } as Partial<JobDetail>),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    await waitFor(() => expect(screen.getByTestId('redact-progress').textContent).toBe('92/149'));
+
+    // 门⑥ I1 场景：重置会话——confirmReset 直达 performReset（弹窗 UI 在 page 层，
+    // hook 测试树只验 hook 语义），同批清 pendingRedact 与 fileInfo
+    // （currentFileId=null），订阅 effect 必须仍走清理分支退掉小卡。
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reset-btn'));
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('redact-progress').textContent).toBe('none'),
+    );
+    // 轮询再推进若干拍也不复活（provider 仍报 redacting，但 pending 已清）
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    expect(screen.getByTestId('redact-progress').textContent).toBe('none');
   });
 });
 

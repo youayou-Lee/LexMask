@@ -21,6 +21,12 @@ export interface PlaygroundDataContextValue {
   taskRecognition: PlaygroundContextValue['taskRecognition'];
   taskPerformance: PlaygroundContextValue['taskPerformance'];
   taskStageLabel: PlaygroundContextValue['taskStageLabel'];
+  // Issue#238：诚实化进度数据源 + 打码被动小卡
+  taskSegment: PlaygroundContextValue['taskSegment'];
+  taskInFlight: PlaygroundContextValue['taskInFlight'];
+  taskStartedAt: PlaygroundContextValue['taskStartedAt'];
+  taskTextMode: PlaygroundContextValue['taskTextMode'];
+  redactProgress: PlaygroundContextValue['redactProgress'];
   uploadIssue: PlaygroundContextValue['uploadIssue'];
   recognitionIssue: PlaygroundContextValue['recognitionIssue'];
   entityMap: PlaygroundContextValue['entityMap'];
@@ -118,6 +124,12 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       taskRecognition: ctx.taskRecognition,
       taskPerformance: ctx.taskPerformance,
       taskStageLabel: ctx.taskStageLabel,
+      // Issue#238：诚实化进度数据源 + 打码被动小卡
+      taskSegment: ctx.taskSegment,
+      taskInFlight: ctx.taskInFlight,
+      taskStartedAt: ctx.taskStartedAt,
+      taskTextMode: ctx.taskTextMode,
+      redactProgress: ctx.redactProgress,
       uploadIssue: ctx.uploadIssue,
       recognitionIssue: ctx.recognitionIssue,
       entityMap: ctx.entityMap,
@@ -164,6 +176,12 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       ctx.taskRecognition,
       ctx.taskPerformance,
       ctx.taskStageLabel,
+      // Issue#238
+      ctx.taskSegment,
+      ctx.taskInFlight,
+      ctx.taskStartedAt,
+      ctx.taskTextMode,
+      ctx.redactProgress,
       ctx.uploadIssue,
       ctx.recognitionIssue,
       ctx.entityMap,

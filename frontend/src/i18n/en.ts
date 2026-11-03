@@ -1213,6 +1213,16 @@ const enOverrides: Record<string, string> = {
   'playground.taskStage.visualFeatures': 'Visual feature recognition',
   'playground.taskStage.vision': 'Vision recognition',
   'playground.taskStage.text': 'Entity recognition',
+  'playground.taskStage.redaction': 'Redaction',
+  // Issue#238: honest progress card — true completed count / pages in parallel / elapsed / segment numbering
+  'playground.taskProgress.completed': 'Completed {completed}/{total}',
+  'playground.taskProgress.inFlight': '{n} pages in parallel',
+  'playground.taskProgress.elapsed': 'Elapsed {time}',
+  'playground.taskProgress.segment': 'Segment {index}/{total}: {stage}',
+  'playground.taskProgress.textRunning': 'Recognizing entities',
+  'playground.redactingTask': 'Redacting "{filename}"',
+  'playground.redactProgressLine': 'Redacting {completed}/{total} pages · Elapsed {time}',
+  'playground.redactProgressIndeterminate': 'Redacting · Elapsed {time}',
   // Issue#194 (T10/D3): redaction moved to a background task — passive hint after submit, safe to leave
   'playground.taskRedacting': 'Redacting in background…',
   'playground.uploadFailed': 'File upload failed.',
