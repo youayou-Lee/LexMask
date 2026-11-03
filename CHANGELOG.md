@@ -19,6 +19,18 @@
 - **门⑥ I1 处置**：rerun 路径（handleRerunNer 图片分支）接入同款 skip 语义——LA 未启动时 rerun 也自动跳过视觉段（不再逐页撞后端预检硬报错），提示条随本次 rerun 刷新（服务已恢复即清掉过期提示）；rerun 防摘钉入 wiring-contract。
 - **测试**：taskflow 新增 (h2)（LA 不可用 → `visualFeatureTypes: []` + 提示置位，负样本 (h) 全类型透传不变）；wiring-contract 契约钉同步新形状并加 skipVisual/提示接线两枚防摘钉；vitest 319 全绿、tsc（含测试）绿、build 绿。
 - **边界**：识别结果页的 pipeline_status 级标注（后端侧）不在本 PR；烧进图片的水印、印章检测质量不受影响。>>>>>>> 491bd1e (fix(playground): LA 未启动不再拦截识别——自动跳过视觉段并显式提示)
+### 功能（Issue#238）进度卡诚实化——识别段真完成数/✓语义/已运行时长 + 打码段逐页进度
+
+- **为什么**：单文件等待卡三处与并行事实不符——①「87/149」实为页**开跑**水位（≈已完成+在飞，并行下"处理到第几页"不成立）；②通用「视觉识别」段不排除任何清单行，进行中的段带 ✓ 显示（进度条 58% 却见「✓ 文字识别 87页」自相矛盾）；③打码段整卷一次性执行零上报，大卷渲染数分钟用户只盯「正在匿名化...」。用户拍板方案 A（诚实化单卡）+ 已运行时长 + 打码补进度，交互预览先行验收。
+- **改了什么**：
+  1. 识别段（`task_queue_pipelines._run_vision`）：进度写点从页开跑移到页**终态**（完成/超时/失败都计入，单调防回退）；每段计数归零（两段式各扫一遍）；合并段跳过一阶段失败页时 `total` 缩水为该段实际页数（进度条不卡死）。
+  2. 新增 `recognition.current_segment`（{index,total,label,concurrency}，段起跑覆写）——段数动态：两段式仅在「勾视觉要素且多页」存在；单段不编号；前端不猜配置。
+  3. 打码段：`_run_redaction` 起跑写 `redaction_started` 0/N；`progress_cb(current,total)` 穿透 `execute_redaction_request → execute_redaction → Redactor.redact → _redact_image → VisionService.apply_redaction`，扫描件/图片栅格化路径逐页回调写「打码 page p/N」（单调防回退）；文本/docx 快链路（page_count<=0）不传回调。
+  4. 前端等待卡：数字行「已完成 X/Y · 并行处理中 min(段并发,剩余) 页」（并行页数=信号量模型下在飞数的精确值）；段名行两段才显示「第 X 段/共 Y 段」；新增「已运行 {time}」（后端 `performance.<task>.started_at` 起算，刷新不走表，缺键回落本地计时）；✓ 清单排除集修正（OCR+HaS 段排除 OCR/NER 两行、泛视觉段排除三行、文本件排除 NER 行）；文本件数字行=「实体识别中」+ 进度条不定态（新 tailwind `indeterminate-slide`）。
+  5. 打码被动小卡：`PlaygroundLoading variant="redaction"`（右下角 passive、无清单/提示/取消），由 pendingRedact 收尾订阅逐拍刷新，done/failed/换文件/重置即退场——「点完打码即可离开」语义不变。
+- **测试**：后端净 +13 例（页完成写点/乱序单调/两段式段信息与段内归零/合并段 total 缩水/单段不编号/超时页计入/打码起跑+逐页+单调/无页数不传回调/回调链穿透三钉/栅格化逐页/单图 1,1），先红后绿；后端全量 2671 passed 零回归（修 test_mask_mode_gating 桩签名承接新 kwarg）；前端净 +7 例（task-progress 纯函数 5 + 打码消息映射注入负例 + PlaygroundLoading 新语义 6 + redactProgress 订阅 1），playground 177/177、全量 333/333、tsc+build 绿。
+- **边界**：打码并行化不在本 PR（打码仍串行，本 PR 只补上报）；供料线（agent/vl_md）进度形态不动；旧任务无 `current_segment`/`started_at` 回落旧行为不误报（AC7）；批次任务中心的进度展示不在本 PR 范围。
+58aa7ee (feat(#238): 进度卡诚实化——识别段真完成数/✓语义/已运行时长 + 打码段逐页进度)
 
 ## 2026-11-03
 
@@ -61,7 +73,6 @@
 - **改了什么**（单函数，`agent_md_adapter.table_to_text`）：HTML 解析结果非空 ⇒ 原样返回（既有行为逐字节不变）；**解析结果为空且输入不含 HTML 表格标签** ⇒ 纯文本回落（按行拆分/行内空白折叠/`strip_inline`）；**含表格标签但解析不出行（畸形 HTML）不回落**——维持空 + `empty table block` 告警，不把标签碎片喂给 NER，并守住 #212 双表示守卫「丢表 ⇒ empty_table_blocks>0 ⇒ 回落 v1」语义链（独立冷审 B2 钉）。方案与验收过独立冷审（需修订 2 项已处置），根因报告/方案存私有仓 `docs/acceptance/2026-11-03-mineru4-plaintext-tablebody-*.md`。
 - **测试**：净 +13 例（table_to_text 直测 8 + clean_segments 集成 3 + 管线级 2：表示选择出段且无 `docvortex_shortfall`、stage1 映射表含表格内实体），先红后绿；变异双杀（删回落分支 7 红、删标签守卫 2 红）；单文件与批量供料两线共用该函数同时受益。
 - **边界**：不做表格结构还原（列对齐/表头语义），NER 与脱敏只需文本可见，结构化还原属效果线另案；3.x 路径（content["html"] 恒 HTML）行为逐字节不变；空表格告警语义不变。
-=======
 ### 变更（Issue#226）本地启动默认启用 MinerU（flash 档）+ 档位参数化
 
 - **为什么**：用户裁定「默认栈要所有功能可用」——#217 当时因 12GB 显存预算把 MinerU 设为隐藏开关（`--with-mineru`），导致默认启动后供料模式不可用；同时 2026-11-02 实测隔离栈的 MinerU standard 档 vLLM 引擎常驻吃 5.4GB，本地不该常态跑 standard。

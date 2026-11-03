@@ -1137,6 +1137,16 @@ const zhOverrides: Record<string, string> = {
   'playground.taskStage.visualFeatures': '视觉要素识别',
   'playground.taskStage.vision': '视觉识别',
   'playground.taskStage.text': '实体识别',
+  'playground.taskStage.redaction': '打码',
+  // Issue#238：进度卡诚实化——真完成数/并行中页数/已运行时长/段编号
+  'playground.taskProgress.completed': '已完成 {completed}/{total}',
+  'playground.taskProgress.inFlight': '并行处理中 {n} 页',
+  'playground.taskProgress.elapsed': '已运行 {time}',
+  'playground.taskProgress.segment': '第 {index} 段/共 {total} 段：{stage}',
+  'playground.taskProgress.textRunning': '实体识别中',
+  'playground.redactingTask': '正在打码「{filename}」',
+  'playground.redactProgressLine': '打码 {completed}/{total} 页 · 已运行 {time}',
+  'playground.redactProgressIndeterminate': '打码处理中 · 已运行 {time}',
   // Issue#194（T10/D3）：打码改后台任务——提交成功后的 passive 提示，可离开页面
   'playground.taskRedacting': '后台打码中…',
   'playground.uploadFailed': '文件上传失败。',

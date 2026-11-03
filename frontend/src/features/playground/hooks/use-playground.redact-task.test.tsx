@@ -450,6 +450,85 @@ describe('Issue#194 打码走任务流第二段（T10）', () => {
     expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/report'))).toBe(false);
     expect(fetchUrls.some((url) => url.endsWith('/redaction/f1/versions'))).toBe(false);
   });
+
+  it('(f) Issue#238：打码在途 → redactProgress 逐页刷新（数字+started_at）；done → 小卡退场', async () => {
+    await seedPreview();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+    await waitFor(() => expect(submitRedactionTask).toHaveBeenCalledTimes(1));
+
+    // 打码在途：progress_message 带逐页数字；performance.redaction.started_at 供时长
+    const startedAt = new Date(Date.now() - 80_000).toISOString();
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'redacting', {
+        items: [
+          {
+            id: 'it1',
+            job_id: 'j1',
+            file_id: 'f1',
+            sort_order: 0,
+            status: 'redacting',
+            progress_stage: 'redaction',
+            progress_current: 92,
+            progress_total: 149,
+            progress_message: '打码 page 92/149',
+            error_message: null,
+            created_at: CREATED,
+            updated_at: CREATED,
+            performance: { redaction: { started_at: startedAt } },
+          },
+        ],
+      } as Partial<JobDetail>),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+
+    await waitFor(() =>
+      expect(harness.pg!.redactProgress).toEqual({
+        completed: 92,
+        total: 149,
+        startedAt,
+        filename: 'a.pdf',
+      }),
+    );
+    // 不定态分支：无逐页消息（redaction_started）→ total=0，卡片回落「打码处理中」
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'redacting', {
+        items: [
+          {
+            id: 'it1',
+            job_id: 'j1',
+            file_id: 'f1',
+            sort_order: 0,
+            status: 'redacting',
+            progress_stage: 'redaction',
+            progress_current: 0,
+            progress_total: 0,
+            progress_message: 'redaction_started',
+            error_message: null,
+            created_at: CREATED,
+            updated_at: CREATED,
+            performance: { redaction: { started_at: startedAt } },
+          },
+        ],
+      } as Partial<JobDetail>),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    await waitFor(() => expect(harness.pg!.redactProgress?.total).toBe(0));
+
+    // done：小卡退场 + 照旧收尾进结果页
+    vi.mocked(getJob).mockResolvedValue(makeDetail('completed', 'completed'));
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    await waitFor(() => expect(harness.pg!.redactProgress).toBeNull());
+    await waitFor(() => expect(screen.getByTestId('stage').textContent).toBe('result'));
+  });
 });
 
 // --- Issue#194 Bug#2：刷新后 awaiting_review 态点打码 ---

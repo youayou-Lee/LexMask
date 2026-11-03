@@ -443,8 +443,10 @@ describe('Issue#194 识别页任务流（T9）', () => {
     await waitFor(() =>
       expect(screen.getByTestId('loading-message').textContent).toBe('正在识别「a.txt」'),
     );
-    // 段名行：第二段显示「视觉要素识别 5/20」（改前只有「后台识别中 5/20」，与第一段一模一样）
-    expect(screen.getByTestId('playground-loading-stage').textContent).toBe('视觉要素识别 5/20');
+    // Issue#238：数字行=真完成数（detail 无 performance → 无段信息，不显示并行中/编号）；
+    // 段名行只承载段名（两段式编号需 current_segment，测试桩未带 → 裸段名）
+    expect(screen.getByTestId('playground-loading-nums').textContent).toBe('已完成 5/20');
+    expect(screen.getByTestId('playground-loading-stage').textContent).toBe('视觉要素识别');
 
     // 第一段（OCR+HaS）→ 文字识别
     vi.mocked(getJob).mockResolvedValue(
@@ -464,8 +466,9 @@ describe('Issue#194 识别页任务流（T9）', () => {
       await harness.task!.refresh();
     });
     await waitFor(() =>
-      expect(screen.getByTestId('playground-loading-stage').textContent).toBe('文字识别 3/20'),
+      expect(screen.getByTestId('playground-loading-stage').textContent).toBe('文字识别'),
     );
+    expect(screen.getByTestId('playground-loading-nums').textContent).toBe('已完成 3/20');
 
     // 无段名消息（vision 排队）→ 段行消失（不秀英文原文），顶部保持「正在识别」人话
     vi.mocked(getJob).mockResolvedValue(
@@ -487,6 +490,8 @@ describe('Issue#194 识别页任务流（T9）', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('playground-loading-stage')).toBeNull(),
     );
+    // Issue#238：段名消失但数字行保留（queued 0/20 也是真完成数）
+    expect(screen.getByTestId('playground-loading-nums').textContent).toBe('已完成 0/20');
     expect(screen.getByTestId('loading-message').textContent).toBe('正在识别「a.txt」');
   });
 });

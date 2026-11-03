@@ -36,6 +36,10 @@ import {
   syncEntitiesWithNerBoxes,
 } from '../utils';
 import { recognitionFailedPages } from '../lib/processing-details';
+import {
+  recognitionStageFromMessage,
+  stageStartedAtFromPerformance,
+} from '../lib/task-progress';
 import { usePlaygroundEntities } from './use-playground-entities';
 import { usePlaygroundFile } from './use-playground-file';
 import { usePlaygroundHistory } from './use-playground-history';
@@ -109,6 +113,17 @@ export function usePlayground() {
     requestedCount: number;
   };
   const [pendingRedact, setPendingRedact] = useState<PendingRedact | null>(null);
+  /**
+   * Issue#238：打码段被动小卡数据（右下角，不遮挡预览页）。pendingRedact 在途时由
+   * 收尾订阅 effect 每拍轮询刷新；done/failed/换文件/重置即清。total=0（文本/docx
+   * 快链路无页级回调）→ 卡片回落不定态文案。
+   */
+  const [redactProgress, setRedactProgress] = useState<{
+    completed: number;
+    total: number;
+    startedAt: string | null;
+    filename: string;
+  } | null>(null);
   /** 用户主动放弃会话（取消/重置）时登记的 job：provider 报 failed 时静默收尾。 */
   const redactAbandonedJobsRef = useRef<Set<string>>(new Set());
 
@@ -676,18 +691,35 @@ export function usePlayground() {
   useEffect(() => {
     if (!currentFileId) return;
     const pending = pendingRedact;
-    if (!pending || pending.fileId !== currentFileId) return;
+    if (!pending || pending.fileId !== currentFileId) {
+      // Issue#238：pendingRedact 消失（提交失败/换文件/重置收尾）→ 打码小卡随之退场。
+      setRedactProgress(null);
+      return;
+    }
     const task = getSingleTask(currentFileId);
     if (!task || task.jobId !== pending.jobId) return;
 
+    if (task.phase === 'redacting') {
+      // Issue#238：打码段被动小卡——每拍轮询刷新逐页数字与已运行时长。
+      const stage = recognitionStageFromMessage(task.message);
+      setRedactProgress({
+        completed: stage ? stage.current : 0,
+        total: stage ? stage.total : 0,
+        startedAt: stageStartedAtFromPerformance(task.performance ?? null, 'redaction'),
+        filename: task.filename,
+      });
+      return;
+    }
     if (task.phase === 'failed') {
       setPendingRedact(null);
+      setRedactProgress(null);
       redactionInFlightRef.current = false;
       if (redactAbandonedJobsRef.current.has(task.jobId)) return; // 用户已放弃会话，静默
       showToast(task.error || t('playground.redactFailed'), 'error');
       return;
     }
     if (task.phase !== 'done') return;
+    setRedactProgress(null);
 
     // 打码完成（provider 已发完成通知）：快照 + report/versions → 结果页
     setPendingRedact(null);
@@ -1138,6 +1170,12 @@ export function usePlayground() {
     taskRecognition: fileCtx.taskRecognition,
     taskPerformance: fileCtx.taskPerformance,
     taskStageLabel: fileCtx.taskStageLabel,
+    // Issue#238：诚实化进度数据源（数字行/段名行/时长/并行中）+ 打码被动小卡
+    taskSegment: fileCtx.taskSegment,
+    taskInFlight: fileCtx.taskInFlight,
+    taskStartedAt: fileCtx.taskStartedAt,
+    taskTextMode: fileCtx.taskTextMode,
+    redactProgress,
     uploadIssue: fileCtx.uploadIssue,
     recognitionIssue: fileCtx.recognitionIssue,
     visualSkippedNotice: fileCtx.visualSkippedNotice,

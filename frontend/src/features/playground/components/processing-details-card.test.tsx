@@ -174,8 +174,11 @@ describe('PlaygroundLoading 等待视图 — 单一活计数 + ✓ 已完成清�
     expect(screen.queryByTestId('playground-loading-timer')).toBeNull();
     expect(screen.queryByTestId('playground-processing-rows')).toBeNull();
     expect(screen.queryByText(/已等待/)).toBeNull();
-    // 当前段行：段名 + 页码——等待页唯一活数字
-    expect(screen.getByTestId('playground-loading-stage').textContent).toBe('视觉要素识别 5/20');
+    // Issue#238：数字行=真完成数（无 segment/inFlight → 不显示编号与并行中）
+    expect(screen.getByTestId('playground-loading-nums').textContent).toBe('已完成 5/20');
+    // 段名行只承载段名（编号需两段式 current_segment）；已运行独立成行（无 startedAt 回落本地 0）
+    expect(screen.getByTestId('playground-loading-stage').textContent).toBe('视觉要素识别');
+    expect(screen.getByTestId('playground-loading-elapsed').textContent).toBe('已运行 不足 1 秒');
     // ✓ 已完成清单：固定顺序、只含有数据的非当前段行
     expect(screen.getByTestId('playground-checklist-parse').textContent).toContain('文本解析');
     expect(screen.getByTestId('playground-checklist-ocr').textContent).toContain('文字识别');
@@ -193,6 +196,124 @@ describe('PlaygroundLoading 等待视图 — 单一活计数 + ✓ 已完成清�
     expect(screen.queryByTestId('playground-loading-stage')).toBeNull();
     expect(screen.queryByTestId('playground-processing-rows')).toBeNull();
     expect(screen.getByText('后台解析中…')).toBeTruthy();
+  });
+
+  // --- Issue#238：诚实化新语义 ---
+
+  it('Issue#238 两段式编号：segment.total>1 → 「第 2 段/共 2 段：视觉要素识别」', () => {
+    render(
+      <PlaygroundLoading
+        loadingMessage="正在识别「第四卷.pdf」"
+        isImageMode
+        stage="视觉要素识别"
+        progress={{ completed: 5, total: 20 }}
+        segment={{ index: 2, total: 2 }}
+      />,
+    );
+    expect(screen.getByTestId('playground-loading-stage').textContent).toBe(
+      '第 2 段/共 2 段：视觉要素识别',
+    );
+  });
+
+  it('Issue#238 单段不编号：segment.total<=1 → 裸段名；inFlight>0 → 数字行带「并行处理中」', () => {
+    render(
+      <PlaygroundLoading
+        loadingMessage="正在识别「执行卷.pdf」"
+        isImageMode
+        stage="视觉识别"
+        progress={{ completed: 112, total: 149 }}
+        segment={{ index: 1, total: 1 }}
+        inFlight={3}
+      />,
+    );
+    expect(screen.getByTestId('playground-loading-stage').textContent).toBe('视觉识别');
+    expect(screen.getByTestId('playground-loading-nums').textContent).toBe(
+      '已完成 112/149 · 并行处理中 3 页',
+    );
+  });
+
+  it('Issue#238 泛「视觉识别」段：OCR/NER/视觉三行都算进行中，清单只留文本解析（AC2）', () => {
+    render(
+      <PlaygroundLoading
+        loadingMessage="正在识别「第四卷.pdf」"
+        isImageMode
+        stage="视觉识别"
+        progress={{ completed: 84, total: 149 }}
+        performance={FULL_VISION_PERF}
+      />,
+    );
+    expect(screen.getByTestId('playground-checklist-parse')).toBeTruthy();
+    expect(screen.queryByTestId('playground-checklist-ocr')).toBeNull();
+    expect(screen.queryByTestId('playground-checklist-ner')).toBeNull();
+    expect(screen.queryByTestId('playground-checklist-visual_features')).toBeNull();
+  });
+
+  it('Issue#238 文本件：数字行=状态词、进度条不定态、无页级数字（AC3）', () => {
+    render(
+      <PlaygroundLoading
+        loadingMessage="正在识别「讯问笔录.docx」"
+        isImageMode={false}
+        stage="实体识别"
+        progress={{ completed: 1, total: 1 }}
+        textMode
+      />,
+    );
+    expect(screen.getByTestId('playground-loading-nums').textContent).toBe('实体识别中');
+    const bar = screen.getByTestId('playground-loading-progress');
+    expect(bar.getAttribute('data-indeterminate')).toBe('true');
+    // 文本件进行中：NER 行不进清单
+    expect(screen.queryByTestId('playground-checklist-ner')).toBeNull();
+  });
+
+  it('Issue#238 已运行以后端 started_at 起算（AC4）', () => {
+    const startedAt = new Date(Date.now() - 125_000).toISOString();
+    render(
+      <PlaygroundLoading
+        loadingMessage="正在识别「第四卷.pdf」"
+        isImageMode
+        progress={{ completed: 10, total: 20 }}
+        startedAt={startedAt}
+      />,
+    );
+    expect(screen.getByTestId('playground-loading-elapsed').textContent).toBe('已运行 2 分 5 秒');
+  });
+
+  it('Issue#238 打码小卡：数字行 + 无清单/提示/取消；total=0 回落不定态文案', () => {
+    const startedAt = new Date(Date.now() - 80_000).toISOString();
+    const { unmount } = render(
+      <PlaygroundLoading
+        variant="redaction"
+        overlay="passive"
+        isImageMode={false}
+        loadingMessage="正在打码「第四卷.pdf」"
+        progress={{ completed: 92, total: 149 }}
+        startedAt={startedAt}
+      />,
+    );
+    const root = screen.getByTestId('playground-loading');
+    expect(root.getAttribute('data-variant')).toBe('redaction');
+    expect(root.getAttribute('data-overlay')).toBe('passive');
+    expect(screen.getByTestId('playground-redact-line').textContent).toBe(
+      '打码 92/149 页 · 已运行 1 分 20 秒',
+    );
+    expect(screen.queryByTestId('playground-loading-checklist')).toBeNull();
+    expect(screen.queryByTestId('playground-cancel-processing')).toBeNull();
+    unmount();
+
+    render(
+      <PlaygroundLoading
+        variant="redaction"
+        overlay="passive"
+        isImageMode={false}
+        loadingMessage="正在打码「讯问笔录.docx」"
+        progress={null}
+        startedAt={startedAt}
+      />,
+    );
+    expect(screen.getByTestId('playground-redact-line').textContent).toContain('打码处理中');
+    expect(screen.getByTestId('playground-loading-progress').getAttribute('data-indeterminate')).toBe(
+      'true',
+    );
   });
 });
 

@@ -14,6 +14,7 @@ import re
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Callable
 from types import SimpleNamespace
 
 import numpy as np
@@ -2170,14 +2171,17 @@ class VisionService:
         image_method: str = "fill",
         strength: int = 75,
         fill_color: str = "#000000",
+        progress_cb: Callable[[int, int], None] | None = None,
     ) -> str:
         if file_type == FileType.IMAGE:
             return await self._redact_image(
-                file_path, bounding_boxes, output_path, image_method, strength, fill_color
+                file_path, bounding_boxes, output_path, image_method, strength, fill_color,
+                progress_cb=progress_cb,
             )
         if file_type in [FileType.PDF, FileType.PDF_SCANNED]:
             return await self._redact_pdf(
-                file_path, bounding_boxes, output_path, image_method, strength, fill_color
+                file_path, bounding_boxes, output_path, image_method, strength, fill_color,
+                progress_cb=progress_cb,
             )
         raise ValueError(f"不支持的文件类型进行匿名化: {file_type}")
 
@@ -2189,6 +2193,7 @@ class VisionService:
         image_method: str,
         strength: int,
         fill_color: str,
+        progress_cb: Callable[[int, int], None] | None = None,
     ) -> str:
         image = Image.open(file_path).convert("RGB")
         width, height = image.size
@@ -2199,6 +2204,9 @@ class VisionService:
             _apply_box_effect(image, bbox, width, height, image_method, strength, fill_color)
 
         image.save(output_path)
+        # Issue#238：单图无逐页概念，上报 (1, 1) 让前端出「打码 1/1」。
+        if progress_cb is not None:
+            progress_cb(1, 1)
         return output_path
 
     async def _redact_pdf(
@@ -2209,6 +2217,7 @@ class VisionService:
         image_method: str,
         strength: int,
         fill_color: str,
+        progress_cb: Callable[[int, int], None] | None = None,
     ) -> str:
         import fitz
 
@@ -2221,7 +2230,8 @@ class VisionService:
             try:
                 mat = fitz.Matrix(_PDF_REDACTION_RENDER_SCALE, _PDF_REDACTION_RENDER_SCALE)
 
-                for page_index in range(len(doc)):
+                total_pages = len(doc)
+                for page_index in range(total_pages):
                     page = doc[page_index]
                     page_no = page_index + 1
                     page_boxes = [b for b in bounding_boxes if b.selected and (b.page or 1) == page_no]
@@ -2238,6 +2248,9 @@ class VisionService:
                     buf.seek(0)
                     new_page = new_doc.new_page(width=page.rect.width, height=page.rect.height)
                     new_page.insert_image(new_page.rect, stream=buf.read())
+                    # Issue#238：逐页上报打码进展（扫描件大卷渲染的主要成本在本循环）。
+                    if progress_cb is not None:
+                        progress_cb(page_no, total_pages)
 
                 new_doc.save(output_path, garbage=4, deflate=True, clean=True)
             finally:

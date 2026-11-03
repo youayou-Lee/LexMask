@@ -14,7 +14,12 @@ import { errorCodeFromEnvelope, firstMessageText } from '@/utils/errorEnvelope';
 import { ACCEPTED_UPLOAD_FILE_TYPES } from '@/utils/fileUploadAccept';
 import { safeJson } from '../utils';
 import { boundingBoxesFromServerInfo, planServerCachedResume } from '../lib/playground-draft';
-import { recognitionStageFromMessage } from '../lib/task-progress';
+import {
+  currentSegmentFromPerformance,
+  inFlightPages,
+  recognitionStageFromMessage,
+  stageStartedAtFromPerformance,
+} from '../lib/task-progress';
 import { shouldEnterPreviewDuringRecognition } from '../lib/progressive-render';
 import type {
   FileInfo,
@@ -179,6 +184,15 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
    * 映射 + t）。等待视图的段名行（唯一活数字）与 ✓ 清单的当前段排除都用它；任务退出即清空。
    */
   const [taskStageLabel, setTaskStageLabel] = useState<string | null>(null);
+  // --- Issue#238 进度卡诚实化：段信息 / 并行中页数 / 任务开始时间 / 文本件无计数 ---
+  /** 段信息（performance.recognition.current_segment）：两段才编号、并行中页数取该段并发。 */
+  const [taskSegment, setTaskSegment] = useState<{ index: number; total: number } | null>(null);
+  /** 并行处理中页数 = min(该段页并发, 剩余页)；串行段/缺段信息 → null（不显示）。 */
+  const [taskInFlight, setTaskInFlight] = useState<number | null>(null);
+  /** 任务段 started_at（ISO）：已运行时长以后端起算，刷新不走表。 */
+  const [taskStartedAt, setTaskStartedAt] = useState<string | null>(null);
+  /** 文本件（NER 段无页级计数）：数字行显示状态词、进度条不定态。 */
+  const [taskTextMode, setTaskTextMode] = useState(false);
   /** 迁移处理守卫：每个 job 的 awaiting_review/终态处理只执行一次（防重复拉快照/重复报错）。 */
   const handledJobRef = useRef<string | null>(null);
   /** 用户主动取消过的 job：provider 报 failed 时静默（cancelProcessing 已收拾过 UI）。 */
@@ -693,12 +707,19 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       // ner 段 1/1、vision 段 page/total →「后台识别中 current/total」+ visionStream 真进度
       //（沿用 Issue#123 的 UI 管道，字段换源）。
       setTaskPerformance(task.performance ?? null);
+      // Issue#238：段信息 / 并行中页数 / 任务开始时间 / 文本件判定——数字行、
+      // 段名行编号、已运行时长、✓ 清单排除集的数据源（全来自轮询已带回的字段）。
+      const stage = recognitionStageFromMessage(task.message);
+      const segment = currentSegmentFromPerformance(task.performance ?? null);
+      setTaskSegment(segment ? { index: segment.index, total: segment.total } : null);
+      setTaskInFlight(inFlightPages(segment, task.current, task.total));
+      setTaskStartedAt(stageStartedAtFromPerformance(task.performance ?? null, 'recognition'));
+      setTaskTextMode(stage?.labelKey === 'playground.taskStage.text');
       if (task.total > 0) {
         setVisionStream({ completed: task.current, total: task.total });
         // 用户验收③④：段名（人话）单独透出给等待视图的段名行（第二段不像重新开始）；
         // loadingMessage 升级为「正在识别「文件名」」顶部行——等待页从此只有一处活数字。
         // 拿不到文件名回落既有文案（段名+页码 / 后台识别中模板）。
-        const stage = recognitionStageFromMessage(task.message);
         setTaskStageLabel(stage ? t(stage.labelKey) : null);
         const filename = fileInfoRef.current?.filename;
         if (filename) {
@@ -715,6 +736,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       } else {
         setVisionStream(null);
         setTaskStageLabel(null);
+        setTaskSegment(null);
+        setTaskInFlight(null);
+        setTaskStartedAt(null);
+        setTaskTextMode(false);
         setLoadingMessage(t('playground.taskParsing'));
       }
       return;
@@ -759,6 +784,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
             setTaskRecognitionJob(null);
             setTaskPerformance(null);
             setTaskStageLabel(null);
+            setTaskSegment(null);
+            setTaskInFlight(null);
+            setTaskStartedAt(null);
+            setTaskTextMode(false);
             setVisionStream(null);
             setIsLoading(false);
             setLoadingMessage('');
@@ -775,6 +804,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       setTaskRecognitionJob(null);
       setTaskPerformance(null);
       setTaskStageLabel(null);
+      setTaskSegment(null);
+      setTaskInFlight(null);
+      setTaskStartedAt(null);
+      setTaskTextMode(false);
       setVisionStream(null);
       setIsLoading(false);
       setLoadingMessage('');
@@ -787,6 +820,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     setTaskRecognitionJob(null);
     setTaskPerformance(null);
     setTaskStageLabel(null);
+    setTaskSegment(null);
+    setTaskInFlight(null);
+    setTaskStartedAt(null);
+    setTaskTextMode(false);
     setVisionStream(null);
     if (cancelledJobsRef.current.has(task.jobId)) return;
     setIsLoading(false);
@@ -820,6 +857,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         setTaskRecognitionJob(null);
         setTaskPerformance(null);
         setTaskStageLabel(null);
+        setTaskSegment(null);
+        setTaskInFlight(null);
+        setTaskStartedAt(null);
+        setTaskTextMode(false);
         setVisionStream(null);
         setIsLoading(false);
         setLoadingMessage('');
@@ -909,6 +950,11 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     taskRecognition,
     taskPerformance,
     taskStageLabel,
+    // Issue#238：诚实化进度数据源（表现层透传给 PlaygroundLoading）
+    taskSegment,
+    taskInFlight,
+    taskStartedAt,
+    taskTextMode,
     reattachTask,
   };
 }

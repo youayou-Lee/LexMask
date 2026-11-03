@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import fitz
@@ -80,6 +81,7 @@ class Redactor(TextRedactorMixin, ImageRedactorMixin):
         entities: list[Entity],
         bounding_boxes: list[BoundingBox],
         config: RedactionConfig,
+        progress_cb: Callable[[int, int], None] | None = None,
     ) -> dict:
         """
         执行匿名化操作
@@ -89,6 +91,8 @@ class Redactor(TextRedactorMixin, ImageRedactorMixin):
             entities: 要匿名化的实体列表
             bounding_boxes: 要匿名化的图片区域列表
             config: 匿名化配置
+            progress_cb: Issue#238 可选逐页进度回调 (current, total)——仅扫描件/
+                图片栅格化路径逐页触发；文本/docx 快链路不回调。None=不上报。
 
         Returns:
             匿名化结果
@@ -196,7 +200,12 @@ class Redactor(TextRedactorMixin, ImageRedactorMixin):
             # 手拉框与实体定位框合并栅格化（不能 only-or：旧框残留+实体选中
             # 的组合曾产出零打码成品——评审 I2）
             redacted_count = await self._redact_image(
-                file_path, file_type, selected_boxes + mask_boxes, output_path, config
+                file_path,
+                file_type,
+                selected_boxes + mask_boxes,
+                output_path,
+                config,
+                progress_cb=progress_cb,
             )
 
         watermark_text = (getattr(config, "watermark_text", None) or "").strip()

@@ -340,6 +340,10 @@ class RecognitionPipelineMixin:
             total=pages,
             message=f"Vision recognition queued for {pages} page(s)",
         )
+        # Issue#238：段数动态——两段式只在「勾选视觉要素且多页」时存在；单段不编号。
+        # current_segment 随段起跑覆写（段号/段数/段名/该段实际并发），前端数字行、
+        # 段名行编号与「并行处理中」都从这里取，不靠前端猜配置。
+        segment_total = 2 if (pages > 1 and visual_feature_types != []) else 1
         self._record_item_performance(
             store,
             task.item_id,
@@ -352,12 +356,36 @@ class RecognitionPipelineMixin:
                     "page_concurrency_reason": page_concurrency_reason,
                     "gpu_memory": _gpu_memory_metadata(gpu_memory),
                     "pdf_text_layer_sparse_probe": sparse_probe,
+                    "current_segment": {
+                        "index": 1,
+                        "total": segment_total,
+                        "label": "OCR+HaS识别" if segment_total == 2 else "视觉识别",
+                        "concurrency": page_concurrency,
+                    },
                     "pages": {},
                 }
             },
         )
         active_pages = 0
         max_active_pages = 0
+        # Issue#238：进度写点 = 页**终态**（完成/超时/失败都计——页账走到头才算数），
+        # 单调防回退；每段归零（两段式各扫一遍，段内 current/total）。
+        completed_pages = 0
+        reported_current = 0
+
+        def bump_stage_progress(stage_label_: str, stage_total_: int) -> None:
+            nonlocal completed_pages, reported_current
+            completed_pages += 1
+            if completed_pages <= reported_current:
+                return
+            reported_current = completed_pages
+            store.update_item_progress(
+                task.item_id,
+                stage="vision",
+                current=completed_pages,
+                total=stage_total_,
+                message=f"{stage_label_} page {completed_pages}/{stage_total_}",
+            )
 
         async def run_page(
             p: int,
@@ -368,25 +396,21 @@ class RecognitionPipelineMixin:
             signature_ocr_types: list[str] | None = None,
             signature_visual_feature_types: list[str] | None = None,
             stage_label: str = "视觉识别",
+            stage_total: int | None = None,
             stage_failed: dict[int, str] | None = None,
         ) -> None:
             nonlocal active_pages, max_active_pages
+            # Issue#238：本段实际要跑的页数（合并段会跳过一阶段失败页，total 缩水才不卡条）。
+            stage_pages = pages if stage_total is None else stage_total
             async with page_sem:
                 page_started = time.perf_counter()
                 page_started_at = _utc_iso()
                 active_pages += 1
                 max_active_pages = max(max_active_pages, active_pages)
                 active_at_start = active_pages
-                store.update_item_progress(
-                    task.item_id,
-                    stage="vision",
-                    current=p,
-                    total=pages,
-                    message=f"{stage_label} page {p}/{pages}",
-                )
                 logger.info(
                     "[queue] item=%s %s page %d/%d START (page_concurrency=%d active_pages=%d)",
-                    task.item_id[:8], stage_label, p, pages, page_concurrency, active_at_start,
+                    task.item_id[:8], stage_label, p, stage_pages, page_concurrency, active_at_start,
                 )
                 self._record_item_performance(
                     store,
@@ -443,6 +467,8 @@ class RecognitionPipelineMixin:
                         stage_failed[p] = (
                             f"{stage_label} page timeout after {page_timeout:.0f}s"
                         )
+                    # Issue#238：超时页也计入已完成——页账走到头才算数，进度条不卡条。
+                    bump_stage_progress(stage_label, stage_pages)
                 except MemoryError:
                     # 冷审 I2：OOM 下继续跑其余页只会放大故障——显式上抛走 FAILED 路径。
                     raise
@@ -501,6 +527,8 @@ class RecognitionPipelineMixin:
                             }
                         },
                     )
+                    # Issue#238：失败页同样计入已完成（失败清单另走 failed_pages 账面）。
+                    bump_stage_progress(stage_label, stage_pages)
                 else:
                     page_ms = _elapsed_ms(page_started)
                     active_pages = max(0, active_pages - 1)
@@ -534,10 +562,12 @@ class RecognitionPipelineMixin:
                         task.item_id[:8],
                         stage_label,
                         p,
-                        pages,
+                        stage_pages,
                         page_ms / 1000,
                         active_at_end,
                     )
+                    # Issue#238：完成页即上报——前端「已完成」从此是真值。
+                    bump_stage_progress(stage_label, stage_pages)
 
         async def run_page_stage(
             *,
@@ -561,6 +591,10 @@ class RecognitionPipelineMixin:
                 if page_filter is not None
                 else list(range(1, max(1, pages) + 1))
             )
+            # Issue#238：段计数归零——两段式各自从 1/total 重扫，单调闸按段重置。
+            nonlocal completed_pages, reported_current
+            completed_pages = 0
+            reported_current = 0
             page_tasks = {
                 asyncio.create_task(
                     run_page(
@@ -571,6 +605,7 @@ class RecognitionPipelineMixin:
                         signature_ocr_types=signature_ocr_types,
                         signature_visual_feature_types=signature_visual_feature_types,
                         stage_label=stage_label,
+                        stage_total=len(page_ids),
                         stage_failed=stage_failed,
                     )
                 ): p
@@ -612,6 +647,21 @@ class RecognitionPipelineMixin:
                     )
                 )
                 page_sem = asyncio.Semaphore(visual_merge_concurrency)
+                # Issue#238：第二段起跑覆写 current_segment——段号/段名/该段实际并发。
+                self._record_item_performance(
+                    store,
+                    task.item_id,
+                    {
+                        "recognition": {
+                            "current_segment": {
+                                "index": 2,
+                                "total": 2,
+                                "label": "视觉特征识别",
+                                "concurrency": visual_merge_concurrency,
+                            }
+                        }
+                    },
+                )
                 # Issue#199：合并阶段跳过一阶段已失败的页——页账保留第一阶段结论，
                 # 失败原因带阶段标签（冷审 I3b）。
                 failed_pages.update(
@@ -957,6 +1007,33 @@ class RedactionPipelineMixin:
                 store.update_item_status(task.item_id, JobItemStatus.COMPLETED)
                 return
 
+            # Issue#238：打码段进度——此前整卷一次性执行零上报，大卷渲染数分钟
+            # 用户只能盯着「正在匿名化...」。起跑先写 0/N（前端立即出「打码中」），
+            # 扫描件/图片栅格化路径逐页回调上报；文本/docx 快链路无页级回调，
+            # 前端回落不定态。page_count<=0（docx/txt 等无页概念）不传回调。
+            redaction_pages = int(fi.get("page_count") or 0)
+            store.update_item_progress(
+                task.item_id,
+                stage="redaction",
+                current=0,
+                total=redaction_pages,
+                message="redaction_started",
+            )
+            reported_redaction_page = 0
+
+            def redaction_progress_cb(current: int, total: int) -> None:
+                nonlocal reported_redaction_page
+                if current <= reported_redaction_page:
+                    return
+                reported_redaction_page = current
+                store.update_item_progress(
+                    task.item_id,
+                    stage="redaction",
+                    current=current,
+                    total=total,
+                    message=f"打码 page {current}/{total}",
+                )
+
             from app.models.schemas import BoundingBox, Entity
             raw_ents = fi.get("entities") or []
             entities = []
@@ -996,7 +1073,13 @@ class RedactionPipelineMixin:
                 image_fill_color=str(cfg.get("image_fill_color") or "#000000"),
                 watermark_text=(str(cfg.get("watermark_text") or "").strip() or None),
             )
-            await execute_redaction_request(task.file_id, entities, boxes, config)
+            await execute_redaction_request(
+                task.file_id,
+                entities,
+                boxes,
+                config,
+                progress_cb=redaction_progress_cb if redaction_pages > 0 else None,
+            )
             self._record_item_performance(
                 store,
                 task.item_id,

@@ -96,10 +96,16 @@ export default {
         'slide-down': 'slideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
         'scale-in': 'scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+        // Issue#238：无页级计数的阶段（文本件 NER/打码快链路）不定态进度条
+        'indeterminate-slide': 'indeterminateSlide 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
         shimmer: 'shimmer 2s linear infinite',
         glow: 'glow 2s ease-in-out infinite alternate',
       },
       keyframes: {
+        indeterminateSlide: {
+          '0%': { transform: 'translateX(-100%)' },
+          '100%': { transform: 'translateX(300%)' },
+        },
         fadeIn: {
           '0%': { opacity: '0' },
           '100%': { opacity: '1' },
