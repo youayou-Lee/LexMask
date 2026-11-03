@@ -166,6 +166,12 @@ function Probe() {
       <button type="button" data-testid="redact-btn" onClick={() => void pg.handleRedact()}>
         redact
       </button>
+      <button type="button" data-testid="reset-btn" onClick={() => pg.confirmReset()}>
+        reset
+      </button>
+      <span data-testid="redact-progress">
+        {pg.redactProgress ? `${pg.redactProgress.completed}/${pg.redactProgress.total}` : 'none'}
+      </span>
     </div>
   );
 }
@@ -528,6 +534,57 @@ describe('Issue#194 打码走任务流第二段（T10）', () => {
     });
     await waitFor(() => expect(harness.pg!.redactProgress).toBeNull());
     await waitFor(() => expect(screen.getByTestId('stage').textContent).toBe('result'));
+  });
+
+  it('(g) Issue#238 门⑥ I1：打码在途时重置会话 → 小卡立即退场（不残留冻结卡）', async () => {
+    await seedPreview();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+    await waitFor(() => expect(submitRedactionTask).toHaveBeenCalledTimes(1));
+
+    const startedAt = new Date(Date.now() - 80_000).toISOString();
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'redacting', {
+        items: [
+          {
+            id: 'it1',
+            job_id: 'j1',
+            file_id: 'f1',
+            sort_order: 0,
+            status: 'redacting',
+            progress_stage: 'redaction',
+            progress_current: 92,
+            progress_total: 149,
+            progress_message: '打码 page 92/149',
+            error_message: null,
+            created_at: CREATED,
+            updated_at: CREATED,
+            performance: { redaction: { started_at: startedAt } },
+          },
+        ],
+      } as Partial<JobDetail>),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    await waitFor(() => expect(screen.getByTestId('redact-progress').textContent).toBe('92/149'));
+
+    // 门⑥ I1 场景：重置会话——confirmReset 直达 performReset（弹窗 UI 在 page 层，
+    // hook 测试树只验 hook 语义），同批清 pendingRedact 与 fileInfo
+    // （currentFileId=null），订阅 effect 必须仍走清理分支退掉小卡。
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reset-btn'));
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('redact-progress').textContent).toBe('none'),
+    );
+    // 轮询再推进若干拍也不复活（provider 仍报 redacting，但 pending 已清）
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    expect(screen.getByTestId('redact-progress').textContent).toBe('none');
   });
 });
 

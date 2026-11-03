@@ -689,7 +689,9 @@ export function usePlayground() {
   const currentFileId = fileCtx.fileInfo?.file_id ?? null;
   const { setStage: setFileStage } = fileCtx;
   useEffect(() => {
-    if (!currentFileId) return;
+    // 门⑥ I1：pending 失配清理必须在 !currentFileId 早退**之前**——重置路径同批清空
+    // pendingRedact 与 fileInfo（currentFileId=null），早退在前会让打码小卡永久残留。
+    // pending.fileId 恒为非空字符串，currentFileId=null 时必走下面的清理分支。
     const pending = pendingRedact;
     if (!pending || pending.fileId !== currentFileId) {
       // Issue#238：pendingRedact 消失（提交失败/换文件/重置收尾）→ 打码小卡随之退场。

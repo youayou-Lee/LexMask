@@ -376,6 +376,8 @@ class RecognitionPipelineMixin:
         def bump_stage_progress(stage_label_: str, stage_total_: int) -> None:
             nonlocal completed_pages, reported_current
             completed_pages += 1
+            # 门⑥ M1：现调用形态下每页每段恰 bump 一次、计数严格递增，本闸为死防御——
+            # 留作未来补查/重试路径复用 bump 时的防回退护栏（勿删）。
             if completed_pages <= reported_current:
                 return
             reported_current = completed_pages

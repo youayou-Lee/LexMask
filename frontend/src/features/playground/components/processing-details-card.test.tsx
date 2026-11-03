@@ -232,6 +232,23 @@ describe('PlaygroundLoading 等待视图 — 单一活计数 + ✓ 已完成清�
     );
   });
 
+  it('Issue#238 门⑥ M2：OCR+HaS 段排除 OCR/NER 两行（视觉行非当前段照常显示）', () => {
+    render(
+      <PlaygroundLoading
+        loadingMessage="正在识别「第四卷.pdf」"
+        isImageMode
+        stage="文字识别"
+        progress={{ completed: 10, total: 20 }}
+        performance={FULL_VISION_PERF}
+      />,
+    );
+    expect(screen.getByTestId('playground-checklist-parse')).toBeTruthy();
+    expect(screen.queryByTestId('playground-checklist-ocr')).toBeNull();
+    expect(screen.queryByTestId('playground-checklist-ner')).toBeNull();
+    // 视觉行不在当前段排除集：FULL_VISION_PERF 有视觉耗时数据即照常显示
+    expect(screen.getByTestId('playground-checklist-visual_features')).toBeTruthy();
+  });
+
   it('Issue#238 泛「视觉识别」段：OCR/NER/视觉三行都算进行中，清单只留文本解析（AC2）', () => {
     render(
       <PlaygroundLoading

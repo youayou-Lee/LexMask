@@ -18,8 +18,7 @@
 - **改了什么**（纯前端，无后端改动）：①`getRecognitionBlocker` 不再把 `visual_features` 计入拦截（OCR/NER 仍硬拦——缺了真跑不了）；②提交侧新增 `isVisualServiceBlocked` 判据（与 blocker 同源），LA 不可用且用户勾了视觉项时**照常提交、视觉段传空数组**（后端既有语义=显式不跑该段，编排器不回落默认全类型），并置 `visualSkippedNotice`；③识别面板顶部新增琥珀色提示条（zh/en），服务恢复后下次任务自动恢复检测。跳过而非静默——用户知道印章/签名本次未检测。
 - **门⑥ I1 处置**：rerun 路径（handleRerunNer 图片分支）接入同款 skip 语义——LA 未启动时 rerun 也自动跳过视觉段（不再逐页撞后端预检硬报错），提示条随本次 rerun 刷新（服务已恢复即清掉过期提示）；rerun 防摘钉入 wiring-contract。
 - **测试**：taskflow 新增 (h2)（LA 不可用 → `visualFeatureTypes: []` + 提示置位，负样本 (h) 全类型透传不变）；wiring-contract 契约钉同步新形状并加 skipVisual/提示接线两枚防摘钉；vitest 319 全绿、tsc（含测试）绿、build 绿。
-- **边界**：识别结果页的 pipeline_status 级标注（后端侧）不在本 PR；烧进图片的水印、印章检测质量不受影响。>>>>>>> 491bd1e (fix(playground): LA 未启动不再拦截识别——自动跳过视觉段并显式提示)
-### 功能（Issue#238）进度卡诚实化——识别段真完成数/✓语义/已运行时长 + 打码段逐页进度
+- **边界**：识别结果页的 pipeline_status 级标注（后端侧）不在本 PR；烧进图片的水印、印章检测质量不受影响。### 功能（Issue#238）进度卡诚实化——识别段真完成数/✓语义/已运行时长 + 打码段逐页进度
 
 - **为什么**：单文件等待卡三处与并行事实不符——①「87/149」实为页**开跑**水位（≈已完成+在飞，并行下"处理到第几页"不成立）；②通用「视觉识别」段不排除任何清单行，进行中的段带 ✓ 显示（进度条 58% 却见「✓ 文字识别 87页」自相矛盾）；③打码段整卷一次性执行零上报，大卷渲染数分钟用户只盯「正在匿名化...」。用户拍板方案 A（诚实化单卡）+ 已运行时长 + 打码补进度，交互预览先行验收。
 - **改了什么**：
@@ -28,10 +27,9 @@
   3. 打码段：`_run_redaction` 起跑写 `redaction_started` 0/N；`progress_cb(current,total)` 穿透 `execute_redaction_request → execute_redaction → Redactor.redact → _redact_image → VisionService.apply_redaction`，扫描件/图片栅格化路径逐页回调写「打码 page p/N」（单调防回退）；文本/docx 快链路（page_count<=0）不传回调。
   4. 前端等待卡：数字行「已完成 X/Y · 并行处理中 min(段并发,剩余) 页」（并行页数=信号量模型下在飞数的精确值）；段名行两段才显示「第 X 段/共 Y 段」；新增「已运行 {time}」（后端 `performance.<task>.started_at` 起算，刷新不走表，缺键回落本地计时）；✓ 清单排除集修正（OCR+HaS 段排除 OCR/NER 两行、泛视觉段排除三行、文本件排除 NER 行）；文本件数字行=「实体识别中」+ 进度条不定态（新 tailwind `indeterminate-slide`）。
   5. 打码被动小卡：`PlaygroundLoading variant="redaction"`（右下角 passive、无清单/提示/取消），由 pendingRedact 收尾订阅逐拍刷新，done/failed/换文件/重置即退场——「点完打码即可离开」语义不变。
-- **测试**：后端净 +13 例（页完成写点/乱序单调/两段式段信息与段内归零/合并段 total 缩水/单段不编号/超时页计入/打码起跑+逐页+单调/无页数不传回调/回调链穿透三钉/栅格化逐页/单图 1,1），先红后绿；后端全量 2671 passed 零回归（修 test_mask_mode_gating 桩签名承接新 kwarg）；前端净 +7 例（task-progress 纯函数 5 + 打码消息映射注入负例 + PlaygroundLoading 新语义 6 + redactProgress 订阅 1），playground 177/177、全量 333/333、tsc+build 绿。
+- **测试**：后端净 +13 例（页完成写点/乱序单调/两段式段信息与段内归零/合并段 total 缩水/单段不编号/超时页计入/打码起跑+逐页+单调/无页数不传回调/回调链穿透三钉/栅格化逐页/单图 1,1），先红后绿；后端全量 2671 passed 零回归（修 test_mask_mode_gating 桩签名承接新 kwarg）；前端净 +15 例（task-progress 纯函数与打码映射注入负例 7 + PlaygroundLoading 新语义 6 + taskflow 并行中/时长 1 + redactProgress 订阅退场 1），换基后全量 351 passed、playground 180/180、tsc+build 绿。
 - **边界**：打码并行化不在本 PR（打码仍串行，本 PR 只补上报）；供料线（agent/vl_md）进度形态不动；旧任务无 `current_segment`/`started_at` 回落旧行为不误报（AC7）；批次任务中心的进度展示不在本 PR 范围。
-58aa7ee (feat(#238): 进度卡诚实化——识别段真完成数/✓语义/已运行时长 + 打码段逐页进度)
-
+- **门⑥处置**：I1（重置后打码小卡永久残留——订阅 effect 的 `!currentFileId` 早退挡在 pending 失配清理之前，重置同批清空 pendingRedact+fileInfo 时 effect 早退、小卡冻结残留）⇒ 清理分支前移 + hook 级回归钉 (g)（confirmReset 直达 performReset，变异验证还原 bug 即红）；I2（CHANGELOG 混入提交哈希行 + 基线残留冲突标记尾行）⇒ 已清；M1 单调闸补「死防御勿删」注释；M2 ocrHas 段排除集补测试钉（此前变异存活）；M6 数字订正。M3（全败卷段标签瞬态）/M4（段切换数字毛刺）/M5（时钟偏移为设计取舍）挂账不修。
 ## 2026-11-03
 
 ### 修正（Issue#217）LibreOffice 烘焙进 backend 镜像——废弃宿主 soffice 挂载
