@@ -421,7 +421,7 @@ def test_r5_redactor_dispatch_passes_cb_to_image_path_only(monkeypatch: pytest.M
 
     async def scanned() -> None:
         await red.redact(
-            file_info={"file_type": "pdf_scanned", "file_path": "/tmp/x.pdf", "is_scanned": True},
+            file_info={"file_type": "pdf_scanned", "file_path": "canary-238-stub.pdf", "is_scanned": True},
             entities=[],
             bounding_boxes=[],
             config=config,
@@ -433,7 +433,7 @@ def test_r5_redactor_dispatch_passes_cb_to_image_path_only(monkeypatch: pytest.M
 
     async def text_pdf() -> None:
         await red.redact(
-            file_info={"file_type": "pdf", "file_path": "/tmp/x.pdf", "is_scanned": False},
+            file_info={"file_type": "pdf", "file_path": "canary-238-stub.pdf", "is_scanned": False},
             entities=[],
             bounding_boxes=[],
             config=config,
