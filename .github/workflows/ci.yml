@@ -200,8 +200,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 2026-11-03：docker-build 连续两轮在 Build backend image 卡死 18min+（Dockerfile 未变、
+      # 前夜同文件 2.5min 通过）⇒ 定性为 runner 匿名拉 Docker Hub 基础镜像限流/抖动。
+      # 显式带重试预拉，命中限流时退避重试；拉到的镜像被 build 直接复用。
+      - name: Pull base images (retry)
+        run: |
+          for img in python:3.11-slim node:24-alpine; do
+            for i in 1 2 3 4 5; do
+              if docker pull "$img"; then break; fi
+              if [ "$i" = 5 ]; then echo "::error::docker pull $img failed after 5 attempts"; exit 1; fi
+              echo "retry $img in 60s (attempt $i)"; sleep 60
+            done
+          done
+
       - name: Build backend image
-        run: docker build -t test-backend -f backend/Dockerfile backend/
+        run: docker build --build-arg APT_MIRROR= -t test-backend -f backend/Dockerfile backend/
 
       - name: Build frontend image
         run: docker build -t test-frontend -f frontend/Dockerfile frontend/

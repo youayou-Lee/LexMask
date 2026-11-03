@@ -743,3 +743,31 @@ def test_added_lines_git_failure_exits_two(repo, capsys, monkeypatch):
     err = capsys.readouterr().err
     assert rc == 2, err
     assert "取新增行失败" in err, err
+
+
+class TestBuiltinContainerHygienePrefixes:
+    """内置容器构建卫生路径白名单（2026-11-03：PR#228 Dockerfile `rm -rf /var/lib/apt/lists/*`
+    重排 RUN 链后被 abs_path 误伤——该行基线既有、是通用基建写法而非实例路径。
+    判据是接线钉：删掉 scan() 内对 BUILTIN_ABS_PATH_PREFIXES 的应用或清空常量即转红。
+    """
+
+    def test_dockerfile_apt_cleanup_line_is_exempt(self):
+        line = "    rm -rf /var/lib/apt/lists/*"
+        assert ptree.scan(line, denylist=[], allow_prefixes=[]) == []
+
+    def test_apt_archive_cache_cleanup_is_exempt(self):
+        line = "    rm -rf /var/cache/apt/archives/*"
+        assert ptree.scan(line, denylist=[], allow_prefixes=[]) == []
+
+    def test_same_prefix_without_star_is_still_flagged(self):
+        # 白名单只放行字面量带 `*` 的卫生行；同前缀的具体子路径（可指向真实文件）照报。
+        hits = ptree.scan("COPY /var/lib/apt/lists/selected-list /tmp/x", denylist=[], allow_prefixes=[])  # public-tree-scan: ignore-line(abs_path)
+        assert ("abs_path", "/var/lib/apt/lists/selected-list") in hits  # public-tree-scan: ignore-line(abs_path)
+
+    def test_other_var_paths_still_flagged(self):
+        hits = ptree.scan("log /var/lib/postgresql/data/seed.sql", denylist=[], allow_prefixes=[])  # public-tree-scan: ignore-line(abs_path)
+        assert ("abs_path", "/var/lib/postgresql/data/seed.sql") in hits  # public-tree-scan: ignore-line(abs_path)
+
+    def test_ignore_line_marker_still_wins_per_rule(self):
+        line = "    rm -rf /var/lib/apt/lists/*  # " + f"{ptree.IGNORE_MARKER}(abs_path)"
+        assert ptree.scan(line, denylist=[], allow_prefixes=[]) == []

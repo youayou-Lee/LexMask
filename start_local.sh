@@ -226,10 +226,5 @@ done
 
 command -v nvidia-smi >/dev/null 2>&1 && \
   info "显存当前：$(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader | head -1)"
-# Issue#217（评审 I2a）：backend 镜像不含 LibreOffice（.doc 转换），运行时挂载宿主——
-# 宿主缺失时 Docker 会把挂载点建成空目录 → .doc 上传转换失败（静默）。这里显式警告。
-if [[ ! -d /usr/lib/libreoffice/program || ! -x /usr/bin/soffice ]]; then
-  warn "宿主未检测到 LibreOffice（/usr/lib/libreoffice 或 /usr/bin/soffice）——.doc 老格式转换将不可用（.docx/PDF 不受影响）。宿主安装：sudo apt-get install --no-install-recommends libreoffice-writer-nogui"
-fi
 info "完成 → 浏览器打开 http://localhost:${FRONTEND_PORT:-3000}"
 info "停止：./stop_local.sh"

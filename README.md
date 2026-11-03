@@ -30,7 +30,7 @@
 docker compose --profile gpu up -d    # 打开 http://localhost:3000
 ```
 
-> 宿主前置：backend 容器的 .doc 老格式转换运行时挂载宿主 LibreOffice（`sudo apt-get install --no-install-recommends libreoffice-writer-nogui`）；缺失时 .docx/PDF 正常、.doc 转换不可用。
+> 无宿主前置：.doc 老格式转换所需 LibreOffice 已烘焙进 backend 镜像（2026-11 起），开箱即用。
 
 本地开发与测试门禁：
 
@@ -55,7 +55,7 @@ cd frontend && npm run build && npm test && npm run lint
 - 云端 = **自有实例的 SSH 隧道**（转发现役端口 8080/8082/8090），不是第三方云 API；隧道你自己开，地址用环境变量或根目录 `.env` 的 `OCR_BASE_URL` / `VISUAL_FEATURES_BASE_URL` / `HAS_TEXT_VLLM_BASE_URL` 提供——`--xx cloud` 而地址没配会立即报错，不起半残栈。脚本不内嵌任何地址/口令；真实案卷禁止发往第三方云服务。
 - 勾了视觉识别项但 LA 没起：上传页直接显示「服务未启动」（PR② 起），提交任务也会秒级明确失败——绝不静默跳过（印章是要打码的对象，漏检=泄漏）。
 - MinerU 喂料：**默认启用（flash 档，Issue#226）**——flash 无常驻 vLLM 引擎、显存轻、单文件秒级；`--mineru-tier standard` 切标准档（≈6.5GB 含引擎，表格型/质量优先场景；与本地 OCR 互斥，脚本会明确报错给指引，完整形态建议上云实例）；`--no-mineru` 关闭；`--mineru cloud` 走云端隧道。**供料模式全链可用**（Issue#219 起）——backend 适配层按产物实际 schema 自动分流：3.x `content_list`（现役实例 3.4.5）与 4.x `docvortex.middle`（本地容器 4.1.3）归一到同一内部表示，将来 MinerU 再升大版本=新增解析分支；未知 schema 显式失败不静默。边界：4.x flash 档暂无公章哨兵来源（3.x 不受影响）。
-- 停止：`./stop_local.sh`（数据卷保留）。原有部署方式完全不变：`docker compose --profile gpu up -d` 照旧可用（.doc 转换需宿主 LibreOffice，见快速开始）。
+- 停止：`./stop_local.sh`（数据卷保留）。原有部署方式完全不变：`docker compose --profile gpu up -d` 照旧可用（.doc 转换所需 LibreOffice 已烘焙进镜像，无需宿主安装）。
 
 ## 文档导航
 

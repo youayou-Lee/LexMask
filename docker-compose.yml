@@ -57,11 +57,6 @@ services:
       - backend-data:/app/data
       - backend-uploads:/app/uploads
       - backend-outputs:/app/outputs
-      # Issue#217: .doc conversion (soffice) is provided by the HOST, not baked
-      # into the image — requires libreoffice-writer-nogui on the host.
-      - /usr/lib/libreoffice:/usr/lib/libreoffice:ro
-      - /usr/bin/soffice:/usr/bin/soffice:ro
-      - /etc/libreoffice:/etc/libreoffice:ro
     networks:
       - redaction-net
     healthcheck:
