@@ -258,3 +258,73 @@ class TestMultiWindowEndToEnd:
         task = sidecar_mod._tasks["t5"]
         assert task["status"] == "completed", task.get("error")
         assert any("page_count" in w for w in task["warnings"])
+
+
+# ---- 门⑥挂账收口（2026-11-04）：F1 同 stem 覆盖 / F4 WAIT fail-fast ----
+
+
+def _make_fake_mineru_input_aware(tmp_path: Path, args_file: Path) -> Path:
+    """fake mineru：md 内容带输入名——同 stem 覆盖测试需要两个 md 可区分。"""
+    fake = tmp_path / "fake-mineru"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'printf \'%s\\n\' "$@" > {args_file}\n'
+        'echo \'{"parse": {"sha256": "abcd", "tier": "flash"}}\'\n'
+        'out=""\n'
+        'prev=""\n'
+        'input=""\n'
+        'for a in "$@"; do\n'
+        '  if [ "$prev" = "-o" ]; then out="$a"; fi\n'
+        '  prev="$a"; input="$a"\n'
+        "done\n"
+        'printf "# fake %s\\n" "$input" > "$out"\n'
+        "",
+        encoding="utf-8",
+    )
+    os.chmod(fake, os.stat(fake).st_mode | stat.S_IEXEC)
+    return fake
+
+
+def test_same_stem_two_inputs_no_overwrite(sidecar_mod, tmp_path, monkeypatch):
+    # 门⑥ M4（挂账①）：一任务两输入同 stem（a.pdf + a.doc，供料批量含 PDF+doc）
+    # ⇒ md 与 mineru4 json 都必须各自存在，不互相覆盖
+    args_file = tmp_path / "cli-args.txt"
+    _make_fake_mineru_input_aware(tmp_path, args_file)
+    _make_doclib(tmp_path / "mineru-home", [_win([0, 1], page_count=2)])
+    a_pdf = tmp_path / "a.pdf"
+    a_doc = tmp_path / "a.doc"
+    a_pdf.write_bytes(b"%PDF-a")
+    a_doc.write_bytes(b"%DOC-a")
+    sidecar_mod._tasks["t6"] = {"status": "pending", "progress": 0,
+                                "error": None, "warnings": [],
+                                "files": ["a.pdf", "a.doc"]}
+    sidecar_mod._run_mineru_sync("t6", [a_pdf, a_doc])
+    task = sidecar_mod._tasks["t6"]
+    assert task["status"] == "completed", task.get("error")
+    import zipfile
+
+    with zipfile.ZipFile(sidecar_mod._task_zip("t6")) as zf:
+        names = sorted(zf.namelist())
+        mds = [n for n in names if n.endswith(".md")]
+        js = [n for n in names if n.startswith("mineru4_")]
+        assert len(mds) == 2, names
+        assert len(js) == 2, names
+        assert len(set(mds)) == 2 and len(set(js)) == 2
+        body = {n: zf.read(n).decode("utf-8", "replace") for n in mds}
+        assert len(set(body.values())) == 2  # 两个 md 内容可区分 = 没有覆盖
+
+
+def test_invalid_wait_env_fails_task_readably(sidecar_mod, tmp_path, monkeypatch):
+    # 门⑥ M6（挂账④）：MINERU_SIDECAR_WAIT 非数字 ⇒ 任务失败且报错点名变量名
+    monkeypatch.setenv("MINERU_SIDECAR_WAIT", "abc")
+    args_file = tmp_path / "cli-args.txt"
+    _make_fake_mineru(tmp_path, args_file)
+    inp = tmp_path / "in.pdf"
+    inp.write_bytes(b"%PDF-fake")
+    sidecar_mod._tasks["t7"] = {"status": "pending", "progress": 0,
+                                "error": None, "warnings": [], "files": ["in.pdf"]}
+    sidecar_mod._run_mineru_sync("t7", [inp])
+    task = sidecar_mod._tasks["t7"]
+    assert task["status"] == "failed"
+    assert "MINERU_SIDECAR_WAIT" in (task.get("error") or "")
+    assert "could not convert" not in (task.get("error") or "")

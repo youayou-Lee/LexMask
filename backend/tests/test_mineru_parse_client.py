@@ -130,10 +130,10 @@ async def test_poll_normalizes_states_and_keeps_zero_progress():
         {"status": "failed", "error": "x"},
     ])
     client = _client(handler)
-    assert await client.poll("job-1") == {"state": "running", "done": 0, "total": 0}
-    assert await client.poll("job-1") == {"state": "running", "done": 0, "total": 0}
-    assert await client.poll("job-1") == {"state": "done", "done": 0, "total": 0}
-    assert await client.poll("job-1") == {"state": "failed", "done": 0, "total": 0}
+    assert await client.poll("job-1") == {"state": "running", "done": 0, "total": 0, "warnings": []}
+    assert await client.poll("job-1") == {"state": "running", "done": 0, "total": 0, "warnings": []}
+    assert await client.poll("job-1") == {"state": "done", "done": 0, "total": 0, "warnings": []}
+    assert await client.poll("job-1") == {"state": "failed", "done": 0, "total": 0, "warnings": []}
 
 
 @pytest.mark.asyncio
@@ -319,3 +319,25 @@ async def test_unknown_json_names_not_logged(caplog):
     joined = " ".join(r.getMessage() for r in caplog.records)
     assert "卷宗机密名" not in joined and "weird" not in joined
     assert "unknown=1" in joined
+
+
+# ---- 门⑥挂账收口（2026-11-04）：F2 sidecar warnings 透传进 MineruResult ----
+
+
+@pytest.mark.asyncio
+async def test_task_warnings_carry_into_result():
+    """sidecar /tasks/{id} 的 warnings 字段随终态轮询带进 MineruResult.warnings。"""
+    handler = _transport(states=[
+        {"status": "processing"},
+        {"status": "completed", "warnings": ["docvortex merge: 去重 3 个重复页"]},
+    ])
+    result = await _client(handler).wait_result("job-1")
+    assert result.warnings == ["docvortex merge: 去重 3 个重复页"]
+
+
+@pytest.mark.asyncio
+async def test_task_warnings_absent_yields_empty_list():
+    """旧 sidecar（无 warnings 键）向后兼容：result.warnings 为空 list 不炸。"""
+    handler = _transport(states=[{"status": "completed"}])
+    result = await _client(handler).wait_result("job-1")
+    assert result.warnings == []

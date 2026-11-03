@@ -79,6 +79,8 @@ async def build_mineru_segments(
             on_progress(done, total)
 
     result = await mineru.wait_result(job_id, on_progress=_cb)
+    for _sw in getattr(result, "warnings", ()) or []:
+        logger.warning("[agent-md-batch] sidecar warning: %s", _sw)
     segs, warns, _stats, source = AgentMdPipelineService._choose_representation(result)
     if segs is None:
         raise RuntimeError(_parse_no_text_message(result, source))

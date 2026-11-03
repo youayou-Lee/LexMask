@@ -18,6 +18,13 @@
 - **测试**：#200 +2 例（温度升级 + max 语义不被拉低）；**修正了原特征化钉的误钉**——旧钉以为 25 型走解析失败递归（24+1），实际先被帽驱动预分批切成 [12,12,1] 且 `type_guidance=[]` 不满足递归门槛（`is None`），钉的一直是预分批点；新测试 monkeypatch 预分批单批 + guidance=None 真正进入递归分支。#204-B +4 例（取消落 memo+re-raise / TTL 内重试零重建 / TTL 过后重建 / settings 口径钉）。变异双杀（#200 还原继承语义 1 红；#204-B 吞 re-raise 3 红）。全量 2627 passed 零回归。
 - **边界**：#204 缺陷 A（建链 O(整卷) 受单页 300s 看管的预算解耦）不在本 PR，另行设计讨论；水印资格闸（#203 主修）行为不变。
 
+### 修正（PR#234 门⑥挂账）sidecar 同 stem 覆盖 / warnings 透传 / mixed 重复告警 / WAIT fail-fast
+
+- **为什么**：PR #234 门⑥独立评审的 4 条 Minor 挂账，用户裁定全部当期收口。①sidecar 一任务多输入同 stem（供料批量含 PDF+doc）时 `-o` 的 md 与 `mineru4_*.json` 都按 stem 命名会互相覆盖；②sidecar 任务级 `warnings`（窗口去重/部分 range 放宽/page_count 缺失）到不了 backend（`poll()` 只读 status）；③`agent_md_pipeline_service` v4 分支 `mixed_schema_v4_wins` 在两处重复 append（基线既有）；④`MINERU_SIDECAR_WAIT` 非数字报错是裸 `could not convert`，定位性差。
+- **改了什么**：①`_run_mineru_sync` 建 per-task 消歧名（首现原名、重复 stem 加 `_1/_2` 序号），`-o` 与 mineru4 json 两处共用；②`MineruResult.warnings` 新字段 + `poll()` 归一化透出 + `wait_result` 终态塞入，单文件线与批量供料线各在 result 拿到处打 WARNING 日志（旧 sidecar 无键向后兼容为空 list）；③删第二处重复 append，mixed 线索只报一次；④`_mineru_wait_sec` 对非法值抛点名 `MINERU_SIDECAR_WAIT` 的 RuntimeError（经任务 error 可读透出）。
+- **测试**：净 +6 例（sidecar 2：同 stem 双输入 md/json 四文件互不覆盖且内容可区分、非法 WAIT 报错点名变量；client 2：warnings 透传/无键兼容——**附带发现并修正测试落点事故：这两例最初误追加到主检出后被还原抹掉，worktree 内从未存在过，变异复核时抓出**；dual_representation 1：mixed 条目 count==1 钉死；特征化钉 poll 响应随契约扩展补 `warnings` 键）。变异 4/4 KILLED；全量 2662 passed 零回归。
+- **边界**：warnings 目前到日志面为止（前端展示不做，超范围）；`_transport` 特征化 3 断言随契约更新。
+
 ### 修正（Issue#230/#231）MinerU 4.x sidecar 三处 CLI 缺陷 + docvortex 表名/脚注/doc_title 静默丢失
 
 - **为什么**：真卷（149 页扫描件 / 78 页表格卷）实测三处 sidecar CLI 缺陷——①不传 `--wait` 走 CLI 缺省 60s，真卷 standard 档必以 `parse_wait_timeout` 失败且留下孤儿 parse；②不传 `--pages` CLI 默认只解析前 10 页，所有 >10 页案卷静默变残卷（#218 引入即如此）；③补 `--pages all` 后 >64 页按窗口拆多份 json，撞后端 `mineru4_multiple_docs` fail-closed 整单作废。同批 #231：4.x docvortex 适配层只认 text/table_body/image_body 三种部件，`table_caption`/`table_footnote`/`image_footnote` 独立部件与 `doc_title` 块全部静默丢失（只在 warns 留痕、下游不失败）——表格卷丢「这张表是什么」的语义。

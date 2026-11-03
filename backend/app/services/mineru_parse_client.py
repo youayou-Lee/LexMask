@@ -60,6 +60,9 @@ class MineruResult:
     # 供管线显式失败点名——产物内容不进任何告警）。
     mineru4_docs: list[dict] = field(default_factory=list)
     unknown_jsons: list[str] = field(default_factory=list)
+    # 门⑥挂账②：sidecar 任务级 warnings（多窗口去重/截断放宽/page_count 缺失）
+    # 随终态轮询透出；旧 sidecar 无该键时为空 list。消费侧（管线）打日志留痕。
+    warnings: list[str] = field(default_factory=list)
 
 
 class MineruParseClient:
@@ -156,6 +159,7 @@ class MineruParseClient:
             "state": self._normalize_state(raw.get("status", "")),
             "done": 0,
             "total": 0,
+            "warnings": raw.get("warnings") or [],
         }
 
     async def wait_result(self, task_id: str, on_progress=None) -> MineruResult:
@@ -170,7 +174,9 @@ class MineruParseClient:
             if on_progress is not None:
                 on_progress(st["done"], st["total"])
             if st["state"] == "done":
-                return await self._fetch_result(task_id)
+                result = await self._fetch_result(task_id)
+                result.warnings = st.get("warnings") or []
+                return result
             if st["state"] == "failed":
                 raise MineruParseError(f"mineru task failed: {task_id}", transient=False)
             if time.monotonic() >= deadline:
