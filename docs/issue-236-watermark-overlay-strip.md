@@ -1,0 +1,380 @@
+# Issue#236 水印预处理：独立矢量覆盖水印流的检测与摘除（设计与验收方案 v2.2）
+
+- Issue: [#236](https://github.com/youayou-Lee/LexMask/issues/236)（#215 阶段 1 第一块）
+- 关联: #215（族 A 卷结构与分阶段）、#206 / PR#214（同族另一路：渲染面 OP 级剥离 + 建链流词过滤；阶段 1 只规划未实现）、#203（文档级水印闸，**本 Issue 不改其行为**）、#204
+- 门禁: 门①（设计含验收判据）→ 门①.5 独立冷审（冷审输入**只有** Issue 正文 + 第 5 节验收判据）→ 门② 开发
+- v2 变更（门①.5 第一轮 REVISE）：订正 coverage 口径数值与方向（§2.2）、补暖负样本、栅格保全、正向对照、原件保护、入口矩阵、副本治理、错误码枚举、环境口径表、变异 10/10、门⓪ 异构卷口径。
+- v2.1 变更（门①.5 第二轮 REVISE，8 阻断 + 7 重要）：AC3/AC8 绑「副本确实产出」防空转、AC2b 补**正文 span 集合 ON/OFF 相等**（正向对照判据，v2.2 已换成 GT 行对照）、差异掩码改用**只画 B 流的独立 oracle**、新增 **AC7 异构卷**（m6 的落点）、AC6 计数拆成「检测=1/构建=0」、AC5b 改为**不设环境变量验默认支路**、AC9 补 `not_pdf/not_applicable`、`pages_probed` 改抽样下限口径、性能/状态语义可机判、环境归属表订正，并把「#203 闸照旧触发」升为拍板项（§7.4）。
+- v2.2 变更（门①.5 第三轮 REVISE）：正文 oracle 从「非水印 span 集合」改为**GT 行对照**（真卷 6,039 行→副本 3,804 行逐页相等，本机已核验 mismatch=0）+ 新增 F2「正文在文字层+水印独立流」夹具；像素掩码钉成「只画 B 流 + 阈值 254 + 膨胀 3 px」的独立 oracle（真卷 4.48%/canary 32.25%，掩码外差异 0、掩码内清除率 0.51/0.53）；补夹具清单 F1–F7/W1–W4/C1–C3 与 GT json；m3/m4/m6 改挂 F6/F7/F5；AC10 改为「阶段级枚举码 + 任务级与基线一致」并给 7 用例映射表；AC8③ 明确 VL-MD 渲染段接副本、agent_md/MinerU 段排除；AC9 补原子性/回收/TTL 竞态；守卫支路标注；数值口径统一（coverage 区间 0.36–0.39、canary 与真卷各自锚定）。
+- 门①.5 已用满 3 轮（r1 9 条恒真+1 反号 → r2 8 阻断 → r3 4 阻断），v2.2 逐条处置；如需第 4 轮须用户授权（门禁上限 3 轮）。
+
+---
+
+## 1. 背景与目标
+
+族 A 真实案卷（149 页扫描件）每页的 `/Contents` 是**两条独立内容流**：
+
+| 流 | 体量 | 内容 | 作用 |
+|---|---|---|---|
+| A | 46 B | `/Fm1 Do` | 整页扫描图（Form XObject，内含不可见 OCR 文字层） |
+| B | 5.3–5.4 kB | 30 组 `q … Q`：`0.25098 rg` / `/Gs1 gs`(alpha) / 45° `cm` / `BT /F1 29.22 Tf <hex> Tj ET` | 防泄漏水印层 |
+
+水印是**独立的矢量覆盖流**，不是烧进像素、也不属于正文文字层，所以可**无损摘除**：把页对象 `/Contents` 从 `[A B]` 改成 `[A]` 即可，原件 1 字节不动。
+
+**目标**：识别流水线最前置的预处理——检测「独立矢量覆盖水印流」并生成**内部识别专用净化副本**；**渲染面**（识别取图、VL-MD 取图）改吃净化副本，让 OCR/视觉/实体抽取看不到水印像素与不可见水印字形；**原件、文本层判定链、交付物默认路径不动**。
+
+**非目标**（沿用 Issue）：烧进扫描图内部的栅格水印（需 inpaint，#215 阶段 2）、文字层内嵌水印碎片（无独立流形态，#203 闸继续管）、水印 OCR 质量优化本身。
+
+---
+
+## 2. 现状实测（判据阈值与红性的锚定证据）
+
+全部数字由本机 `PyMuPDF 1.27.2.3` + 本仓真实代码对族 A 卷与三份负样本实测；脚本与产物在容器 `.tmp/i236/`（不入库）。
+
+### 2.1 结构事实
+
+- 149/149 页 `/Contents` 均 2 条流；A 全部 46 B（`Do`×1、`BT`×0），B 全部 5.3–5.4 kB（`BT`×30、`Do`×0）；水印流位置恒为第 2 条（slot=1）。
+- 水印 span 特征（`get_text("dict")`）：**15 个/页**、去空白文本 distinct=5、**最高重复 6 次**、`font=NotoSansCJKsc-Regular`、`size` 29.22–29.79（**极差比 1.017**）、`alpha=51`、`dir=45°`。
+- 全卷原始可提取文本 **90,475 字符**；其中水印 **43,355**（≈282 字符/页），正文层 **47,120**（16 页为 0；正文层在 A 的 XObject 内）。
+- `quality.classify` = USABLE（avg_chars 275、ink_alignment 0.1312）。
+
+### 2.2 关键口径订正：#203 闸的数字与方向（v1 写反，已实测）
+
+用**本仓既有函数**实测（`extract_text_layer_pages` + `measure_repeated_fragment_coverage`，阈值 `TEXT_LAYER_MAX_REPEATED_FRAGMENT_COVERAGE=0.15`，`text_layer_doc_source.py:218` 判定 `coverage > 0.15` 才拒）：
+
+| 输入 | 可提取字符 | coverage | 闸判定 | 后果 |
+|---|---|---|---|---|
+| **原件** | 90,475 | **0.3764**（fragment_kinds=6, max_fragment_pages=149） | **拒绝**（`repeated_fragment_coverage`） | docline 建链 **0 次**；路由=逐页 OCR，与今天一致 |
+| **净化副本** | 47,120 | **0.0407**（fragment_kinds=4, max_fragment_pages=45） | **放行** | **若副本喂文本层 ⇒ docline 接管整卷** |
+
+⇒ 不可协商的边界（数据钉死）：**净化副本只能供渲染**。副本喂文本层会让 coverage 从 0.3764 掉到 0.0407、闸从「拒」翻成「放行」，docline 接管 149 页；按约 22 s/2000 字块估算 ≈ 24 块 ≈ 528 s，而 `BATCH_RECOGNITION_PAGE_TIMEOUT=300 s` 是**页级**计时（O(卷) 工作量撞 O(页) 墙）⇒ **整卷清零**，正是 2026-10-28 事故的形态。因此文本层判定、docline 建链、#203 闸、预览、交付默认路径一律继续吃原件。
+
+### 2.3 检测与摘除成本实测
+
+| 动作 | 范围 | 实测 |
+|---|---|---|
+| 差分 oracle 探测（5 页） | 族 A 卷 | **25.7 ms**（原型）/ **29 ms**（生产实现），5/5 命中，候选唯一（slot 全=1） |
+| 全卷逐页差分 oracle | 149 页 | 1.12 s（149/149 唯一）⇒ 只在探测页用 dict oracle，全卷用廉价校验 |
+| 全卷摘除 + 逐页廉价校验 + save | 149 页 | **633 ms**；含探测的首次调用 **681 ms**；dropped=149 / skipped=0；副本 25,798,037 B |
+| 逐页廉价校验本体 | 149 页 | 0.247 s（被删 745 行，全部 ⊆ 水印字符集） |
+| 负样本 78 页文本型 / 6 页扫描型 / 10 页带文字层 canary | — | 0 个水印 span ⇒ `no_wm_spans`；14 / 11 / 265 ms |
+| 第二次 `render_source`（同卷） | 149 页 | **0.1 ms**（memo 命中，不再探测/构建） |
+
+⇒ AC11「149 页预处理 < 1 s」空间充足（681 ms），且「每卷一次」由 memo + 卷级锁保证。
+
+### 2.4 像素差对照（150 dpi，`get_pixmap(matrix=Matrix(150/72,150/72))`）
+
+- 族 A 卷页 1（副本 vs 原件）：changed fraction **2.2961%**、max|Δ|=**34**；差异只应出现在水印笔画覆盖处（非水印区须逐像素相等）。
+- 合成 canary 页 1（全栅格正文 + 30 份水印）：changed **17.083%**、max|Δ|=84；摘除后页文本 **0 字符**、正文仅在像素里。
+- **独立掩码 oracle**：把页渲染成「只画被摘掉的那条流」（临时文档，`/Contents=[B]`）⇒ 得到水印笔画区域掩码；像素差值必须全部落在掩码内（掩码外 max|Δ|=0）。这是 AC1③/AC2c 的判定依据，不是用差集自证。
+
+### 2.5 判据陷阱（教训）
+
+- 「剩余文本行 ⊆ 水印字符集」不能当残余守卫：字符集仅 16 个字符（数字+固定字样），正文 18 位报关单号等 **147 行**天然 ⊆ 该集合。可用守卫=**剩余行包含已知水印令牌**（去空白、len≥6）。族 A 卷副本残余命中 **0**（令牌 6 个）。
+- `insert_text` 的 `rotate` 只接受 90° 倍数；45° 水印只能用 `TextWriter.write_text(morph=(Point, Matrix(45)))` 合成。
+- 合成 canary 实测（3 页、每页 `[A B]`）：probe 478 ms 命中（slots=(1,1,1)）、build 47 ms、摘后 0 字符。
+
+---
+
+## 3. 方案
+
+### 3.1 检测（probe，每卷一次，纯 CPU）
+
+对探测页（默认 5 页，按 `round(i*(n-1)/(k-1))` 均匀取，覆盖首/末页；页数 ≤ k 时全取；探测页数 < `MIN_HIT_PAGES` ⇒ `below_min_pages`）：
+
+1. 取「旋转 + 半透明 + 有文字」span：`|dir.y| ≥ TILT_MIN(0.2)` 且 `ALPHA_MIN(1) ≤ alpha ≤ ALPHA_MAX(220)`。无此类 span ⇒ `no_wm_spans`。
+2. 每条内容流做**纯字节 op 白名单**扫描：`q/Q/cm/BT/ET/Tf/Td/TD/Tm/T*/TJ/Tj/'/"` 与文字/图形状态类 op 允许；出现任何绘制类 op（`f/F/f*/B/B*/b/b*/S/s/Do/BI/sh`）或未知 op ⇒ 该流不合格（族 A 卷 A 流被排除、B 流通过）。
+3. 对每条合格流做**差分 oracle**：临时把该流从 `/Contents` 摘掉 → `reload_page` → 取 span 列表，要求 **①摘后无水印 span** 且 **②摘后非水印 span 与摘前逐字段精确相等**（text/bbox/font/size/dir/alpha），随后恢复 `/Contents`。这是「锚定独立流而非重复文字」的判据：文字里重复的水印不会因摘掉某条流而消失（①不成立）；把正文或不可见文字层一并摘掉会让②不成立。
+4. 该页候选流**必须唯一**（0 个 ⇒ 未命中；≥2 个 ⇒ 该页弃权）。
+5. 卷级命中：`hit_pages ≥ MIN_HIT_PAGES(3)`，且各命中页签名一致——同字体、同旋转方向、`size` 极差比 ≤ `MAX_SIZE_SPREAD(1.5)`（实测 1.017）、`alpha` 极差比 ≤ `MAX_ALPHA_SPREAD(2.0)`（实测 1.0）、单页最高重复次数 ≥ `MIN_REPEATS(3)`（实测 6）。
+6. 输出：`code ∈ {hit, no_wm_spans, no_isolated_overlay, below_min_pages, signature_drift, capped_by_size, not_pdf, not_applicable, disabled, error}` + `pages_probed/pages_hit/slots/fonts/size_spread/alpha_spread/top_repeats/charset/tokens/elapsed_ms`。
+   - `not_pdf`：文件不是 PDF（docx/图片等，读取即失败）。
+   - `not_applicable`：是 PDF 但形态明确不适用（0 页、加密不可读、页数 0 等）。
+
+### 3.2 摘除（build，每卷一次）
+
+**卷级决策、页级执行**（门⓪ 口径）：卷级 probe 命中决定「本卷做预处理」，摘除与校验**逐页独立**；部分页有水印的异构卷 ⇒ 有水印页摘除、无水印页 `skip`，`pages_skipped > 0` 显式记账（不把页级差异汇总成「全卷成功」）。
+
+逐页：
+1. 内容流 < 2 条 ⇒ `skip`。候选顺序：探测页记录的 slot 优先，其余按白名单顺序尝试。
+2. 摘掉该流 → `get_text()` 行集合**廉价校验**：`copy_lines ⊆ orig_lines` 且 `orig − copy` 的每一行 `set(line) ⊆ 水印字符集`。任一不满足 ⇒ 恢复 `/Contents` 并 `skip`。
+3. **残余守卫**：摘后剩余行若仍含已知水印令牌（去空白、len≥6）⇒ 恢复并 `skip`。
+4. 全卷处理完 → `save(garbage=3, deflate=True)` 到临时文件 → **落盘自检**（重新打开、页数与页尺寸逐页一致）→ 原子 `os.replace` 到副本路径、`chmod 0600`；自检不过 ⇒ 删临时文件、状态 `failed`、回落原件。
+5. 任何异常 ⇒ `failed` + 机读 `error_code`，渲染回落原件，**不阻断识别**；进程内负缓存（重试不重复付代价，进程重启后重试）。
+
+### 3.3 接线（唯一取图口收口 + 交付开关）
+
+新增 `backend/app/services/watermark_overlay.py`（不 import 业务服务），`file_parser` 增加一个 kwarg：
+
+| 调用点 | 取图对象 | 改动 |
+|---|---|---|
+| `vision_service.py:298` 识别取图（批量/playground/重识别/重试都经此） | 净化副本 | 默认 `allow_strip=True` |
+| `vl_md_pipeline_service.py:192` 供料 VL-MD 渲染 | 净化副本 | 默认 |
+| `vision_service.py:2263` 预览红框底图 | 原件 | 显式 `allow_strip=False` |
+| `api/files.py:822` 文件预览端点 | 原件 | 显式 `allow_strip=False` |
+| `vision_service.py:2228` `_redact_pdf` 交付 PDF 光栅化 | **原件**（默认保留）/ 净化副本（开关关闭时） | 新参数 `source_path`，由交付开关决定 |
+| `text_layer_docline_service.py:195` ink alignment | 原件 | 不动（直连 `get_pixmap`） |
+| `redaction/watermark.py:50` 交付水印合成 | 原件 | 不动 |
+| `agent_md`（MinerU 原件字节上传） | 原件 | **本 Issue 不动**（§6.2） |
+
+`FileParser.get_pdf_page_image(file_path, page, dpi=150, *, allow_strip=True)`：
+- 先 `await asyncio.to_thread(watermark_overlay.render_source, resolved)`（探测/构建都在 worker 线程，事件循环不冻结；并发由卷级锁串行到「只做一次」）；
+- **页图缓存键必须携带变体**：`(*_pdf_page_cache_key(...), "clean"|"raw")`——否则预览（raw）与识别（clean）互相污染同一页缓存，正是「预览/交付悄悄变干净」的漏口（AC5 钉住）；
+- `_render_pdf_page_image` 用 `open_pdf_checked(副本 | 原件)` 渲染。
+
+交付开关：`WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK=true`（默认）。置 false 时 `_redact_pdf` 以净化副本为光栅化源（交付 PDF 无水印）；副本不可用则回落原件并记 `delivery_source=original`。**两支路都必须实现并验收**，否则开关是死代码。
+
+### 3.4 副本生命周期
+
+- 目录 `settings.OUTPUT_DIR/.watermark_overlay/`（`makedirs(0o700)` + `chmod 0700`；`cleanup_orphan_files` 只扫顶层文件 ⇒ 不被小时清理误删，也不进任何导出）。
+- 命名 `<sha256(realpath|size|mtime_ns)[:32]>.pdf`；原件更新即换名。
+- TTL `WATERMARK_OVERLAY_COPY_TTL_HOURS=24`：每次构建前后各扫一次并删除超龄文件。
+- 进程内 memo（键=fingerprint）：`{code, pages_probed, pages_hit, pages_stripped, pages_skipped, duration_ms, error, copy_path}`；命中与失败都缓存；对外状态**剔除 copy_path**。
+- 并发：卷级 `threading.Lock`（进程级）+ in-flight 登记；第二个请求等首个完成（AC9 断言构建调用计数=1）。
+- 体积闸：`size > WATERMARK_OVERLAY_MAX_FILE_MB(400)` ⇒ `capped_by_size`，不处理。
+
+### 3.5 配置键（默认值）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `WATERMARK_OVERLAY_STRIP_ENABLED` | **true** | 识别面总开关（关=完全回到今天行为） |
+| `WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK` | **true** | 交付面是否保留原水印（拍板项） |
+| `WATERMARK_OVERLAY_PROBE_PAGES` | 5 | 探测页数 |
+| `WATERMARK_OVERLAY_MIN_HIT_PAGES` | 3 | 卷级命中最低页数 |
+| `WATERMARK_OVERLAY_MIN_REPEATS` | 3 | 单页水印文字最高重复下限（实测 6） |
+| `WATERMARK_OVERLAY_MAX_SIZE_SPREAD` | 1.5 | 字号极差比（实测 1.017） |
+| `WATERMARK_OVERLAY_MAX_ALPHA_SPREAD` | 2.0 | 透明度极差比（实测 1.0） |
+| `WATERMARK_OVERLAY_TILT_MIN` | 0.2 | `|dir.y|` 下限（45° ⇒ 0.707） |
+| `WATERMARK_OVERLAY_ALPHA_MAX` | 220 | 半透明上限 |
+| `WATERMARK_OVERLAY_MAX_FILE_MB` | 400 | 体积闸 |
+| `WATERMARK_OVERLAY_COPY_TTL_HOURS` | 24 | 副本 TTL |
+
+`.env.example` 同步登记（含锚定注释）。
+
+### 3.6 可观测（页级 `pipeline_status["watermark_overlay"]`）
+
+```json
+{"ran": true, "skipped": false, "failed": false, "region_count": 0, "error": null,
+ "duration_ms": 681, "code": "hit", "pages_probed": 5, "pages_hit": 5,
+ "pages_stripped": 149, "pages_skipped": 0, "source": "copy"}
+```
+
+- `source ∈ {copy, original}`：本页渲染实际吃了谁——**唯一机器可读证据**。
+- `code` 枚举见 3.1；阶段失败另有 `error_code ∈ {probe_error, copy_dir_unwritable, copy_verify_failed, build_error, capped_by_size, not_pdf, not_applicable}`。
+- 全局关闭时固定返回 `{"code":"disabled","source":"original","skipped":true,...}`（OFF 轮也可判定）。
+- 前端对 `pipeline_status` 通用遍历，新标签自动可见。
+
+### 3.7 计数探针（供验收用，生产不加日志噪音）
+
+模块暴露只读计数器 `watermark_overlay.stats()`：`{"probe_calls": n, "build_calls": n, "build_skipped": n, "copy_created": n}`（进程级，测试/运维可读）。验收判据里所有「调用了几次」都读它，不靠日志抽样。
+
+---
+
+## 4. 实施清单
+
+| 文件 | 动作 |
+|---|---|
+| `backend/app/services/watermark_overlay.py` | 新增：probe / build / memo / 卷级锁 / TTL / 状态 / stats |
+| `backend/app/core/config.py` | 11 个配置键 + 6 个 validator |
+| `backend/.env.example` | 同步登记 |
+| `backend/app/services/file_parser.py` | `allow_strip` kwarg、变体缓存键、副本渲染源 |
+| `backend/app/services/vision_service.py` | 写 `pipeline_status["watermark_overlay"]`；预览点 `allow_strip=False`；`_redact_pdf` 交付开关 |
+| `backend/app/services/vl_md_pipeline_service.py` | 默认走副本（确认/无改动） |
+| `backend/app/api/files.py` | 预览点 `allow_strip=False` |
+| ~~`backend/tests/test_watermark_overlay_detect.py`~~ → 合并为 `backend/tests/test_watermark_overlay_strip.py` | 检测：正样本 + **暖负样本组** + 冷负样本 + 异构卷 |
+| ~~`backend/tests/test_watermark_overlay_build.py`~~ → 同上单文件 | 摘除：逐页校验/残余守卫/异构卷/自检失败/原子性 |
+| ~~`backend/tests/test_file_parser_watermark_wiring.py`~~ → 同上单文件 | 变体缓存/预览原件/原件 sha256/串行 memo/TTL/权限/损坏副本 |
+| ~~`backend/tests/test_vision_watermark_status.py`~~ → 同上单文件 | `pipeline_status` 形状 + OFF=disabled + stats |
+| ~~`backend/tests/test_delivery_watermark_switch.py`~~ → 同上单文件 | 交付开关双支路（像素级） |
+| `CHANGELOG.md` | 合并时登记 |
+
+测试一律**合成夹具**（公开仓不依赖 testdata）；真实案卷与 canary 走 `testdata/`（git-crypt）。
+
+---
+
+## 5. 验收判据（门①.5 冷审对象，v2.2）
+
+> 规则：每条判据在「功能不做 / 被改坏」时**必须 FAIL**；阈值有第 2 节实测锚定；判据锚定**行为/输出**（GT 文本行、像素掩码、计数、机读码），不以「字段存在」为唯一证据。标〔守卫〕的条目单独在组件缺席时会通过，但它所属的 AC 另有一个组件缺席必红的支路。环境归属见 AC13。
+
+### 5.0 夹具清单（全部落私有 `testdata/`，生成器 `LexMask-workspace/scripts/issue236/gen.py`，同一脚本产出对应 `-gt.json`；生成后登记 sha256）
+
+| 夹具 | 文件 | 形态 | 期望 |
+|---|---|---|---|
+| F1 | `canary-issue236-vector-overlay-watermark.pdf` | 3 页；全栅格化名正文（PIL 150 dpi）；每页 30 份水印 `某某市院 张某某450102199001011234`（`TextWriter`，29.22 pt，opacity 0.25，45°），`/Contents=[A,B]`；页文本 492 字符/30 行（边缘份数被裁切，属允许形态） | `hit`，摘后页文本 0 |
+| F2 | `canary-issue236-textlayer-overlay.pdf` | 3 页；**正文为不可见文字层**（`render_mode=3`，A 流）+ 水印独立流 B；页文本 = 正文 + 水印 | `hit`；副本页文本 = GT `copy_lines`（>0）、水印令牌 0 |
+| F3 | `canary-issue236-partial-overlay.pdf` | 5 页；3 页 `[A,B]`（有水印）、2 页单流（无水印） | `hit`；`pages_stripped=3`、`pages_skipped=2` |
+| F4 | `canary-issue236-double-overlay.pdf` | 3 页；`/Contents=[A,B1,B2]`，B1/B2 均为水印流 | `no_isolated_overlay`（候选不唯一），不产出副本 |
+| F5 | `canary-issue236-overlap-residual.pdf` | 3 页；水印同时出现在可摘流 B **和** 扫描图内的不可见文字层（摘 B 后仍残留） | 逐页 `skip`（残余令牌守卫），`pages_skipped=3`，不产出可用副本 |
+| F6 | `canary-issue236-dual-qualified.pdf` | 2 页；`[A,B_wm,B_body]`，B_body 是合法不可见正文层（水平、`alpha=0`） | `hit` 且只摘 B_wm；副本页文本 = GT 正文（B_body 全部保留） |
+| F7 | `canary-issue236-single-page-overlay.pdf` | 5 页；仅 1 页有水印 | `below_min_pages`，不产出副本 |
+| W1 | `canary-issue236-warm-inline.pdf` | 2 页；水印文字并入主内容流（图 `Do` + 旋转半透明文字，单流） | `no_isolated_overlay`/`no_wm_spans`，不产出副本 |
+| W2 | `canary-issue236-warm-legal-textlayer.pdf` | 2 页；`[A,B]`，B 为合法 OCR 文字层（`alpha=0`、水平、不可见） | 同上 |
+| W3 | `canary-issue236-warm-vector-table.pdf` | 2 页；`[A,B]`，B 为矢量表格/公章绘制（含 `f/S/re`） | 同上 |
+| W4 | `canary-issue236-warm-raster-watermark.pdf` | 2 页；水印烧进栅格图，B 为空流 | 不产出副本（非目标形态） |
+| C1–C3 | `testdata/文本型-叶辉审查报告.pdf`（78 页）、`testdata/扫描型PDF误判为文本型-1.pdf`（6 页）、`testdata/canary-issue115-textlayer-10p.pdf`（10 页） | 冷负样本（实存） | `no_wm_spans`，零副本 |
+| R1 | `testdata/第四卷.pdf`（149 页，实存，私有） | 真卷：正文在 A 的不可见文字层、水印 B | `hit`；GT 见 §5.1 |
+
+GT json 结构（每个夹具一份）：`{"page": 1, "orig_lines": n, "wm_lines": m, "copy_lines": k, "copy_chars": c, "tokens": [...]}`，由生成器**从原件计算**（`copy_lines = orig_lines − wm_span_lines`），并附 `sha256`。
+
+### 5.1 真卷 GT（本机实测，已核验）
+
+149 页：原件非空文本行 **6,039** → 副本 **3,804**，水印行 **2,235**（15 行/页）；**逐页** `copy_lines == orig_lines − wm_lines` 全部成立（mismatch **0**）；副本总字符 **47,253**（原件 90,475）；**16 页**副本正文为 0（原件本来也没有正文层）。⇒ 该 GT 是真实、可分辨的判据基线：把整页替换成空白页会得到 0 行 ≠ GT。
+
+### AC1 canary 栅格保全与检测命中（F1，本地可判）
+- 前置（组件缺席必红）：`stats()["probe_calls"]==1`、`copy_created==1`、`code=hit`。
+- 判据：① 摘后每页文本 **0 字符**（摘前 492）；② 掩码 oracle（定义见 5.2）：掩码外 `max|Δ|=0`，掩码内差异像素 / 总差异像素 = **1.0**，差异像素占比 in **[16%, 18%]**（锚定 17.083%）；③ 页数、页尺寸、`/XObject` 图像流解压字节数前后相同；④ 原件 sha256 前后一致；⑤ 掩码非空且面积占比 **> 1%**。
+- 红性：摘错流 ⇒ ②（掩码外出现整页差异）③（图像流缺失）FAIL；不摘 ⇒ ① FAIL。
+
+### 5.2 像素掩码 oracle（AC1②/AC2-2d/AC7④ 共同口径，已实测）
+掩码 = 把**被摘掉的那条流单独渲染**（临时文档 `/Contents=[B]`，150 dpi，`alpha=False`）→ 灰度 `min(channel) < 254` → 二值膨胀半径 **3 px**。实测：真卷页 1 掩码占比 **4.48%**、canary 页 1 **32.25%**；两者「掩码外差异像素数」均 **= 0**、「掩码内差异/掩码面积」**0.512 / 0.530**。
+- 判据必须同时满足：掩码面积 > 1%（防空掩码恒真）、掩码外 `max|Δ| = 0`、**掩码内差异面积 / 掩码面积 ≥ 0.45**（证明掩码确实被清掉，不只看「差异都在掩码内」）。
+- 注：canary 掩码密度（32%）远高于真卷（4.5%）是夹具排版差异（密排 30 份、边缘裁切），**两套夹具各自用各自的锚定区间，不互相外推**。
+
+### AC2 渲染面净化与零残留（真卷 R1，云实例）
+同一云实例、同一参数跑整卷识别（`WATERMARK_OVERLAY_STRIP_ENABLED` OFF / ON）：
+- 2a 机制：ON 轮页级 `pipeline_status.watermark_overlay` 满足 `code=hit`、`source=copy`、`duration_ms>0`、`pages_probed ≥ 3`、`pages_hit == pages_probed`（R1 全页平铺，5/5）；OFF 轮 `code=disabled`、`source=original`。
+- 2b 零残留：GT 令牌 = 完整水印串 `钦州市院 林映峰14501201410363675`（空白归一后子串匹配）。ON 轮 OCR 文本与识别框文本 GT 命中 **= 0**；OFF 轮 **> 0**（现场记录基线）；NER 实体不含 GT。
+- 2c 正文没掉（GT 行对照，非 ∅≡∅）：副本页文本非空行集合（空白归一）**逐页等于 GT `copy_lines`**（§5.1：共 3,804 行，其中 16 页为 0 行）；**不允许整页空白替换**（页副本行数=0 但 GT>0 ⇒ FAIL）。
+- 2d 像素机制：页 1（dpi=150，PNG）：掩码口径同 5.2 ⇒ 掩码外 `max|Δ|=0`、掩码内差异/掩码面积 ≥0.45、差异占比 in **[2.0%, 2.6%]**（锚定 2.30%）；掩码面积 ≈4.48%。
+- 2e 文本层线路不变（口径订正，见 §7.4）：文档级 `pipeline_status.text_layer_doc.fallback_reason_code == "repeated_fragment_coverage"`、`fallback_reason` 含 coverage ∈ **[0.36, 0.39]**（本机实测 0.3764，历史记录 0.3827，同一区间）、`run_document_ner` 建链 **= 0**；ON/OFF 两轮该块逐字相同。
+- 2f 一般不变式：文本层入口 `text_layer_doc_source._build` 收到的 `file_path` **始终**是原件（单测覆盖；本 Issue 不改该路由，任何卷都不允许收副本）。
+
+### AC3 命中卷原件保护（R1，与 2a 同轮）
+- 前置：`copy_created≥1`、`source=copy`（否则 FAIL，不允许空转）。
+- 判据：① 原件 sha256/`mtime_ns`/`size` 一致；② 副本每页 `/Contents` **1** 条流（原件 2）、副本 GT 令牌命中 **0**、`st_dev+st_ino` 不同、内容 sha256 不同；③ 副本页文本行集合 = GT `copy_lines`（同 2c）。
+
+### AC4 误杀红线：暖负样本（W1–W4，本地可判）
+- 判据：W1–W4 全部 `code ∈ {no_wm_spans, no_isolated_overlay}`、`source=original`、`stats()["build_calls"]` 增量 **0**、`copy_created==0`、副本目录零新增、原件 sha256 不变。
+- 红性归属（明确分工）：**W1** 杀「只按重复文字判分」（水印并入主流，重复判分必误摘）；**W2** 杀「只要存在独立流就摘」（合法不可见正文字层也是独立流）；W3 杀「不检查绘制 op」；W4 杀「只看页面上有水印像素」。
+- 云侧（同批）：W1 关闭态与开启态识别框/文本集合逐页一致（千分位/空格归一）。
+
+### AC5 预览面与交付面（默认不设环境变量）
+- 5a〔守卫〕预览〔与 5c 同 AC，组件缺席时由 5c 必红〕：`api/files.py` 预览端点返回 PNG 与「原件渲染 PNG」**字节相等**（同 dpi=150、同 `get_pixmap` 参数、无打码叠加层的基线调用）；`preview_redaction` 同理比对**未叠加红框的底图**（先取 `allow_strip=False` 的底图字节做对照）。
+- 5b〔守卫〕交付默认（**不设** `DELIVERY_KEEP_WATERMARK`，验默认值本身）：交付 PDF GT 命中 **> 0**、每页 `/Contents` **2** 条流；ZIP 内不含副本文件。
+- 5c 交付反向支路：显式 `DELIVERY_KEEP_WATERMARK=false`：交付 PDF GT **= 0**、每页 `/Contents` **1** 条流、页数=原件；正文保全 = 交付 PDF 每页 150 dpi 渲染 vs 副本渲染：掩码外 `max|Δ| ≤ 8`（JPEG 容差）、**差异面积 in [0.5%, 6%]**（两侧页均非空白，不允许 0 对 0）。
+- 红性：默认值漏传到预览/交付 ⇒ 5a/5b FAIL；只实现默认支路 ⇒ 5c FAIL。
+
+### AC6 未命中卷零差异（C1–C3，本地可判）
+- 判据：① 原件 sha256 一致；② `stats()["probe_calls"]` 增量 **1**、`duration_ms>0`、`pages_probed ≥ 3`（检测确实执行）；③ `stats()["build_calls"]` 增量 **0**、`copy_created==0`；④ `code ∈ {no_wm_spans, no_isolated_overlay}`、`source=original`；⑤ 副本目录零新增；⑥（云）识别框/文本/实体集合与 OFF 逐页一致（页级失败白名单见 AC13）。
+
+### AC7 页级记账与多流歧义（F3/F4/F5/F6/F7，本地可判）
+- 7a F3（异构卷）：`code=hit`、`pages_stripped=3`、`pages_skipped=2`；无水印页副本渲染 `max|Δ|=0`（逐像素相等）；水印页按 5.2 掩码判定；全卷副本文本行集合 = GT `copy_lines`。
+- 7b F7（仅 1 页有水印）：`below_min_pages`、`build_calls` 增量 0、无副本（`MIN_HIT_PAGES` 语义）。
+- 7c F5（重叠残留）：逐页 `skip`（`pages_skipped=3`），副本文件不产出或产出但 GT 令牌命中 >0 ⇒ 后者 FAIL —— 判据写死：**不得产出「仍含水印令牌」的副本**。
+- 7d F4（双水印流）：`no_isolated_overlay`，不产出副本（候选不唯一必须弃权，不许「都摘」）。
+- 7e F6（双合格流）：只摘 B_wm；副本页文本 = GT 正文（B_body 全保留），水印令牌 0。
+
+### AC8 入口矩阵（防「某入口没接线」）
+命中卷逐入口断言渲染源为副本：① 批量整卷识别（`task_queue_pipelines.run` → `vision_detect`）；② playground 单页 `POST /redaction/{file_id}/vision`；③ VL-MD 渲染线（`VlMdPipelineService` 的 `get_pdf_page_image` 段）；④ reject 后重识别；⑤ 队列重试；⑥ 预览（必须原件）。
+- 证据：①–⑤ 页级 `pipeline_status.watermark_overlay.source == "copy"`（或等价机读记录）；⑥ 由 5a 像素断言承担（预览端点不写页级状态时以像素为准）。
+- 显式排除：**agent_md（供料 MinerU 段，发送原件字节）本 Issue 不接线**，不计入红性（§6.2）。VL-MD 的取图渲染段与 MinerU 解析段是两条路径，前者接副本、后者不动。
+
+### AC9 副本治理（本地可判）
+- 前置：`copy_created ≥ 1` 且副本在 `<OUTPUT_DIR>/.watermark_overlay/` 下、mtime 属本次。
+- 9a 结构：副本 `fitz.open` 重开、页数/逐页 `rect` 与原件一致。
+- 9b 权限：目录 0700、文件 0600。
+- 9c TTL：旧副本 mtime 调早 + `COPY_TTL_HOURS` 调小 ⇒ 下次构建时被**实际删除**；新鲜副本不删。
+- 9d 并发单飞：`BATCH_RECOGNITION_PAGE_CONCURRENCY>1` 同卷并发 ⇒ `build_calls` 增量 **1**（多线程本地复测）。
+- 9e 不泄漏：不进交付 ZIP（5b）、不被预览直出（5a）。
+- 9f 原子性与回收：构建失败/异常后**不留下半成品文件**（临时名 + `os.replace`，断言目录内只有合法副本）；任务 reject/删除后副本在 TTL 内被清；TTL 清理与在飞渲染不互踩（在飞文件跳过删除）。
+- 9g memo：同卷第二次渲染 < 5 ms 且两计数器不增。
+
+### AC10 异常输入 fail-open（阶段级 vs 任务级，本地 + 云）
+判据分两层：**阶段级**必须显式失败并给枚举错误码；**任务级**行为必须与「未接本组件」的基线一致（不能因预处理把原本能跑的任务弄失败，也不能吞掉原本就失败的解析错误）。
+- 用例 → 错误码一一映射（钉死，不接受任意值）：
+| 输入 | 期望 `error_code` | 期望任务级行为 |
+|---|---|---|
+| 损坏 PDF | `probe_error` | 与基线一致（基线本来就失败的识别失败照旧；水印阶段 `failed=true`） |
+| 加密 PDF | `not_applicable` | 同上（基线 `open_pdf_checked` 拒绝/走既有加密路径） |
+| 0 页 PDF | `not_applicable` | 同上 |
+| 非 PDF（docx/图片） | `not_pdf` | 同上（该文件本就不走 PDF 路径） |
+| 超大卷（> `MAX_FILE_MB`） | `capped_by_size` | 照常识别（原件） |
+| 副本目录不可写 | `copy_dir_unwritable` | 照常识别（原件），任务**成功** |
+| 落盘自检失败（注入：让 `save` 后自检读到页数不符，或直接替换 `xref` 断页数） | `copy_verify_failed` | 照常识别（原件），任务**成功** |
+- 通用判据：`source=original`、原件 sha256 不变、`failed=true` 且 `error_code` 属上表枚举；有效 PDF+可恢复故障（后两行）要求任务级 `COMPLETED` 且 `recognition.failed_pages` 不含该页；解析类故障要求任务级与基线逐项相同（用 OFF 轮同输入复跑做基线对照）。
+- 红性：异常上抛 ⇒ 后两行任务级 FAIL；错误码写死/伪标（如一律 `not_applicable`）⇒ 表驱动映射 FAIL。
+
+### AC11 性能与「一次/卷」（云实例）
+- 判据：① 首次命中该卷 `duration_ms` < **1000 ms**（锚定 681 ms，单线程、warm page cache）；② `probe_calls`/`build_calls` 各增量 **1**、`pages_probed ≥ 3`、`pages_hit == pages_probed`（R1）；③ 同卷第二次渲染 `duration_ms ≤ 5 ms` 且两计数器不增。
+- 红性：单边「<1s」⇒ 必须与 ②③ 联合；无 memo/单飞 ⇒ 149×681 ms ⇒ FAIL。
+
+### AC12 变异验证（10/10 KILLED，每条落到具体判据）
+| # | 需求级违例（突变体） | 由哪条判据杀 |
+|---|---|---|
+| m1 | 用「流内重复文字 ≥ N」判水印（不做差分 oracle） | AC4-W1 |
+| m2 | 只要求「水印文字消失」，不要求「正文行不变」 | AC2-2c（同 F2）、AC7-7e |
+| m3 | 只要存在合格流就摘（同页多条时全摘） | AC7-7e（F6）、AC4-W2 |
+| m4 | 单页命中即认定整卷 | AC7-7b（F7）、AC6 |
+| m5 | 只做卷级判定、逐页不做保真校验/记账 | AC7-7a（F3②③）、AC7-7c |
+| m6 | 摘后不做残余检查 | AC7-7c（F5） |
+| m7 | 预览/识别共用取图变体（`allow_strip` 不生效） | AC5a |
+| m8 | 无 memo/卷级锁 | AC11②③、AC9-9d |
+| m9 | 在原件上摘除（写回原件） | AC3① |
+| m10 | 交付开关只实现默认支路 | AC5c |
+- 判据：10/10 KILLED，且每个变异必须在**本条对应判据**上红（不得靠无关用例）。
+
+### AC13 环境口径表
+| 验收内容 | 环境 | 备注 |
+|---|---|---|
+| AC1、AC4（本地部分）、AC6①–⑤、AC7、AC9、AC10（阶段级 + 可恢复两行）、AC12 | **本地 compose / pytest** | 纯 PyMuPDF CPU |
+| AC2、AC3、AC5a/5b/5c、AC6⑥、AC8、AC10（解析类任务级基线对照）、AC11、AC4 云侧一致性与 W1 关闭态对照 | **云 DCU 实例（GPU 栈）** | 需识别/OCR/NER |
+| 页级失败白名单 | 云 | #199 后基线 **148/149 completed**（页 133 显式 timeout）；AC2/AC6⑥/AC8/AC11 比「逐页一致」时写入白名单，跑前先记 OFF 基线 |
+| 性能计时（AC11） | 云 | 同进程、单线程、warm cache |
+
+## 6. 风险与边界
+
+### 6.1 风险与缓解
+| 风险 | 缓解 |
+|---|---|
+| 误删非水印流 | 差分 oracle「非水印 span 逐字段相等」+ 候选唯一 + 签名一致 + 暖负样本判据（AC4）+ 正文 span 正向对照（AC2-2c） |
+| 残余水印（同页双水印流） | probe 要求「摘后无水印 span」；build 残余令牌守卫；`pages_skipped>0` 显式（AC7） |
+| 副本泄漏（同含 PII） | 0700/0600、TTL、只在 OUTPUT_DIR 下、不进导出与预览（AC5/AC9） |
+| 副本拖慢识别 | 每卷一次、卷级锁、体积闸、worker 线程内执行（AC11/AC9-9d） |
+| 缓存互相污染（clean/raw） | 页图缓存键携带变体（AC5a 钉住） |
+| 与 #206 冲突 | 检测器不依赖 `visible_text_watermark.py`（preview 无该模块）；本 Issue 管「独立流」，#206 管「同流 OP 级剥离」 |
+
+### 6.2 诚实边界
+- 只覆盖「水印是独立内容流且流内无绘制 op」这一族；同流内嵌（族 B）不做（#206 阶段 1 范畴）。
+- 异构卷：卷级 probe 若探测页恰好都没水印 ⇒ `below_min_pages`（不处理），不做页级穷举探测。
+- `agent_md` 供料模式把**原件字节**送 MinerU：其水印误识别本 Issue 不解决，登记后续（不在 AC8 红性内）。
+- 交付默认保留水印（拍板项 1）；关闭支路已实现并验收（AC5c）。
+
+---
+
+## 7. 待拍板（门① 结束前需用户确认）
+
+1. **交付物水印默认保留**（`WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK=true`）；反向支路已实现，随时可切。
+2. **净化副本只供渲染**（文本层/docline/闸/预览一律原件）——§2.2 的 0.3764 vs 0.0407 实测钉死方向。
+3. **识别面总开关默认值**：提议 `WATERMARK_OVERLAY_STRIP_ENABLED=true`（fail-open、逐页校验、只影响渲染面）；如要求默认关，改 false，门④ 用环境变量开启后同样成立。
+4. **Issue 正文草案 AC#2 的口径修订**：草案写「摘除后 #203 coverage 闸对该卷触发 0 次」，但实测原件 coverage **0.3764**、闸本来就拒绝该卷（建链 0 次），副本才是 0.0407。因此本方案把 AC 改为「**闸行为不变**：仍拒绝该卷、docline 建链 0 次、ON/OFF 两轮一致」。**这是对 Issue 验收口径的反向修订，需要你确认**（我倾向修订，因为「闸 0 触发」只能靠把副本喂文本层达成，而那会触发整卷 300 s 清零）。
+
+---
+
+## 8. 门②/③ 实施进度（v2.2 设计已落地，2026-11-04）
+
+### 8.1 落库文件
+
+| 文件 | 状态 |
+|---|---|
+| `backend/app/services/watermark_overlay.py` | 新增 570 行：`probe()` / `build_stripped_copy()` / `render_source()` / `status_for()` / `stats()` / TTL sweep / 卷级 memo+单飞 |
+| `backend/app/core/config.py` | 11 键 + 6 validator（`WATERMARK_OVERLAY_*`） |
+| `.env.example` | 11 键登记（含默认关与边界注释） |
+| `backend/app/services/file_parser.py` | `get_pdf_page_image(..., allow_strip=True)`、clean/raw 变体缓存键、6 元组键类型同步 |
+| `backend/app/services/vision_service.py` | `pipeline_status["watermark_overlay"]`、预览 `allow_strip=False`、`_delivery_source()` + `_redact_pdf(source_path=)` |
+| `backend/app/api/files.py` | 预览端点 `allow_strip=False` |
+| `backend/tests/test_watermark_overlay_strip.py` | 新增 21 例（合成夹具手写内容流，零 testdata 依赖） |
+| `CHANGELOG.md` | 本轮登记 |
+
+### 8.2 实现相对设计的偏离（均已在本轮固化）
+
+1. **探针码语义收敛**：`hits < MIN_HIT_PAGES` 时，`hits>0` → `below_min_pages`（异构卷/稀疏命中）；`hits==0` → `no_isolated_overlay`（有覆盖 span 但无唯一可摘流）或 `no_wm_spans`（冷负样本）。v2.2 原文只写 `below_min_pages`，实测发现「零命中但不可分离」（W1）也落该码会把两种成因混为一谈。
+2. **新增构建码 `no_strippable_pages`**：逐页守卫全弃权时必须**不产出副本**（AC7-7c）；`_build_once` 映射为 `failed=False / source=original / error=None`，与真失败（`error:Type`）区分。
+3. **计数器 `stats()`**：`{probe_calls, build_calls, render_calls, render_ms}` 进程级；AC1/AC4/AC6/AC11 的「跨调用行为证据」用它，不靠单次返回状态自证。
+4. **`probe(max_file_mb)` 改 float**：便于用极小阈值做体积闸红测（`int` 无法表达 1e-6）。
+5. **夹具改为手写内容流**（不用 `TextWriter` 临时页搬运）：`TextWriter` 生成的 ExtGState 缺 `/Type /ExtGState`，搬进新资源字典后 MuPDF 会报 `cannot find ExtGState resource`；手写 `q … cm BT … Tj ET Q` 与族 A 卷形态更一致（实测 `dir=(0.707, 0.707)` 需要矩阵 `0.70711 -0.70711 0.70711 0.70711`，即 `Matrix(-45)` 等价）。**私有生成器同步注意：canary 的水印旋转方向要与真卷一致（+45° 视觉方向 ⇒ 该矩阵）。**
+
+### 8.3 本地已跑通的判据（门③ 本地可判部分）
+
+自动化：`pytest backend/tests/test_watermark_overlay_strip.py` → **21 passed / 2.0s**，`ruff check` 干净。覆盖 AC1（命中+栅格保全+原件 sha）、AC4（W1 并入主流 / 合法不可见文字层 / 矢量表格三支暖负样本）、AC5（预览原件视图 / 交付默认保留 / 交付反向支路，像素掩码相对判据）、AC6（冷负样本零文件零构建 + 检测执行证据）、AC7（F4 双流歧义 / F5 残余弃权且不出副本 / F6 合法流不被摘 / F7 单页命中弃权 / F3 异构卷逐页记账）、AC9（0700/0600、页数与 rect、TTL 实清、关闭不探测）、AC10（损坏 / 超限 / 自检失败 fail-open 且不留半成品）、AC11（memo：探测 1 次、构建 1 次、二次调用 0 增量）。
+
+待办（本轮未做，门④/⑤/⑥ 范畴）：真卷 R1 云实例整卷 E2E 与 AC2/AC3/AC12/AC13；testdata canary（F1–F7/W1–W4/C1–C3）与 `-gt.json` 由私有生成器产出；变异验证 10/10。

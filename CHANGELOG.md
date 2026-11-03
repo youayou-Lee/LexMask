@@ -2,6 +2,17 @@
 
 ## 2026-11-04
 
+### 变更（Issue#236）独立矢量覆盖水印流：识别取图前检测并摘除（仅内部副本）
+
+- **为什么**：族 A 案卷（如「第四卷」149 页）每页 `/Contents=[A,B]`——A 是整页扫描图 + 不可见 OCR 文字层，B 是 5384B 的独立水印层（30 组 45° 半透明 `BT…Tj…ET`，`0.25098 rg` + `/Gs1 gs` alpha 51 + `NotoSansCJKsc-Regular` 29.22）。这类水印会污染 OCR 取图（浅灰字被当正文）与后续 PII 召回；而把它「当文本过滤」会连带擦掉正文（#206 实测 43,449→8,468 字符）。摘 B 是无损的：原件字节不动，只是内部渲染副本少一层。
+- **改了什么**：
+  1. 新模块 `backend/app/services/watermark_overlay.py`：卷级**差分 oracle 探针**（抽样页逐条内容流试摘 → 要求「水印 span 消失且非水印 span 逐字段相等」且候选唯一）→ 指纹闸（字体/尺寸极差/alpha/重复次数）→ 逐页摘除（op 白名单 + 行集合校验 + 残余水印令牌守卫）→ 副本落 `OUTPUT_DIR/.watermark_overlay`（0700/0600、TTL 清理、页数自检、原子 `os.replace`）。进程级 memo + 单飞：每卷只付一次探测/构建。
+  2. `file_parser.get_pdf_page_image(..., allow_strip=True)`：识别/VL-MD 走净化副本，**页图缓存键加 clean/raw 变体**（否则预览与识别互相污染）；预览两点（`vision_service.preview_redaction`、`api/files.py` 预览端点）显式 `allow_strip=False`。
+  3. `vision_service`：`pipeline_status` 新增 `watermark_overlay` 段（code/source/pages_probed/pages_hit/pages_stripped/pages_skipped/duration_ms），随任务指标与结果页透出；交付光栅化新增 `_delivery_source()`（默认保留水印＝原件；`WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK=false` 才走副本）。
+  4. 配置 11 键（默认关：`WATERMARK_OVERLAY_STRIP_ENABLED=false`）——开关、探测页数、命中页下限、指纹阈值、倾斜/α 阈值、体积闸、副本 TTL、交付保留开关。
+- **测试**：新增 `backend/tests/test_watermark_overlay_strip.py` 21 例（合成夹具手写内容流：命中摘除+栅格保全、暖负样本[水印并入主流/合法不可见文字层/矢量表格]、`[A,B1,B2]` 歧义、单页命中弃权、异构卷逐页记账、残余水印弃权且**不产出带水印副本**、合法流不被误摘、冷负样本零文件零构建、副本权限/TTL/结构、关闭时不探测、损坏/超限/自检失败 fail-open、预览原件视图、交付默认保留+反向支路像素级对照）；`ruff` 干净。
+- **边界**：只处理「独立矢量流」形态——烧进像素的水印、文字层内的水印碎片不在本 Change（#215 后续阶段）；文本层建链与 #203 闸**仍吃原件**（副本仅渲染，实测副本 coverage 0.0407 < 闸 0.15 会让 docline 接管并撞 300s 页墙）；agent_md（MinerU）走原件字节，不在本 Change。
+
 ### 修正（Issue#232/#237）错误信封机读化：拒收文案按码本地化 + 下载路径空 detail 出 "{}" + healthcheck 敲错门牌
 
 - **为什么**：#229 门⑥两处挂账（#232）——①I-1：伪造扩展名拒收文案只有中文自由文本、无机读码，en locale 前端按既有决策只能显示通用兜底，「实际格式+可操作指引」只对 zh 生效；②M-3：下载/批量打包路径（`api-client.ts` fetchBlob、`api.ts` downloadArchive）仍是 `detail ?? message` 旧短路，空 `detail:{}` 给用户看 "{}"。#237：frontend healthcheck 的 `wget localhost:8080` 先解析 `::1` 而 nginx 只监听 IPv4 ⇒ 本地所有栈 frontend 容器常年误显 unhealthy（服务本身正常）。

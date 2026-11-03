@@ -819,7 +819,8 @@ async def get_page_image(
 
         parser = FileParser()
         try:
-            image_bytes = await parser.get_pdf_page_image(file_path, page)
+            # Issue#236：预览是原件视图（含水印），不得用识别用的净化副本。
+            image_bytes = await parser.get_pdf_page_image(file_path, page, allow_strip=False)
             # Issue #83：成品预览翻页需要该 PDF 自身真实页数（替换 docx 回转后
             # 可能与原卷不同），随响应头返回；历史对比消费方可选使用
             page_count = await parser.get_pdf_page_count(file_path)

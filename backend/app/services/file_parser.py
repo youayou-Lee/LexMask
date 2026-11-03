@@ -20,6 +20,7 @@ from docx import Document
 from app.core.config import settings
 from app.core.file_validation import safe_path_in_dir
 from app.models.schemas import FileType, ParseResult
+from app.services import watermark_overlay
 
 if TYPE_CHECKING:
     from app.services.ocr_has_vision_service import OCRTextBlock
@@ -172,7 +173,7 @@ class FileParser:
 
     # 注：页级缓存容量复用 PDF_PAGE_IMAGE_CACHE_PAGES，属既有约定
     # （image / text_blocks / scan 三个缓存均以该值为上限），如需独立容量需另行评审。
-    _pdf_page_image_cache: OrderedDict[tuple[str, int, int, int, int], bytes] = OrderedDict()
+    _pdf_page_image_cache: OrderedDict[tuple[str, int, int, int, int, str], bytes] = OrderedDict()
     _pdf_page_image_cache_lock = Lock()
     _pdf_page_text_blocks_cache: OrderedDict[
         tuple[str, int, int, int, int],
@@ -184,13 +185,15 @@ class FileParser:
     # Issue#207 同键单飞：在飞渲染任务表（键与页图缓存同键）。客户端 abort 不会
     # 终止已进线程池的渲染，单飞把连点风暴的服务端成本钉在每唯一页一次。
     _pdf_page_render_inflight: dict[
-        tuple[str, int, int, int, int], "asyncio.Task[bytes]"
+        tuple[str, int, int, int, int, str], "asyncio.Task[bytes]"
     ] = {}
     _pdf_page_render_inflight_lock = Lock()
 
     def __init__(self) -> None:
         self.last_pdf_page_image_cache_hit: bool | None = None
         self.last_pdf_page_text_blocks_cache_hit: bool | None = None
+        # Issue#236：本页取图时水印预处理的状态（无该插件/关闭时为 None 或 disabled 状态）。
+        self.last_watermark_overlay_status: dict | None = None
 
     @staticmethod
     def _pdf_page_cache_key(file_path: str, page: int, dpi: int) -> tuple[str, int, int, int, int]:
@@ -622,7 +625,9 @@ class FileParser:
         )
 
 
-    async def get_pdf_page_image(self, file_path: str, page: int, dpi: int = 150) -> bytes:
+    async def get_pdf_page_image(
+        self, file_path: str, page: int, dpi: int = 150, *, allow_strip: bool = True
+    ) -> bytes:
         """获取 PDF 指定页的图片。
 
         Issue#207：fitz 渲染是同步 CPU 活，历史上在事件循环内联执行——每次
@@ -632,8 +637,22 @@ class FileParser:
         """
         _validate_path(file_path)
         self.last_pdf_page_image_cache_hit = False
-        cache_key = self._pdf_page_cache_key(file_path, page, dpi)
-        resolved = cache_key[0]
+        # Issue#236：识别/VL-MD 取图换净化的内部副本源；预览走原件（allow_strip=False）。
+        # 探针/构建是同步 CPU 活（~700 ms/卷），放 worker 线程避免冻结事件循环；
+        # 卷级结果有进程内 memo，同卷后续页只付一次。
+        source_path = file_path
+        self.last_watermark_overlay_status = None
+        if allow_strip:
+            source_path, wm_status = await asyncio.to_thread(
+                watermark_overlay.render_source, file_path
+            )
+            self.last_watermark_overlay_status = wm_status
+            if not source_path:
+                source_path = file_path
+        # 变体进缓存键：净化副本与原件是两张不同的图，否则预览与识别会互相污染。
+        variant = "raw" if (not allow_strip or source_path == file_path) else "clean"
+        cache_key = (*self._pdf_page_cache_key(file_path, page, dpi), variant)
+        resolved = cache_key[0] if source_path == file_path else source_path
         cache_limit = int(settings.PDF_PAGE_IMAGE_CACHE_PAGES)
         if cache_limit > 0:
             with self._pdf_page_image_cache_lock:
@@ -655,7 +674,7 @@ class FileParser:
 
     def _singleflight_render_task(
         self,
-        cache_key: tuple[str, int, int, int, int],
+        cache_key: tuple[str, int, int, int, int, str],
         resolved: str,
         page: int,
         dpi: int,
@@ -672,7 +691,7 @@ class FileParser:
             task.add_done_callback(lambda _t, key=cache_key: self._finish_render(key))
             return task
 
-    def _finish_render(self, key: tuple[str, int, int, int, int]) -> None:
+    def _finish_render(self, key: tuple[str, int, int, int, int, str]) -> None:
         """单飞渲染任务收尾：显式取回异常（唯一请求方已断连时无人 await，
         不取回会刷「Task exception was never retrieved」告警）并出表。"""
         task = self._pdf_page_render_inflight.get(key)
@@ -682,7 +701,7 @@ class FileParser:
 
     async def _render_pdf_page_image(
         self,
-        cache_key: tuple[str, int, int, int, int],
+        cache_key: tuple[str, int, int, int, int, str],
         resolved: str,
         page: int,
         dpi: int,
