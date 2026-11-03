@@ -268,6 +268,11 @@ _WM_NOT_APPLICABLE = {
 }
 
 
+def _initial_wm_label() -> dict:
+    """该页/次还没走渲染取图时的初值（IMAGE 页与提前返回分支用）。"""
+    return dict(_WM_NOT_APPLICABLE)
+
+
 def watermark_overlay_label(status: dict | None) -> dict:
     """把水印模块的卷级状态折成 pipeline_status 的标签值（AC2-2a 的唯一机读证据）。
 
@@ -327,7 +332,7 @@ class VisionService:
             nonlocal image_data
             if file_type == FileType.IMAGE:
                 image_data = await self.file_parser.read_image(file_path)
-                pipeline_status["watermark_overlay"] = dict(_WM_NOT_APPLICABLE)
+                pipeline_status["watermark_overlay"] = _initial_wm_label()
                 return image_data
             render_start = time.perf_counter()
             image_data = await self.file_parser.get_pdf_page_image(file_path, page)

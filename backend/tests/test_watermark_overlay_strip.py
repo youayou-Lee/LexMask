@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import io
 import logging
 import os
@@ -618,10 +619,14 @@ def test_copy_ttl_sweeps_stale_files(tmp_path, env, monkeypatch):
     os.utime(copy_path, (stale, stale))
     monkeypatch.setattr(settings, "WATERMARK_OVERLAY_COPY_TTL_HOURS", 1)
     other = str(uploads / "ttl2.pdf")
-    build_pdf(other, pages=1)  # 触发一次构建 → 触发 sweep
-    wm._CACHE.clear()  # noqa: SLF001
+    build_pdf(other, pages=3)  # 有真水印、会命中并构建 ⇒ 触发 sweep
+    # 不走 _CACHE.clear()：过期副本不算「在用」，必须被真实清掉（门⑥ 二轮 #6）
     wm.render_source(other)
     assert not os.path.exists(copy_path), "过期副本必须被清理"
+    # TTL 对 memo 同样生效：再来请求该卷要重建，且拿到的必须是存在的新副本
+    again, again_status = wm.render_source(src)
+    assert again and os.path.exists(again), again_status
+    assert again_status["code"] == "hit", again_status
 
 
 def test_disabled_switch_does_not_probe(tmp_path, monkeypatch):
@@ -647,12 +652,19 @@ def test_disabled_switch_does_not_probe(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_corrupt_pdf_returns_probe_error(tmp_path, env):
-    path = tmp_path / "broken.pdf"
+def test_corrupt_pdf_maps_to_not_pdf_and_fails_open(tmp_path, env):
+    """AC10：读不开的 PDF 不得炸识别——归 not_pdf、回落原件、原件不动。"""
+    uploads, _outputs = env
+    path = uploads / "broken.pdf"
     path.write_bytes(b"%PDF-1.7\nnot a real pdf")
+    before = path.read_bytes()
     outcome = wm.probe(str(path))
-    assert outcome.code == "error"
-    assert outcome.error
+    assert outcome.code == "not_pdf", outcome
+    copy_path, status = wm.render_source(str(path))
+    assert copy_path is None
+    assert status["code"] == "not_pdf", status
+    assert status["source"] == "original"
+    assert path.read_bytes() == before
 
 
 def test_oversized_volume_is_capped(tmp_path, env, monkeypatch):
@@ -765,6 +777,8 @@ def test_clean_render_changes_only_watermark_pixels(tmp_path, env):
 def test_copy_dir_unwritable_fails_open_without_breaking_recognition(tmp_path, env, monkeypatch):
     """C1（AC10）：副本目录不可写 ⇒ 显式 code=copy_dir_unwritable、回落原件、
     **不得抛异常**（识别面默认开启，模块故障不能把正常卷的识别整卷打掉）。"""
+    if os.geteuid() == 0:  # root 无视目录权限，容器内跑会假红
+        pytest.skip("目录只读语义对 root 无效")
     uploads, outputs = env
     src = str(uploads / "readonly-dir.pdf")
     build_pdf(src, pages=3)
@@ -803,14 +817,20 @@ def test_sweep_never_deletes_in_use_copy(tmp_path, env):
     build_pdf(src, pages=3)
     copy_path, status = wm.render_source(src)
     assert status["source"] == "copy"
-    os.utime(copy_path, (0, 0))  # 极旧
     stale = os.path.join(os.path.dirname(copy_path), "stale-orphan.pdf")
     with open(stale, "wb") as fh:
         fh.write(b"%PDF-1.4 stale")
     os.utime(stale, (0, 0))
     wm._sweep(os.path.dirname(copy_path), 24)
-    assert os.path.exists(copy_path), "在用的副本被误删"
+    assert os.path.exists(copy_path), "在用的（保鲜）副本被误删"
     assert not os.path.exists(stale), "过期孤儿副本应被清掉"
+    # 一旦过期，memo 不再豁免清理（TTL 真实生效），随后请求会重建
+    stale_ts = time.time() - 48 * 3600
+    os.utime(copy_path, (stale_ts, stale_ts))
+    wm._sweep(os.path.dirname(copy_path), 24)
+    assert not os.path.exists(copy_path), "过期副本不应对 memo 永久豁免"
+    again, again_status = wm.render_source(src)
+    assert again and os.path.exists(again), again_status
 
 
 def test_partial_residual_watermark_refuses_whole_volume(tmp_path, env):
@@ -998,19 +1018,143 @@ def test_legal_ascii_body_stream_survives_charset_guard(tmp_path, env):
     outcome = wm.probe(src)
     assert outcome.code == "hit", outcome
     copy_path, status = wm.render_source(src)
-    # 卷级熔断（门⑥ C2）：只要有一页被守卫判定「摘不干净」，整卷不产出副本——
-    # 否则那页的正文会随「水印流」一起消失，而状态面还报 hit。
-    assert copy_path is None, status
-    assert status["code"] == "guard_refused_pages", status
-    assert status["source"] == "original"
-    assert status["pages_guard_refused"] == 1, status
+    # AC7-7a：异构卷——水印页照摘，无水印的正文页既不摘也不熔断（门⑥ 二轮：熔断只按「页」判，
+    # 且只对「本页确实有水印却摘不干净」生效；把正文页的守卫弃权也算熔断会把整卷误伤）。
+    assert copy_path, status
+    assert status["code"] == "hit", status
     assert status["pages_stripped"] == 3, status
-    assert wm.stats()["build_calls"] >= 1
-    # 原件仍然完整可读（正文流没有被真的删掉）
-    doc = fitz.open(src)
+    assert status["pages_skipped"] == 1, status
+    assert status["pages_guard_refused"] == 0, status
+    doc = fitz.open(copy_path)
     try:
         text = doc.load_page(3).get_text()
+        for index in (0, 1, 2):
+            assert "ACME-CONFIDENTIAL" not in doc.load_page(index).get_text()
     finally:
         doc.close()
     assert "SAMPLE BODY ONE" in text
     assert "SAMPLE BODY THREE" in text
+    # 原件也仍然完整（正文流没有被真的删掉）
+    doc = fitz.open(src)
+    try:
+        assert "SAMPLE BODY ONE" in doc.load_page(3).get_text()
+    finally:
+        doc.close()
+
+
+# ---------------------------------------------------------------------------
+# 门⑥ 二轮补钉：输入口径码 / 构建失败语义 / pipeline_status 接线 / 不透明水印
+# ---------------------------------------------------------------------------
+
+
+def test_non_pdf_input_maps_to_not_pdf(tmp_path, env):
+    uploads, _outputs = env
+    src = str(uploads / "not-a-pdf.pdf")
+    with open(src, "wb") as fh:
+        fh.write(b"not a pdf at all")
+    outcome = wm.probe(src)
+    assert outcome.code == "not_pdf", outcome
+    _copy, status = wm.render_source(src)
+    assert status["code"] == "not_pdf", status
+    assert status["source"] == "original"
+
+
+def test_zero_page_pdf_maps_to_not_applicable(tmp_path, env):
+    uploads, _outputs = env
+    src = str(uploads / "empty.pdf")
+    # fitz 不允许保存 0 页，手写一个合法的零页 PDF（MuPDF 可正常打开、page_count=0）
+    zero_page = (
+        "%PDF-1.4\n"
+        "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+        "2 0 obj\n<< /Type /Pages /Count 0 /Kids [] /MediaBox [0 0 595 842] >>\nendobj\n"
+        "trailer\n<< /Root 1 0 R /Size 3 >>\n%%EOF\n"
+    )
+    with open(src, "wb") as fh:
+        fh.write(zero_page.encode("latin-1"))
+    outcome = wm.probe(src)
+    assert outcome.code == "not_applicable", outcome
+
+
+def test_copy_self_check_failure_is_failed_and_sanitized(tmp_path, env, monkeypatch):
+    uploads, _outputs = env
+    src = str(uploads / "selfcheck.pdf")
+    build_pdf(src, pages=3)
+    real_open = wm.fitz.open
+
+    def _boom(path, *a, **kw):
+        if isinstance(path, str) and ".watermark_overlay" in path:
+            raise ValueError("copy page count 2 != 3 at /srv/secret/path")
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(wm.fitz, "open", _boom)
+    copy_path, status = wm.render_source(src)
+    assert copy_path is None, status
+    assert status["code"] == "copy_verify_failed", status
+    assert status["failed"] is True, status
+    assert "/srv/secret" not in (status.get("error") or ""), status
+
+
+def test_pipeline_status_initial_label_matches_helper():
+    from app.services import vision_service
+
+    initial = vision_service._initial_wm_label()  # noqa: SLF001
+    assert initial["code"] == "not_applicable"
+    assert initial["source"] == "original"
+    assert vision_service.watermark_overlay_label(None)["code"] == "not_run"
+    # 接线钉：识别路径必须真的调用这个 helper（删掉接线即红）
+    source = inspect.getsource(vision_service)
+    assert "watermark_overlay_label(" in source
+    assert "_initial_wm_label(" in source
+
+
+def test_opaque_overlay_is_not_treated_as_watermark(tmp_path, env):
+    """alpha 上限（>220）必须真的挡住「不透明灰字」——否则指纹闸形同虚设。"""
+    uploads, _outputs = env
+    src = str(uploads / "opaque.pdf")
+    build_pdf(src, pages=3, opacity=1.0)
+    outcome = wm.probe(src)
+    assert outcome.code in {"no_wm_spans", "no_isolated_overlay"}, outcome
+    copy_path, status = wm.render_source(src)
+    assert copy_path is None
+    assert status["source"] == "original"
+    assert wm.stats()["build_calls"] == 0
+
+
+def test_probe_reports_slot_per_page(tmp_path, env):
+    """门⑥ 二轮：插槽映射必须按**页**记录，不能按命中顺序索引页号（异构卷会错配）。"""
+    uploads, _outputs = env
+    src = str(uploads / "slot-map.pdf")
+    build_pdf(src, pages=5, overlay_pages=[0, 2, 4])
+    wm.reset_stats()
+    outcome = wm.probe(src, probes=5)
+    assert outcome.code == "hit", outcome
+    assert outcome.slot_by_page, "每页插槽必须留痕"
+    assert [page for page, _slot in outcome.slot_by_page] == sorted(page for page, _slot in outcome.slot_by_page)
+    assert {page for page, _slot in outcome.slot_by_page} <= {0, 2, 4}
+
+
+def test_fail_open_result_is_cached_briefly(tmp_path, env, monkeypatch):
+    """门⑥ 二轮：持续故障时不能每页重付探测/构建，但短窗口后必须重试。"""
+    uploads, _outputs = env
+    src = str(uploads / "flaky.pdf")
+    build_pdf(src, pages=3)
+    wm.reset_stats()
+    calls = {"n": 0}
+
+    def boom(*_args, **_kwargs):
+        calls["n"] += 1
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(wm, "probe", boom)
+    first_path, first = wm.render_source(src)
+    _second_path, second = wm.render_source(src)
+    assert first_path is None and first["code"] == "error" and first["failed"] is True
+    assert second["code"] == "error"
+    assert calls["n"] == 1, "同一卷的失败结果必须负缓存，不能每页重付"
+
+    with wm._CACHE_LOCK:  # 短窗口过期后必须允许重试（否则故障修好也永不恢复）
+        for key in list(wm._CACHE):
+            if isinstance(wm._CACHE[key], dict) and "_cached_at" in wm._CACHE[key]:
+                wm._CACHE[key]["_cached_at"] -= wm._FAIL_OPEN_TTL_S + 1
+    wm.render_source(src)
+    assert calls["n"] == 2

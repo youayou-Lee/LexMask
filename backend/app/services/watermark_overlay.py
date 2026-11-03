@@ -60,6 +60,12 @@ def _sanitize_error(exc: BaseException | str) -> str:
     return text[:200]
 
 
+def _settings():
+    from app.core.config import settings
+
+    return settings
+
+
 def _bump(name: str, delta: int = 1) -> None:
     with _STATS_LOCK:
         _STATS[name] = _STATS.get(name, 0) + delta
@@ -84,6 +90,7 @@ class ProbeOutcome:
     pages_probed: int = 0
     pages_hit: int = 0
     slots: tuple[int, ...] = ()
+    slot_by_page: tuple[tuple[int, int], ...] = ()
     fonts: tuple[str, ...] = ()
     size_spread: float = 1.0
     alpha_spread: float = 1.0
@@ -229,6 +236,7 @@ def probe(
 
         hits: list[int] = []
         slots: list[int] = []
+        hit_slots: list[tuple[int, int]] = []
         sizes: list[float] = []
         alphas: list[float] = []
         fonts: set[str] = set()
@@ -268,6 +276,7 @@ def probe(
 
             hits.append(index)
             slots.append(candidates[0])
+            hit_slots.append((index, candidates[0]))
             for span in overlay:
                 sizes.append(span["size"])
                 alphas.append(float(span["alpha"]))
@@ -295,6 +304,7 @@ def probe(
             pages_probed=len(ids),
             pages_hit=len(hits),
             slots=tuple(slots),
+            slot_by_page=tuple(hit_slots),
             fonts=tuple(sorted(fonts)),
             size_spread=round(size_spread, 3),
             alpha_spread=round(alpha_spread, 3),
@@ -307,9 +317,11 @@ def probe(
         if top_repeats < min_repeats:
             return done("signature_drift", **common)
         return done("hit", **common)
+    except fitz.FileDataError as exc:  # 后缀是 .pdf、内容不是 PDF ⇒ 同样是「不是 PDF」
+        return done("not_pdf", pages_probed=0, error=_sanitize_error(exc))
     except Exception as exc:  # noqa: BLE001 - fail-open：任何异常都回落原件
         logger.warning("watermark overlay probe failed: %s", type(exc).__name__)
-        return done("error", error=f"{type(exc).__name__}: {exc}"[:200])
+        return done("error", error=_sanitize_error(exc))
     finally:
         if doc is not None:
             doc.close()
@@ -348,7 +360,7 @@ def build_stripped_copy(
 
     charset = set(outcome.charset)
     tokens = tuple(outcome.tokens)
-    preferred_slots = list(outcome.slots)
+    slot_for_page = dict(outcome.slot_by_page)
     doc = None
     tmp_path = f"{dest}.tmp-{os.getpid()}-{threading.get_ident()}"
     try:
@@ -363,10 +375,16 @@ def build_stripped_copy(
             if len(xrefs) < 2:
                 skipped += 1
                 continue
+            # 该页本身有没有覆盖水印：决定「摘不掉」是隐患（refused）还是本来无事（skipped）。
+            page_has_wm = any(
+                _is_overlay_span(span, tilt_min=tilt_min, alpha_max=alpha_max)
+                for span in _spans(page)
+            )
             order = list(range(len(xrefs)))
-            if index < len(preferred_slots) and preferred_slots[index] in order:
-                order.remove(preferred_slots[index])
-                order.insert(0, preferred_slots[index])
+            preferred = slot_for_page.get(index)
+            if preferred is not None and preferred in order:
+                order.remove(preferred)
+                order.insert(0, preferred)
             dropped_here = False
             for slot in order:
                 xref = xrefs[slot]
@@ -378,23 +396,21 @@ def build_stripped_copy(
                 _set_contents(doc, page.xref, keep)
                 reloaded = doc.reload_page(page)
                 new_lines = _line_set(reloaded)
+                refuse = False
                 if new_lines - original_lines:  # 摘除后凭空多出行：结构异常
-                    guard_refused += 1
-                    _set_contents(doc, reloaded.xref, xrefs)
-                    page = doc.reload_page(reloaded)
-                    continue
-                removed = original_lines - new_lines
-                if not removed:  # 什么都没删掉：该流不是水印
-                    _set_contents(doc, reloaded.xref, xrefs)
-                    page = doc.reload_page(reloaded)
-                    continue
-                if not all(set(line) <= charset for line in removed):  # 删掉的不全是水印字符
-                    guard_refused += 1
-                    _set_contents(doc, reloaded.xref, xrefs)
-                    page = doc.reload_page(reloaded)
-                    continue
-                if tokens and _residual_tokens(new_lines, tokens):  # 摘后仍有水印令牌
-                    guard_refused += 1
+                    refuse = True
+                else:
+                    removed = original_lines - new_lines
+                    if not removed:
+                        # 什么都没删掉：该流不是水印，换下一个候选（不算页级拒绝）。
+                        _set_contents(doc, reloaded.xref, xrefs)
+                        page = doc.reload_page(reloaded)
+                        continue
+                    if not all(set(line) <= charset for line in removed):  # 删掉的不全是水印字符
+                        refuse = True
+                    elif tokens and _residual_tokens(new_lines, tokens):  # 摘后仍有水印令牌
+                        refuse = True
+                if refuse:
                     _set_contents(doc, reloaded.xref, xrefs)
                     page = doc.reload_page(reloaded)
                     continue
@@ -402,6 +418,10 @@ def build_stripped_copy(
                 break
             if dropped_here:
                 stripped += 1
+            elif page_has_wm:
+                # 页级判定：这一页**确实有**覆盖水印，但没有一个候选流能被干净摘掉
+                # （哪怕试了多个 slot 全拒，也只算 1 页，不按尝试次数放大）。
+                guard_refused += 1
             else:
                 skipped += 1
 
@@ -416,21 +436,23 @@ def build_stripped_copy(
                 raise ValueError(f"copy page count {len(check)} != {page_count}")
         finally:
             check.close()
+        if guard_refused:
+            # 卷级熔断：有页**确实带水印却摘不干净**时，整卷不产出副本。
+            # 否则下游 OCR/NER 会继续吃那一页的水印，而状态面却是绿的（门⑥ C2）。
+            # 注意：只按「页」判定——本来没有水印的页（异构卷正文页）只记 skipped，
+            # 不触发熔断（AC7-7a：异构卷应 hit + pages_stripped=3）。
+            logger.warning(
+                "watermark overlay: %d page(s) with watermark refused by guard; falling back to original",
+                guard_refused,
+            )
+            return done("guard_refused_pages", pages=page_count,
+                        pages_stripped=stripped, pages_skipped=skipped,
+                        pages_guard_refused=guard_refused)
         if not stripped:
             # 逐页守卫全弃权 ⇒ 不得产出「看起来是净化副本、其实还带水印」的文件
             # （AC7-7c：副本文件不产出，或产出但 GT 令牌命中 > 0 一律 FAIL）。
             return done("no_strippable_pages", pages=page_count,
                         pages_stripped=0, pages_skipped=skipped,
-                        pages_guard_refused=guard_refused)
-        if guard_refused:
-            # 卷级熔断：有页被守卫判定「摘不干净」时，整卷不产出副本。
-            # 否则下游 OCR/NER 会继续吃那一页的水印，而状态面却是绿的（门⑥ C2）。
-            logger.warning(
-                "watermark overlay: %d page(s) refused by per-page guard; falling back to original",
-                guard_refused,
-            )
-            return done("guard_refused_pages", pages=page_count,
-                        pages_stripped=stripped, pages_skipped=skipped,
                         pages_guard_refused=guard_refused)
         os.replace(tmp_path, dest)
         try:
@@ -493,10 +515,11 @@ def _sweep(directory: str, ttl_hours: float) -> None:
         return
     cutoff = time.time() - ttl_hours * 3600
     with _CACHE_LOCK:
+        # 只有「仍然保鲜」的副本才算在用；过期条目不再豁免，允许被清掉后按需重建。
         in_use = {
             os.path.basename(v["copy_path"])
             for v in _CACHE.values()
-            if v.get("copy_path")
+            if v.get("copy_path") and _cached_copy_alive(v)
         }
     try:
         names = os.listdir(directory)
@@ -528,11 +551,14 @@ def _public(status: dict | None) -> dict:
     """对外的状态形状：不暴露副本文件系统路径（前端只关心 code/source/计数）。"""
     if not status:
         return {}
-    return {k: v for k, v in status.items() if k != "copy_path"}
+    return {k: v for k, v in status.items() if k != "copy_path" and not k.startswith("_")}
 
 
 _FAIL_OPEN = {"ran": True, "skipped": False, "failed": False, "region_count": 0,
               "source": "original", "copy_path": None}
+# fail-open 状态也进 memo（否则持续失败的卷会每页重付一次探测/构建），但只在短窗口内生效：
+# 权限/磁盘类故障修好后不该被永久负缓存钉死。
+_FAIL_OPEN_TTL_S = 60.0
 
 
 def _fail_open_status(code: str, error: str | None, duration_ms: int = 0) -> dict:
@@ -542,11 +568,22 @@ def _fail_open_status(code: str, error: str | None, duration_ms: int = 0) -> dic
 
 
 def _cached_copy_alive(status: dict) -> bool:
-    """memo 命中但副本已被 TTL 清掉时必须重建，否则渲染拿到不存在的路径。"""
+    """memo 是否仍然可用：副本要存在且未过 TTL；fail-open 结果只保鲜一个短窗口。"""
     if status.get("source") != "copy":
-        return True
+        cached_at = status.get("_cached_at")
+        if cached_at is None:
+            return False
+        return time.time() - float(cached_at) <= _FAIL_OPEN_TTL_S
     copy_path = status.get("copy_path")
-    return bool(copy_path) and os.path.exists(copy_path)
+    if not copy_path or not os.path.exists(copy_path):
+        return False
+    try:  # TTL 对 memo 同样生效：过期副本不返回，交给 _build_once 重建（并顺手 sweep）
+        ttl_hours = float(getattr(_settings(), "WATERMARK_OVERLAY_COPY_TTL_HOURS", 24))
+        if ttl_hours <= 0:
+            return True
+        return os.path.getmtime(copy_path) >= time.time() - ttl_hours * 3600
+    except OSError:
+        return False
 
 
 def render_source(path: str) -> tuple[str | None, dict]:
@@ -564,14 +601,27 @@ def render_source(path: str) -> tuple[str | None, dict]:
     try:
         return _render_source_locked(path)
     except PermissionError as exc:
-        logger.warning("watermark overlay copy dir not writable: %s", type(exc).__name__)
-        return None, _fail_open_status("copy_dir_unwritable", _sanitize_error(exc))
+        message = _sanitize_error(exc)
+        logger.warning("watermark overlay copy dir not writable: %s: %s", type(exc).__name__, message)
+        return None, _remember_failure(path, _fail_open_status("copy_dir_unwritable", message))
     except Exception as exc:  # noqa: BLE001 - fail-open 兜底
-        logger.warning("watermark overlay render_source failed: %s", type(exc).__name__)
-        return None, _fail_open_status("error", _sanitize_error(exc))
+        message = _sanitize_error(exc)
+        logger.warning("watermark overlay render_source failed: %s: %s", type(exc).__name__, message)
+        return None, _remember_failure(path, _fail_open_status("error", message))
     finally:
         _bump("render_calls")
         _bump("render_ms", int((time.perf_counter() - render_started) * 1000))
+
+
+def _remember_failure(path: str, status: dict) -> dict:
+    """把 fail-open 结果写进短窗口负缓存，避免同一卷每页重付探测/构建。"""
+    try:
+        key = _fingerprint(path)
+    except OSError:
+        return status
+    with _CACHE_LOCK:
+        _CACHE[key] = dict(status, _cached_at=time.time())
+    return status
 
 
 def _render_source_locked(path: str) -> tuple[str | None, dict]:
@@ -613,17 +663,6 @@ def _build_once(path: str, key: str) -> dict:
         status["duration_ms"] = int((time.perf_counter() - started) * 1000)
         return status
 
-    # 副本目录的准备**必须**在 fail-open 保护范围内：OUTPUT_DIR 只读/磁盘满时
-    # 不能把正常卷的识别整卷打掉（AC10 / 门⑥ C1）。
-    try:
-        directory = copy_dir()
-        _sweep(directory, float(getattr(settings, "WATERMARK_OVERLAY_COPY_TTL_HOURS", 24)))
-    except OSError as exc:
-        logger.warning("watermark overlay copy dir unavailable: %s", type(exc).__name__)
-        status = _fail_open_status("copy_dir_unwritable", _sanitize_error(exc))
-        return stamp(status)
-
-    dest = os.path.join(directory, f"{key}.pdf")
     outcome = probe(
         path,
         probes=int(getattr(settings, "WATERMARK_OVERLAY_PROBE_PAGES", 5)),
@@ -638,7 +677,7 @@ def _build_once(path: str, key: str) -> dict:
     status = {
         "ran": True,
         "skipped": False,
-        "failed": outcome.code == "error",
+        "failed": outcome.code in {"error", "copy_verify_failed"},
         "region_count": 0,
         "error": outcome.error,
         "code": outcome.code,
@@ -652,6 +691,21 @@ def _build_once(path: str, key: str) -> dict:
     }
     if not outcome.hit:
         return stamp(status)
+    # 副本目录的准备**必须**在 fail-open 保护范围内，且放在探测之后：OUTPUT_DIR 只读/磁盘满时
+    # 不能把正常卷的识别整卷打掉（AC10 / 门⑥ C1）；而没有水印的卷根本不需要动文件系统。
+    try:
+        directory = copy_dir()
+        _sweep(directory, float(getattr(settings, "WATERMARK_OVERLAY_COPY_TTL_HOURS", 24)))
+    except OSError as exc:
+        logger.warning("watermark overlay copy dir unavailable: %s", type(exc).__name__)
+        status.update(
+            code="copy_dir_unwritable",
+            failed=False,
+            error=_sanitize_error(exc),
+            source="original",
+        )
+        return stamp(status)
+    dest = os.path.join(directory, f"{key}.pdf")
     build = build_stripped_copy(path, dest, outcome)
     status["pages_stripped"] = build.pages_stripped
     status["pages_skipped"] = build.pages_skipped
@@ -662,7 +716,7 @@ def _build_once(path: str, key: str) -> dict:
         code = build.code if not build.code.startswith("error") else "error"
         status.update(
             code=code,
-            failed=code == "error",
+            failed=code in {"error", "copy_verify_failed"},
             error=build.error or (None if code == "no_strippable_pages" else code),
             source="original",
             copy_path=None,
