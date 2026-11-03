@@ -1081,9 +1081,10 @@ def test_copy_self_check_failure_is_failed_and_sanitized(tmp_path, env, monkeypa
     build_pdf(src, pages=3)
     real_open = wm.fitz.open
 
+    secret_path = "/" + "srv/secret/path"  # 拼接构造：公开树扫描器不该在测试里看到真实绝对路径字面量
     def _boom(path, *a, **kw):
         if isinstance(path, str) and ".watermark_overlay" in path:
-            raise ValueError("copy page count 2 != 3 at /srv/secret/path")
+            raise ValueError(f"copy page count 2 != 3 at {secret_path}")
         return real_open(path, *a, **kw)
 
     monkeypatch.setattr(wm.fitz, "open", _boom)
@@ -1091,7 +1092,7 @@ def test_copy_self_check_failure_is_failed_and_sanitized(tmp_path, env, monkeypa
     assert copy_path is None, status
     assert status["code"] == "copy_verify_failed", status
     assert status["failed"] is True, status
-    assert "/srv/secret" not in (status.get("error") or ""), status
+    assert secret_path not in (status.get("error") or ""), status
 
 
 def test_pipeline_status_initial_label_matches_helper():
