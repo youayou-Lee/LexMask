@@ -467,3 +467,136 @@ def test_malformed_structure_warns_not_silent():
     flat, warns = normalize_docvortex([doc])
     assert len(flat) == 1 and flat[0]["page_idx"] == 1
     assert any("mineru4_malformed" in w for w in warns)
+
+
+# ---- Issue#231：v4 docvortex 表名/脚注/图注/doc_title 不再静默丢失 ----
+
+
+class TestDocvortexCaptionsFootnotes:
+    def test_table_caption_footnote_parts_mapped_v2_caliber(self):
+        # 4.x 实测形态：表名/脚注是独立部件（part），不是 v2 的 content dict 键
+        from app.services.agent_md_adapter import clean_segments, normalize_docvortex
+        doc = _v4_doc([(0, [
+            {"type": "table", "index": 0,
+             "content": [
+                 {"type": "table_body",
+                  "content": "<table><tr><td>1</td></tr></table>"},
+                 {"type": "table_caption", "content": "表 1 财产查询反馈"},
+                 {"type": "table_footnote", "content": "注：金额单位为元"},
+             ]},
+        ])])
+        flat, warns = normalize_docvortex([doc])
+        assert warns == []  # 已知部件类型不许掉进告警桶
+        assert flat[0]["type"] == "table"
+        assert flat[0]["table_body"] == "<table><tr><td>1</td></tr></table>"
+        assert flat[0]["table_caption"] == "表 1 财产查询反馈"
+        assert flat[0]["table_footnote"] == "注：金额单位为元"
+        # 消费侧（v2 同口径）：表格段 = 正文 + 表名 + 脚注
+        segs, _ = clean_segments(flat)
+        assert segs[0].source == "table"
+        assert "表 1 财产查询反馈" in segs[0].text
+        assert "注：金额单位为元" in segs[0].text
+        assert "<table>" not in segs[0].text  # 正文走 table_to_text，不裸 HTML
+
+    def test_multiple_caption_parts_join_with_v2_separator(self):
+        # v2 _parts_text 口径：" | " 连接
+        from app.services.agent_md_adapter import normalize_docvortex
+        doc = _v4_doc([(0, [
+            {"type": "table", "index": 0,
+             "content": [
+                 {"type": "table_body", "content": "<table></table>"},
+                 {"type": "table_caption", "content": "表 1"},
+                 {"type": "table_caption", "content": "续表 1"},
+             ]},
+        ])])
+        flat, warns = normalize_docvortex([doc])
+        assert warns == []
+        assert flat[0]["table_caption"] == "表 1 | 续表 1"
+
+    def test_image_footnote_mapped_and_survives_sentinel(self):
+        from app.services.agent_md_adapter import (
+            clean_segments,
+            enrich_image_blocks,
+            normalize_docvortex,
+        )
+        doc = _v4_doc([(2, [
+            {"type": "image", "index": 0,
+             "content": [{"type": "image_footnote", "content": "图 3 现场照片"}]},
+        ])])
+        flat, warns = normalize_docvortex([doc])
+        assert warns == []
+        assert flat[0]["type"] == "image"
+        assert flat[0]["image_footnote"] == "图 3 现场照片"
+        segs, _ = clean_segments(flat)
+        assert segs[0].source == "img_ocr"
+        assert segs[0].text == "图 3 现场照片"
+        # 4.x zip 无 images/ ⇒ enrich 失败降级哨兵时不得吞掉已有图注
+        filled, _ = enrich_image_blocks(segs, {}, _FakeOcr())
+        assert filled[0].text == "图 3 现场照片"
+
+    def test_doc_title_block_maps_to_text(self):
+        from app.services.agent_md_adapter import normalize_docvortex
+        doc = _v4_doc([(0, [
+            {"type": "doc_title", "index": 0,
+             "content": [{"type": "text", "content": "执行裁定书"}]},
+        ])])
+        flat, warns = normalize_docvortex([doc])
+        assert warns == []
+        assert flat[0]["type"] == "text"
+        assert flat[0]["text"] == "执行裁定书"
+
+    def test_unknown_part_type_still_warns(self):
+        # 负例钉子：真正未知的 part type 仍必须进告警，不许被新映射吞掉
+        from app.services.agent_md_adapter import normalize_docvortex
+        doc = _v4_doc([(0, [
+            {"type": "table", "index": 0,
+             "content": [
+                 {"type": "table_body", "content": "<table></table>"},
+                 {"type": "table_caption_v9", "content": "形似负例"},
+             ]},
+        ])])
+        flat, warns = normalize_docvortex([doc])
+        assert any("unhandled docvortex part type: table_caption_v9" in w for w in warns)
+        assert "table_caption" not in flat[0]
+
+    def test_caption_parts_on_non_table_blocks_not_attached(self):
+        # v2 口径：caption 只在 table 块上上浮；text 块里的 table_caption 部件
+        # 是已知类型（不告警），但不上浮为表格语义
+        from app.services.agent_md_adapter import normalize_docvortex
+        doc = _v4_doc([(0, [
+            {"type": "text", "index": 0,
+             "content": [{"type": "table_caption", "content": "错位表名"}]},
+        ])])
+        flat, warns = normalize_docvortex([doc])
+        assert warns == []
+        assert "table_caption" not in flat[0]
+
+
+
+
+def test_caption_part_content_as_text_part_list():
+    # 真卷实测形态（149 页卷 flash 档）：caption/footnote 部件的 content 是
+    # 文本部件列表（[{"type":"text","content":...}]），不是字符串——与 v2
+    # _parts_text 输入同形，必须同样收敛（149 页真卷 7 个部件 0 上浮即事故）。
+    from app.services.agent_md_adapter import clean_segments, normalize_docvortex
+    doc = _v4_doc([(0, [
+        {"type": "table", "index": 0,
+         "content": [
+             {"type": "table_body", "content": "<table><tr><td>1</td></tr></table>"},
+             {"type": "table_caption",
+              "content": [{"type": "text", "content": "出口货物报关单统计表"}]},
+             {"type": "table_footnote",
+              "content": [{"type": "text", "content": "注：金额单位为元"},
+                           {"type": "text", "content": "分包检测"}]},
+         ]},
+        {"type": "image", "index": 1,
+         "content": [{"type": "image_footnote",
+                       "content": [{"type": "text", "content": "图 3 现场照片"}]}]},
+    ])])
+    flat, warns = normalize_docvortex([doc])
+    assert warns == []
+    assert flat[0]["table_caption"] == "出口货物报关单统计表"
+    assert flat[0]["table_footnote"] == "注：金额单位为元 | 分包检测"  # v2 " | " 连接
+    assert flat[1]["image_footnote"] == "图 3 现场照片"
+    segs, _ = clean_segments(flat)
+    assert "出口货物报关单统计表" in segs[0].text

@@ -28,17 +28,15 @@ MinerU 调用形态：``mineru -p <input> -o <outdir>``（4.x CLI），产物目
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
-import threading
 import time
 import uuid
 import zipfile
 from pathlib import Path
 from typing import Any
-
-import json
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -86,6 +84,60 @@ def _load_task_meta(task_id: str) -> None:
             pass
 
 
+def _mineru_wait_sec() -> int:
+    """--wait 上限（Issue#230 缺陷①）：CLI 缺省 60s，真卷 standard 10 页就要
+    3.5 分钟 ⇒ 不传必超时。缺省跟随 MINERU_SIDECAR_TIMEOUT 留 120s 余量（子进程
+    timeout 比服务端等待上限大，保证先收到 CLI 的结构化超时错误而非被 kill）。"""
+    if os.environ.get("MINERU_SIDECAR_WAIT"):
+        return max(60, int(float(os.environ["MINERU_SIDECAR_WAIT"])))
+    return max(60, int(MINERU_TIMEOUT_SEC) - 120)
+
+
+def _merge_docvortex_docs(docs: list[dict]) -> tuple[dict, list[str]]:
+    """多个 docvortex.middle 窗口 doc 合并为单份（Issue#230 缺陷③）。
+
+    MinerU 4.x 对 >64 页文档按窗口拆成多份 json（实测 149 页 → ``1-10`` +
+    ``11-149``）。盲拼会把导出 md 全文翻倍，所以合并规则收紧：
+
+    - 同 ``page_idx`` 且逐字节同内容 ⇒ 去重（doclib 历史缓存页段常态），计数告警；
+    - 同 ``page_idx`` 内容不同 / ``schema_version`` 不一致 ⇒ raise（任务显式失败，
+      不许猜）；
+    - 合并键 = 页 canonical JSON，合并后按 page_idx 排序；metadata 取首份。
+    """
+    if not docs:
+        raise ValueError("docvortex merge: 无文档可合并")
+    if len(docs) == 1:
+        return docs[0], []
+    base = docs[0]
+    merged_version = base.get("schema_version")
+    pages_by_idx: dict[int, dict] = {}
+    warns: list[str] = []
+    deduped = 0
+    for doc in docs:
+        if doc.get("schema_version") != merged_version:
+            raise ValueError(
+                "docvortex merge: schema_version 不一致 "
+                f"({merged_version} vs {doc.get('schema_version')})，拒绝盲拼"
+            )
+        for page in doc.get("pages") or []:
+            idx = page.get("page_idx")
+            key = int(idx) if isinstance(idx, (int, float)) else -1
+            canon = json.dumps(page, sort_keys=True, ensure_ascii=False)
+            if key in pages_by_idx:
+                if json.dumps(pages_by_idx[key], sort_keys=True, ensure_ascii=False) == canon:
+                    deduped += 1
+                    continue
+                raise ValueError(
+                    f"docvortex merge: page_idx {idx} 在多个窗口内容不同，拒绝盲拼"
+                )
+            pages_by_idx[key] = page
+    if deduped:
+        warns.append(f"docvortex merge: 去重 {deduped} 个重复页")
+    merged = dict(base)
+    merged["pages"] = [pages_by_idx[k] for k in sorted(pages_by_idx)]
+    return merged, warns
+
+
 def _run_mineru_sync(task_id: str, inputs: list[Path]) -> None:
     """同步执行 mineru CLI（在线程池跑——asyncio 子进程在 uvicorn 非主线程
     的事件循环里收不到退出回调，线程形态任何部署都稳）。"""
@@ -112,6 +164,12 @@ def _run_mineru_sync(task_id: str, inputs: list[Path]) -> None:
                     "--json",
                     "--tier",
                     os.environ.get("MINERU_SIDECAR_TIER", "flash"),
+                    # Issue#230：--wait 不传 CLI 缺省 60s（真卷必超时）；--pages 不传
+                    # CLI 默认只解析前 10 页（静默截断）。均可配，缺省就安全。
+                    "--wait",
+                    str(_mineru_wait_sec()),
+                    "--pages",
+                    os.environ.get("MINERU_SIDECAR_PAGES", "all"),
                     "-o",
                     str(out_dir / (input_path.stem + ".md")),
                     str(input_path),
@@ -127,16 +185,38 @@ def _run_mineru_sync(task_id: str, inputs: list[Path]) -> None:
                 parse_results.append(json.loads(proc.stdout.decode(errors="replace")))
             except Exception:
                 parse_results.append({})
-        # 收取 doclib 结构化产物（4.x schema；backend 侧 3.x content_list 适配另案）
+        # 收取 doclib 结构化产物（4.x schema；backend 侧 3.x content_list 适配另案）。
+        # Issue#230 缺陷③：>64 页文档按窗口拆多份 json，直接拷会撞后端
+        # mineru4_multiple_docs fail-closed（整单作废）⇒ 同 sha 窗口按 page_idx
+        # 合并成单份；合并后 pages 数必须等于 metadata.page_count，否则任务显式
+        # 失败（残卷不许静默出厂——缺陷②的静默截断就是事故本体）。
         home = Path(os.environ.get("MINERU_SIDECAR_HOME", str(Path.home() / ".mineru")))
-        for pr in parse_results:
+        for pr, input_path in zip(parse_results, inputs, strict=False):
             sha = (pr.get("parse") or {}).get("sha256") or ""
             tier = (pr.get("parse") or {}).get("tier") or os.environ.get("MINERU_SIDECAR_TIER", "flash")
-            if sha:
-                lib = home / "doclib" / "parsed" / sha[:2] / sha / tier
-                for f in sorted(lib.glob("*.json")):
-                    dest = out_dir / f"mineru4_{tier}_{f.name}"
-                    shutil.copyfile(f, dest)
+            if not sha:
+                continue
+            lib = home / "doclib" / "parsed" / sha[:2] / sha / tier
+            raw_docs = []
+            for f in sorted(lib.glob("*.json")):
+                try:
+                    raw_docs.append(json.loads(f.read_text(encoding="utf-8")))
+                except Exception as exc:  # noqa: BLE001 —— 坏窗口不许静默丢
+                    raise RuntimeError(f"mineru doclib json unreadable: {f.name}: {exc}")
+            if not raw_docs:
+                continue
+            doc, merge_warns = _merge_docvortex_docs(raw_docs)
+            if merge_warns:
+                task.setdefault("warnings", []).extend(merge_warns)
+            pages = doc.get("pages") or []
+            page_count = (doc.get("metadata") or {}).get("page_count")
+            if isinstance(page_count, int) and page_count != len(pages):
+                raise RuntimeError(
+                    f"mineru truncated: pages={len(pages)} metadata.page_count={page_count}"
+                    f"（输入 {input_path.name}；残卷不许出厂，请检查 --pages/窗口收取）"
+                )
+            dest = out_dir / f"mineru4_{tier}_{input_path.stem}.json"
+            dest.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
         # 进度按时间粗估（CLI 无结构化进度输出）；完成时置 100。
         task["progress"] = min(
             90, 5 + int((time.monotonic() - t0) / max(MINERU_TIMEOUT_SEC, 1) * 85)
@@ -186,6 +266,7 @@ async def create_task(files: list[UploadFile] = File(...)) -> dict[str, Any]:
         "status": "pending",
         "progress": 0,
         "error": None,
+        "warnings": [],  # Issue#230：去重/截断等非致命异常显式可见
         "files": [p.name for p in inputs],
     }
     _write_task_meta(task_id)
@@ -208,6 +289,7 @@ async def task_status(task_id: str) -> dict[str, Any]:
         "status": task["status"],
         "progress": task.get("progress"),
         "error": task.get("error"),
+        "warnings": task.get("warnings") or [],
     }
 
 

@@ -17,6 +17,15 @@
   2. `text_layer_doc_source.py`：建链取消 → 落短 TTL 负缓存（新 settings `TEXT_LAYER_DOCLINE_CANCEL_NEGATIVE_TTL_SEC=300`，reason_code=`cancelled`）→ **re-raise**（取消传播不能吞）；TTL 内重试直接短路，TTL 过后允许重建。
 - **测试**：#200 +2 例（温度升级 + max 语义不被拉低）；**修正了原特征化钉的误钉**——旧钉以为 25 型走解析失败递归（24+1），实际先被帽驱动预分批切成 [12,12,1] 且 `type_guidance=[]` 不满足递归门槛（`is None`），钉的一直是预分批点；新测试 monkeypatch 预分批单批 + guidance=None 真正进入递归分支。#204-B +4 例（取消落 memo+re-raise / TTL 内重试零重建 / TTL 过后重建 / settings 口径钉）。变异双杀（#200 还原继承语义 1 红；#204-B 吞 re-raise 3 红）。全量 2627 passed 零回归。
 - **边界**：#204 缺陷 A（建链 O(整卷) 受单页 300s 看管的预算解耦）不在本 PR，另行设计讨论；水印资格闸（#203 主修）行为不变。
+
+### 修正（Issue#230/#231）MinerU 4.x sidecar 三处 CLI 缺陷 + docvortex 表名/脚注/doc_title 静默丢失
+
+- **为什么**：真卷（149 页扫描件 / 78 页表格卷）实测三处 sidecar CLI 缺陷——①不传 `--wait` 走 CLI 缺省 60s，真卷 standard 档必以 `parse_wait_timeout` 失败且留下孤儿 parse；②不传 `--pages` CLI 默认只解析前 10 页，所有 >10 页案卷静默变残卷（#218 引入即如此）；③补 `--pages all` 后 >64 页按窗口拆多份 json，撞后端 `mineru4_multiple_docs` fail-closed 整单作废。同批 #231：4.x docvortex 适配层只认 text/table_body/image_body 三种部件，`table_caption`/`table_footnote`/`image_footnote` 独立部件与 `doc_title` 块全部静默丢失（只在 warns 留痕、下游不失败）——表格卷丢「这张表是什么」的语义。
+- **改了什么**：①sidecar 显式传 `--wait`（`MINERU_SIDECAR_WAIT`，缺省=超时−120s）与 `--pages`（`MINERU_SIDECAR_PAGES`，缺省 `all`）；②新增 `_merge_docvortex_docs` 纯函数按 `page_idx` 合并多窗口（同页同内容去重计数、同页异内容/schema_version 不一致显式失败不盲拼），后端 `normalize_docvortex` 的 fail-closed 原样保留当防御网；③合并后 `pages` 数 != `metadata.page_count` ⇒ 任务显式失败（残卷不许出厂）；④任务增 `warnings` 字段并在 `/tasks/{id}` 透出；⑤adapter v4 分支把三个已知部件映射到与 v2 同口径字段（`table_caption`/`table_footnote` 仅 table 块上浮、`image_footnote` 仅 image 块上浮，`" | "` 连接同 `_parts_text`），`doc_title` 按「标题→正文」口径进 `_DOCVORTEX_TEXT_BLOCK_TYPES`，未知 part type 仍告警不动；⑥`clean_segments` image 段并入图注、`enrich_image_blocks` 哨兵降级保留段内已有文本。
+- **测试**：净 +18 例（sidecar 11：merge 五判据 + CLI 参数四判据 + 端到端单份合并/截断显式失败；adapter 7：v2 同口径映射、多部件 `" | "` 连接、图注哨兵保留、`doc_title`、形似负例 `table_caption_v9` 仍告警、**部件 content 列表形态**——真卷实测 caption/footnote 的 content 是文本部件列表非字符串，149 页真卷 7 个部件曾 0 上浮），先红后绿；变异 9/9 KILLED；后端全量 2640 passed 零回归。门④：149 页真卷 flash 档容器实测——doclib 恰为 Issue 同款双窗口（`1-10`+`11-149`）⇒ sidecar 合并单份 pages=149 连续、`mineru4_docs=1`、任务 completed 141s 零告警；7 个 caption/footnote 部件全数上浮进 80 个表格段（64 段含表名/脚注语义行）、unhandled part 告警零。
+- **边界**：不做表格结构化还原（效果线另案，#224 同口径）；`normalize_docvortex` 多 doc fail-closed 不动；sidecar 契约向后兼容（新字段 `warnings` client 侧不读不受影响）；MinerU flash 档对表格零结构（无 `table_body`/caption 部件）是上游能力边界，属 #50 T2 范畴。
+- **canary**：testdata `canary-issue230-doclib-two-windows/`（多窗口微缩夹具）+ `canary-issue231-docvortex-captions.json`（caption/footnote/doc_title/形似负例形态夹具），全合成假数据。
+
 ### 修正（Issue#224）MinerU 4.x 纯文本 table_body 全量丢失——表格型案卷 0 实体
 
 - **为什么**：真卷验收发现（表格型扫描 PDF 走供料模式报「未识别到任何敏感实体」）：4.x flash 对扫描表格输出的 `table_body` 是**纯文本版面文字（无 HTML 标签）**，`table_to_text` 只收集 `<td>/<th>` 单元格 → 解析 0 行返回空 → `clean_segments` 记 `empty table block`，表格正文（真卷实测 47,256 字符）fail-open 全量丢弃，NER 只见 23 字符。既有夹具的 `table_body` 全是合成 HTML，与真实 4.x 形态不同源，测试未覆盖。#219 已知边界「4.x 比值守卫 warning-only 无回落」是同一风险另一面；本例在更上游（归一层有货、清洁层扔光）。
