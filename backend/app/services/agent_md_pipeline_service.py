@@ -15,6 +15,7 @@
 """
 import asyncio
 import json
+import logging
 import re
 import uuid
 from datetime import datetime
@@ -49,6 +50,8 @@ DOC_VORTEX_MD_RATIO = 0.7
 def _body_chars(segs: list[Seg]) -> int:
     """正文量口径：只数真正进 NER 的 text/table 段（哨兵/OCR 占位不计）。"""
     return sum(len(s.text) for s in segs if s.source in ("text", "table"))
+
+logger = logging.getLogger(__name__)
 
 
 class AgentMdPipelineService:
@@ -179,6 +182,9 @@ class AgentMdPipelineService:
                     task.pages_done, task.pages_total = done, total
 
                 result = await self.mineru.wait_result(job_id, on_progress=on_progress)
+            # 门⑥挂账②：sidecar 任务级 warnings（去重/部分 range/page_count 缺失）留痕日志
+            for _sw in getattr(result, "warnings", ()) or []:
+                logger.warning("mineru sidecar warning: %s", _sw)
             if dead or task.state == TaskState.FAILED or was_failed:
                 return task
             task.state = TaskState.NER_RUNNING
@@ -259,8 +265,7 @@ class AgentMdPipelineService:
                 # 门⑥ M-1：失败路径也要带上 clean 层告警（观测面不缺一截）
                 warns.extend(f"v4: {w}" for w in v4_warns)
                 return None, warns, v4_stats, "docvortex_middle"
-            if getattr(result, "content_list_v1", None) or getattr(result, "content_list_v2", None):
-                warns.append("mixed_schema_v4_wins: zip 同时含 4.x 与 3.x 表示，已按 4.x 解析")
+            # 挂账③：mixed 线索只在上方统一 append 一次（此前此处重复 append 同一条）
             v4_chars = _body_chars(v4_segs)
             if v4_chars == 0:
                 warns.extend(f"v4: {w}" for w in v4_warns)

@@ -60,6 +60,9 @@ class MineruResult:
     # 供管线显式失败点名——产物内容不进任何告警）。
     mineru4_docs: list[dict] = field(default_factory=list)
     unknown_jsons: list[str] = field(default_factory=list)
+    # 门⑥挂账②：sidecar 任务级 warnings（多窗口去重/截断放宽/page_count 缺失）
+    # 随终态轮询透出；旧 sidecar 无该键时为空 list。消费侧（管线）打日志留痕。
+    warnings: list[str] = field(default_factory=list)
 
 
 class MineruParseClient:
@@ -127,7 +130,10 @@ class MineruParseClient:
         return task_id
 
     async def poll(self, task_id: str) -> dict:
-        """查询任务状态，归一化为 {"state", "done", "total"}。
+        """查询任务状态，归一化为 {"state", "done", "total", "warnings", "error"}。
+
+        warnings/error 为 sidecar 任务级信息（error 仅 failed 终态有值，warning
+        恒 list）；旧 sidecar 无这两个键时分别为空 list / None（向后兼容）。
 
         线上无进度字段（Task 0 §8.2），done/total 恒 0，页计数由管线层本地负责；
         state 映射：processing→running，completed→done，failed→failed，未知→running。
@@ -156,6 +162,8 @@ class MineruParseClient:
             "state": self._normalize_state(raw.get("status", "")),
             "done": 0,
             "total": 0,
+            "warnings": raw.get("warnings") or [],
+            "error": raw.get("error"),
         }
 
     async def wait_result(self, task_id: str, on_progress=None) -> MineruResult:
@@ -170,9 +178,14 @@ class MineruParseClient:
             if on_progress is not None:
                 on_progress(st["done"], st["total"])
             if st["state"] == "done":
-                return await self._fetch_result(task_id)
+                result = await self._fetch_result(task_id)
+                result.warnings = st.get("warnings") or []
+                return result
             if st["state"] == "failed":
-                raise MineruParseError(f"mineru task failed: {task_id}", transient=False)
+                # PR#239 验收 B2：sidecar 的可读失败原因（如「MINERU_SIDECAR_WAIT
+                # 非法」）必须随异常透出，不许只给无信息的 task_id
+                detail = st.get("error") or "未知原因"
+                raise MineruParseError(f"mineru task failed: {task_id}: {detail}", transient=False)
             if time.monotonic() >= deadline:
                 raise MineruParseError(
                     f"mineru task timeout after {self.timeout}s: {task_id}", transient=True

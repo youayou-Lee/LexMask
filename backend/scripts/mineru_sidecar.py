@@ -89,7 +89,12 @@ def _mineru_wait_sec() -> int:
     3.5 分钟 ⇒ 不传必超时。缺省跟随 MINERU_SIDECAR_TIMEOUT 留 120s 余量（子进程
     timeout 比服务端等待上限大，保证先收到 CLI 的结构化超时错误而非被 kill）。"""
     if os.environ.get("MINERU_SIDECAR_WAIT"):
-        return max(60, int(float(os.environ["MINERU_SIDECAR_WAIT"])))
+        raw = os.environ["MINERU_SIDECAR_WAIT"]
+        try:
+            return max(60, int(float(raw)))
+        except (ValueError, OverflowError) as exc:
+            # 挂账④：fail-visible 且点名变量，不裸抛（inf 走 OverflowError 同样接住）
+            raise RuntimeError(f"MINERU_SIDECAR_WAIT 非法: {raw!r}（须为秒数，如 7080）") from exc
     return max(60, int(MINERU_TIMEOUT_SEC) - 120)
 
 
@@ -156,24 +161,44 @@ def _run_mineru_sync(task_id: str, inputs: list[Path]) -> None:
         exit_code = 0
         output_tail = b""
         parse_results: list[dict] = []
-        for input_path in inputs:
+        # 挂账①：同任务两输入同 stem（a.pdf + a.doc）时 -o 的 md 与 mineru4 json
+        # 都会互相覆盖 ⇒ 首次出现用原名，重复 stem 加序号（_1/_2…），两处共用。
+        taken = {p.stem for p in inputs}
+        used: set[str] = set()
+        out_names: list[str] = []
+        for i, input_path in enumerate(inputs):
+            key = input_path.stem
+            name, n = key, 0
+            # 门⑥ r2 M1：消歧名不许撞上同批其他输入的原名（a.pdf+a.doc+a_1.rtf
+            # 曾把第 2/3 输入都算成 a_1 静默覆盖）——递增到无人占用为止
+            while name in used or (name in taken and name != key):
+                n += 1
+                name = f"{key}_{n}"
+            out_names.append(name)
+            used.add(name)
+            # Issue#230：--wait 不传 CLI 缺省 60s（真卷必超时）；--pages 不传
+            # CLI 默认只解析前 10 页（静默截断）。均可配，缺省就安全。
+            # PR#239 验收实弹修正：上游对非 PDF 输入拒绝 --pages
+            # （page_range_invalid: "doc uses full-document parsing"）——仅 PDF
+            # 传 --pages；非 PDF 上游本就全文档解析，无 10 页截断问题。
+            cli_args = [
+                MINERU_BIN,
+                "parse",
+                "--json",
+                "--tier",
+                os.environ.get("MINERU_SIDECAR_TIER", "flash"),
+                "--wait",
+                str(_mineru_wait_sec()),
+            ]
+            if input_path.suffix.lower() == ".pdf":
+                cli_args += ["--pages", os.environ.get("MINERU_SIDECAR_PAGES", "all")]
+            cli_args += [
+                "-o",
+                str(out_dir / (out_names[i] + ".md")),
+                str(input_path),
+            ]
             proc = subprocess.run(
-                [
-                    MINERU_BIN,
-                    "parse",
-                    "--json",
-                    "--tier",
-                    os.environ.get("MINERU_SIDECAR_TIER", "flash"),
-                    # Issue#230：--wait 不传 CLI 缺省 60s（真卷必超时）；--pages 不传
-                    # CLI 默认只解析前 10 页（静默截断）。均可配，缺省就安全。
-                    "--wait",
-                    str(_mineru_wait_sec()),
-                    "--pages",
-                    os.environ.get("MINERU_SIDECAR_PAGES", "all"),
-                    "-o",
-                    str(out_dir / (input_path.stem + ".md")),
-                    str(input_path),
-                ],
+                cli_args,
                 capture_output=True,
                 timeout=MINERU_TIMEOUT_SEC,
             )
@@ -197,7 +222,7 @@ def _run_mineru_sync(task_id: str, inputs: list[Path]) -> None:
         # strict=False 是刻意的：CLI 失败项在 break 前不 append，len(parse_results)
         # <= len(inputs) 是本控制流的不变式（前缀对齐，错位结构上不可能）；
         # strict=True 反而炸掉失败路径（契约测试 test_failed_task_carries_error 实测）。
-        for pr, input_path in zip(parse_results, inputs, strict=False):
+        for i, (pr, input_path) in enumerate(zip(parse_results, inputs, strict=False)):
             sha = (pr.get("parse") or {}).get("sha256") or ""
             tier = (pr.get("parse") or {}).get("tier") or os.environ.get("MINERU_SIDECAR_TIER", "flash")
             if not sha:
@@ -233,7 +258,7 @@ def _run_mineru_sync(task_id: str, inputs: list[Path]) -> None:
                 task.setdefault("warnings", []).append(
                     f"mineru metadata.page_count missing: pages={len(pages)}（截断校验不可用）"
                 )
-            dest = out_dir / f"mineru4_{tier}_{input_path.stem}.json"
+            dest = out_dir / f"mineru4_{tier}_{out_names[i]}.json"
             dest.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
         # 进度按时间粗估（CLI 无结构化进度输出）；完成时置 100。
         task["progress"] = min(
