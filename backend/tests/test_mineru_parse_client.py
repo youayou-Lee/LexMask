@@ -130,10 +130,10 @@ async def test_poll_normalizes_states_and_keeps_zero_progress():
         {"status": "failed", "error": "x"},
     ])
     client = _client(handler)
-    assert await client.poll("job-1") == {"state": "running", "done": 0, "total": 0, "warnings": []}
-    assert await client.poll("job-1") == {"state": "running", "done": 0, "total": 0, "warnings": []}
-    assert await client.poll("job-1") == {"state": "done", "done": 0, "total": 0, "warnings": []}
-    assert await client.poll("job-1") == {"state": "failed", "done": 0, "total": 0, "warnings": []}
+    assert await client.poll("job-1") == {"state": "running", "done": 0, "total": 0, "warnings": [], "error": None}
+    assert await client.poll("job-1") == {"state": "running", "done": 0, "total": 0, "warnings": [], "error": None}
+    assert await client.poll("job-1") == {"state": "done", "done": 0, "total": 0, "warnings": [], "error": None}
+    assert await client.poll("job-1") == {"state": "failed", "done": 0, "total": 0, "warnings": [], "error": "x"}
 
 
 @pytest.mark.asyncio
@@ -341,3 +341,22 @@ async def test_task_warnings_absent_yields_empty_list():
     handler = _transport(states=[{"status": "completed"}])
     result = await _client(handler).wait_result("job-1")
     assert result.warnings == []
+
+
+# ---- PR#239 验收 B2：failed 终态把 sidecar 可读报错透传进 MineruParseError ----
+
+
+@pytest.mark.asyncio
+async def test_failed_task_error_message_carries_sidecar_error():
+    """sidecar 任务 failed 时，MineruParseError 必须携带 sidecar 的 error 原文
+    （如「MINERU_SIDECAR_WAIT 非法」），不许只给无信息的 task_id。"""
+    import pytest as _pytest
+
+    from app.services.mineru_parse_client import MineruParseError
+    handler = _transport(states=[
+        {"status": "failed", "error": "MINERU_SIDECAR_WAIT 非法: 'abc'（须为秒数，如 7080）"},
+    ])
+    with _pytest.raises(MineruParseError) as ei:
+        await _client(handler).wait_result("job-1")
+    assert "MINERU_SIDECAR_WAIT" in str(ei.value)
+    assert "job-1" in str(ei.value)

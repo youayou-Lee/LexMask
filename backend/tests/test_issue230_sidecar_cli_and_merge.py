@@ -372,3 +372,39 @@ def test_invalid_wait_env_inf_also_named(sidecar_mod, tmp_path, monkeypatch):
     task = sidecar_mod._tasks["t9"]
     assert task["status"] == "failed"
     assert "MINERU_SIDECAR_WAIT" in (task.get("error") or "")
+
+
+def test_non_pdf_input_omits_pages_flag(sidecar_mod, tmp_path):
+    # 验收实弹抓到的回归：MinerU CLI 对非 PDF 输入拒绝 --pages（page_range_invalid）
+    # —— #234 缺省 all 会打死所有 .doc 喂料任务。口径：仅 PDF 传 --pages，
+    # 非 PDF 不传（上游对 doc 本就全文档解析，无截断问题）。
+    args_file = tmp_path / "cli-args.txt"
+    _make_fake_mineru(tmp_path, args_file)
+    _make_doclib(tmp_path / "mineru-home", [_win([0], page_count=1)])
+    doc = tmp_path / "卷.doc"
+    doc.write_bytes(b"%DOC-fake")
+    sidecar_mod._tasks["t10"] = {"status": "pending", "progress": 0,
+                                 "error": None, "warnings": [], "files": ["卷.doc"]}
+    sidecar_mod._run_mineru_sync("t10", [doc])
+    task = sidecar_mod._tasks["t10"]
+    assert task["status"] == "completed", task.get("error")
+    task["_cli_args"] = args_file.read_text(encoding="utf-8").split()
+    args = task["_cli_args"]
+    assert "--pages" not in args
+    assert "--wait" in args  # --wait 对所有输入都需要
+
+
+def test_pdf_input_keeps_pages_all(sidecar_mod, tmp_path):
+    args_file = tmp_path / "cli-args.txt"
+    _make_fake_mineru(tmp_path, args_file)
+    _make_doclib(tmp_path / "mineru-home", [_win([0], page_count=1)])
+    pdf = tmp_path / "卷.pdf"
+    pdf.write_bytes(b"%PDF-fake")
+    sidecar_mod._tasks["t11"] = {"status": "pending", "progress": 0,
+                                 "error": None, "warnings": [], "files": ["卷.pdf"]}
+    sidecar_mod._run_mineru_sync("t11", [pdf])
+    task = sidecar_mod._tasks["t11"]
+    assert task["status"] == "completed", task.get("error")
+    task["_cli_args"] = args_file.read_text(encoding="utf-8").split()
+    args = task["_cli_args"]
+    assert args[args.index("--pages") + 1] == "all"

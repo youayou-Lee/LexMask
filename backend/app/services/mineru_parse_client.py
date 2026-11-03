@@ -160,6 +160,7 @@ class MineruParseClient:
             "done": 0,
             "total": 0,
             "warnings": raw.get("warnings") or [],
+            "error": raw.get("error"),
         }
 
     async def wait_result(self, task_id: str, on_progress=None) -> MineruResult:
@@ -178,7 +179,10 @@ class MineruParseClient:
                 result.warnings = st.get("warnings") or []
                 return result
             if st["state"] == "failed":
-                raise MineruParseError(f"mineru task failed: {task_id}", transient=False)
+                # PR#239 验收 B2：sidecar 的可读失败原因（如「MINERU_SIDECAR_WAIT
+                # 非法」）必须随异常透出，不许只给无信息的 task_id
+                detail = st.get("error") or "未知原因"
+                raise MineruParseError(f"mineru task failed: {task_id}: {detail}", transient=False)
             if time.monotonic() >= deadline:
                 raise MineruParseError(
                     f"mineru task timeout after {self.timeout}s: {task_id}", transient=True

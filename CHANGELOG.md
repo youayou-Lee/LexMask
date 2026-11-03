@@ -24,7 +24,8 @@
 - **改了什么**：①`_run_mineru_sync` 建 per-task 消歧名（首现原名、重复 stem 加 `_1/_2` 序号），`-o` 与 mineru4 json 两处共用；②`MineruResult.warnings` 新字段 + `poll()` 归一化透出 + `wait_result` 终态塞入，单文件线与批量供料线各在 result 拿到处打 WARNING 日志（旧 sidecar 无键向后兼容为空 list）；③删第二处重复 append，mixed 线索只报一次；④`_mineru_wait_sec` 对非法值抛点名 `MINERU_SIDECAR_WAIT` 的 RuntimeError（经任务 error 可读透出）。
 - **门⑥ r2 处置（3 Minor 全修）**：M1 消歧名防撞（`a.pdf+a.doc+a_1.rtf` 曾把第 2/3 输入都算成 `a_1` 静默覆盖 ⇒ 生成名撞 taken/used 即递增，实弹判据钉死）；M2 `MINERU_SIDECAR_WAIT=inf` 走 OverflowError 逃逸 ⇒ `except (ValueError, OverflowError)` + 判据；M3 pipeline_service logger 区空行规整。
 - **测试**：净 +8 例（sidecar 2：同 stem 双输入 md/json 四文件互不覆盖且内容可区分、非法 WAIT 报错点名变量；client 2：warnings 透传/无键兼容——**附带发现并修正测试落点事故：这两例最初误追加到主检出后被还原抹掉，worktree 内从未存在过，变异复核时抓出**；dual_representation 1：mixed 条目 count==1 钉死；特征化钉 poll 响应随契约扩展补 `warnings` 键）。变异 6/6 KILLED（含 r2 两条新判据对旧实现各一杀）；全量 2664 passed 零回归。
-- **边界**：warnings 目前到日志面为止（前端展示不做，超范围）；`_transport` 特征化 3 断言随契约更新。
+- **验收实弹追加（内置浏览器+真容器，2026-11-04）**：抓出两个真缺陷并当回合修复——①**#234 引入的 .doc 回归**：缺省 `--pages all` 被上游对非 PDF 输入拒绝（`page_range_invalid: "doc uses full-document parsing"`），所有 .doc 喂料任务必失败 ⇒ 仅 PDF 传 `--pages`，非 PDF 不传（上游对 doc 本就全文档解析，无截断问题）+2 判据（变异 1/1 KILLED）；②**F4 断层**：sidecar 的可读失败原因被 client 在 failed 终态丢弃（UI 只见无信息的 task_id）⇒ `poll()` 透传 `error`、`wait_result` 抛错携带原文 +1 判据（UI 实测：`MINERU_SIDECAR_WAIT 非法: 'abc'（须为秒数，如 7080）` 直达前端）。F1 同 stem 消歧真容器实弹：三输入（a.pdf+a.doc+a_1.rtf）六产物互不覆盖、内容一一对应；F2 warnings 实弹到达 API 面。全量 2667 passed 零回归。
+- **边界**：warnings 目前到日志面为止（前端展示不做，超范围）；`_transport` 特征化断言随契约更新（含新增 `error` 键）。
 
 ### 修正（Issue#230/#231）MinerU 4.x sidecar 三处 CLI 缺陷 + docvortex 表名/脚注/doc_title 静默丢失
 

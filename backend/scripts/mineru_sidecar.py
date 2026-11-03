@@ -176,23 +176,29 @@ def _run_mineru_sync(task_id: str, inputs: list[Path]) -> None:
                 name = f"{key}_{n}"
             out_names.append(name)
             used.add(name)
+            # Issue#230：--wait 不传 CLI 缺省 60s（真卷必超时）；--pages 不传
+            # CLI 默认只解析前 10 页（静默截断）。均可配，缺省就安全。
+            # PR#239 验收实弹修正：上游对非 PDF 输入拒绝 --pages
+            # （page_range_invalid: "doc uses full-document parsing"）——仅 PDF
+            # 传 --pages；非 PDF 上游本就全文档解析，无 10 页截断问题。
+            cli_args = [
+                MINERU_BIN,
+                "parse",
+                "--json",
+                "--tier",
+                os.environ.get("MINERU_SIDECAR_TIER", "flash"),
+                "--wait",
+                str(_mineru_wait_sec()),
+            ]
+            if input_path.suffix.lower() == ".pdf":
+                cli_args += ["--pages", os.environ.get("MINERU_SIDECAR_PAGES", "all")]
+            cli_args += [
+                "-o",
+                str(out_dir / (out_names[i] + ".md")),
+                str(input_path),
+            ]
             proc = subprocess.run(
-                [
-                    MINERU_BIN,
-                    "parse",
-                    "--json",
-                    "--tier",
-                    os.environ.get("MINERU_SIDECAR_TIER", "flash"),
-                    # Issue#230：--wait 不传 CLI 缺省 60s（真卷必超时）；--pages 不传
-                    # CLI 默认只解析前 10 页（静默截断）。均可配，缺省就安全。
-                    "--wait",
-                    str(_mineru_wait_sec()),
-                    "--pages",
-                    os.environ.get("MINERU_SIDECAR_PAGES", "all"),
-                    "-o",
-                    str(out_dir / (out_names[i] + ".md")),
-                    str(input_path),
-                ],
+                cli_args,
                 capture_output=True,
                 timeout=MINERU_TIMEOUT_SEC,
             )
