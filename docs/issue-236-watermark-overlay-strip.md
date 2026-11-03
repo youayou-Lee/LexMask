@@ -431,3 +431,14 @@ GT json 结构（每个夹具一份）：`{"page": 1, "orig_lines": n, "wm_lines
 2. `stats()` 是**进程内**计数器，`docker exec` 起的是新进程，读到 0 属正常；本次以 `pipeline_status` 与副本文件为判据。
 3. 预览端点与识别共用 `FileParser` 实例的页图缓存，clean/raw 变体键已隔离；本次以字节尺寸对照取证（未做逐像素 diff，因为预览请求与渲染请求是两条 HTTP 路径，jpg/png 编码不同）。
 4. 交付面（ZIP/PDF）本次只做了自动化像素判据（默认保留）；真卷「交付件仍带水印」未做人工目检，留待门⑤ 验收。
+
+### 9.4 最终 head 重跑（`5bcc882`，门⑥ 处置后）
+
+门⑥ 二段评审期间分支连动三次（`b2ab1f6` → `8f30da0` → `5bcc882`），按评审要求**在最终 head 上重跑门④**，结论与 §9.1 一致：
+
+- 新 file_id `813ad917-4f60-404c-962f-a4273eb1c3e1`（上传 sha256 `336e449a…21fc`，与本地原件逐字节相同 ⇒ 原件未被改动）。
+- 149/149 页 `pipeline_status.watermark_overlay = {code:"hit", source:"copy", pages_probed:5, pages_hit:5, pages_stripped:149, pages_skipped:0, pages_guard_refused:0, duration_ms:662}`（新增字段 `pages_guard_refused` 亦为 0）。
+- 副本 `outputs/.watermark_overlay/2b7175de….pdf`：25,798,037 B、`0600`、目录 `0700`；原件 90,624 字符 → 副本 47,253；「林映峰」1,788 → **0**。
+- `bounding_boxes` 149 页 **3,506** 框；`林映峰`/`14501201410363675`/`钦州市院` 均 **0**；`钦州` 61 次为正文。
+- `text_layer_doc.fallback_reason_code` 仍为 `repeated_fragment_coverage`（coverage 0.376），闸未因本次改动松动。
+- 预览 `page-image?page=1` → 4,493,427 B（原件 150dpi 视图）；未命中卷 `文本型-叶辉审查报告.pdf` → 副本目录 **2 → 2**（零新建）。
