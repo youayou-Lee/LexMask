@@ -36,11 +36,24 @@ function toEntitiesWithDefaults(entities: Record<string, unknown>[]): Entity[] {
   );
 }
 
+/**
+ * 2026-11-03 用户反馈：后端统一信封是 `{error_code, message, detail:{}}`，
+ * 旧实现 `data.detail ?? data.message` 被空对象 detail 短路（?? 只挡 nullish），
+ * message 里的具体原因永远取不到 ⇒ 一律兜底「文件上传失败」。改为取第一个
+ * 非空字符串，字段顺序 detail→message→error 仅在同型时生效。
+ */
+function firstMessageText(...candidates: unknown[]): string | null {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return null;
+}
+
 async function responseErrorMessage(res: Response, fallbackKey: string) {
   try {
     const data = await safeJson<{ detail?: unknown; message?: unknown; error?: unknown }>(res);
-    const detail = data.detail ?? data.message ?? data.error;
-    if (typeof detail === 'string' && detail.trim()) return detail;
+    const message = firstMessageText(data.detail, data.message, data.error);
+    if (message) return message;
   } catch {
     // Keep the localized fallback when the response body is not JSON.
   }
@@ -60,8 +73,7 @@ async function readErrorEnvelope(
     }>(res);
     const code =
       typeof data?.error_code === 'string' && data.error_code ? data.error_code : null;
-    const detail = data?.detail ?? data?.message ?? data?.error;
-    const message = typeof detail === 'string' && detail.trim() ? detail.trim() : null;
+    const message = firstMessageText(data?.detail, data?.message, data?.error);
     return { code, message };
   } catch {
     return { code: null, message: null };
@@ -349,7 +361,11 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       applyParsedFile(uploadData.file_id, uploadData.filename, uploadData.file_size, parseData);
     } catch (err) {
       if (signal.aborted) return;
-      showToast(localizeErrorMessage(err, 'playground.processFailed'), 'error');
+      // 2026-11-03 用户反馈：服务端拒绝只靠 toast 一闪而过，用户误以为产品坏了——
+      // 具体原因必须持久展示在上传面板（uploadIssue），与 onDropRejected 同待遇。
+      const message = localizeErrorMessage(err, 'playground.processFailed');
+      showToast(message, 'error');
+      setUploadIssue(message);
       setIsLoading(false);
       setLoadingMessage('');
     } finally {

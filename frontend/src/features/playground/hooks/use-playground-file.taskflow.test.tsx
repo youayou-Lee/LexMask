@@ -587,4 +587,29 @@ describe('Issue#194 终审 A：待确认扫描件回场不重复提交', () => {
       baseOptions.latestVisualFeatureTypesRef.current = [];
     }
   });
+
+  // 2026-11-03 用户反馈：服务端拒绝（如内容与扩展名不符）只弹 toast 一闪而过，
+  // 用户误以为产品坏了——具体原因必须持久展示在上传面板（uploadIssue）。
+  it('(k) 上传被服务端 400 拒：后端具体原因（被空 detail 遮蔽）同时进 uploadIssue 持久展示与 toast', async () => {
+    const backendMessage =
+      '文件内容实际是纯文本，与扩展名 .doc 不匹配——文件可能在传输中损坏或被重命名过；请用原始文件重新导出/另存为后再上传';
+    vi.mocked(authFetch).mockImplementation(
+      async () =>
+        ({
+          ok: false,
+          status: 400,
+          json: async () => ({ error_code: 'HTTP_400', message: backendMessage, detail: {} }),
+        }) as unknown as Response,
+    );
+    renderHarness();
+    await act(async () => {
+      await harness.file!.handleFileDrop([new File(['x'], 'acceptance-53.doc')]);
+    });
+
+    expect(harness.file!.uploadIssue).toBe(backendMessage);
+    expect(showToast).toHaveBeenCalledWith(backendMessage, 'error');
+    // 页面停留上传态、loading 退出——留给用户一个可读的错误面板，而非空白页
+    expect(harness.file!.stage).toBe('upload');
+    expect(harness.file!.isLoading).toBe(false);
+  });
 });

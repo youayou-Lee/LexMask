@@ -52,13 +52,16 @@ export interface ConfirmResult {
 /**
  * 读取后端错误信封（AppError：{error_code, message, detail, request_id}）里的
  * 用户可读文案，取不到时回退 i18n key（key 由页面任务注册；缺 key 时 t() 原样返回 key）。
- * 与 playground 同款实现：detail 为 dict 时跳过、响应体非 JSON 时走回退。
+ * 与 playground 同款实现：取第一个**非空字符串**字段（2026-11-03 修正——旧
+ * `detail ?? message` 被空对象 detail 短路，message 里的具体原因永远取不到）、
+ * 响应体非 JSON 时走回退。
  */
 async function responseErrorMessage(res: Response, fallbackKey: string): Promise<string> {
   try {
     const data = (await res.json()) as { detail?: unknown; message?: unknown; error?: unknown };
-    const detail = data.detail ?? data.message ?? data.error;
-    if (typeof detail === 'string' && detail.trim()) return detail;
+    for (const candidate of [data.detail, data.message, data.error]) {
+      if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+    }
   } catch {
     // Keep the localized fallback when the response body is not JSON.
   }
