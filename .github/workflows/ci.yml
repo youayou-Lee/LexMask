@@ -214,7 +214,7 @@ jobs:
           done
 
       - name: Build backend image
-        run: docker build -t test-backend -f backend/Dockerfile backend/
+        run: docker build --build-arg APT_MIRROR= -t test-backend -f backend/Dockerfile backend/
 
       - name: Build frontend image
         run: docker build -t test-frontend -f frontend/Dockerfile frontend/

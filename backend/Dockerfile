@@ -16,8 +16,11 @@ WORKDIR /app
 # (trixie, LO 25.2) put the whole install's peak dpkg/apt RSS at ~73MB and
 # `soffice --version` passes in-image — so we bake it properly. If a future
 # base changes this picture, re-measure before reintroducing hacks.
+# APT_MIRROR 置空 ⇒ 保留 deb.debian.org 官方源（GitHub Actions 海外 runner 走阿里云镜像实测
+# 卡死 18min+，2026-11-03 三轮复现；官方源 2.5min 通过）。本地构建不传参即默认阿里云。
+ARG APT_MIRROR=mirrors.aliyun.com
 RUN set -eux; \
-    sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true; \
+    if [ -n "$APT_MIRROR" ]; then sed -i "s|deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true; fi; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         libgl1 libglib2.0-0 libxinerama1 libpng16-16t64 libreoffice-writer-nogui; \
