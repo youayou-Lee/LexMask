@@ -127,10 +127,16 @@ def test_supplement_concurrency_dispatches_in_parallel():
 
 
 def test_supplement_parallel_result_equals_serial():
-    """同响应序列下，窗口=1 与窗口=4 的合并结果逐值一致（提交序合并钉死）。"""
+    """同响应序列下，窗口=1 与窗口=4 的合并结果逐值一致（提交序合并钉死）。
+
+    注意：NER 结果缓存是**类级共享**（conftest 只在测试间清），同一测试内
+    串行腿会污染并行腿的主查键——并行腿前必须清缓存，否则并行腿直接命中
+    缓存、并发链根本没跑（变异假存活的根源）。
+    """
     serial_client, _ = make_client()
     serial_result = serial_client.ner(LONG_TEXT, TYPES, type_guidance=[])
 
+    HaSClient._SHARED_NER_CACHE.clear()
     parallel_client, _ = make_client()
     patcher = pytest.MonkeyPatch()
     patcher.setattr(settings, "HAS_NER_SUPPLEMENT_CONCURRENCY", 4, raising=False)
@@ -185,6 +191,7 @@ def test_supplement_merge_follows_submission_order_not_completion_order():
     assert len(set(expected)) == len(expected), expected
 
     parallel_client, _ = make_delayed_client()
+    HaSClient._SHARED_NER_CACHE.clear()  # 类级共享缓存：串行腿已写入主查键
     patcher = pytest.MonkeyPatch()
     patcher.setattr(settings, "HAS_NER_SUPPLEMENT_CONCURRENCY", 8, raising=False)
     try:
