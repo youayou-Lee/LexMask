@@ -4,6 +4,7 @@
 委托给 VisionService.apply_redaction 执行实际图像处理
 """
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from app.models.schemas import BoundingBox, FileType, RedactionConfig
@@ -173,6 +174,7 @@ class ImageRedactorMixin:
         selected_boxes: list[BoundingBox],
         output_path: str,
         config: RedactionConfig,
+        progress_cb: Callable[[int, int], None] | None = None,
     ) -> int:
         """
         图片/扫描件匿名化：HaS Image 风格块级匿名化
@@ -184,6 +186,7 @@ class ImageRedactorMixin:
             selected_boxes: 选中的边界框列表
             output_path: 输出文件路径
             config: 匿名化配置
+            progress_cb: Issue#238 可选逐页进度回调 (current, total)，透传栅格化路径
 
         Returns:
             匿名化区域数量
@@ -198,6 +201,7 @@ class ImageRedactorMixin:
             image_method=method,
             strength=strength,
             fill_color=fill_color,
+            progress_cb=progress_cb,
         )
 
         return len(safe_boxes)

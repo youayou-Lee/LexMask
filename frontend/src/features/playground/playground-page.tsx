@@ -55,6 +55,12 @@ const PlaygroundInner: FC = () => {
     taskRecognition,
     taskPerformance,
     taskStageLabel,
+    // Issue#238：诚实化进度（段/并行中/时长/文本件）+ 打码被动小卡
+    taskSegment,
+    taskInFlight,
+    taskStartedAt,
+    taskTextMode,
+    redactProgress,
     recognitionIssue,
     visualSkippedNotice,
     entityMap,
@@ -584,7 +590,30 @@ const PlaygroundInner: FC = () => {
           progress={visionStream}
           performance={taskRecognition ? taskPerformance : null}
           stage={taskRecognition ? taskStageLabel : null}
+          segment={taskRecognition ? taskSegment : null}
+          inFlight={taskRecognition ? taskInFlight : null}
+          startedAt={taskRecognition ? taskStartedAt : null}
+          textMode={taskRecognition ? taskTextMode : false}
           overlay={overlayModeFor(progressiveRecognition)}
+        />
+      )}
+
+      {/* Issue#238：打码段被动小卡——pendingRedact 在途时右下角浮出，预览页保持可操作 */}
+      {redactProgress && (
+        <PlaygroundLoading
+          variant="redaction"
+          overlay="passive"
+          isImageMode={false}
+          loadingMessage={t('playground.redactingTask').replace(
+            '{filename}',
+            redactProgress.filename || '',
+          )}
+          progress={
+            redactProgress.total > 0
+              ? { completed: redactProgress.completed, total: redactProgress.total }
+              : null
+          }
+          startedAt={redactProgress.startedAt}
         />
       )}
 

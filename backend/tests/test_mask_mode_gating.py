@@ -24,7 +24,8 @@ class _StubRedactor:
     def __init__(self, capture: dict[str, Any]):
         self._capture = capture
 
-    async def redact(self, *, file_info, entities, bounding_boxes, config):
+    async def redact(self, *, file_info, entities, bounding_boxes, config, progress_cb=None):
+        # Issue#238：编排层现在会透传打码逐页回调；桩不消费，仅接住关键字保持契约面
         self._capture["mode"] = config.replacement_mode
         return {
             "output_file_id": "out-1",
