@@ -674,3 +674,14 @@ def _pdf_type():
     from app.models.schemas import FileType
 
     return FileType.PDF
+
+
+def test_shipped_switch_defaults_follow_decision():
+    """AC5a/AC13：出厂默认值即拍板结论（不依赖测试夹具的 monkeypatch）。"""
+    from app.core.config import settings as shipped
+
+    assert shipped.WATERMARK_OVERLAY_STRIP_ENABLED is True, "识别面默认开（2026-11-04 拍板）"
+    assert shipped.WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK is True, "交付默认保留水印"
+    assert shipped.WATERMARK_OVERLAY_PROBE_PAGES == 5
+    assert shipped.WATERMARK_OVERLAY_MIN_HIT_PAGES == 3
+    assert shipped.WATERMARK_OVERLAY_COPY_TTL_HOURS == 24

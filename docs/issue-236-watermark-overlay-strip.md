@@ -341,11 +341,12 @@ GT json 结构（每个夹具一份）：`{"page": 1, "orig_lines": n, "wm_lines
 
 ---
 
-## 7. 待拍板（门① 结束前需用户确认）
+## 7. 拍板结论（2026-11-04 用户确认）
 
-1. **交付物水印默认保留**（`WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK=true`）；反向支路已实现，随时可切。
-2. **净化副本只供渲染**（文本层/docline/闸/预览一律原件）——§2.2 的 0.3764 vs 0.0407 实测钉死方向。
-3. **识别面总开关默认值**：提议 `WATERMARK_OVERLAY_STRIP_ENABLED=true`（fail-open、逐页校验、只影响渲染面）；如要求默认关，改 false，门④ 用环境变量开启后同样成立。
+1. **交付物水印默认保留** ✅（`WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK=true`）；反向支路已实现，随时可切。
+2. **净化副本只供渲染** ✅（文本层/docline/闸/预览一律原件）——§2.2 的 0.3764 vs 0.0407 实测钉死方向。
+3. **识别面总开关默认开** ✅（`WATERMARK_OVERLAY_STRIP_ENABLED=true`，fail-open + 逐页校验 + 只影响渲染取图）；由 `test_shipped_switch_defaults_follow_decision` 钉住出厂值。
+4. **门④ 顺序** ✅：默认值定案后即上云做整卷 E2E（真卷 R1 + canary + 变异 10/10 + 入口矩阵）。
 4. **Issue 正文草案 AC#2 的口径修订**：草案写「摘除后 #203 coverage 闸对该卷触发 0 次」，但实测原件 coverage **0.3764**、闸本来就拒绝该卷（建链 0 次），副本才是 0.0407。因此本方案把 AC 改为「**闸行为不变**：仍拒绝该卷、docline 建链 0 次、ON/OFF 两轮一致」。**这是对 Issue 验收口径的反向修订，需要你确认**（我倾向修订，因为「闸 0 触发」只能靠把副本喂文本层达成，而那会触发整卷 300 s 清零）。
 
 ---

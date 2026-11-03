@@ -1112,7 +1112,7 @@ class Settings(BaseSettings):
     # Issue#236：独立矢量覆盖水印流的检测与摘除（识别前预处理，仅内部副本）。
     # 默认关：默认关=识别面不新增预处理；开启后只把**渲染取图**换成净化副本，
     # 文本层建链/闸/交付光栅化仍吃原件（见 docs/issue-236-watermark-overlay-strip.md）。
-    WATERMARK_OVERLAY_STRIP_ENABLED: bool = False
+    WATERMARK_OVERLAY_STRIP_ENABLED: bool = True
     # 每卷抽样页数/最少命中页（探针是卷级决策：抽样未达命中数则整卷弃权）。
     WATERMARK_OVERLAY_PROBE_PAGES: int = 5
     WATERMARK_OVERLAY_MIN_HIT_PAGES: int = 3
