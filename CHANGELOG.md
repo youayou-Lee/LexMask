@@ -17,6 +17,7 @@
 
 - **为什么**：本地小显存环境常不启动 LA（visual-features），前端把「未部署」当「必需服务故障」直接拦停识别——用户勾了印章/签名就完全无法识别文字部分。用户裁定：不启动 LA 服务要能正常继续。
 - **改了什么**（纯前端，无后端改动）：①`getRecognitionBlocker` 不再把 `visual_features` 计入拦截（OCR/NER 仍硬拦——缺了真跑不了）；②提交侧新增 `isVisualServiceBlocked` 判据（与 blocker 同源），LA 不可用且用户勾了视觉项时**照常提交、视觉段传空数组**（后端既有语义=显式不跑该段，编排器不回落默认全类型），并置 `visualSkippedNotice`；③识别面板顶部新增琥珀色提示条（zh/en），服务恢复后下次任务自动恢复检测。跳过而非静默——用户知道印章/签名本次未检测。
+- **门⑥ I1 处置**：rerun 路径（handleRerunNer 图片分支）接入同款 skip 语义——LA 未启动时 rerun 也自动跳过视觉段（不再逐页撞后端预检硬报错），提示条随本次 rerun 刷新（服务已恢复即清掉过期提示）；rerun 防摘钉入 wiring-contract。
 - **测试**：taskflow 新增 (h2)（LA 不可用 → `visualFeatureTypes: []` + 提示置位，负样本 (h) 全类型透传不变）；wiring-contract 契约钉同步新形状并加 skipVisual/提示接线两枚防摘钉；vitest 319 全绿、tsc（含测试）绿、build 绿。
 - **边界**：识别结果页的 pipeline_status 级标注（后端侧）不在本 PR；烧进图片的水印、印章检测质量不受影响。>>>>>>> 491bd1e (fix(playground): LA 未启动不再拦截识别——自动跳过视觉段并显式提示)
 

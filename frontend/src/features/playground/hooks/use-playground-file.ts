@@ -899,6 +899,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     recognitionIssue,
     setRecognitionIssue,
     visualSkippedNotice,
+    setVisualSkippedNotice,
     isImageMode,
     dropzone,
     encryptedPrompt,

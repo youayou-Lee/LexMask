@@ -78,6 +78,9 @@ describe('Issue#123 接线契约：四处接线不得被静默摘掉', () => {
     // LA 未启动跳过视觉段的判据与提示接线不得被静默摘掉
     expect(fileHook).toContain("Boolean(opts.isVisualServiceBlocked?.())");
     expect(fileHook).toContain("setVisualSkippedNotice(t('playground.visualSkippedNotice'))");
+    // rerun 路径同语义（门⑥ I1）：跳过判据 + 提示刷新不得被静默摘掉
+    expect(playgroundHook).toContain('skipVisual ? [] : recognition.selectedVisualFeatureTypes');
+    expect(playgroundHook).toContain("setVisualSkippedNotice(skipVisual ? t('playground.visualSkippedNotice') : null)");
     // provider watch 注册（占位视图即刻可被 taskForFile 命中）
     expect(fileHook).toMatch(/watch\(ref\.job_id, fileId,/);
     // 阶段人话 + 真进度映射（字段换源：任务轮询的 progress_current/total → visionStream）

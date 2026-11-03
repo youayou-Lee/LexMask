@@ -295,6 +295,7 @@ export function usePlayground() {
   const { setRecognitionIssue } = fileCtx;
   const { handleRerunNerImage } = imageCtx;
   const { handleRerunNerText } = entityCtx;
+  const { setVisualSkippedNotice } = fileCtx;
 
   const handleRerunNer = useCallback(async () => {
     if (!fileCtx.fileInfo) return;
@@ -310,10 +311,16 @@ export function usePlayground() {
     }
     setRecognitionIssue(null);
     if (fileCtx.isImageMode) {
+      // 门⑥ I1（PR#235）：rerun 与初始任务同语义——LA 未启动时跳过视觉段
+      // 而非逐页撞后端预检硬报错；提示条随本次 rerun 结果刷新（服务已恢复
+      // 则清掉「已跳过」的过期提示）。
+      const skipVisual =
+        recognition.selectedVisualFeatureTypes.length > 0 && isVisualServiceBlocked();
+      setVisualSkippedNotice(skipVisual ? t('playground.visualSkippedNotice') : null);
       await handleRerunNerImage(
         fileCtx.fileInfo.file_id,
         recognition.selectedOcrHasTypes,
-        recognition.selectedVisualFeatureTypes,
+        skipVisual ? [] : recognition.selectedVisualFeatureTypes,
         fileCtx.setIsLoading,
         fileCtx.setLoadingMessage,
         fileCtx.setVisionStream,
@@ -336,10 +343,12 @@ export function usePlayground() {
     getRecognitionBlocker,
     handleRerunNerImage,
     handleRerunNerText,
+    isVisualServiceBlocked,
     recognition.selectedOcrHasTypes,
     recognition.selectedTypesRef,
     recognition.selectedVisualFeatureTypes,
     setRecognitionIssue,
+    setVisualSkippedNotice,
   ]);
 
   // 替换模式下自动补默认化名：仅对缺失的原文 key 请求 preview-map，
