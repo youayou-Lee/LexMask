@@ -12,6 +12,7 @@ NER / Hide / Pair / Seek 的 user 提示须与模型卡模板逐字一致（勿�
 4. seek - 标签还原
 """
 
+import contextvars
 import hashlib
 import json
 import logging
@@ -19,6 +20,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -147,12 +149,19 @@ class NerMetricsScope:
     段 gather+to_thread 多线程并发 += 会丢计，评审 Minor-2）。
     """
 
-    __slots__ = ("finish_reasons", "truncation_retries", "rebatch_batches", "_lock")
+    __slots__ = (
+        "finish_reasons",
+        "truncation_retries",
+        "rebatch_batches",
+        "supplement_jobs",
+        "_lock",
+    )
 
     def __init__(self) -> None:
         self.finish_reasons: list[str] = []
         self.truncation_retries = 0
         self.rebatch_batches = 0
+        self.supplement_jobs = 0
         self._lock = threading.Lock()
 
 
@@ -161,6 +170,7 @@ def _record_ner_metrics(
     finish_reason: str | None = None,
     truncation_retries: int = 0,
     rebatch_batches: int = 0,
+    supplement_jobs: int = 0,
 ) -> None:
     scopes = _METRIC_SCOPES.get()
     if not scopes:
@@ -171,6 +181,7 @@ def _record_ner_metrics(
         with scope._lock:
             scope.truncation_retries += int(truncation_retries)
             scope.rebatch_batches += int(rebatch_batches)
+            scope.supplement_jobs += int(supplement_jobs)
 
 
 @contextmanager
@@ -202,6 +213,8 @@ def drain_ner_metrics(scope: NerMetricsScope) -> dict[str, Any]:
         metrics["has_text_ner_truncation_retries"] = scope.truncation_retries
     if scope.rebatch_batches > 0:
         metrics["has_text_ner_rebatch_batches"] = scope.rebatch_batches
+    if scope.supplement_jobs > 0:
+        metrics["has_text_ner_supplement_jobs"] = scope.supplement_jobs
     return metrics
 
 
@@ -823,6 +836,27 @@ class HaSClient:
             buf_len += len(line)
         _flush()
         return chunks or [text]
+
+    @staticmethod
+    def _supplement_concurrency_window() -> int:
+        """补查并发窗口（Issue#216 补查并行化）。
+
+        HAS_NER_SUPPLEMENT_CONCURRENCY ≤1 = 串行（默认，行为不变）；>1 时按
+        HAS_NER_GLOBAL_MAX_INFLIGHT 钳制——补查链握着 GPU 闸位跑（组运行器
+        在 slot 内调用 aggregate），窗口超过闸宽就绕过了闸的记账口径；闸=1
+        的部署上必须退化为串行。
+        """
+        from app.core.config import settings
+
+        try:
+            window = max(1, int(settings.HAS_NER_SUPPLEMENT_CONCURRENCY or 1))
+        except (TypeError, ValueError):
+            window = 1
+        try:
+            gate = max(1, int(settings.HAS_NER_GLOBAL_MAX_INFLIGHT or 1))
+        except (TypeError, ValueError):
+            gate = 1
+        return max(1, min(window, gate))
 
     @staticmethod
     def _normalize_ner_type_name(type_name: str) -> str:
@@ -1692,28 +1726,67 @@ If nothing matches, return {{}}.
                             require_requery_type_batch,
                             len(text),
                         )
+                        # 先把补查任务展平成 (chunk, type_batch, guidance) 列表：
+                        # 窗口=1 时按列表顺序串行（与旧双重 for 逐字节等价）；
+                        # 窗口>1 时线程池并发派发、按**提交序**合并与收首异常——
+                        # 合并与异常语义都不依赖完成顺序（Issue#216 补查并行化）。
+                        requery_jobs = []
+                        for chunk in retry_chunks:
+                            for type_batch in type_batches:
+                                batch_set = set(type_batch)
+                                batch_guidance = [
+                                    item
+                                    for item in (retry_guidance or [])
+                                    if str(item.get("type") or "") in batch_set
+                                ] or None
+                                requery_jobs.append((chunk, type_batch, batch_guidance))
                         with ner_metrics_scope() as retry_scope:
                             merged_retry: dict[str, list[str]] = {}
                             retry_confirmed = True
-                            for chunk in retry_chunks:
-                                for type_batch in type_batches:
-                                    batch_set = set(type_batch)
-                                    batch_guidance = [
-                                        item
-                                        for item in (retry_guidance or [])
-                                        if str(item.get("type") or "") in batch_set
-                                    ] or None
-                                    part, part_confirmed = self.ner_checked(
-                                        chunk,
-                                        type_batch,
-                                        batch_guidance,
-                                        temperature=retry_temperature,
-                                        sample_index=sample_index,
-                                        _allow_truncation_retry=False,
-                                        raise_on_error=raise_on_error,
-                                        context_tokens=context_tokens,
-                                        deadline=deadline,
-                                    )
+
+                            def _run_requery_job(job):
+                                job_chunk, job_types, job_guidance = job
+                                return self.ner_checked(
+                                    job_chunk,
+                                    job_types,
+                                    job_guidance,
+                                    temperature=retry_temperature,
+                                    sample_index=sample_index,
+                                    _allow_truncation_retry=False,
+                                    raise_on_error=raise_on_error,
+                                    context_tokens=context_tokens,
+                                    deadline=deadline,
+                                )
+
+                            supplement_window = self._supplement_concurrency_window()
+                            if supplement_window > 1 and len(requery_jobs) > 1:
+                                _record_ner_metrics(supplement_jobs=len(requery_jobs))
+                                # 补查链跑在同步线程里，复用不了异步 GPU 闸——窗口
+                                # 运行时钳到闸宽以内，并发请求总量不越过闸的记账口径。
+                                # 每个任务跑在调用方上下文的**独立拷贝**里：contextvar
+                                # （_METRIC_SCOPES/LAST_FINISH_REASON）透传进线程，
+                                # 任务间互不串写；scope 对象本身线程安全（锁）。
+                                caller_ctx = contextvars.copy_context()
+                                with ThreadPoolExecutor(
+                                    max_workers=min(supplement_window, len(requery_jobs))
+                                ) as pool:
+                                    futures = [
+                                        pool.submit(caller_ctx.copy().run, _run_requery_job, job)
+                                        for job in requery_jobs
+                                    ]
+                                for future in futures:
+                                    part, part_confirmed = future.result()
+                                    for key, values in (part or {}).items():
+                                        if not isinstance(values, list):
+                                            continue
+                                        bucket = merged_retry.setdefault(key, [])
+                                        for value in values:
+                                            if value and value not in bucket:
+                                                bucket.append(value)
+                                    retry_confirmed = retry_confirmed and part_confirmed
+                            else:
+                                for job in requery_jobs:
+                                    part, part_confirmed = _run_requery_job(job)
                                     for key, values in (part or {}).items():
                                         if not isinstance(values, list):
                                             continue
@@ -1725,11 +1798,14 @@ If nothing matches, return {{}}.
                             retry_result = merged_retry
                         retry_metrics = drain_ner_metrics(retry_scope)
                         logger.warning(
-                            "HaS NER re-query finished: finish_reason=%s confirmed=%s recovered=%d/%d types",
+                            "HaS NER re-query finished: finish_reason=%s confirmed=%s "
+                            "recovered=%d/%d types jobs=%d window=%d",
                             retry_metrics.get("has_text_ner_finish_reason") or "unknown",
                             retry_confirmed,
                             len([t for t in missing if retry_result.get(t)]),
                             len(missing),
+                            retry_metrics.get("has_text_ner_supplement_jobs") or len(requery_jobs),
+                            supplement_window,
                         )
                         for key, values in (retry_result or {}).items():
                             if not isinstance(values, list):

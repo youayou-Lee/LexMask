@@ -589,6 +589,11 @@ class Settings(BaseSettings):
     # 该上限**只在整批真装不下完成帽时**生效（容量算术与 #103/#104 同源）；
     # 装得下就单批，不做无谓的类型切分。
     HAS_NER_REQUERY_MAX_TYPES_PER_CALL: int = 2
+    # 截断补查的**并发窗口**（Issue#216 补查并行化 / 单文件提速试点）。默认 1 =
+    # 串行（与 preview 行为逐字节等价）；>1 时补查任务（文本块 × 类型批）按
+    # 窗口线程池并发派发，vLLM 连续批处理吃并发。运行时按 HAS_NER_GLOBAL_MAX_
+    # INFLIGHT 钳制（补查链握着 GPU 闸位跑，窗口不越过闸的记账口径）。
+    HAS_NER_SUPPLEMENT_CONCURRENCY: int = 1
     # 补查时**整段单次**的文本字符上限。默认 0 = 始终按行边界分块：门④二轮
     # 实测（2026-10-29 15:27）「整段 3924 字符 × 2 类型」单请求生成 72.6s
     # （模型重读整页再枚举该类全部值），比 450 字符块慢一个数量级。
@@ -988,6 +993,11 @@ class Settings(BaseSettings):
     @field_validator("HAS_VISION_MAX_GROUPS_INFLIGHT")
     @classmethod
     def _validate_has_vision_max_groups_inflight(cls, v: int) -> int:
+        return max(1, min(16, v))
+
+    @field_validator("HAS_NER_SUPPLEMENT_CONCURRENCY")
+    @classmethod
+    def _validate_has_ner_supplement_concurrency(cls, v: int) -> int:
         return max(1, min(16, v))
 
     @field_validator("HAS_NER_MAX_TYPES_PER_REQUEST")
