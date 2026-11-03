@@ -19,7 +19,7 @@ from app.core.file_validation import (
 
 # WPS/MS Word .doc 的 OLE 复合文档魔数（Composite Document File V2）
 OLE_DOC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 20
-UTF8_TEXT = "被告赵涛洋，身份证号110118197712242590。".encode("utf-8")
+UTF8_TEXT = "被告赵涛洋，身份证号110118197712242590。".encode()
 DOCX_ZIP = b"PK\x03\x04" + b"\x00" * 20
 
 
