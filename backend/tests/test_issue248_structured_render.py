@@ -50,10 +50,12 @@ def _mapping(**overrides):
 
 
 def _entities():
-    # 全局偏移按 "\n\n" 连接的 segs 计算（与检测层一致）
+    # 全局偏移按 "\n\n" 连接的 segs 计算（与检测层一致，门⑥ M1：真值锚定——
+    # seg1="财产查询反馈信息表 被查询对象 韦某甲"（19 字符），韦某甲@[16,19)；
+    # seg2 起点 21，证件号@[27,45)
     return [
-        Entity(id="e1", text="韦某甲", type="PERSON", start=13, end=16),
-        Entity(id="e2", text="452626199005190011", type="ID", start=25, end=43),
+        Entity(id="e1", text="韦某甲", type="PERSON", start=16, end=19),
+        Entity(id="e2", text="452626199005190011", type="ID", start=27, end=45),
     ]
 
 
@@ -79,7 +81,29 @@ def test_structured_render_matches_legacy_semantics_excluded_retained():
     assert "4526**********0011" in md  # 其余照常替换
     assert mapping_json["items"][0]["excluded"] is True
     pages = [r["page"] for r in retained["retained_fields"] if r["text"] == "韦某甲"]
-    assert pages and set(pages) == {1}  # 页码来自 segs（page_idx+1），两处出现都记账
+    assert pages and set(pages) == {1}  # retained 按实体记账（页码=实体所在 seg 的 page_idx+1）
+
+
+def test_excluded_entity_on_page2_derives_page2():
+    """门⑥ M1：页码推导真判据——实体落在 seg2（page_idx=1）必须记页 2。"""
+    mapping = _mapping()
+    mapping[0].excluded = True
+    ents = _entities()
+    # 把人名实体挪到 seg2 的正文段「正文段落：韦某甲名下房产一套。」
+    # seg2 全局起点 = 19(seg1) + 2 + 24(seg2) + 2 = 47；「正文段落：」5 字符
+    # → 韦某甲@[52,55)，落在页 2（真值，门⑥ M1）
+    ents[0] = Entity(id="e1", text="韦某甲", type="PERSON", start=52, end=55)
+    _md, _mj, retained = render_outputs_on_structure(STRUCTURED_MD, SEGS, ents, mapping)
+    pages = [r["page"] for r in retained["retained_fields"] if r["text"] == "韦某甲"]
+    assert pages == [2]
+
+
+def test_representation_mismatch_gate_rejects_unmatched_original():
+    """门⑥ C1 前向覆盖闸：映射原文在结构化 md 中不存在 → 表示失配拒绝出厂。"""
+    mapping = _mapping()
+    mapping[1].original_text = "000000000000000000"  # 检测面有、产物面（md）没有
+    with pytest.raises(ValueError, match="representation_mismatch"):
+        render_outputs_on_structure(STRUCTURED_MD, SEGS, _entities(), mapping)
 
 
 def test_replacement_structural_chars_rejected():
@@ -284,3 +308,85 @@ def test_batch_commit_renders_on_structured_md(tmp_path, monkeypatch):
     assert "<table>" in out and "| 某银行 | 10.15 |" in out  # 结构保留
     assert "韦某甲" not in out and "韦某1" in out            # 替换生效
     verify_structure_integrity(md, out)
+
+
+# ---- 门⑥ I2：回落路径判据（structured_md 缺失 → legacy + 显式 warning） ------
+
+
+def test_pipeline_confirm_fallback_flat_when_md_missing(tmp_path):
+    """structured_md 缺失（zip 无 .md）→ 回落 legacy 拍平重建 + 显式 warning。
+
+    变异钉：删 confirm 回落 warning 或回落分支，此测试必须红。"""
+    from app.services.agent_md_pipeline_service import AgentMdPipelineService
+    from app.services.agent_md_types import AgentMdTask, MappingItem, TaskState
+
+    svc = AgentMdPipelineService(output_dir=str(tmp_path))
+    task = AgentMdTask(
+        task_id="t3", state=TaskState.MAPPING_READY, filename="a.pdf",
+        structured_md=None,  # zip 官方 md 缺位
+        segs=[Seg(text="正文段落：韦某甲名下房产一套。", page_idx=0, source="text")],
+        entities=[Entity(id="e1", text="韦某甲", type="PERSON", start=5, end=8)],
+        mapping=[MappingItem(id="m1", original_text="韦某甲", entity_type="PERSON",
+                             replacement="韦某1")],
+    )
+    svc._tasks["t3"] = task
+    done = svc.confirm_nowait("t3", [])
+    assert done.state == TaskState.COMPLETED
+    assert any("structured_md_missing" in w for w in done.warnings)  # 显式不静默
+    md = list(tmp_path.glob("*_脱敏MD_*.md"))[0].read_text(encoding="utf-8")
+    assert "<table>" not in md and "韦某1" in md  # 拍平形状（legacy 产物）
+
+
+def test_batch_commit_fallback_flat_when_md_missing(tmp_path, monkeypatch):
+    """批量 commit structured_md 缺失 → legacy 拍平产物 + warning 留痕。"""
+    from app.services import agent_md_batch as batch
+
+    fs_store: dict = {}
+
+    class _FS:
+        def get(self, file_id):
+            return fs_store.get(file_id)
+
+        def update(self, file_id, patch):
+            fs_store.setdefault(file_id, {}).update(patch)
+
+    draft = batch.serialize_draft(
+        segs=[Seg(text="正文段落：韦某甲名下房产一套。", page_idx=0, source="text")],
+        entities=[Entity(id="e1", text="韦某甲", type="PERSON", start=5, end=8)],
+        mapping=[MappingItem(id="m1", original_text="韦某甲", entity_type="PERSON",
+                             replacement="韦某1")],
+        carrier="mineru", structured_md=None,
+    )
+    fs_store["f1"] = {"file_id": "f1", "filename": "a.pdf", "agent_md_draft": draft}
+    warnings: list[str] = []
+    monkeypatch.setattr(batch.logger, "warning",
+                        lambda msg, *a, **k: warnings.append(msg % a if a else msg))
+    batch.commit_agent_md_item(_FS().get("f1") | {"file_id": "f1"}, [])
+    assert any("structured_md missing" in w for w in warnings)  # 显式不静默
+
+
+def test_batch_commit_gate_failure_raises_valueerror(tmp_path):
+    """批量闸失败 → ValueError（error_message 通道）→ 调用方打回 AWAITING_REVIEW。
+
+    门⑥ I2：#248 前批量 commit 的 ValueError 只有草稿缺失一种；闸失败共用
+    同一通道（job_management_service 两条调用方捕获后 item 留在 AWAITING_REVIEW
+    并落 error_message——接线由既有 worker 测试面覆盖，此处钉闸的 ValueError 契约）。"""
+    from app.services import agent_md_batch as batch
+
+    class _FS:
+        def get(self, file_id):
+            return fs_store.get(file_id)
+
+    draft = batch.serialize_draft(
+        segs=[Seg(text="正文段落：韦某甲名下房产一套。", page_idx=0, source="text")],
+        entities=[Entity(id="e1", text="韦某甲", type="PERSON", start=5, end=8)],
+        mapping=[MappingItem(id="m1", original_text="韦某甲", entity_type="PERSON",
+                             replacement="韦某1")],
+        carrier="mineru", structured_md=STRUCTURED_MD,
+    )
+    fs_store = {"f1": {"file_id": "f1", "filename": "a.pdf", "agent_md_draft": draft}}
+    with pytest.raises(ValueError, match="replacement_structural_chars"):
+        # 决策把人名替换值换成带竖线 → 渲染闸拒绝
+        batch.commit_agent_md_item(
+            dict(_FS().get("f1"), file_id="f1"),
+            [{"id": "m1", "action": "custom", "replacement": "韦|某"}])

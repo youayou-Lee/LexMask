@@ -165,6 +165,14 @@ async def confirm(task_id: str, body: dict, owner_id: str = Depends(require_auth
             message="本次未识别到任何敏感实体，确认出稿将得到未脱敏原文；请先勾选已知晓",
         )
     task = await pipeline_mod.get_agent_md_pipeline().confirm(task_id, body.get("decisions", []))
+    if task.state == TaskState.FAILED:
+        # 门⑥ I1（#248）：confirm 可在 MAPPING_READY 之后因渲染闸（结构字符/
+        # 表示失配/零残留/结构对账）转 FAILED——原因必须送达 owner，不许
+        # 200+output_file_id:null 让前端拿 404 兜底文案。机读码=消息前缀
+        # （replacement_structural_chars / representation_mismatch /
+        # zero_residual_violation / structure_integrity_violation）。
+        code = task.message.split(":", 1)[0] if task.message else "RENDER_GATE_REJECTED"
+        raise AppError(status_code=422, error_code=code, message=task.message or "产物渲染闸拒绝出稿")
     if zero_entities:
         # 门⑥ m4：豁免路径（停用全部类型）同样交付未脱敏原文，必须一并留痕
         audit_log(

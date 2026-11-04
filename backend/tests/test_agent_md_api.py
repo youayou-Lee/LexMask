@@ -218,7 +218,7 @@ def test_confirm_and_download(fake_pipeline, monkeypatch):
         cd = resp.headers["content-disposition"]
         fname = unquote(cd.rsplit("utf-8''", 1)[-1].strip('"'))
         assert fname.startswith(stem) and not fname.startswith("out-1"), (kind, fname)
-    assert client.get("/api/v1/agent-md/tk-1/artifacts/md").content == "脱敏MD".encode("utf-8")
+    assert client.get("/api/v1/agent-md/tk-1/artifacts/md").content == "脱敏MD".encode()
     assert client.get("/api/v1/agent-md/tk-1/artifacts/exe").status_code == 404
 
 
@@ -241,3 +241,25 @@ def test_artifacts_before_complete_404(fake_pipeline):
     r = client.get("/api/v1/agent-md/tk-1/artifacts/md")  # MAPPING_READY 尚未出稿
     assert r.status_code == 404
     assert r.json()["error_code"] == "ARTIFACT_NOT_FOUND"
+
+
+def test_confirm_gate_failure_envelope(fake_pipeline):
+    """门⑥ I1（#248）：渲染闸失败 → 422 AppError，机读码=message 前缀送达 owner。
+
+    #248 前 confirm 的 FAILED 只可能来自「task not ready」（路由 409 先拦）；
+    #248 起闸失败走 FAILED 迁移——路由不分支会把 200+null 交给前端，
+    owner 当场看不到哪个映射项坏了。"""
+    fake_pipeline.t.state = TaskState.MAPPING_READY
+
+    async def confirm_gate_fail(task_id, decisions):
+        fake_pipeline.t.state = TaskState.FAILED
+        fake_pipeline.t.message = (
+            "structure_integrity_violation: 脱敏过程破坏了 md 结构——<tr> 计数 5→4")
+        return fake_pipeline.t
+
+    fake_pipeline.confirm = confirm_gate_fail
+    r = client.post("/api/v1/agent-md/tk-1/confirm", json={"decisions": []})
+    assert r.status_code == 422
+    body = r.json()
+    assert body["error_code"] == "structure_integrity_violation"
+    assert "structure_integrity_violation" in body["message"]
