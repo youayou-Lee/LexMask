@@ -2,11 +2,29 @@
 
 纯逻辑层：无 I/O、不依赖具体服务；实体偏移为 "\n\n" 连接后的段级全局偏移，
 段间隔长度恒为 2。
+
+Issue#248：新增 ``render_outputs_on_structure``——替换应用在 zip 官方结构化
+md 上（表格/标题/页序原样保留），与 ``render_outputs``（拍平重建，回落路径）
+语义同构：非排除项全文替换（按 original 长度降序防嵌套）、excluded 记
+retained。三道机读闸见各函数 docstring。
 """
+import re
+
 from app.models.schemas import Entity
 from app.services.agent_md_types import MappingItem, Seg
 
 _SEP = "\n\n"
+
+# Issue#248 结构字符闸：replacement 出现这些字符会破坏 md 表格/标题结构
+# （管道表被 | 切断、HTML 被尖括号破坏、表格被换行断行）。化名/掩码生成器
+# 不产出这些字符；用户 custom 决策带入时 fail-closed。
+_REPLACEMENT_STRUCTURAL_RE = re.compile(r"[|<>`\r\n]")
+
+_PAGE_MARKER_RE = re.compile(r"<!--\s*page\s+\d+\s+of\s+\d+\s*-->")
+_HTML_TAG_RES = {tag: re.compile(rf"<{tag}\b", re.IGNORECASE)
+                 for tag in ("table", "tr", "td", "th")}
+# 管道表行内未转义竖线（\| 是 md 转义字面量，不是分隔符）
+_UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
 
 
 def apply_decisions(mapping: list[MappingItem], decisions: list[dict]) -> list[MappingItem]:
@@ -113,3 +131,137 @@ def _find_type(mapping: list[MappingItem], original: str) -> str:
         if m.original_text == original:
             return m.entity_type
     return "UNKNOWN"
+
+
+# ---- Issue#248：结构保全渲染（应用在官方结构化 md 上） --------------------
+
+
+def _page_of_offset(segs: list[Seg], offset: int) -> int:
+    """实体全局偏移 → 1 起始页码（与 render_outputs 的 seg.page_idx+1 口径一致）。"""
+    cursor = 0
+    for seg in segs:
+        end = cursor + len(seg.text)
+        if cursor <= offset < end:
+            return seg.page_idx + 1
+        cursor = end + len(_SEP)
+    return (segs[-1].page_idx + 1) if segs else 1
+
+
+def render_outputs_on_structure(
+    structured_md: str, segs: list[Seg], entities: list[Entity],
+    mapping: list[MappingItem],
+) -> tuple[str, dict, dict]:
+    """在结构化 md 上执行脱敏替换（Issue#248 主路径）。
+
+    与 render_outputs 语义同构，差别只在载体：替换落在 zip 官方 md
+    （含 HTML/管道表格、标题、页标记）上，检测层 segs 仅用于 excluded
+    项的页码记账。三道机读闸：
+
+    1. 结构字符闸：非排除项 replacement 含 ``|`` ``<`` ``>`` `` ` `` 或换行
+       → ValueError（replacement_structural_chars）——替换值破坏表格结构
+       是结构性风险，不许带病进产物；
+    2. 零残留闸：替换完成后任一非排除项 original_text 仍在产物中出现
+       → ValueError（zero_residual_violation）——典型成因是替换值回插
+       原文（如 replacement="张三丰" 且 original="张三"），机读判据不许
+       靠肉眼；
+    3. 结构对账：``verify_structure_integrity(输入md, 输出md)`` 由调用方
+       在写盘前执行（本函数产出即输入同一字符串，对账交给调用方组装）。
+
+    excluded 项不替换（全文兜底跳过，长文本优先的嵌套语义与 render_outputs
+    一致：若 excluded 文本落在更长被替换文本内部，随长文本整体替换）。
+    """
+    items = [m for m in mapping if not m.excluded and m.original_text]
+    bad = [m for m in items if _REPLACEMENT_STRUCTURAL_RE.search(m.replacement or "")]
+    if bad:
+        first = bad[0]
+        raise ValueError(
+            f"replacement_structural_chars: 映射 {first.id} 的替换值含 md 结构字符"
+            f"（|<>` 或换行），会破坏表格——original={first.original_text!r} "
+            f"replacement={first.replacement!r}"
+        )
+
+    retained: list[dict] = []
+    key = {(m.original_text, m.entity_type): m for m in mapping}
+    for ent in entities:
+        item = key.get((ent.text, ent.type))
+        if item is not None and item.excluded:
+            retained.append(
+                {"text": ent.text, "type": _find_type(mapping, ent.text),
+                 "page": _page_of_offset(segs, ent.start)}
+            )
+
+    md = structured_md
+    for m in sorted(items, key=lambda m: len(m.original_text), reverse=True):
+        md = md.replace(m.original_text, m.replacement)
+
+    residual = [m for m in items if m.original_text in md]
+    if residual:
+        names = "、".join(repr(m.original_text) for m in residual[:3])
+        raise ValueError(
+            f"zero_residual_violation: {len(residual)} 个映射项原文在产物中残留"
+            f"（{names}{' 等' if len(residual) > 3 else ''}）——替换值回插原文或"
+            "映射自冲突，禁止出厂"
+        )
+
+    mapping_json = {
+        "items": [
+            {
+                "id": m.id,
+                "original_text": m.original_text,
+                "entity_type": m.entity_type,
+                "replacement": m.replacement,
+                "excluded": m.excluded,
+            }
+            for m in mapping
+        ]
+    }
+    return md, mapping_json, {"retained_fields": retained}
+
+
+def _pipe_blocks(md: str) -> list[tuple[int, int]]:
+    """管道表格分块：连续 ``|`` 开头行 ⇒（行数, 未转义竖线总数）。
+
+    结构字符闸保证替换值不带 ``|``，故块边界与竖线数在脱敏前后不变——
+    变了就是结构被破坏。
+    """
+    blocks: list[tuple[int, int]] = []
+    lines = md.splitlines()
+    i = 0
+    while i < len(lines):
+        if lines[i].lstrip().startswith("|"):
+            n, pipes = 0, 0
+            while i < len(lines) and lines[i].lstrip().startswith("|"):
+                n += 1
+                pipes += len(_UNESCAPED_PIPE_RE.findall(lines[i]))
+                i += 1
+            blocks.append((n, pipes))
+        else:
+            i += 1
+    return blocks
+
+
+def verify_structure_integrity(src_md: str, out_md: str) -> None:
+    """结构对账（Issue#248 AC-A1 机读判据）：脱敏不许改变结构。
+
+    对账三面：页标记序列、HTML 表格标签计数（table/tr/td/th）、管道表
+    分块（行数+竖线数）。任一不一致 ⇒ ValueError，产物拒绝出厂。
+    正文内容变化（脱敏替换本体）不参与对账。
+    """
+    problems: list[str] = []
+    if _PAGE_MARKER_RE.findall(src_md) != _PAGE_MARKER_RE.findall(out_md):
+        problems.append(
+            f"页标记序列变化 src={len(_PAGE_MARKER_RE.findall(src_md))}"
+            f" out={len(_PAGE_MARKER_RE.findall(out_md))}"
+        )
+    for tag, rx in _HTML_TAG_RES.items():
+        a, b = len(rx.findall(src_md)), len(rx.findall(out_md))
+        if a != b:
+            problems.append(f"<{tag}> 计数 {a}→{b}")
+    if _pipe_blocks(src_md) != _pipe_blocks(out_md):
+        problems.append(
+            f"管道表分块变化 src={_pipe_blocks(src_md)} out={_pipe_blocks(out_md)}"
+        )
+    if problems:
+        raise ValueError(
+            "structure_integrity_violation: 脱敏过程破坏了 md 结构——" + "；".join(problems)
+        )

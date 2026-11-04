@@ -38,7 +38,7 @@ class _FakeMineru:
     async def wait_result(self, task_id, on_progress=None):
         if on_progress:
             on_progress(1, 1)
-        return MineruResult(md="# 合成", content_list_v2=_v2_nested_one_para(), images={})
+        return MineruResult(md="张三借李四人民币一万元", content_list_v2=_v2_nested_one_para(), images={})
 
 
 class _FakeOcr:
@@ -158,7 +158,7 @@ class _GatedMineru:
         await self.gate.wait()
         if on_progress:
             on_progress(1, 1)
-        return MineruResult(md="# 合成", content_list_v2=_v2_nested_one_para(), images={})
+        return MineruResult(md="张三借李四人民币一万元", content_list_v2=_v2_nested_one_para(), images={})
 
 
 def test_confirm_during_stage1_failed_not_resurrected(tmp_path, sample_pdf):
@@ -202,7 +202,7 @@ class _SubmitGatedMineru:
     async def wait_result(self, task_id, on_progress=None):
         if on_progress:
             on_progress(1, 1)
-        return MineruResult(md="# 合成", content_list_v2=_v2_nested_one_para(), images={})
+        return MineruResult(md="张三借李四人民币一万元", content_list_v2=_v2_nested_one_para(), images={})
 
 
 def test_confirm_in_submit_window_failed_not_resurrected(tmp_path, sample_pdf):
