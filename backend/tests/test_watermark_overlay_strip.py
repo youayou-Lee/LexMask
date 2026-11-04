@@ -1211,3 +1211,29 @@ def test_private_canary_matches_its_gt(tmp_path, env):
         assert hits == gt["expected"]["copy_token_hits"], hits
     finally:
         copy.close()
+
+
+def test_sweep_expired_clears_stale_orphans(env):
+    """AC9：进程级定时清理（`sweep_expired`）能实清过期副本，且不碰保鲜文件。"""
+    _uploads, outputs = env
+    directory = Path(wm.copy_dir())
+    stale = directory / "stale-from-earlier-run.pdf"
+    fresh = directory / "fresh-still-referenced.pdf"
+    for target in (stale, fresh):
+        target.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    os.utime(stale, (0, 0))
+
+    removed = wm.sweep_expired(ttl_hours=1.0)
+
+    assert removed >= 1
+    assert not stale.exists(), "过期副本必须被清"
+    assert fresh.exists(), "保鲜副本不得被清"
+
+
+def test_sweep_expired_is_callable_by_periodic_cleanup():
+    """接线钉：`main._periodic_cleanup` 与启动清理都必须真的调 `sweep_expired`（删接线即红）。"""
+    import app.main as app_main
+
+    source = inspect.getsource(app_main)
+    assert "watermark_overlay.sweep_expired()" in source
+    assert source.count("watermark_overlay.sweep_expired()") >= 2

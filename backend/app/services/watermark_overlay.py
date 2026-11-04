@@ -509,10 +509,10 @@ def copy_dir() -> str:
     return directory
 
 
-def _sweep(directory: str, ttl_hours: float) -> None:
-    """清过期副本；**绝不删正在被 memo/在飞请求引用的文件**（门⑥ C3）。"""
+def _sweep(directory: str, ttl_hours: float) -> int:
+    """清过期副本；**绝不删正在被 memo/在飞请求引用的文件**（门⑥ C3）。返回删除数量。"""
     if ttl_hours <= 0:
-        return
+        return 0
     cutoff = time.time() - ttl_hours * 3600
     with _CACHE_LOCK:
         # 只有「仍然保鲜」的副本才算在用；过期条目不再豁免，允许被清掉后按需重建。
@@ -524,7 +524,8 @@ def _sweep(directory: str, ttl_hours: float) -> None:
     try:
         names = os.listdir(directory)
     except OSError:
-        return
+        return 0
+    removed = 0
     for name in names:
         if name in in_use or ".tmp-" in name:
             continue
@@ -532,8 +533,33 @@ def _sweep(directory: str, ttl_hours: float) -> None:
         try:
             if os.path.isfile(candidate) and os.path.getmtime(candidate) < cutoff:
                 os.remove(candidate)
+                removed += 1
         except OSError:
             continue
+    return removed
+
+
+def sweep_expired(ttl_hours: float | None = None) -> int:
+    """清过期副本副本（供进程级定时清理调用）：返回删除数量，**绝不抛异常**。
+
+    构建路径只在「下一次有水印卷要处理」时才扫一次，若某卷只处理一次就再无扫描
+    ⇒ 靠 `main._periodic_cleanup`（每小时）+ 启动一次兜住 AC9「TTL 实清」。
+    """
+    from app.core.config import settings
+
+    ttl = (
+        float(getattr(settings, "WATERMARK_OVERLAY_COPY_TTL_HOURS", 24))
+        if ttl_hours is None
+        else float(ttl_hours)
+    )
+    try:
+        directory = copy_dir()
+    except OSError:
+        return 0
+    try:
+        return _sweep(directory, ttl)
+    except OSError:
+        return 0
 
 
 def status_for(path: str) -> dict:

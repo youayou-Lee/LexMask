@@ -160,6 +160,10 @@ async def _periodic_cleanup():
             removed = cleanup_orphan_files()
             if removed:
                 logger.info("Periodic cleanup removed %d orphan files", removed)
+            from app.services import watermark_overlay
+            swept = watermark_overlay.sweep_expired()
+            if swept:
+                logger.info("Periodic cleanup removed %d watermark overlay copies", swept)
         except Exception:
             logger.exception("periodic orphan cleanup failed")
 
@@ -195,6 +199,15 @@ async def lifespan(app: FastAPI):
     removed = cleanup_orphan_files()
     if removed:
         logger.info("Cleaned up %d orphan files", removed)
+
+    # 1b. Sweep expired watermark-overlay copies (Issue#236: TTL 实清，不只靠下一次构建)
+    try:
+        from app.services import watermark_overlay
+        swept = watermark_overlay.sweep_expired()
+        if swept:
+            logger.info("Swept %d expired watermark overlay copies", swept)
+    except Exception:
+        logger.exception("watermark overlay sweep at startup failed")
 
     # 2. Check external services
     from app.services.ocr_service import ocr_service

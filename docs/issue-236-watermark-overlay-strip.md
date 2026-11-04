@@ -129,6 +129,7 @@
 - 目录 `settings.OUTPUT_DIR/.watermark_overlay/`（`makedirs(0o700)` + `chmod 0700`；`cleanup_orphan_files` 只扫顶层文件 ⇒ 不被小时清理误删，也不进任何导出）。
 - 命名 `<sha256(realpath|size|mtime_ns)[:32]>.pdf`；原件更新即换名。
 - TTL `WATERMARK_OVERLAY_COPY_TTL_HOURS=24`：每次**命中水印后的**构建前扫一次，删除超龄文件；memo 命中也要过 TTL 校验（过期副本不返回，按需重建）。清理只豁免「保鲜且被 memo 持有」的副本与在飞临时文件。
+- **进程级定时清理（门⑥ 二轮处置补）**：仅靠「下一次有水印卷构建」才扫，会让「只处理过一次的卷」副本无限滞留 ⇒ 新增 `sweep_expired(ttl_hours=None)`（返回删除数量、绝不抛异常），由 `app/main.py` 的 `_periodic_cleanup()`（每小时）与 `lifespan` 启动各调一次；判据 `test_sweep_expired_clears_stale_orphans` 与接线钉 `test_sweep_expired_is_callable_by_periodic_cleanup`（删任一接线即红）。
 - 进程内 memo（键=fingerprint）：`{code, pages_probed, pages_hit, pages_stripped, pages_skipped, pages_guard_refused, duration_ms, error, copy_path}`；命中与 fail-open 都缓存（后者 60 s 短窗口）；对外状态**剔除 copy_path 与内部字段**。
 - 并发：卷级 `threading.Lock`（进程级）+ in-flight 登记；第二个请求等首个完成（AC9 断言构建调用计数=1）。
 - 体积闸：`size > WATERMARK_OVERLAY_MAX_FILE_MB(400)` ⇒ `capped_by_size`，不处理。
@@ -174,7 +175,7 @@
 
 | 文件 | 动作 |
 |---|---|
-| `backend/app/services/watermark_overlay.py` | 新增：probe / build / memo / 卷级锁 / TTL / 状态 / stats |
+| `backend/app/services/watermark_overlay.py` | 新增：probe / build / memo / 卷级锁 / TTL（含 `sweep_expired`）/ 状态 / stats |
 | `backend/app/core/config.py` | 11 个配置键 + 6 个 validator |
 | `backend/.env.example` | 同步登记 |
 | `backend/app/services/file_parser.py` | `allow_strip` kwarg、变体缓存键、副本渲染源 |
@@ -289,7 +290,7 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 - 前置：`copy_created ≥ 1` 且副本在 `<OUTPUT_DIR>/.watermark_overlay/` 下、mtime 属本次。
 - 9a 结构：副本 `fitz.open` 重开、页数/逐页 `rect` 与原件一致。
 - 9b 权限：目录 0700、文件 0600。
-- 9c TTL：旧副本 mtime 调早 + `COPY_TTL_HOURS` 调小 ⇒ 下次构建时被**实际删除**；新鲜副本不删。
+- 9c TTL：旧副本 mtime 调早 + `COPY_TTL_HOURS` 调小 ⇒ 下次构建时被**实际删除**；新鲜副本不删；**进程级** `sweep_expired()` 单独可判（不依赖下次构建）。
 - 9d 并发单飞：`BATCH_RECOGNITION_PAGE_CONCURRENCY>1` 同卷并发 ⇒ `build_calls` 增量 **1**（多线程本地复测）。
 - 9e 不泄漏：不进交付 ZIP（5b）、不被预览直出（5a）。
 - 9f 原子性与回收：构建失败/异常后**不留下半成品文件**（临时名 + `os.replace`，断言目录内只有合法副本）；任务 reject/删除后副本在 TTL 内被清；TTL 清理与在飞渲染不互踩（在飞文件跳过删除）。
