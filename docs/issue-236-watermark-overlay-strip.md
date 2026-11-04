@@ -196,31 +196,46 @@
 
 > 规则：每条判据在「功能不做 / 被改坏」时**必须 FAIL**；阈值有第 2 节实测锚定；判据锚定**行为/输出**（GT 文本行、像素掩码、计数、机读码），不以「字段存在」为唯一证据。标〔守卫〕的条目单独在组件缺席时会通过，但它所属的 AC 另有一个组件缺席必红的支路。环境归属见 AC13。
 
-### 5.0 夹具清单（全部落私有 `testdata/`，生成器 `LexMask-workspace/scripts/issue236/gen.py`，同一脚本产出对应 `-gt.json`；生成后登记 sha256）
+### 5.0 夹具清单（落盘策略：F1 落私有 `testdata/` + GT；F2–F7/W1–W4 由测试内 `build_pdf()` 现造）
+
+**落盘实现（2026-11-04 定稿）**：只有 **F1（canary）** 以文件形式落 `testdata/`（含 `-gt.json`），生成器 `LexMask-workspace/scripts/issue236/gen_canary.py`（`--out-dir` 指定目标、`--verify-module` 用仓库实现交叉核验）；其余夹具由 `backend/tests/test_watermark_overlay_strip.py::build_pdf()` 在临时目录现造——理由：单测需要「每次全新建文件」且不能让 CI 依赖 git-crypt，文件形态与下表逐条一致，判据不变。
+
+F1 实测（生成即核验，`--verify-module`）：
+```
+pdf  testdata/canary-issue236-vector-overlay-watermark.pdf (1,825,674 B, 3 页)
+gt   testdata/canary-issue236-vector-overlay-watermark-gt.json
+sha  0ab90d517eab14002936cb62d4430a4693a17b48117089a99961e6ea618a5b45
+verify: {"probe_code":"hit","pages_probed":3,"pages_hit":3,"build_code":"stripped",
+         "pages_stripped":3,"copy_chars_total":0,"copy_token_hits":0}
+```
+- 每页 `/Contents=[A(栅格) B(水印)]`（页 1 `[7, 15]`），页文本 491 字符/30 行全部来自水印；GT `copy_lines=0 / copy_chars=0 / tokens=["某某市院张某某450102199001011234"]`。
+- **sha256 非稳定**：PDF 内嵌生成时间戳，重跑会换 sha ⇒ GT 里的 `sha256` 只对应当次产物（判据依赖「形态 + 行/字符数」而非字节指纹）。
+
 
 | 夹具 | 文件 | 形态 | 期望 |
 |---|---|---|---|
-| F1 | `canary-issue236-vector-overlay-watermark.pdf` | 3 页；全栅格化名正文（PIL 150 dpi）；每页 30 份水印 `某某市院 张某某450102199001011234`（`TextWriter`，29.22 pt，opacity 0.25，45°），`/Contents=[A,B]`；页文本 492 字符/30 行（边缘份数被裁切，属允许形态） | `hit`，摘后页文本 0 |
-| F2 | `canary-issue236-textlayer-overlay.pdf` | 3 页；**正文为不可见文字层**（`render_mode=3`，A 流）+ 水印独立流 B；页文本 = 正文 + 水印 | `hit`；副本页文本 = GT `copy_lines`（>0）、水印令牌 0 |
-| F3 | `canary-issue236-partial-overlay.pdf` | 5 页；3 页 `[A,B]`（有水印）、2 页单流（无水印） | `hit`；`pages_stripped=3`、`pages_skipped=2` |
-| F4 | `canary-issue236-double-overlay.pdf` | 3 页；`/Contents=[A,B1,B2]`，B1/B2 均为水印流 | `no_isolated_overlay`（候选不唯一），不产出副本 |
-| F5 | `canary-issue236-overlap-residual.pdf` | 3 页；水印同时出现在可摘流 B **和** 扫描图内的不可见文字层（摘 B 后仍残留） | 逐页 `skip`（残余令牌守卫），`pages_skipped=3`，不产出可用副本 |
-| F6 | `canary-issue236-dual-qualified.pdf` | 2 页；`[A,B_wm,B_body]`，B_body 是合法不可见正文层（水平、`alpha=0`） | `hit` 且只摘 B_wm；副本页文本 = GT 正文（B_body 全部保留） |
-| F7 | `canary-issue236-single-page-overlay.pdf` | 5 页；仅 1 页有水印 | `below_min_pages`，不产出副本 |
-| W1 | `canary-issue236-warm-inline.pdf` | 2 页；水印文字并入主内容流（图 `Do` + 旋转半透明文字，单流） | `no_isolated_overlay`/`no_wm_spans`，不产出副本 |
-| W2 | `canary-issue236-warm-legal-textlayer.pdf` | 2 页；`[A,B]`，B 为合法 OCR 文字层（`alpha=0`、水平、不可见） | 同上 |
-| W3 | `canary-issue236-warm-vector-table.pdf` | 2 页；`[A,B]`，B 为矢量表格/公章绘制（含 `f/S/re`） | 同上 |
-| W4 | `canary-issue236-warm-raster-watermark.pdf` | 2 页；水印烧进栅格图，B 为空流 | 不产出副本（非目标形态） |
+| F1 | `canary-issue236-vector-overlay-watermark.pdf` ✅已落 testdata | 3 页；全栅格化名正文（PIL 150 dpi）；每页 30 份水印 `某某市院 张某某450102199001011234`（`TextWriter`，29.22 pt，opacity 0.25，45°），`/Contents=[A,B]`；页文本 491 字符/30 行（边缘份数被裁切，属允许形态） | `hit`，摘后页文本 0（已实测） |
+| F2 | 🧪测试内构造 `canary-issue236-textlayer-overlay.pdf` | 3 页；**正文为不可见文字层**（`render_mode=3`，A 流）+ 水印独立流 B；页文本 = 正文 + 水印 | `hit`；副本页文本 = GT `copy_lines`（>0）、水印令牌 0 |
+| F3 | 🧪测试内构造 `canary-issue236-partial-overlay.pdf` | 5 页；3 页 `[A,B]`（有水印）、2 页单流（无水印） | `hit`；`pages_stripped=3`、`pages_skipped=2` |
+| F4 | 🧪测试内构造 `canary-issue236-double-overlay.pdf` | 3 页；`/Contents=[A,B1,B2]`，B1/B2 均为水印流 | `no_isolated_overlay`（候选不唯一），不产出副本 |
+| F5 | 🧪测试内构造 `canary-issue236-overlap-residual.pdf` | 3 页；水印同时出现在可摘流 B **和** 扫描图内的不可见文字层（摘 B 后仍残留） | 逐页 `skip`（残余令牌守卫），`pages_skipped=3`，不产出可用副本 |
+| F6 | 🧪测试内构造 `canary-issue236-dual-qualified.pdf` | 2 页；`[A,B_wm,B_body]`，B_body 是合法不可见正文层（水平、`alpha=0`） | `hit` 且只摘 B_wm；副本页文本 = GT 正文（B_body 全部保留） |
+| F7 | 🧪测试内构造 `canary-issue236-single-page-overlay.pdf` | 5 页；仅 1 页有水印 | `below_min_pages`，不产出副本 |
+| W1 | 🧪测试内构造 `canary-issue236-warm-inline.pdf` | 2 页；水印文字并入主内容流（图 `Do` + 旋转半透明文字，单流） | `no_isolated_overlay`/`no_wm_spans`，不产出副本 |
+| W2 | 🧪测试内构造 `canary-issue236-warm-legal-textlayer.pdf` | 2 页；`[A,B]`，B 为合法 OCR 文字层（`alpha=0`、水平、不可见） | 同上 |
+| W3 | 🧪测试内构造 `canary-issue236-warm-vector-table.pdf` | 2 页；`[A,B]`，B 为矢量表格/公章绘制（含 `f/S/re`） | 同上 |
+| W4 | 🧪测试内构造 `canary-issue236-warm-raster-watermark.pdf` | 2 页；水印烧进栅格图，B 为空流 | 不产出副本（非目标形态） |
 | C1–C3 | `testdata/文本型-叶辉审查报告.pdf`（78 页）、`testdata/扫描型PDF误判为文本型-1.pdf`（6 页）、`testdata/canary-issue115-textlayer-10p.pdf`（10 页） | 冷负样本（实存） | `no_wm_spans`，零副本 |
 | R1 | `testdata/第四卷.pdf`（149 页，实存，私有） | 真卷：正文在 A 的不可见文字层、水印 B | `hit`；GT 见 §5.1 |
 
-GT json 结构（每个夹具一份）：`{"page": 1, "orig_lines": n, "wm_lines": m, "copy_lines": k, "copy_chars": c, "tokens": [...]}`，由生成器**从原件计算**（`copy_lines = orig_lines − wm_span_lines`），并附 `sha256`。
+GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page": 1, "orig_lines": n, "wm_lines": m, "copy_lines": k, "copy_chars": c, "tokens": [...]}`，由生成器**从原件计算**（`copy_lines = orig_lines − wm_span_lines`），并附 `sha256`。
 
 ### 5.1 真卷 GT（本机实测，已核验）
 
 149 页：原件非空文本行 **6,039** → 副本 **3,804**，水印行 **2,235**（15 行/页）；**逐页** `copy_lines == orig_lines − wm_lines` 全部成立（mismatch **0**）；副本总字符 **47,253**（原件 90,475）；**16 页**副本正文为 0（原件本来也没有正文层）。⇒ 该 GT 是真实、可分辨的判据基线：把整页替换成空白页会得到 0 行 ≠ GT。
 
 ### AC1 canary 栅格保全与检测命中（F1，本地可判）
+- **F1 已有落盘件**：`testdata/canary-issue236-vector-overlay-watermark.pdf` + `-gt.json`，由 `LexMask-workspace/scripts/issue236/gen_canary.py` 生成；`--verify-module` 实跑 `{probe_code:"hit", pages_probed:3, pages_hit:3, pages_stripped:3, copy_chars_total:0, copy_token_hits:0}`（§5.0）。单测侧用 `build_pdf(...)` 现造同形态夹具，判据同下。
 - 前置（组件缺席必红）：`stats()["probe_calls"]==1`、`copy_created==1`、`code=hit`。
 - 判据：① 摘后每页文本 **0 字符**（摘前 492）；② 掩码 oracle（定义见 5.2）：掩码外 `max|Δ|=0`，掩码内差异像素 / 总差异像素 = **1.0**，差异像素占比 in **[16%, 18%]**（锚定 17.083%）；③ 页数、页尺寸、`/XObject` 图像流解压字节数前后相同；④ 原件 sha256 前后一致；⑤ 掩码非空且面积占比 **> 1%**。
 - 红性：摘错流 ⇒ ②（掩码外出现整页差异）③（图像流缺失）FAIL；不摘 ⇒ ① FAIL。
