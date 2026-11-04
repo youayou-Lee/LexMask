@@ -85,6 +85,23 @@ class _Gfx:
                 )
         return "\n".join(ops)
 
+    def watermark_ops_single_bt(self, rect: fitz.Rect, rows: int = 3, cols: int = 3,
+                                rotation: float = -45.0) -> str:
+        """62（证据材料卷51）形态（Issue#245）：全部水印塞进**单个 BT…ET 块**，
+        旋转走 Tm（130 个 Tm 携 65 个 Tj）——数 BT 会误拒，必须按文字绘制 op 计数。"""
+        import math
+
+        cos = round(math.cos(math.radians(rotation)), 5)
+        sin = round(math.sin(math.radians(rotation)), 5)
+        body: list[str] = []
+        for row in range(rows):
+            for col in range(cols):
+                x = 24 + col * (rect.width / cols)
+                y = 60 + row * (rect.height / rows)
+                body.append(f"{cos} {sin} {-sin} {cos} {x:.2f} {y:.2f} Tm ({WM_TEXT}) Tj")
+        return ("q BT /GS0 gs 0.25098 0.25098 0.25098 rg /HeBo 29.22 Tf\n"
+                + "\n".join(body) + "\nET Q")
+
 
 def _new_stream(doc: fitz.Document, payload: str) -> int:
     xref = doc.get_new_xref()
@@ -146,6 +163,7 @@ def build_pdf(
     residual_wm_pages: list[int] | None = None,
     wm_rotation: float = -45.0,
     opacity: float = 0.25,
+    wm_single_bt: bool = False,
 ) -> None:
     """合成夹具。
 
@@ -185,7 +203,11 @@ def build_pdf(
                 _append_stream(doc, pxref, _new_stream(doc, wm_ops))
                 wm_ops = ""
             elif index in overlay_pages:
-                wm_ops = gfx.watermark_ops(rect, rotation=wm_rotation)
+                wm_ops = (
+                    gfx.watermark_ops_single_bt(rect, rotation=wm_rotation)
+                    if wm_single_bt
+                    else gfx.watermark_ops(rect, rotation=wm_rotation)
+                )
                 if inline_wm:
                     _append_stream(doc, pxref, _new_stream(doc, wm_ops))
                     # 并入主流：把水印 op 追加到第一条内容流尾部（W1 不可分离）
@@ -464,15 +486,105 @@ def test_warm_vector_table_stream_is_rejected_by_op_whitelist(tmp_path, env):
 # ---------------------------------------------------------------------------
 
 
-def test_double_watermark_streams_are_ambiguous(tmp_path, env):
-    """F4：/Contents=[A,B1,B2] 两条水印流 ⇒ 候选不唯一，必须弃权。"""
+def test_single_bt_multi_tj_watermark_stream_is_qualified(tmp_path, env):
+    """62（证据材料卷51）形态（Issue#245）：全部水印塞进单个 BT 块（Tm 旋转）。
+
+    门槛必须按文字绘制 op（Tj/TJ）计数——数 BT 块会把 65 份水印的单块形态误拒。
+    """
+    path = str(tmp_path / "single-bt-multi-tj.pdf")
+    build_pdf(path, pages=3, wm_single_bt=True)
+    outcome = wm.probe(path)
+    assert outcome.code == "hit", outcome
+    assert all(subset == (1,) for _page, subset in outcome.slot_by_page), outcome.slot_by_page
+    copy_path, status = wm.render_source(path)
+    assert status["source"] == "copy" and status["pages_stripped"] == 3, status
+    doc = fitz.open(copy_path)
+    try:
+        for index in range(doc.page_count):
+            assert WM_ID not in doc.load_page(index).get_text(), "副本不得残留水印令牌"
+    finally:
+        doc.close()
+
+
+def test_double_watermark_streams_strip_both(tmp_path, env):
+    """F4（Issue#245 语义反转）：同一水印画两遍（双保险）⇒ 组合试摘整组摘除。
+
+    旧语义「候选不唯一必须弃权」只对「单流候选」成立；单流全败 + 唯一组合成立时
+    应整组摘除——6号案卷 10 页真卷实测双层画法可无损摘除（#245 证据评论）。
+    """
     path = str(tmp_path / "double-overlay.pdf")
     build_pdf(path, pages=3, wm_streams=2)
     outcome = wm.probe(path)
-    assert outcome.code == "no_isolated_overlay", outcome
+    assert outcome.code == "hit", outcome
+    assert all(len(subset) == 2 for _page, subset in outcome.slot_by_page), outcome.slot_by_page
     copy_path, status = wm.render_source(path)
-    assert copy_path is None and status["source"] == "original"
-    assert wm.stats()["build_calls"] == 0
+    assert status["source"] == "copy", status
+    assert status["pages_stripped"] == 3, status
+    # 副本：水印令牌零残留；每页只应剩 1 条内容流（两条水印流都被摘掉）。
+    doc = fitz.open(copy_path)
+    try:
+        for index in range(doc.page_count):
+            page = doc.load_page(index)
+            assert WM_ID not in page.get_text(), "副本不得残留水印令牌"
+            assert len(_contents(doc, page.xref)) == 1, "双层摘除后每页只应剩 1 条内容流"
+    finally:
+        doc.close()
+    # 正文像素零改动：副本渲染应与「无水印同体夹具」逐像素一致。
+    ref_path = str(tmp_path / "double-overlay-ref.pdf")
+    build_pdf(ref_path, pages=3, wm_streams=0)
+    for index in range(3):
+        assert ImageChops.difference(
+            _render_png(copy_path, index), _render_png(ref_path, index)
+        ).getbbox() is None, f"页 {index} 正文像素被改动"
+
+
+def test_combo_removal_must_not_eat_legal_body_stream(tmp_path, env):
+    """Issue#245 组合试摘的三层守卫：残留令牌 / 接受前覆盖残留 / escalated span oracle。
+
+    夹具（直接构造，绕过 probe——专门压 build 的组合路径）：页上有
+    A=纯水印流、B=混合流（倾斜水印 + 水平数字正文同流，字符 ⊆ 水印字符集）。
+    摘 A ⇒ B 的倾斜水印残留（令牌守卫拒）；摘 B ⇒ 数字正文被删但覆盖 span 仍在
+    （接受前守卫拒）；组合 {A,B} ⇒ 覆盖清零但非覆盖 span 变化（escalated oracle 拒）。
+    三层全部拒绝 ⇒ guard_refused_pages，不产出副本，原件不动。
+    """
+    path = str(tmp_path / "combo-body-eat.pdf")
+    doc = fitz.open()
+    try:
+        gfx = _Gfx(doc)
+        for _page in range(3):
+            page = doc.new_page(width=595, height=842)
+            page.insert_text((72, 120), BODY_INVISIBLE, fontsize=11, render_mode=3)
+            pxref = page.xref
+            _append_stream(doc, pxref, _new_stream(doc, gfx.watermark_ops(fitz.Rect(0, 0, 595, 842))))
+            mixed = gfx.watermark_ops(fitz.Rect(0, 0, 595, 842), rows=1, cols=2)
+            mixed += ("\nBT /Helv 9 Tf 1 0 0 1 72 640 Tm (450102199001011234) Tj ET\n"
+                      "BT /Helv 9 Tf 1 0 0 1 72 620 Tm (450102199001011234) Tj ET\n"
+                      "BT /Helv 9 Tf 1 0 0 1 72 600 Tm (450102199001011234) Tj ET")
+            _append_stream(doc, pxref, _new_stream(doc, mixed))
+            _merge_resources(doc, pxref, gfx)
+        doc.save(path, garbage=3, deflate=True)
+    finally:
+        doc.close()
+
+    outcome = wm.ProbeOutcome(
+        code="hit", pages_probed=3, pages_hit=3, slots=(1, 1, 1),
+        slot_by_page=((0, (1,)), (1, (1,)), (2, (1,))),
+        fonts=("HeBo",), size_spread=1.0, alpha_spread=1.0, top_repeats=4,
+        charset="".join(sorted(set(WM_TEXT) | set("0123456789"))),
+        tokens=(WM_TEXT,),
+    )
+    dest = str(tmp_path / "combo-body-copy.pdf")
+    result = wm.build_stripped_copy(path, dest, outcome)
+    assert result.code == "guard_refused_pages", result
+    assert result.pages_guard_refused == 3, result
+    assert not os.path.exists(dest), "熔断后不得留下副本文件"
+    # 原件不动：正文数字与水印都还在。
+    doc = fitz.open(path)
+    try:
+        text = doc.load_page(0).get_text()
+        assert "450102199001011234" in text and WM_TEXT in text
+    finally:
+        doc.close()
 
 
 def test_single_overlay_page_is_below_min_pages(tmp_path, env):

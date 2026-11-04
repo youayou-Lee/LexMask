@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import logging
 import os
 import re
@@ -40,8 +41,18 @@ _WS_RE = re.compile(r"\s+")
 _TILT_MIN = 0.2
 _ALPHA_MIN = 1
 _ALPHA_MAX = 220
-_MIN_BT_PER_STREAM = 3
+# 「这条流真的在画文字」的门槛：按文字绘制 op（Tj/TJ/'/"）计数。锚定样本是
+# 每份水印一个独立 BT…ET 块（30 组），但 62（证据材料卷51）形态把 65 份水印
+# 塞进单个 BT 块（#245 外部对照）——数 BT 会误拒，数 Tj 才是形态无关的信号。
+_MIN_TEXT_OPS = 3
 _MIN_TOKEN_LEN = 6
+
+
+def _has_text_drawing(ops: Counter) -> bool:
+    return ops.get("Tj", 0) + ops.get("TJ", 0) + ops.get("'", 0) + ops.get('"', 0) >= _MIN_TEXT_OPS
+# Issue#245：组合试摘只对「合格流 ≤ 此数」的页启用——超出即单流路径（fail-closed），
+# 组合枚举成本 O(2^k)，页内合格流条数现实上限是个位数。
+_MAX_COMBO_QUALIFIED = 6
 
 
 # 进程级计数器：验收判据（AC1/AC4/AC6/AC11）要能断言「探测 1 次、构建 1 次/0 次」，
@@ -90,7 +101,9 @@ class ProbeOutcome:
     pages_probed: int = 0
     pages_hit: int = 0
     slots: tuple[int, ...] = ()
-    slot_by_page: tuple[tuple[int, int], ...] = ()
+    # 每命中页的摘除槽位组：单流形态为 (page, (slot,))；Issue#245 双保险形态为
+    # (page, (slot_a, slot_b, ...))——同一水印画多遍时必须整组同摘。
+    slot_by_page: tuple[tuple[int, tuple[int, ...]], ...] = ()
     fonts: tuple[str, ...] = ()
     size_spread: float = 1.0
     alpha_spread: float = 1.0
@@ -254,29 +267,55 @@ def probe(
             saw_overlay = True
             base_non = [s for s in base if not _is_overlay_span(s, tilt_min=tilt_min, alpha_max=alpha_max)]
             xrefs = _contents_xrefs(doc, page)
-            candidates: list[int] = []
+            qualified: list[int] = []
             if len(xrefs) >= 2:
                 for slot, xref in enumerate(xrefs):
                     ops, ok = _stream_ops(doc.xref_stream(xref))
-                    if not ok or ops.get("BT", 0) < _MIN_BT_PER_STREAM:
-                        continue
-                    keep = [x for j, x in enumerate(xrefs) if j != slot]
-                    _set_contents(doc, page.xref, keep)
-                    reloaded = doc.reload_page(page)
-                    after = _spans(reloaded)
-                    _set_contents(doc, reloaded.xref, xrefs)
-                    page = doc.reload_page(reloaded)
-                    if any(_is_overlay_span(s, tilt_min=tilt_min, alpha_max=alpha_max) for s in after):
-                        continue
-                    if after != base_non:
-                        continue
-                    candidates.append(slot)
-            if len(candidates) != 1:
+                    if ok and _has_text_drawing(ops):
+                        qualified.append(slot)
+
+            def _try_subset(
+                subset: tuple[int, ...], *, xrefs: list[int], base_non: list[dict]
+            ) -> bool:
+                """试摘一组流：摘后无覆盖 span 且非覆盖 span 逐字段不变（随后恢复）。"""
+                nonlocal page
+                keep = [x for j, x in enumerate(xrefs) if j not in subset]
+                if not keep:
+                    return False
+                _set_contents(doc, page.xref, keep)
+                reloaded = doc.reload_page(page)
+                after = _spans(reloaded)
+                _set_contents(doc, reloaded.xref, xrefs)
+                page = doc.reload_page(reloaded)
+                if any(_is_overlay_span(s, tilt_min=tilt_min, alpha_max=alpha_max) for s in after):
+                    return False
+                return after == base_non
+
+            passing: list[tuple[int, ...]] = []
+            singles = [slot for slot in qualified if _try_subset((slot,), xrefs=xrefs, base_non=base_non)]
+            if len(singles) == 1:
+                passing = [(singles[0],)]
+            elif not singles:
+                # 单流试摘全不成立 ⇒ 组合试摘（Issue#245：同一水印画两遍的双保险画法，
+                # 摘一条另一条还在，单流差分 oracle 必然全败）。组合枚举只在「没有任何
+                # 单流候选」时发生——既有单流卷的快路径零改动；多于一组成立仍判歧义
+                # 弃权（fail-closed，同 AC7-7d）。
+                if len(qualified) <= _MAX_COMBO_QUALIFIED:
+                    for size in range(2, len(qualified) + 1):
+                        for combo in itertools.combinations(qualified, size):
+                            if _try_subset(combo, xrefs=xrefs, base_non=base_non):
+                                passing.append(combo)
+                if len(passing) > 1:
+                    passing = []
+            # len(singles) > 1：多条单流候选 = 歧义，维持弃权。
+
+            if len(passing) != 1:
                 continue
 
+            subset = passing[0]
             hits.append(index)
-            slots.append(candidates[0])
-            hit_slots.append((index, candidates[0]))
+            slots.append(subset[0])
+            hit_slots.append((index, subset))
             for span in overlay:
                 sizes.append(span["size"])
                 alphas.append(float(span["alpha"]))
@@ -360,7 +399,7 @@ def build_stripped_copy(
 
     charset = set(outcome.charset)
     tokens = tuple(outcome.tokens)
-    slot_for_page = dict(outcome.slot_by_page)
+    subset_for_page = dict(outcome.slot_by_page)
     doc = None
     tmp_path = f"{dest}.tmp-{os.getpid()}-{threading.get_ident()}"
     try:
@@ -376,23 +415,47 @@ def build_stripped_copy(
                 skipped += 1
                 continue
             # 该页本身有没有覆盖水印：决定「摘不掉」是隐患（refused）还是本来无事（skipped）。
+            base_spans = _spans(page)
             page_has_wm = any(
                 _is_overlay_span(span, tilt_min=tilt_min, alpha_max=alpha_max)
-                for span in _spans(page)
+                for span in base_spans
             )
-            order = list(range(len(xrefs)))
-            preferred = slot_for_page.get(index)
-            if preferred is not None and preferred in order:
-                order.remove(preferred)
-                order.insert(0, preferred)
-            dropped_here = False
-            for slot in order:
-                xref = xrefs[slot]
+            qualified: list[int] = []
+            for slot, xref in enumerate(xrefs):
                 ops, ok = _stream_ops(doc.xref_stream(xref))
-                if not ok or ops.get("BT", 0) < _MIN_BT_PER_STREAM:
+                if ok and _has_text_drawing(ops):
+                    qualified.append(slot)
+            original_lines = _line_set(page)
+            base_non = [
+                s for s in base_spans
+                if not _is_overlay_span(s, tilt_min=tilt_min, alpha_max=alpha_max)
+            ]
+
+            # 候选子集顺序：探针验证过的组合优先（快路径），其后单流（既有路径），
+            # 最后组合枚举（Issue#245：探针只抽样 5 页，未抽到的双保险页也要能摘）。
+            subsets: list[tuple[int, ...]] = []
+            preferred = subset_for_page.get(index)
+            if preferred:
+                subsets.append(tuple(sorted(preferred)))
+            subsets.extend((slot,) for slot in qualified)
+            if page_has_wm and 2 <= len(qualified) <= _MAX_COMBO_QUALIFIED:
+                for size in range(2, len(qualified) + 1):
+                    subsets.extend(itertools.combinations(qualified, size))
+
+            dropped_here = False
+            for subset in subsets:
+                keep = [x for j, x in enumerate(xrefs) if j not in subset]
+                if not keep:
                     continue
-                original_lines = _line_set(page)
-                keep = [x for j, x in enumerate(xrefs) if j != slot]
+                # 未被探针验证过的组合走全套 span oracle（摘后无覆盖 span、非覆盖
+                # span 逐字段不变），防止「借组合之名删正文」；探针子集已在探测期
+                # 通过 span oracle，这里走廉价行集校验。注意以「子集是否就是探针
+                # 验证过的那个」判定，而不是「页是否被探针命中」——探针只背书它
+                # 试过的那一个子集。
+                probed = subset_for_page.get(index)
+                escalated = len(subset) > 1 and (
+                    probed is None or tuple(sorted(subset)) != tuple(sorted(probed))
+                )
                 _set_contents(doc, page.xref, keep)
                 reloaded = doc.reload_page(page)
                 new_lines = _line_set(reloaded)
@@ -402,7 +465,7 @@ def build_stripped_copy(
                 else:
                     removed = original_lines - new_lines
                     if not removed:
-                        # 什么都没删掉：该流不是水印，换下一个候选（不算页级拒绝）。
+                        # 什么都没删掉：该组合不是水印，换下一个候选（不算页级拒绝）。
                         _set_contents(doc, reloaded.xref, xrefs)
                         page = doc.reload_page(reloaded)
                         continue
@@ -410,7 +473,29 @@ def build_stripped_copy(
                         refuse = True
                     elif tokens and _residual_tokens(new_lines, tokens):  # 摘后仍有水印令牌
                         refuse = True
+                    elif escalated:
+                        after = _spans(reloaded)
+                        after_non = [
+                            s for s in after
+                            if not _is_overlay_span(s, tilt_min=tilt_min, alpha_max=alpha_max)
+                        ]
+                        if after_non != base_non or any(
+                            _is_overlay_span(s, tilt_min=tilt_min, alpha_max=alpha_max)
+                            for s in after
+                        ):
+                            refuse = True
                 if refuse:
+                    _set_contents(doc, reloaded.xref, xrefs)
+                    page = doc.reload_page(reloaded)
+                    continue
+                # 接受前守卫（Issue#245）：摘后不得残留覆盖 span——双保险页只摘到
+                # 一层时仍带水印，宁可拒绝（页级 refused ⇒ 卷级熔断）也不产出
+                # 「看起来净化、其实还带水印」的副本。
+                after = _spans(reloaded)
+                if any(
+                    _is_overlay_span(s, tilt_min=tilt_min, alpha_max=alpha_max)
+                    for s in after
+                ):
                     _set_contents(doc, reloaded.xref, xrefs)
                     page = doc.reload_page(reloaded)
                     continue
