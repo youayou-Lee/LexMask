@@ -7,6 +7,7 @@ API-layer imports.  The functions here delegate to the service layer
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -77,8 +78,13 @@ async def execute_redaction_request(
     entities: list,
     bounding_boxes: list,
     config: Any,
+    progress_cb: Callable[[int, int], None] | None = None,
 ) -> None:
-    """Execute redaction via the service layer."""
+    """Execute redaction via the service layer.
+
+    Issue#238：``progress_cb(current, total)`` 由打码执行链逐页回调（扫描件/
+    图片栅格化路径），供任务队列上报「打码 p/N」进展；文本/docx 快链路不回调。
+    """
     from app.models.schemas import RedactionRequest
     from app.services.redaction_orchestrator import execute_redaction
     req = RedactionRequest(
@@ -87,5 +93,5 @@ async def execute_redaction_request(
         bounding_boxes=bounding_boxes,
         config=config,
     )
-    await execute_redaction(req)
+    await execute_redaction(req, progress_cb=progress_cb)
 

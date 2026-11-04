@@ -1,10 +1,14 @@
 // Copyright 2026 LexMask Contributors
 
 import { t, useI18n } from '@/i18n';
+import { firstMessageText } from '@/utils/errorEnvelope';
 
 type ErrorLike = {
   message?: unknown;
   status?: unknown;
+  /** fetchBlob 系 ApiError 携带的机读码与结构化 detail（#232 I-1）。 */
+  errorCode?: unknown;
+  detail?: unknown;
   response?: {
     status?: unknown;
     data?: {
@@ -19,17 +23,76 @@ type ErrorLike = {
  * 后端错误信封的机器可读错误码（`app/core/errors.py` error_response）。
  * #30 起 PDF 加密类错误带码：调用方（如 playground 密码框）按码路由交互，
  * 文案映射只作 toast 兜底。无码返回 null，调用方回退字符串启发式。
+ * #232：fetchBlob 系 ApiError 把码放在实例字段上，同样认。
  */
 export function errorCodeFromError(error: unknown): string | null {
   const candidate = (error && typeof error === 'object' ? error : null) as ErrorLike | null;
   const code = candidate?.response?.data?.error_code;
-  return typeof code === 'string' && code ? code : null;
+  if (typeof code === 'string' && code) return code;
+  const direct = candidate?.errorCode;
+  return typeof direct === 'string' && direct ? direct : null;
+}
+
+/** 信封里的结构化 detail（ApiError 实例字段或 axios 形 response.data.detail）。 */
+function errorDetailFromError(error: unknown): unknown {
+  const candidate = (error && typeof error === 'object' ? error : null) as ErrorLike | null;
+  if (candidate?.detail !== undefined) return candidate.detail;
+  return candidate?.response?.data?.detail;
 }
 
 const ERROR_CODE_MESSAGE_KEYS: Record<string, string> = {
   PDF_ENCRYPTED_NEEDS_PASSWORD: 'common.pdfEncrypted',
   PDF_WRONG_PASSWORD: 'common.pdfWrongPassword',
+  // #232 I-1：detail 缺失时的通用兜底；有 detail 时走 composeFileContentMismatch
+  FILE_CONTENT_MISMATCH: 'common.fileContentMismatch',
 };
+
+/** FILE_CONTENT_MISMATCH 的机读 detail 形状（后端 spoof_reject_error）。 */
+type ContentMismatchDetail = {
+  detected_format?: unknown;
+  extension?: unknown;
+};
+
+function mismatchDetailField(detail: unknown, field: keyof ContentMismatchDetail): string | null {
+  if (!detail || typeof detail !== 'object') return null;
+  const value = (detail as ContentMismatchDetail)[field];
+  return typeof value === 'string' && value ? value : null;
+}
+
+/**
+ * #232 I-1：按机读 detail 组合本地化拒收文案。
+ * format 名走 i18n 词包（common.format*），模板与后端 zh 文案逐字对齐。
+ */
+function composeFileContentMismatch(detail: unknown): string {
+  const formatCode = mismatchDetailField(detail, 'detected_format');
+  const extension = mismatchDetailField(detail, 'extension');
+  if (formatCode && extension) {
+    const formatName = t(`common.format${formatCode.charAt(0).toUpperCase()}${formatCode.slice(1)}`);
+    return t('common.fileContentMismatchWithFormat')
+      .replace('{format}', formatName)
+      .replace('{ext}', extension);
+  }
+  return t('common.fileContentMismatch');
+}
+
+/**
+ * #232：信封 → 用户可读文案的统一入口（responseErrorMessage 系路径用）。
+ * 已知码先映射本地化（en 用户不再看中文原文）；未知码保持原样取
+ * 第一个非空字符串字段——全空回退 fallbackKey。
+ */
+export function messageFromEnvelope(
+  data: { error_code?: unknown; detail?: unknown; message?: unknown; error?: unknown } | null,
+  fallbackKey: string,
+): string {
+  const code = toText(data?.error_code);
+  if (code === 'FILE_CONTENT_MISMATCH') {
+    return composeFileContentMismatch(data?.detail);
+  }
+  if (code && ERROR_CODE_MESSAGE_KEYS[code]) {
+    return t(ERROR_CODE_MESSAGE_KEYS[code]);
+  }
+  return firstMessageText(data?.detail, data?.message, data?.error) ?? t(fallbackKey);
+}
 
 function toText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -68,6 +131,10 @@ export function localizeErrorMessage(error: unknown, fallbackKey = 'common.error
 
   const errorCode = errorCodeFromError(error);
   if (errorCode && ERROR_CODE_MESSAGE_KEYS[errorCode]) {
+    if (errorCode === 'FILE_CONTENT_MISMATCH') {
+      // #232 I-1：结构化 detail 组合本地化文案（format 名走词包）
+      return composeFileContentMismatch(errorDetailFromError(error));
+    }
     return t(ERROR_CODE_MESSAGE_KEYS[errorCode]);
   }
 

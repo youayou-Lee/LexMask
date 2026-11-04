@@ -424,7 +424,9 @@ def test_mixed_v4_and_3x_v4_wins_with_warning(sample_pdf, tmp_path):
     assert task.state == TaskState.MAPPING_READY
     assert "李演示" in _body(task) and "6222020200012345678" not in _body(task)
     assert task.dropped_blocks["source"] == "docvortex_middle"
-    assert any("mixed_schema_v4_wins" in w for w in task.warnings)
+    # 挂账 F3：mixed 线索只许出现一次（v4 分支 255/262 两处 append 的重复曾漏网）
+    assert task.warnings.count(
+        "mixed_schema_v4_wins: zip 同时含 4.x 与 3.x 表示，已按 4.x 解析") == 1
 
 
 def test_unknown_json_with_empty_3x_fails_source_unknown(sample_pdf, tmp_path):

@@ -73,8 +73,14 @@ describe('Issue#123 接线契约：四处接线不得被静默摘掉', () => {
     );
     // Issue#194 终审 B：扫描件/图片的视觉要素选择随任务透传（isVisionFile 三参分支）
     expect(fileHook).toMatch(
-      /await submitRecognitionTask\(\s*\n\s*fileId,\s*\n\s*opts\.latestSelectedTypesRef\.current,\s*\n\s*isVisionFile\s*\n\s*\? \{\s*\n\s*ocrHasTypes: opts\.latestOcrHasTypesRef\.current,\s*\n\s*visualFeatureTypes: opts\.latestVisualFeatureTypesRef\.current,\s*\n\s*\}\s*\n\s*: undefined,\s*\n\s*\);/,
+      /await submitRecognitionTask\(\s*\n\s*fileId,\s*\n\s*opts\.latestSelectedTypesRef\.current,\s*\n\s*isVisionFile\s*\n\s*\? \{\s*\n\s*ocrHasTypes: opts\.latestOcrHasTypesRef\.current,\s*\n\s*visualFeatureTypes: skipVisual\s*\n\s*\? \[\]\s*\n\s*: opts\.latestVisualFeatureTypesRef\.current,\s*\n\s*\}\s*\n\s*: undefined,\s*\n\s*\);/,
     );
+    // LA 未启动跳过视觉段的判据与提示接线不得被静默摘掉
+    expect(fileHook).toContain("Boolean(opts.isVisualServiceBlocked?.())");
+    expect(fileHook).toContain("setVisualSkippedNotice(t('playground.visualSkippedNotice'))");
+    // rerun 路径同语义（门⑥ I1）：跳过判据 + 提示刷新不得被静默摘掉
+    expect(playgroundHook).toContain('skipVisual ? [] : recognition.selectedVisualFeatureTypes');
+    expect(playgroundHook).toContain("setVisualSkippedNotice(skipVisual ? t('playground.visualSkippedNotice') : null)");
     // provider watch 注册（占位视图即刻可被 taskForFile 命中）
     expect(fileHook).toMatch(/watch\(ref\.job_id, fileId,/);
     // 阶段人话 + 真进度映射（字段换源：任务轮询的 progress_current/total → visionStream）
@@ -125,5 +131,31 @@ describe('Issue#123 接线契约：四处接线不得被静默摘掉', () => {
     expect(context).toMatch(/ctx\.taskPerformance,/);
     // 页面层：loading 拿到 performance（任务驱动识别期间才非 null）
     expect(page).toMatch(/performance=\{taskRecognition \? taskPerformance : null\}/);
+  });
+
+  it('Issue#238：taskSegment/taskInFlight/taskStartedAt/taskTextMode/redactProgress 贯通 hook → context → page（五字段接线钉）', () => {
+    // hook 层（use-playground-file）：新状态 + recognizing 分支计算 + return 透出
+    expect(fileHook).toMatch(/currentSegmentFromPerformance\(task\.performance \?\? null\)/);
+    expect(fileHook).toMatch(/inFlightPages\(segment, task\.current, task\.total\)/);
+    expect(fileHook).toMatch(/setTaskStartedAt\(stageStartedAtFromPerformance\(task\.performance \?\? null, 'recognition'\)\)/);
+    // hook 层（use-playground）：return 对象透传五字段
+    expect(playgroundHook).toMatch(/taskSegment: fileCtx\.taskSegment,/);
+    expect(playgroundHook).toMatch(/taskInFlight: fileCtx\.taskInFlight,/);
+    expect(playgroundHook).toMatch(/taskStartedAt: fileCtx\.taskStartedAt,/);
+    expect(playgroundHook).toMatch(/taskTextMode: fileCtx\.taskTextMode,/);
+    expect(playgroundHook).toMatch(/redactProgress,/);
+    // context 层：类型 + 映射 + 依赖数组（五字段缺一即测试红——防止三槽拆分漏搬）
+    for (const field of ['taskSegment', 'taskInFlight', 'taskStartedAt', 'taskTextMode', 'redactProgress'] as const) {
+      expect(context).toContain(`${field}: PlaygroundContextValue['${field}'];`);
+      expect(context).toMatch(new RegExp(`${field}: ctx\.${field},`));
+      expect(context).toMatch(new RegExp(`ctx\.${field},`));
+    }
+    // 页面层：loading 拿到四字段 + 打码小卡渲染 redactProgress
+    expect(page).toMatch(/segment=\{taskRecognition \? taskSegment : null\}/);
+    expect(page).toMatch(/inFlight=\{taskRecognition \? taskInFlight : null\}/);
+    expect(page).toMatch(/startedAt=\{taskRecognition \? taskStartedAt : null\}/);
+    expect(page).toMatch(/textMode=\{taskRecognition \? taskTextMode : false\}/);
+    expect(page).toMatch(/\{redactProgress && \(/);
+    expect(page).toMatch(/variant="redaction"/);
   });
 });

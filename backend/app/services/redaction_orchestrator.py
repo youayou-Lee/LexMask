@@ -13,6 +13,7 @@ import base64
 import logging
 import os
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -207,9 +208,15 @@ def _boxes_from_page(raw_boxes: Any, page: int) -> list[BoundingBox]:
 # Redaction execution
 # ---------------------------------------------------------------------------
 
-async def execute_redaction(request: RedactionRequest) -> RedactionResult:
+async def execute_redaction(
+    request: RedactionRequest,
+    progress_cb: Callable[[int, int], None] | None = None,
+) -> RedactionResult:
     """
     Execute document redaction and update file_store.
+
+    Issue#238：``progress_cb(current, total)`` 透传给 Redactor——扫描件/图片
+    栅格化路径逐页回调（文本/docx 快链路不回调），供任务队列上报打码进展。
     Returns RedactionResult. Raises ValueError if file not found.
     """
     import time as _time
@@ -251,6 +258,7 @@ async def execute_redaction(request: RedactionRequest) -> RedactionResult:
         entities=request.entities,
         bounding_boxes=request.bounding_boxes,
         config=request.config,
+        progress_cb=progress_cb,
     )
     selected_item_count = _selected_request_item_count(request.entities, request.bounding_boxes)
 

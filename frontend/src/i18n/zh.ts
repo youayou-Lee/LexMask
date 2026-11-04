@@ -795,6 +795,24 @@ const zhBase: Record<string, string> = {
   'common.networkError': '网络连接失败，请检查服务是否已经启动。',
   'common.pdfEncrypted': '该 PDF 已加密，需要输入密码才能处理。',
   'common.pdfWrongPassword': '密码错误，请重试。',
+  // #232 I-1：拒收文案按机读码本地化（模板与后端 spoof_reject_message 逐字对齐）
+  'common.fileContentMismatch':
+    '文件内容与扩展名不匹配——文件可能在传输中损坏或被重命名过；请用原始文件重新导出/另存为后再上传',
+  'common.fileContentMismatchWithFormat':
+    '文件内容实际是{format}，与扩展名 {ext} 不匹配——文件可能在传输中损坏或被重命名过；请用原始文件重新导出/另存为后再上传',
+  'common.formatPdf': 'PDF 文档',
+  'common.formatZip': 'zip 容器（docx 等 Office 新格式）',
+  'common.formatOle': '旧版 Word/RTF 复合文档（OLE）',
+  'common.formatRtf': 'RTF 文档',
+  'common.formatJpeg': 'JPEG 图片',
+  'common.formatPng': 'PNG 图片',
+  'common.formatGif': 'GIF 图片',
+  'common.formatBmp': 'BMP 图片',
+  'common.formatWebp': 'WebP 图片',
+  'common.formatTiff': 'TIFF 图片',
+  'common.formatText': '纯文本',
+  'common.formatBinary': '未知二进制格式',
+  'common.formatUnknown': '未知格式',
   'common.downloadFailed': '下载失败。',
   'common.downloadFailedWithStatus': '下载失败（{status}）。',
   'common.loadFailed': '加载文件失败。',
@@ -1119,6 +1137,16 @@ const zhOverrides: Record<string, string> = {
   'playground.taskStage.visualFeatures': '视觉要素识别',
   'playground.taskStage.vision': '视觉识别',
   'playground.taskStage.text': '实体识别',
+  'playground.taskStage.redaction': '打码',
+  // Issue#238：进度卡诚实化——真完成数/并行中页数/已运行时长/段编号
+  'playground.taskProgress.completed': '已完成 {completed}/{total}',
+  'playground.taskProgress.inFlight': '并行处理中 {n} 页',
+  'playground.taskProgress.elapsed': '已运行 {time}',
+  'playground.taskProgress.segment': '第 {index} 段/共 {total} 段：{stage}',
+  'playground.taskProgress.textRunning': '实体识别中',
+  'playground.redactingTask': '正在打码「{filename}」',
+  'playground.redactProgressLine': '打码 {completed}/{total} 页 · 已运行 {time}',
+  'playground.redactProgressIndeterminate': '打码处理中 · 已运行 {time}',
   // Issue#194（T10/D3）：打码改后台任务——提交成功后的 passive 提示，可离开页面
   'playground.taskRedacting': '后台打码中…',
   'playground.uploadFailed': '文件上传失败。',
@@ -1625,6 +1653,8 @@ Object.assign(zhOverrides, {
   'batchHub.demoCta': '打开示例数据演示',
   'batchHub.liveDisabledBackend': '后端离线时不能创建批量任务。',
   'batchHub.liveDisabledModels': '请先启动识别模型服务，再创建批量任务。',
+  'playground.visualSkippedNotice':
+    '视觉服务未启动，本次已跳过印章/签名检测（启动服务后重新识别即可恢复）。',
   'playground.recognitionPausedModelServices':
     '识别已暂停，因为必需的模型服务不可用：{services}。请启动服务后再重新识别。',
   'batchWizard.step4.requiredPagesVisited': '页面已浏览',

@@ -6,6 +6,7 @@ import {
   authenticatedBlobUrl,
   BATCH_TIMEOUT,
 } from './api-client';
+import { errorEnvelopeMessage } from '@/utils/errorEnvelope';
 import type { CompareData, FileInfo, FileListResponse } from '../types';
 
 export { authenticatedBlobUrl };
@@ -239,7 +240,8 @@ export const fileApi = {
       let message = 'Failed to download archive';
       try {
         const err = await res.json();
-        message = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail ?? err);
+        // #232 M-3：取第一个非空字符串字段，空 detail 不再渲染 "{}"
+        message = errorEnvelopeMessage(err, 'Failed to download archive');
       } catch {
         // ignore json parse failures
       }

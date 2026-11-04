@@ -27,7 +27,7 @@ from app.core.file_validation import (  # canonical source; re-exported for back
     MAGIC_BYTES,  # noqa: F401
     get_file_type,
     safe_path_in_dir,
-    spoof_reject_message,
+    spoof_reject_error,
     validate_magic_bytes,
 )
 from app.core.file_validation import (
@@ -463,10 +463,11 @@ async def process_upload(
     """
     # 验证文件 magic bytes 与扩展名匹配
     if not validate_magic_bytes(file_path, file_ext):
-        # 报错文案带实际检测格式与可操作指引（2026-11-03 用户反馈）；先取文案再删文件
-        message = spoof_reject_message(file_path, file_ext)
+        # 报错文案带实际检测格式与可操作指引（2026-11-03 用户反馈）；先取文案再删文件。
+        # #232：升格为 FileContentMismatchError（仍属 ValueError），路由层出机读信封。
+        mismatch = spoof_reject_error(file_path, file_ext)
         os.remove(file_path)
-        raise ValueError(message)
+        raise mismatch
 
     # 病毒扫描（VIRUS_SCAN_ENABLED 关闭时跳过；开启时 ClamAV 不在线会优雅降级放行）
     if settings.VIRUS_SCAN_ENABLED:
@@ -828,7 +829,17 @@ async def import_inbox_files(
         # magic bytes 预检在 move 之前做：process_upload 对伪造文件的语义是
         # 直接删除（上传场景合理），inbox 场景必须让原件留在原地给运维核查。
         if not validate_magic_bytes(src, ext):
-            failed.append({"name": name, "reason": spoof_reject_message(src, ext)})
+            # #232：逐件明细附机读码与结构化 detail，reason 文案不变
+            mismatch = spoof_reject_error(src, ext)
+            failed.append(
+                {
+                    "name": name,
+                    "reason": str(mismatch),
+                    "error_code": mismatch.error_code,
+                    "detected_format": mismatch.detected_format,
+                    "extension": mismatch.extension,
+                }
+            )
             continue
         file_id = str(uuid.uuid4())
         dest = os.path.realpath(os.path.join(settings.UPLOAD_DIR, f"{file_id}{ext}"))

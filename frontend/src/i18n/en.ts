@@ -1213,6 +1213,16 @@ const enOverrides: Record<string, string> = {
   'playground.taskStage.visualFeatures': 'Visual feature recognition',
   'playground.taskStage.vision': 'Vision recognition',
   'playground.taskStage.text': 'Entity recognition',
+  'playground.taskStage.redaction': 'Redaction',
+  // Issue#238: honest progress card — true completed count / pages in parallel / elapsed / segment numbering
+  'playground.taskProgress.completed': 'Completed {completed}/{total}',
+  'playground.taskProgress.inFlight': '{n} pages in parallel',
+  'playground.taskProgress.elapsed': 'Elapsed {time}',
+  'playground.taskProgress.segment': 'Segment {index}/{total}: {stage}',
+  'playground.taskProgress.textRunning': 'Recognizing entities',
+  'playground.redactingTask': 'Redacting "{filename}"',
+  'playground.redactProgressLine': 'Redacting {completed}/{total} pages · Elapsed {time}',
+  'playground.redactProgressIndeterminate': 'Redacting · Elapsed {time}',
   // Issue#194 (T10/D3): redaction moved to a background task — passive hint after submit, safe to leave
   'playground.taskRedacting': 'Redacting in background…',
   'playground.uploadFailed': 'File upload failed.',
@@ -1226,6 +1236,8 @@ const enOverrides: Record<string, string> = {
   'playground.encryptedPdf.decrypting': 'Decrypting...',
   'playground.cancelled': 'Processing cancelled.',
   'playground.recognizeFailed': 'Recognition failed.',
+  'playground.visualSkippedNotice':
+    'Visual service is unavailable; seal/signature detection was skipped for this run. Start the service and re-recognize to include it.',
   'playground.recognitionPausedModelServices':
     'Recognition is paused because required model services are unavailable: {services}. Start the services, then run recognition again.',
   'playground.redactFailed': 'Redaction failed.',
@@ -1484,6 +1496,25 @@ const enOverrides: Record<string, string> = {
   'common.networkError': 'Network connection failed. Check that the service is running.',
   'common.pdfEncrypted': 'This PDF is encrypted. Enter its password to continue.',
   'common.pdfWrongPassword': 'Incorrect password. Please try again.',
+  // #232 I-1: localized rejection copy keyed off the machine-readable code
+  // (the zh template mirrors the backend spoof_reject_message verbatim).
+  'common.fileContentMismatch':
+    'The file content does not match its extension. The file may have been corrupted or renamed in transit; re-export or save it in its original format and upload again.',
+  'common.fileContentMismatchWithFormat':
+    'The file content is actually {format}, which does not match the extension {ext}. The file may have been corrupted or renamed in transit; re-export or save it in its original format and upload again.',
+  'common.formatPdf': 'a PDF document',
+  'common.formatZip': 'a zip container (docx or another newer Office format)',
+  'common.formatOle': 'a legacy Word/RTF compound document (OLE)',
+  'common.formatRtf': 'an RTF document',
+  'common.formatJpeg': 'a JPEG image',
+  'common.formatPng': 'a PNG image',
+  'common.formatGif': 'a GIF image',
+  'common.formatBmp': 'a BMP image',
+  'common.formatWebp': 'a WebP image',
+  'common.formatTiff': 'a TIFF image',
+  'common.formatText': 'plain text',
+  'common.formatBinary': 'an unknown binary format',
+  'common.formatUnknown': 'an unknown format',
   'common.downloadFailed': 'Download failed.',
   'common.downloadFailedWithStatus': 'Download failed ({status}).',
   'common.loadFailed': 'Failed to load the file.',

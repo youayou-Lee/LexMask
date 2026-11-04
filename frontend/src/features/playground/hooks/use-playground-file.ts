@@ -9,11 +9,17 @@ import { useSingleTask } from '@/features/single-task/single-task-context';
 import { SINGLE_TASK_POLL_MS } from '@/constants/timing';
 import { showToast } from '@/components/Toast';
 import { t } from '@/i18n';
-import { localizeErrorMessage } from '@/utils/localizeError';
+import { localizeErrorMessage, messageFromEnvelope } from '@/utils/localizeError';
+import { errorCodeFromEnvelope, firstMessageText } from '@/utils/errorEnvelope';
 import { ACCEPTED_UPLOAD_FILE_TYPES } from '@/utils/fileUploadAccept';
 import { safeJson } from '../utils';
 import { boundingBoxesFromServerInfo, planServerCachedResume } from '../lib/playground-draft';
-import { recognitionStageFromMessage } from '../lib/task-progress';
+import {
+  currentSegmentFromPerformance,
+  inFlightPages,
+  recognitionStageFromMessage,
+  stageStartedAtFromPerformance,
+} from '../lib/task-progress';
 import { shouldEnterPreviewDuringRecognition } from '../lib/progressive-render';
 import type {
   FileInfo,
@@ -39,21 +45,20 @@ function toEntitiesWithDefaults(entities: Record<string, unknown>[]): Entity[] {
 /**
  * 2026-11-03 用户反馈：后端统一信封是 `{error_code, message, detail:{}}`，
  * 旧实现 `data.detail ?? data.message` 被空对象 detail 短路（?? 只挡 nullish），
- * message 里的具体原因永远取不到 ⇒ 一律兜底「文件上传失败」。改为取第一个
- * 非空字符串，字段顺序 detail→message→error 仅在同型时生效。
+ * message 里的具体原因永远取不到 ⇒ 一律兜底「文件上传失败」。#229 改取第一个
+ * 非空字符串；#232 起取错逻辑统一在 utils/errorEnvelope + localizeError.messageFromEnvelope。
  */
-function firstMessageText(...candidates: unknown[]): string | null {
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
-  }
-  return null;
-}
-
 async function responseErrorMessage(res: Response, fallbackKey: string) {
   try {
-    const data = await safeJson<{ detail?: unknown; message?: unknown; error?: unknown }>(res);
-    const message = firstMessageText(data.detail, data.message, data.error);
-    if (message) return message;
+    // #232：信封统一走 messageFromEnvelope——已知码出本地化文案（en 不再看中文原文），
+    // 未知码保持第一个非空字符串字段的既有行为。
+    const data = await safeJson<{
+      error_code?: unknown;
+      detail?: unknown;
+      message?: unknown;
+      error?: unknown;
+    }>(res);
+    return messageFromEnvelope(data, fallbackKey);
   } catch {
     // Keep the localized fallback when the response body is not JSON.
   }
@@ -71,8 +76,7 @@ async function readErrorEnvelope(
       message?: unknown;
       error?: unknown;
     }>(res);
-    const code =
-      typeof data?.error_code === 'string' && data.error_code ? data.error_code : null;
+    const code = errorCodeFromEnvelope(data);
     const message = firstMessageText(data?.detail, data?.message, data?.error);
     return { code, message };
   } catch {
@@ -116,6 +120,12 @@ export interface UsePlaygroundFileOptions {
   /** Return a user-facing reason when automatic recognition should not run yet */
   getRecognitionBlocker?: (file: PendingFile) => string | null;
   /**
+   * LA（visual_features）服务当前是否不可用（blocker 同源判据）。True 时
+   * startTask 自动剔除视觉要素、照常提交识别，并置 visualSkippedNotice
+   * 显式提示——「未部署就跳过」而非拦截，但不静默丢功能。
+   */
+  isVisualServiceBlocked?: () => boolean;
+  /**
    * Issue#194 验收反馈：已完成打码的单文件（file 记录 output_path 在）回场时，
    * 直接恢复结果页（镜像打码完成订阅的数据组装）。返回 false 则继续旧路径。
    * 不提供时维持旧行为（会落 rerun 自动重跑识别——扫描件无实体被误判未识别）。
@@ -142,6 +152,8 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
   );
   const [uploadIssue, setUploadIssue] = useState<string | null>(null);
   const [recognitionIssue, setRecognitionIssue] = useState<string | null>(null);
+  // 本次识别跳过了视觉段（LA 未启动）时的显式提示；新任务开始/换文件即清
+  const [visualSkippedNotice, setVisualSkippedNotice] = useState<string | null>(null);
   // Issue #30：解析返回 PDF_ENCRYPTED_NEEDS_PASSWORD 时挂起流程，弹密码框
   const [encryptedPrompt, setEncryptedPrompt] = useState<EncryptedPdfPrompt | null>(null);
 
@@ -172,6 +184,15 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
    * 映射 + t）。等待视图的段名行（唯一活数字）与 ✓ 清单的当前段排除都用它；任务退出即清空。
    */
   const [taskStageLabel, setTaskStageLabel] = useState<string | null>(null);
+  // --- Issue#238 进度卡诚实化：段信息 / 并行中页数 / 任务开始时间 / 文本件无计数 ---
+  /** 段信息（performance.recognition.current_segment）：两段才编号、并行中页数取该段并发。 */
+  const [taskSegment, setTaskSegment] = useState<{ index: number; total: number } | null>(null);
+  /** 并行处理中页数 = min(该段页并发, 剩余页)；串行段/缺段信息 → null（不显示）。 */
+  const [taskInFlight, setTaskInFlight] = useState<number | null>(null);
+  /** 任务段 started_at（ISO）：已运行时长以后端起算，刷新不走表。 */
+  const [taskStartedAt, setTaskStartedAt] = useState<string | null>(null);
+  /** 文本件（NER 段无页级计数）：数字行显示状态词、进度条不定态。 */
+  const [taskTextMode, setTaskTextMode] = useState(false);
   /** 迁移处理守卫：每个 job 的 awaiting_review/终态处理只执行一次（防重复拉快照/重复报错）。 */
   const handledJobRef = useRef<string | null>(null);
   /** 用户主动取消过的 job：provider 报 failed 时静默（cancelProcessing 已收拾过 UI）。 */
@@ -613,6 +634,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
 
     const startTask = async () => {
       setRecognitionIssue(null);
+      setVisualSkippedNotice(null);
       setVisionStream(null);
       setIsLoading(true);
       setLoadingMessage(t('playground.taskParsing'));
@@ -621,16 +643,25 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         // 识别工人视觉段按 ocr_has_types/visual_feature_types 读取）——不传则编排器
         // 恒按默认全类型集跑，用户勾选对任务化扫描件无效（老同步流的回归）。
         const isVisionFile = pendingFile.isScanned || pendingFile.fileType === 'image';
+        // LA 未部署 → 本次自动剔除视觉要素（后端空数组=显式不跑该段），照常识别；
+        // 显式提示不静默。服务恢复了下次任务自动恢复检测。
+        const skipVisual =
+          isVisionFile &&
+          opts.latestVisualFeatureTypesRef.current.length > 0 &&
+          Boolean(opts.isVisualServiceBlocked?.());
         const ref = await submitRecognitionTask(
           fileId,
           opts.latestSelectedTypesRef.current,
           isVisionFile
             ? {
                 ocrHasTypes: opts.latestOcrHasTypesRef.current,
-                visualFeatureTypes: opts.latestVisualFeatureTypesRef.current,
+                visualFeatureTypes: skipVisual
+                  ? []
+                  : opts.latestVisualFeatureTypesRef.current,
               }
             : undefined,
         );
+        if (skipVisual) setVisualSkippedNotice(t('playground.visualSkippedNotice'));
         if (fileInfoRef.current?.file_id !== fileId) return; // 提交期间用户已切走/重置
         watch(ref.job_id, fileId, fileInfoRef.current?.filename || fileId);
         cancelledJobsRef.current.delete(ref.job_id);
@@ -676,12 +707,19 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       // ner 段 1/1、vision 段 page/total →「后台识别中 current/total」+ visionStream 真进度
       //（沿用 Issue#123 的 UI 管道，字段换源）。
       setTaskPerformance(task.performance ?? null);
+      // Issue#238：段信息 / 并行中页数 / 任务开始时间 / 文本件判定——数字行、
+      // 段名行编号、已运行时长、✓ 清单排除集的数据源（全来自轮询已带回的字段）。
+      const stage = recognitionStageFromMessage(task.message);
+      const segment = currentSegmentFromPerformance(task.performance ?? null);
+      setTaskSegment(segment ? { index: segment.index, total: segment.total } : null);
+      setTaskInFlight(inFlightPages(segment, task.current, task.total));
+      setTaskStartedAt(stageStartedAtFromPerformance(task.performance ?? null, 'recognition'));
+      setTaskTextMode(stage?.labelKey === 'playground.taskStage.text');
       if (task.total > 0) {
         setVisionStream({ completed: task.current, total: task.total });
         // 用户验收③④：段名（人话）单独透出给等待视图的段名行（第二段不像重新开始）；
         // loadingMessage 升级为「正在识别「文件名」」顶部行——等待页从此只有一处活数字。
         // 拿不到文件名回落既有文案（段名+页码 / 后台识别中模板）。
-        const stage = recognitionStageFromMessage(task.message);
         setTaskStageLabel(stage ? t(stage.labelKey) : null);
         const filename = fileInfoRef.current?.filename;
         if (filename) {
@@ -698,6 +736,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       } else {
         setVisionStream(null);
         setTaskStageLabel(null);
+        setTaskSegment(null);
+        setTaskInFlight(null);
+        setTaskStartedAt(null);
+        setTaskTextMode(false);
         setLoadingMessage(t('playground.taskParsing'));
       }
       return;
@@ -742,6 +784,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
             setTaskRecognitionJob(null);
             setTaskPerformance(null);
             setTaskStageLabel(null);
+            setTaskSegment(null);
+            setTaskInFlight(null);
+            setTaskStartedAt(null);
+            setTaskTextMode(false);
             setVisionStream(null);
             setIsLoading(false);
             setLoadingMessage('');
@@ -758,6 +804,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       setTaskRecognitionJob(null);
       setTaskPerformance(null);
       setTaskStageLabel(null);
+      setTaskSegment(null);
+      setTaskInFlight(null);
+      setTaskStartedAt(null);
+      setTaskTextMode(false);
       setVisionStream(null);
       setIsLoading(false);
       setLoadingMessage('');
@@ -770,6 +820,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     setTaskRecognitionJob(null);
     setTaskPerformance(null);
     setTaskStageLabel(null);
+    setTaskSegment(null);
+    setTaskInFlight(null);
+    setTaskStartedAt(null);
+    setTaskTextMode(false);
     setVisionStream(null);
     if (cancelledJobsRef.current.has(task.jobId)) return;
     setIsLoading(false);
@@ -803,6 +857,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         setTaskRecognitionJob(null);
         setTaskPerformance(null);
         setTaskStageLabel(null);
+        setTaskSegment(null);
+        setTaskInFlight(null);
+        setTaskStartedAt(null);
+        setTaskTextMode(false);
         setVisionStream(null);
         setIsLoading(false);
         setLoadingMessage('');
@@ -881,6 +939,8 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     uploadIssue,
     recognitionIssue,
     setRecognitionIssue,
+    visualSkippedNotice,
+    setVisualSkippedNotice,
     isImageMode,
     dropzone,
     encryptedPrompt,
@@ -890,6 +950,11 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     taskRecognition,
     taskPerformance,
     taskStageLabel,
+    // Issue#238：诚实化进度数据源（表现层透传给 PlaygroundLoading）
+    taskSegment,
+    taskInFlight,
+    taskStartedAt,
+    taskTextMode,
     reattachTask,
   };
 }

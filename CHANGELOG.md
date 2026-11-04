@@ -1,5 +1,35 @@
 # CHANGELOG
 
+## 2026-11-04
+
+### 修正（Issue#232/#237）错误信封机读化：拒收文案按码本地化 + 下载路径空 detail 出 "{}" + healthcheck 敲错门牌
+
+- **为什么**：#229 门⑥两处挂账（#232）——①I-1：伪造扩展名拒收文案只有中文自由文本、无机读码，en locale 前端按既有决策只能显示通用兜底，「实际格式+可操作指引」只对 zh 生效；②M-3：下载/批量打包路径（`api-client.ts` fetchBlob、`api.ts` downloadArchive）仍是 `detail ?? message` 旧短路，空 `detail:{}` 给用户看 "{}"。#237：frontend healthcheck 的 `wget localhost:8080` 先解析 `::1` 而 nginx 只监听 IPv4 ⇒ 本地所有栈 frontend 容器常年误显 unhealthy（服务本身正常）。
+- **改了什么**：
+  1. 后端：新增 `FileContentMismatchError`（`ValueError` 子类，既有回滚路径不动）与 `detect_format_code` 机读格式码；`process_upload` 拒收升格为该异常，单文件/断点续传两路由按 `isinstance` 出 `AppError` 信封（`error_code=FILE_CONTENT_MISMATCH` + `detail={detected_format, extension}`），中文 message 逐字不变；批量入库逐件明细附同款机读字段。
+  2. 前端：取错统一收口 `utils/errorEnvelope.ts`（`firstMessageText`/`errorEnvelopeMessage`/`errorCodeFromEnvelope`，playground、agent-md、下载路径全站一个具名函数，评审 M-4 落地）；`ApiError` 增 `detail` 字段；`localizeError` 增 `messageFromEnvelope`（已知码先映射：`FILE_CONTENT_MISMATCH` 按机读 detail 组合本地化文案，format 名走词包 13 键 × zh/en；未知码保持原行为）。
+  3. #237：`docker-compose.yml` 与 `frontend/Dockerfile` healthcheck 改 `http://127.0.0.1:8080/`。
+- **测试**：后端 +18 例（码表 12 形态 + unknown、单文件/断点续传信封两路径、常量契约锚、批量逐件明细），全量 2676 passed 零回归；前端 +15 例（envelope 取错 9、fetchBlob 信封 3、FILE_CONTENT_MISMATCH 组合/兜底/en 6），vitest 334 + tsc×2 + build 全绿；i18n parity 契约测试守键位。
+- **边界**：`_MAGIC_TYPE_NAMES` 标签失准（RIFF≠仅 WebP 等，#228 评审 M-1）不在本修；批量入库「不支持的类型/文件过大」仍为纯文本 reason（无机读码，触发时再议）；en 词包懒加载，en 组合文案由 parity 契约测试保障。
+
+### 变更（Issue#230 缺口）LA 服务未启动不再拦截识别——自动跳过视觉段并显式提示
+
+- **为什么**：本地小显存环境常不启动 LA（visual-features），前端把「未部署」当「必需服务故障」直接拦停识别——用户勾了印章/签名就完全无法识别文字部分。用户裁定：不启动 LA 服务要能正常继续。
+- **改了什么**（纯前端，无后端改动）：①`getRecognitionBlocker` 不再把 `visual_features` 计入拦截（OCR/NER 仍硬拦——缺了真跑不了）；②提交侧新增 `isVisualServiceBlocked` 判据（与 blocker 同源），LA 不可用且用户勾了视觉项时**照常提交、视觉段传空数组**（后端既有语义=显式不跑该段，编排器不回落默认全类型），并置 `visualSkippedNotice`；③识别面板顶部新增琥珀色提示条（zh/en），服务恢复后下次任务自动恢复检测。跳过而非静默——用户知道印章/签名本次未检测。
+- **门⑥ I1 处置**：rerun 路径（handleRerunNer 图片分支）接入同款 skip 语义——LA 未启动时 rerun 也自动跳过视觉段（不再逐页撞后端预检硬报错），提示条随本次 rerun 刷新（服务已恢复即清掉过期提示）；rerun 防摘钉入 wiring-contract。
+- **测试**：taskflow 新增 (h2)（LA 不可用 → `visualFeatureTypes: []` + 提示置位，负样本 (h) 全类型透传不变）；wiring-contract 契约钉同步新形状并加 skipVisual/提示接线两枚防摘钉；vitest 319 全绿、tsc（含测试）绿、build 绿。
+- **边界**：识别结果页的 pipeline_status 级标注（后端侧）不在本 PR；烧进图片的水印、印章检测质量不受影响。### 功能（Issue#238）进度卡诚实化——识别段真完成数/✓语义/已运行时长 + 打码段逐页进度
+
+- **为什么**：单文件等待卡三处与并行事实不符——①「87/149」实为页**开跑**水位（≈已完成+在飞，并行下"处理到第几页"不成立）；②通用「视觉识别」段不排除任何清单行，进行中的段带 ✓ 显示（进度条 58% 却见「✓ 文字识别 87页」自相矛盾）；③打码段整卷一次性执行零上报，大卷渲染数分钟用户只盯「正在匿名化...」。用户拍板方案 A（诚实化单卡）+ 已运行时长 + 打码补进度，交互预览先行验收。
+- **改了什么**：
+  1. 识别段（`task_queue_pipelines._run_vision`）：进度写点从页开跑移到页**终态**（完成/超时/失败都计入，单调防回退）；每段计数归零（两段式各扫一遍）；合并段跳过一阶段失败页时 `total` 缩水为该段实际页数（进度条不卡死）。
+  2. 新增 `recognition.current_segment`（{index,total,label,concurrency}，段起跑覆写）——段数动态：两段式仅在「勾视觉要素且多页」存在；单段不编号；前端不猜配置。
+  3. 打码段：`_run_redaction` 起跑写 `redaction_started` 0/N；`progress_cb(current,total)` 穿透 `execute_redaction_request → execute_redaction → Redactor.redact → _redact_image → VisionService.apply_redaction`，扫描件/图片栅格化路径逐页回调写「打码 page p/N」（单调防回退）；文本/docx 快链路（page_count<=0）不传回调。
+  4. 前端等待卡：数字行「已完成 X/Y · 并行处理中 min(段并发,剩余) 页」（并行页数=信号量模型下在飞数的精确值）；段名行两段才显示「第 X 段/共 Y 段」；新增「已运行 {time}」（后端 `performance.<task>.started_at` 起算，刷新不走表，缺键回落本地计时）；✓ 清单排除集修正（OCR+HaS 段排除 OCR/NER 两行、泛视觉段排除三行、文本件排除 NER 行）；文本件数字行=「实体识别中」+ 进度条不定态（新 tailwind `indeterminate-slide`）。
+  5. 打码被动小卡：`PlaygroundLoading variant="redaction"`（右下角 passive、无清单/提示/取消），由 pendingRedact 收尾订阅逐拍刷新，done/failed/换文件/重置即退场——「点完打码即可离开」语义不变。
+- **测试**：后端净 +13 例（页完成写点/乱序单调/两段式段信息与段内归零/合并段 total 缩水/单段不编号/超时页计入/打码起跑+逐页+单调/无页数不传回调/回调链穿透三钉/栅格化逐页/单图 1,1），先红后绿；后端全量 2671 passed 零回归（修 test_mask_mode_gating 桩签名承接新 kwarg）；前端净 +15 例（task-progress 纯函数与打码映射注入负例 7 + PlaygroundLoading 新语义 6 + taskflow 并行中/时长 1 + redactProgress 订阅退场 1），换基后全量 351 passed、playground 180/180、tsc+build 绿。
+- **边界**：打码并行化不在本 PR（打码仍串行，本 PR 只补上报）；供料线（agent/vl_md）进度形态不动；旧任务无 `current_segment`/`started_at` 回落旧行为不误报（AC7）；批次任务中心的进度展示不在本 PR 范围。
+- **门⑥处置**：I1（重置后打码小卡永久残留——订阅 effect 的 `!currentFileId` 早退挡在 pending 失配清理之前，重置同批清空 pendingRedact+fileInfo 时 effect 早退、小卡冻结残留）⇒ 清理分支前移 + hook 级回归钉 (g)（confirmReset 直达 performReset，变异验证还原 bug 即红）；I2（CHANGELOG 混入提交哈希行 + 基线残留冲突标记尾行）⇒ 已清；M1 单调闸补「死防御勿删」注释；M2 ocrHas 段排除集补测试钉（此前变异存活）；M6 数字订正。M3（全败卷段标签瞬态）/M4（段切换数字毛刺）/M5（时钟偏移为设计取舍）挂账不修。
 ## 2026-11-03
 
 ### 修正（Issue#217）LibreOffice 烘焙进 backend 镜像——废弃宿主 soffice 挂载
@@ -18,6 +48,15 @@
 - **测试**：#200 +2 例（温度升级 + max 语义不被拉低）；**修正了原特征化钉的误钉**——旧钉以为 25 型走解析失败递归（24+1），实际先被帽驱动预分批切成 [12,12,1] 且 `type_guidance=[]` 不满足递归门槛（`is None`），钉的一直是预分批点；新测试 monkeypatch 预分批单批 + guidance=None 真正进入递归分支。#204-B +4 例（取消落 memo+re-raise / TTL 内重试零重建 / TTL 过后重建 / settings 口径钉）。变异双杀（#200 还原继承语义 1 红；#204-B 吞 re-raise 3 红）。全量 2627 passed 零回归。
 - **边界**：#204 缺陷 A（建链 O(整卷) 受单页 300s 看管的预算解耦）不在本 PR，另行设计讨论；水印资格闸（#203 主修）行为不变。
 
+### 修正（PR#234 门⑥挂账）sidecar 同 stem 覆盖 / warnings 透传 / mixed 重复告警 / WAIT fail-fast
+
+- **为什么**：PR #234 门⑥独立评审的 4 条 Minor 挂账，用户裁定全部当期收口。①sidecar 一任务多输入同 stem（供料批量含 PDF+doc）时 `-o` 的 md 与 `mineru4_*.json` 都按 stem 命名会互相覆盖；②sidecar 任务级 `warnings`（窗口去重/部分 range 放宽/page_count 缺失）到不了 backend（`poll()` 只读 status）；③`agent_md_pipeline_service` v4 分支 `mixed_schema_v4_wins` 在两处重复 append（基线既有）；④`MINERU_SIDECAR_WAIT` 非数字报错是裸 `could not convert`，定位性差。
+- **改了什么**：①`_run_mineru_sync` 建 per-task 消歧名（首现原名、重复 stem 加 `_1/_2` 序号），`-o` 与 mineru4 json 两处共用；②`MineruResult.warnings` 新字段 + `poll()` 归一化透出 + `wait_result` 终态塞入，单文件线与批量供料线各在 result 拿到处打 WARNING 日志（旧 sidecar 无键向后兼容为空 list）；③删第二处重复 append，mixed 线索只报一次；④`_mineru_wait_sec` 对非法值抛点名 `MINERU_SIDECAR_WAIT` 的 RuntimeError（经任务 error 可读透出）。
+- **门⑥ r2 处置（3 Minor 全修）**：M1 消歧名防撞（`a.pdf+a.doc+a_1.rtf` 曾把第 2/3 输入都算成 `a_1` 静默覆盖 ⇒ 生成名撞 taken/used 即递增，实弹判据钉死）；M2 `MINERU_SIDECAR_WAIT=inf` 走 OverflowError 逃逸 ⇒ `except (ValueError, OverflowError)` + 判据；M3 pipeline_service logger 区空行规整。
+- **测试**：净 +8 例（sidecar 2：同 stem 双输入 md/json 四文件互不覆盖且内容可区分、非法 WAIT 报错点名变量；client 2：warnings 透传/无键兼容——**附带发现并修正测试落点事故：这两例最初误追加到主检出后被还原抹掉，worktree 内从未存在过，变异复核时抓出**；dual_representation 1：mixed 条目 count==1 钉死；特征化钉 poll 响应随契约扩展补 `warnings` 键）。变异 6/6 KILLED（含 r2 两条新判据对旧实现各一杀）；全量 2664 passed 零回归。
+- **验收实弹追加（内置浏览器+真容器，2026-11-04）**：抓出两个真缺陷并当回合修复——①**#234 引入的 .doc 回归**：缺省 `--pages all` 被上游对非 PDF 输入拒绝（`page_range_invalid: "doc uses full-document parsing"`），所有 .doc 喂料任务必失败 ⇒ 仅 PDF 传 `--pages`，非 PDF 不传（上游对 doc 本就全文档解析，无截断问题）+2 判据（变异 1/1 KILLED）；②**F4 断层**：sidecar 的可读失败原因被 client 在 failed 终态丢弃（UI 只见无信息的 task_id）⇒ `poll()` 透传 `error`、`wait_result` 抛错携带原文 +1 判据（UI 实测：`MINERU_SIDECAR_WAIT 非法: 'abc'（须为秒数，如 7080）` 直达前端）。F1 同 stem 消歧真容器实弹：三输入（a.pdf+a.doc+a_1.rtf）六产物互不覆盖、内容一一对应；F2 warnings 实弹到达 API 面。全量 2667 passed 零回归。
+- **边界**：warnings 目前到日志面为止（前端展示不做，超范围）；`_transport` 特征化断言随契约更新（含新增 `error` 键）。
+
 ### 修正（Issue#230/#231）MinerU 4.x sidecar 三处 CLI 缺陷 + docvortex 表名/脚注/doc_title 静默丢失
 
 - **为什么**：真卷（149 页扫描件 / 78 页表格卷）实测三处 sidecar CLI 缺陷——①不传 `--wait` 走 CLI 缺省 60s，真卷 standard 档必以 `parse_wait_timeout` 失败且留下孤儿 parse；②不传 `--pages` CLI 默认只解析前 10 页，所有 >10 页案卷静默变残卷（#218 引入即如此）；③补 `--pages all` 后 >64 页按窗口拆多份 json，撞后端 `mineru4_multiple_docs` fail-closed 整单作废。同批 #231：4.x docvortex 适配层只认 text/table_body/image_body 三种部件，`table_caption`/`table_footnote`/`image_footnote` 独立部件与 `doc_title` 块全部静默丢失（只在 warns 留痕、下游不失败）——表格卷丢「这张表是什么」的语义。
@@ -32,7 +71,6 @@
 - **改了什么**（单函数，`agent_md_adapter.table_to_text`）：HTML 解析结果非空 ⇒ 原样返回（既有行为逐字节不变）；**解析结果为空且输入不含 HTML 表格标签** ⇒ 纯文本回落（按行拆分/行内空白折叠/`strip_inline`）；**含表格标签但解析不出行（畸形 HTML）不回落**——维持空 + `empty table block` 告警，不把标签碎片喂给 NER，并守住 #212 双表示守卫「丢表 ⇒ empty_table_blocks>0 ⇒ 回落 v1」语义链（独立冷审 B2 钉）。方案与验收过独立冷审（需修订 2 项已处置），根因报告/方案存私有仓 `docs/acceptance/2026-11-03-mineru4-plaintext-tablebody-*.md`。
 - **测试**：净 +13 例（table_to_text 直测 8 + clean_segments 集成 3 + 管线级 2：表示选择出段且无 `docvortex_shortfall`、stage1 映射表含表格内实体），先红后绿；变异双杀（删回落分支 7 红、删标签守卫 2 红）；单文件与批量供料两线共用该函数同时受益。
 - **边界**：不做表格结构还原（列对齐/表头语义），NER 与脱敏只需文本可见，结构化还原属效果线另案；3.x 路径（content["html"] 恒 HTML）行为逐字节不变；空表格告警语义不变。
-=======
 ### 变更（Issue#226）本地启动默认启用 MinerU（flash 档）+ 档位参数化
 
 - **为什么**：用户裁定「默认栈要所有功能可用」——#217 当时因 12GB 显存预算把 MinerU 设为隐藏开关（`--with-mineru`），导致默认启动后供料模式不可用；同时 2026-11-02 实测隔离栈的 MinerU standard 档 vLLM 引擎常驻吃 5.4GB，本地不该常态跑 standard。

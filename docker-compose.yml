@@ -86,7 +86,8 @@ services:
     networks:
       - redaction-net
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080/ || exit 1"]
+      # #237：wget 的 localhost 先解析 ::1，nginx 只监听 IPv4 ⇒ 拒连误报 unhealthy
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8080/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

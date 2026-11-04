@@ -2,6 +2,8 @@
 
 import axios, { AxiosHeaders, type AxiosRequestConfig } from 'axios';
 
+import { errorCodeFromEnvelope, errorEnvelopeMessage } from '@/utils/errorEnvelope';
+
 // ─── Timeout constants ───────────────────────────────────────
 export const API_TIMEOUT = 60_000;
 export const VISION_TIMEOUT = 900_000;
@@ -35,6 +37,8 @@ export class ApiError extends Error {
     public errorType: ApiErrorType = 'unknown',
     /** 机器可读错误码（后端统一信封的 error_code，如 PDF_ENCRYPTED_NEEDS_PASSWORD）。 */
     public errorCode?: string,
+    /** 信封里的结构化 detail（如 FILE_CONTENT_MISMATCH 的 detected_format/extension，#232 I-1）。 */
+    public detail?: unknown,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -242,13 +246,18 @@ export async function fetchBlob(url: string, init?: RequestInit): Promise<Blob> 
     const isAuthError = res.status === HTTP_STATUS_UNAUTHORIZED;
     if (isAuthError) emitUnauthorized(normalizedUrl);
     let msg = `HTTP ${res.status}`;
+    let errorCode: string | undefined;
+    let detail: unknown;
     try {
       const err = await res.json();
-      msg = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail ?? err);
+      // #232 M-3：取第一个非空字符串字段，空 detail 不再渲染 "{}"
+      msg = errorEnvelopeMessage(err, `HTTP ${res.status}`);
+      errorCode = errorCodeFromEnvelope(err) ?? undefined;
+      detail = err?.detail;
     } catch {
       /* ignore */
     }
-    throw new ApiError(msg, res.status, isAuthError ? 'auth' : 'server');
+    throw new ApiError(msg, res.status, isAuthError ? 'auth' : 'server', errorCode, detail);
   }
   return res.blob();
 }
