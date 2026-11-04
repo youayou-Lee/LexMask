@@ -70,8 +70,21 @@ def _requery_job_count(text: str) -> int:
 
 
 def test_requery_fixture_produces_multiple_jobs():
-    """夹具自检：长文本确实切出 >1 个补查块（任务数 >1 是并发化的前提）。"""
+    """夹具自检：长文本确实切出 >1 个补查块（任务数 >1 是并发化的前提）。
+
+    M-4（门①.5）：下游断言把 `_requery_job_count`（块数）当任务总数用，成立
+    前提是补查只切**单个类型批**（缺失 3 类的预算 ≤ cap）。这里显式钉住前提，
+    未来动 HAS_NER_REQUERY_*/token 预算导致类型批 >1 时在此显式红、而不是让
+    `len(calls) == 1 + chunks` 之类的断言假红。
+    """
     assert _requery_job_count(LONG_TEXT) > 1
+    missing = {"薪酬", "年龄（岁）", "日期"}  # 含被截断桶（cut_bucket 并入）
+    budget = HaSClient._ner_completion_budget(
+        len(missing), LONG_TEXT, HaSClient._effective_tokens_per_type(settings)
+    )
+    assert budget <= HaSClient._effective_completion_hard_cap(settings), (
+        f"补查预算 {budget} 超 cap——类型批将 >1，块数≠任务数，下游断言前提失效"
+    )
 
 
 def test_supplement_concurrency_default_serial_is_unchanged():
@@ -218,6 +231,38 @@ def test_supplement_jobs_metric_recorded():
             patcher.undo()
     metrics = drain_ner_metrics(scope)
     assert metrics.get("has_text_ner_supplement_jobs") == jobs
+
+
+def test_supplement_finish_reason_propagates_via_context_copy():
+    """contextvar 透传判据（门①.5 I-2，钉住 caller_ctx.copy().run）。
+
+    补查段的 finish_reason 只有经 caller_ctx 拷贝进线程后才能落进调用方的
+    metrics scope——真实现的 _call_model 在线程内 set LAST_FINISH_REASON，
+    若实现改成裸 pool.submit（无上下文拷贝），补查段的 finish_reason 会
+    静默丢弃（re-query 日志恒 unknown），而 #216「并发下长生成不稳定」的
+    诊断恰恰依赖它。fake 只在补查段 set（主查不 set），串行主查不会污染断言。
+    """
+    from app.services.has_client import LAST_FINISH_REASON
+
+    client = HaSClient()
+
+    def fake_call_model(messages, *, max_tokens=None, temperature=None):
+        requested = _types_in_prompt(messages[0]["content"])
+        if len(requested) == len(TYPES):
+            return MAIN_RESPONSE  # 主查不 set，断言只认补查段的透传
+        LAST_FINISH_REASON.set("length")
+        return REQUERY_RESPONSE
+
+    client._call_model = fake_call_model
+    with ner_metrics_scope() as scope:
+        patcher = pytest.MonkeyPatch()
+        patcher.setattr(settings, "HAS_NER_SUPPLEMENT_CONCURRENCY", 4, raising=False)
+        try:
+            client.ner(LONG_TEXT, TYPES, type_guidance=[])
+        finally:
+            patcher.undo()
+    metrics = drain_ner_metrics(scope)
+    assert metrics.get("has_text_ner_finish_reason") == "length", metrics
 
 
 def test_supplement_window_clamped_to_gate_width():
