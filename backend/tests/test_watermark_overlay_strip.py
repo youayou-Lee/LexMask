@@ -17,6 +17,7 @@ import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import fitz
 import pytest
@@ -1159,3 +1160,54 @@ def test_fail_open_result_is_cached_briefly(tmp_path, env, monkeypatch):
                 wm._CACHE[key]["_cached_at"] -= wm._FAIL_OPEN_TTL_S + 1
     wm.render_source(src)
     assert calls["n"] == 2
+
+
+_TESTDATA = Path(__file__).resolve().parents[4] / "testdata"
+_PRIVATE_CANARY = _TESTDATA / "canary-issue236-vector-overlay-watermark.pdf"
+_PRIVATE_CANARY_GT = _TESTDATA / "canary-issue236-vector-overlay-watermark-gt.json"
+
+
+@pytest.mark.skipif(not _PRIVATE_CANARY.is_file(), reason="私有 testdata 未挂载（CI 无 git-crypt）")
+def test_private_canary_matches_its_gt(tmp_path, env):
+    """落盘 canary（testdata/，git-crypt）与它的 GT 自洽：形态、命中、摘后零文本零令牌。
+
+    单测夹具是临时现造的；这条把**落盘件**也钉住，防止夹具与生成器漂移。
+    """
+    import json
+
+    gt = json.loads(_PRIVATE_CANARY_GT.read_text(encoding="utf-8"))
+    doc = fitz.open(str(_PRIVATE_CANARY))
+    try:
+        assert len(doc) == gt["pages"]
+        for number in range(len(doc)):
+            streams = doc.load_page(number).get_contents()
+            assert len(streams) == 2, f"页 {number + 1} 应为 [A,B] 两个内容流"
+        page_lines = [
+            [line.strip() for line in doc.load_page(i).get_text().splitlines() if line.strip()]
+            for i in range(len(doc))
+        ]
+        assert page_lines[0] == page_lines[-1], "canary 各页形态应一致"
+        orig_lines = len(page_lines[0])
+        page1 = gt["pages_gt"]["1"]
+        assert orig_lines == page1["orig_lines"], (orig_lines, page1)
+        assert page1["copy_lines"] == 0 and page1["copy_chars"] == 0
+    finally:
+        doc.close()
+
+    outcome = wm.probe(str(_PRIVATE_CANARY))
+    assert outcome.code == gt["expected"]["probe_code"], outcome
+    assert outcome.pages_hit == gt["pages"]
+
+    _uploads, outputs = env
+    copy_path, status = wm.render_source(str(_PRIVATE_CANARY))
+    assert status["source"] == "copy" and copy_path, status
+    copy = fitz.open(copy_path)
+    try:
+        assert len(copy) == gt["expected"]["pages_stripped"]
+        chars = sum(len(copy.load_page(i).get_text().strip()) for i in range(len(copy)))
+        token = page1["tokens"][0].replace(" ", "")
+        hits = sum(copy.load_page(i).get_text().count(token) for i in range(len(copy)))
+        assert chars == gt["expected"]["copy_chars_total"], chars
+        assert hits == gt["expected"]["copy_token_hits"], hits
+    finally:
+        copy.close()
