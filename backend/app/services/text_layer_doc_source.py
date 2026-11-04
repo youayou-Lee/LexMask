@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.models.entity_schemas import BoundingBox
 from app.services import text_layer_docline_service as docline
 from app.services import text_layer_quality as quality
+from app.services import watermark_overlay
 from app.services.has_client import has_client
 from app.services.vision.has_text_payload import (
     _build_has_text_type_names,
@@ -155,6 +156,33 @@ async def _build(
     scanned = bool(snapshot.get("is_scanned")) or file_type in {"pdf_scanned", "image"}
     if not scanned:
         return None
+
+    # **水印预处理命中 ⇒ 文档级链弃权**（Issue#243/#245）。探针命中的卷，其可提取
+    # 文字层被水印文字支配：可见水印流的文字逐页平铺可读（62证据材料卷：4 字
+    # 「百色市院」×65/页），且碎片形态恰好低于 #203 重复片段闸的 ≥10 字长词判据
+    # （闸放行）⇒ docline 吃**原件**文字层会把水印整体当正文建链（实测 872 实体、
+    # 650 个水印框）。命中 ⇒ 强制回落逐页线：逐页 OCR 吃净化副本页图、文本层分支
+    # 吃净化副本文字层，两者均无水印。走 render_source（memo+单飞）不重复付探测
+    # 成本，探针冷时顺带把副本建好（逐页线正要用它）。
+    try:
+        _wm_src, wm_status = await asyncio.to_thread(watermark_overlay.render_source, path)
+        if wm_status.get("code") == "hit":
+            logger.info(
+                "text_layer_docline skipped: watermark overlay hit file=%s", file_id[:8]
+            )
+            raise _TransientIneligible(
+                "watermark_overlay_hit",
+                code="watermark_overlay_hit",
+                permanent=True,
+            )
+    except _TransientIneligible:
+        raise
+    except Exception:
+        # fail-open：水印模块故障不得改变 docline 既有路由（识别面另有 fail-open）。
+        logger.warning(
+            "text_layer_docline: watermark overlay gate check failed; continuing",
+            exc_info=True,
+        )
 
     started = time.perf_counter()
     pages = await asyncio.to_thread(docline.extract_text_layer_pages, path)
