@@ -152,18 +152,29 @@ def cleanup_orphan_files() -> int:
     return removed
 
 
+def _cleanup_tick() -> tuple[int, int]:
+    """一次清理节拍：孤儿文件 + 水印覆盖层过期副本；返回 (orphans, copies)。
+
+    抽成同步函数是为了可判据（`_periodic_cleanup` 与启动都调它，测试可直接 spy 调用）
+    并且让阻塞 IO 统一交给 `asyncio.to_thread`（Issue#236 门⑥ M6）。
+    """
+    removed = cleanup_orphan_files()
+    if removed:
+        logger.info("Periodic cleanup removed %d orphan files", removed)
+    from app.services import watermark_overlay
+
+    swept = watermark_overlay.sweep_expired()
+    if swept:
+        logger.info("Periodic cleanup removed %d watermark overlay copies", swept)
+    return removed, swept
+
+
 async def _periodic_cleanup():
-    """Background task: run orphan file cleanup every hour."""
+    """Background task: run orphan file cleanup + watermark copy sweep every hour."""
     while True:
         await asyncio.sleep(3600)
         try:
-            removed = cleanup_orphan_files()
-            if removed:
-                logger.info("Periodic cleanup removed %d orphan files", removed)
-            from app.services import watermark_overlay
-            swept = watermark_overlay.sweep_expired()
-            if swept:
-                logger.info("Periodic cleanup removed %d watermark overlay copies", swept)
+            await asyncio.to_thread(_cleanup_tick)
         except Exception:
             logger.exception("periodic orphan cleanup failed")
 
@@ -195,19 +206,11 @@ async def lifespan(app: FastAPI):
     from app.services.entity_type_service import persist_entity_types_at_startup
     persist_entity_types_at_startup()
 
-    # 1. Clean up orphan files (once at startup)
-    removed = cleanup_orphan_files()
-    if removed:
-        logger.info("Cleaned up %d orphan files", removed)
-
-    # 1b. Sweep expired watermark-overlay copies (Issue#236: TTL 实清，不只靠下一次构建)
+    # 1. Clean up orphan files + expired watermark-overlay copies (once at startup)
     try:
-        from app.services import watermark_overlay
-        swept = watermark_overlay.sweep_expired()
-        if swept:
-            logger.info("Swept %d expired watermark overlay copies", swept)
+        _cleanup_tick()
     except Exception:
-        logger.exception("watermark overlay sweep at startup failed")
+        logger.exception("startup cleanup failed")
 
     # 2. Check external services
     from app.services.ocr_service import ocr_service

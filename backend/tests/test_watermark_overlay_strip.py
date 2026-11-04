@@ -1230,10 +1230,68 @@ def test_sweep_expired_clears_stale_orphans(env):
     assert fresh.exists(), "保鲜副本不得被清"
 
 
-def test_sweep_expired_is_callable_by_periodic_cleanup():
-    """接线钉：`main._periodic_cleanup` 与启动清理都必须真的调 `sweep_expired`（删接线即红）。"""
+def test_cleanup_tick_calls_sweep_expired(monkeypatch):
+    """接线钉（运行时可红）：`main._cleanup_tick` 必须真的调 `sweep_expired`。
+
+    门⑥ 增量评审 I1：原先用 `inspect.getsource` 数字面量，注释掉/挪进死代码都绿 ⇒
+    改成 monkeypatch spy，删掉调用（或注释掉）即红。
+    """
     import app.main as app_main
 
-    source = inspect.getsource(app_main)
-    assert "watermark_overlay.sweep_expired()" in source
-    assert source.count("watermark_overlay.sweep_expired()") >= 2
+    calls: list[int] = []
+    monkeypatch.setattr(wm, "sweep_expired", lambda: (calls.append(1), 0)[1])
+    monkeypatch.setattr(app_main, "cleanup_orphan_files", lambda: 0)
+
+    assert app_main._cleanup_tick() == (0, 0)
+    assert calls == [1], "_cleanup_tick 没有真正调用 sweep_expired"
+
+
+def test_periodic_cleanup_runs_tick_in_thread():
+    """接线钉（结构）：每小时循环必须把 `_cleanup_tick` 交给 `asyncio.to_thread`（门⑥ M6）。"""
+    import ast
+
+    import app.main as app_main
+
+    tree = ast.parse(inspect.getsource(app_main._periodic_cleanup))
+    threaded = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "to_thread"
+        and any(isinstance(arg, ast.Name) and arg.id == "_cleanup_tick" for arg in node.args)
+    ]
+    assert threaded, "_periodic_cleanup 没有用 asyncio.to_thread 跑 _cleanup_tick"
+
+
+def test_sweep_expired_keeps_memo_held_copy(env):
+    """门⑥ M4：sweep 参数化小 TTL 时，**保鲜且被 memo 持有**的副本仍豁免。"""
+    uploads, _outputs = env
+    src = str(uploads / "memo-held.pdf")
+    build_pdf(src, pages=3)
+
+    copy_path, status = wm.render_source(src)
+    assert status["source"] == "copy" and copy_path
+
+    now = time.time()
+    hour_ago = now - 3600
+    os.utime(copy_path, (hour_ago, hour_ago))
+    directory = Path(wm.copy_dir())
+    orphan = directory / "orphan-one-hour-old.pdf"
+    orphan.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    os.utime(orphan, (hour_ago, hour_ago))
+
+    removed = wm.sweep_expired(ttl_hours=0.5)
+
+    assert Path(copy_path).exists(), "memo 保鲜副本不得被小 TTL sweep 删掉"
+    assert not orphan.exists(), "无主过期副本应被删"
+    assert removed == 1
+
+
+def test_copy_ttl_validator_forbids_zero():
+    """门⑥ I3：`WATERMARK_OVERLAY_COPY_TTL_HOURS=0` 会让 TTL 静默失效 ⇒ 校验器下限抬到 1。"""
+    from app.core.config import Settings
+
+    validator = Settings.__dict__["_validate_wm_overlay_copy_ttl"].__func__
+    assert validator(None, 0) == 1
+    assert validator(None, 24) == 24

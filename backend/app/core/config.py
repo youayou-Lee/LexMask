@@ -1165,10 +1165,16 @@ class Settings(BaseSettings):
     def _validate_wm_overlay_alpha_max(cls, v: int) -> int:
         return max(1, min(255, v))
 
-    @field_validator("WATERMARK_OVERLAY_MAX_FILE_MB", "WATERMARK_OVERLAY_COPY_TTL_HOURS")
+    @field_validator("WATERMARK_OVERLAY_MAX_FILE_MB")
     @classmethod
     def _validate_wm_overlay_non_negative_ints(cls, v: int) -> int:
         return max(0, min(1_000_000, v))
+
+    @field_validator("WATERMARK_OVERLAY_COPY_TTL_HOURS")
+    @classmethod
+    def _validate_wm_overlay_copy_ttl(cls, v: int) -> int:
+        # 下限 1：0 会让 sweep/memo 双双「永不过期」，AC9 的 TTL 实清被静默废掉（门⑥ I3）。
+        return max(1, min(1_000_000, v))
 
     @field_validator("VISUAL_SEAL_SOURCE", mode="before")
     @classmethod

@@ -540,26 +540,32 @@ def _sweep(directory: str, ttl_hours: float) -> int:
 
 
 def sweep_expired(ttl_hours: float | None = None) -> int:
-    """清过期副本副本（供进程级定时清理调用）：返回删除数量，**绝不抛异常**。
+    """清过期副本（供进程级定时清理调用）：返回删除数量，OSError/取值错误一律不抛（返回 0）。
 
     构建路径只在「下一次有水印卷要处理」时才扫一次，若某卷只处理一次就再无扫描
-    ⇒ 靠 `main._periodic_cleanup`（每小时）+ 启动一次兜住 AC9「TTL 实清」。
+    ⇒ 靠 `main._cleanup_tick`（每小时一次 + 启动一次）兜住 AC9「TTL 实清」。
+    目录不存在时直接返回 0（不 `makedirs`：开关关闭时不该凭空建目录，门⑥ M3）。
     """
     from app.core.config import settings
 
-    ttl = (
-        float(getattr(settings, "WATERMARK_OVERLAY_COPY_TTL_HOURS", 24))
-        if ttl_hours is None
-        else float(ttl_hours)
-    )
     try:
-        directory = copy_dir()
-    except OSError:
+        ttl = (
+            float(getattr(settings, "WATERMARK_OVERLAY_COPY_TTL_HOURS", 24))
+            if ttl_hours is None
+            else float(ttl_hours)
+        )
+    except (TypeError, ValueError):
+        logger.debug("watermark overlay sweep: invalid ttl %r", ttl_hours)
         return 0
     try:
-        return _sweep(directory, ttl)
+        directory = os.path.join(settings.OUTPUT_DIR, ".watermark_overlay")
+        if not os.path.isdir(directory):
+            return 0
+        removed = _sweep(directory, ttl)
     except OSError:
         return 0
+    logger.debug("watermark overlay sweep dir=%s ttl_hours=%s removed=%d", directory, ttl, removed)
+    return removed
 
 
 def status_for(path: str) -> dict:

@@ -129,7 +129,10 @@
 - 目录 `settings.OUTPUT_DIR/.watermark_overlay/`（`makedirs(0o700)` + `chmod 0700`；`cleanup_orphan_files` 只扫顶层文件 ⇒ 不被小时清理误删，也不进任何导出）。
 - 命名 `<sha256(realpath|size|mtime_ns)[:32]>.pdf`；原件更新即换名。
 - TTL `WATERMARK_OVERLAY_COPY_TTL_HOURS=24`：每次**命中水印后的**构建前扫一次，删除超龄文件；memo 命中也要过 TTL 校验（过期副本不返回，按需重建）。清理只豁免「保鲜且被 memo 持有」的副本与在飞临时文件。
-- **进程级定时清理（门⑥ 二轮处置补）**：仅靠「下一次有水印卷构建」才扫，会让「只处理过一次的卷」副本无限滞留 ⇒ 新增 `sweep_expired(ttl_hours=None)`（返回删除数量、绝不抛异常），由 `app/main.py` 的 `_periodic_cleanup()`（每小时）与 `lifespan` 启动各调一次；判据 `test_sweep_expired_clears_stale_orphans` 与接线钉 `test_sweep_expired_is_callable_by_periodic_cleanup`（删任一接线即红）。
+- **进程级定时清理（门⑥ 二轮处置补；增量短审后收紧）**：仅靠「下一次有水印卷构建」才扫，会让「只处理过一次的卷」副本无限滞留 ⇒ 新增 `sweep_expired(ttl_hours=None)`（返回删除数量；取 `WATERMARK_OVERLAY_COPY_TTL_HOURS`，`OSError`/非法取值一律返回 0 不抛；目录不存在直接返回 0，不 `makedirs`），由 `app/main.py` 的 `_cleanup_tick()` 统一调用，`_periodic_cleanup()` 每小时经 `asyncio.to_thread` 跑一次（不阻塞事件循环）+ `lifespan` 启动一次。
+  - 判据：`test_sweep_expired_clears_stale_orphans`（过期清/保鲜留）、`test_sweep_expired_keeps_memo_held_copy`（小 TTL sweep 不删 memo 保鲜副本）、`test_cleanup_tick_calls_sweep_expired`（monkeypatch spy，**删或注释调用即红**）、`test_periodic_cleanup_runs_tick_in_thread`（AST 断言 `asyncio.to_thread(_cleanup_tick)`）。
+  - `WATERMARK_OVERLAY_COPY_TTL_HOURS` 校验器下限抬到 **1**（0 会让 sweep/memo 双双永不过期，AC9 被静默废掉）；`test_copy_ttl_validator_forbids_zero` 钉住。
+  - 诚实边界：多点位部署下 `_CACHE` 不跨进程，A 进程可能删掉 B 进程已在用的过期副本 ⇒ B 会收到一次 `FileNotFoundError`（有页级隔离兜住，不回落原件）；当前生产为单 uvicorn worker（`backend/Dockerfile:55` 无 `--workers`），且默认 TTL 24h 使窗口极小。
 - 进程内 memo（键=fingerprint）：`{code, pages_probed, pages_hit, pages_stripped, pages_skipped, pages_guard_refused, duration_ms, error, copy_path}`；命中与 fail-open 都缓存（后者 60 s 短窗口）；对外状态**剔除 copy_path 与内部字段**。
 - 并发：卷级 `threading.Lock`（进程级）+ in-flight 登记；第二个请求等首个完成（AC9 断言构建调用计数=1）。
 - 体积闸：`size > WATERMARK_OVERLAY_MAX_FILE_MB(400)` ⇒ `capped_by_size`，不处理。
@@ -396,7 +399,7 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 
 ### 8.3 本地已跑通的判据（门③ 本地可判部分）
 
-自动化：`pytest backend/tests/test_watermark_overlay_strip.py` → **43 passed / 3.3s**，`ruff check` 干净。覆盖 AC1（命中+栅格保全+原件 sha）、AC4（W1 并入主流 / 合法不可见文字层 / 矢量表格三支暖负样本）、AC5（预览原件视图 / 交付默认保留 / 交付反向支路，像素掩码相对判据）、AC6（冷负样本零文件零构建 + 检测执行证据）、AC7（F4 双流歧义 / F5 残余弃权且不出副本 / F6 合法流不被摘 / F7 单页命中弃权 / F3 异构卷逐页记账 / **F9 合法 ASCII 正文流被字符闸挡住** / **F10 水印与绘制 op 同流判不可摘**）、AC9（0700/0600、页数与 rect、TTL 实清、关闭不探测）、AC10（损坏 / 超限 / 自检失败 fail-open 且不留半成品）、AC11（memo：探测 1 次、构建 1 次、二次调用 0 增量）。
+自动化：`pytest backend/tests/test_watermark_overlay_strip.py` → **49 passed / 4.7s**（head `188a601` + 增量处置），`ruff check` 干净。覆盖 AC1（命中+栅格保全+原件 sha）、AC4（W1 并入主流 / 合法不可见文字层 / 矢量表格三支暖负样本）、AC5（预览原件视图 / 交付默认保留 / 交付反向支路，像素掩码相对判据）、AC6（冷负样本零文件零构建 + 检测执行证据）、AC7（F4 双流歧义 / F5 残余弃权且不出副本 / F6 合法流不被摘 / F7 单页命中弃权 / F3 异构卷逐页记账 / **F9 合法 ASCII 正文流被字符闸挡住** / **F10 水印与绘制 op 同流判不可摘**）、AC9（0700/0600、页数与 rect、TTL 实清、关闭不探测）、AC10（损坏 / 超限 / 自检失败 fail-open 且不留半成品）、AC11（memo：探测 1 次、构建 1 次、二次调用 0 增量）。
 
 **AC12 变异验证：10/10 KILLED**（每条变异都让具体用例转红；变异脚本为一次性临时件、不入库）：
 
@@ -411,7 +414,9 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 | M7 | 关闭开关仍探测/构建 | `test_disabled_switch_does_not_probe` |
 | M8 | 构建错误不落 `failed`（静默回落） | `test_copy_verify_failure_falls_back_to_original` |
 | M9 | 交付开关失效（总用副本） | `test_delivery_keeps_watermark_by_default` |
-| M10 | 副本 TTL 清理失效 | `test_copy_ttl_sweeps_stale_files` |
+| M10 | 副本 TTL 清理失效（`_cached_copy_alive` 的 TTL 校验去掉） | `test_copy_ttl_sweeps_stale_files` |
+| M11 | `sweep_expired` 内 `_sweep` 掏空（恒删 0） | `test_sweep_expired_clears_stale_orphans` |
+| M12 | `_cleanup_tick` 里删/注释 `sweep_expired()` 调用 | `test_cleanup_tick_calls_sweep_expired`（spy，实测红） |
 
 变异过程暴露的两条实现事实（都不是 bug，写清以免后人误读）：
 - `_PAINT_OPS` 属于**第二道冗余防线**：绘制类 op 本来就不在 `_SAFE_OPS` 白名单里，所以只删「`op in _PAINT_OPS`」这半条判据不会让任何用例转红（等价变异）；真正承重的是整条白名单，故 M2 定为「白名单整体失效」。
@@ -438,6 +443,23 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 | 10 | 只读目录用例依赖非 root（容器内假红）；插槽按命中顺序索引页号会错配 | 用例加 `os.geteuid()==0` 跳过；`slot_by_page` 改按页号记录（新增 `test_probe_reports_slot_per_page`） |
 
 局部工具输出（原文）：`43 passed in 3.27s`（含新增三例后）、`ruff check` 三文件全绿。
+
+**增量短审（范围 `da396f3..188a601`，判定 APPROVE with fixes）**：
+
+| 项 | 问题 | 处置 |
+|---|---|---|
+| **I1** | 进程级清理的「接线钉」用 `inspect.getsource` 数字面量 ⇒ 注释掉/挪进死代码仍绿（实测 MUT1/MUT2 绿、MUT3 整行删除才红） | 抽 `_cleanup_tick()` 同步函数，改 **monkeypatch spy** 运行时判据 `test_cleanup_tick_calls_sweep_expired`（删/注释调用即红）；另加 AST 结构钉 `test_periodic_cleanup_runs_tick_in_thread`（拿掉 `asyncio.to_thread` 即红） |
+| **I2** | 文档「删任一接线即红」措辞过强；§8.4 未登记本轮处置 | 文案精确化（运行时 spy + AST 两钉分开描述）；§8.4 增本表 |
+| **I3** | `COPY_TTL_HOURS` 校验器允许 0 ⇒ 实测 sweep 返回 0、副本与 memo 永不过期且无日志，AC9 被合法配置静默废掉 | 下限改 **1** + `test_copy_ttl_validator_forbids_zero` |
+| **M1/M7** | 文档测试数过期、变异表缺本轮行 | 测试数改 49；变异表补 M11（`_sweep` 掏空 ⇒ 功能用例红）、M12（删 `_cleanup_tick` 内调用 ⇒ spy 钉红） |
+| **M2** | `sweep_expired` docstring 重复字 + `float()` 在 try 外（实测 `ttl_hours="abc"` 抛 ValueError） | 文案订正；取值转换纳入 try，非法值返回 0 |
+| **M3** | 经 `copy_dir()` 无条件 `makedirs`：开关关闭时启动也会建 `OUTPUT_DIR/.watermark_overlay/` | 先 `os.path.isdir` 判存在，不存在直接返回 0 |
+| **M4** | 只测显式 `ttl_hours=1.0`，settings 分支与 memo 豁免无判据 | 新增 `test_sweep_expired_keeps_memo_held_copy` |
+| **M5** | 返回值 0 的三义（关闭/不可读/无过期）静默 | `logger.debug("… dir=… ttl=… removed=…")` |
+| **M6** | 同步阻塞清扫跑在事件循环上 | 统一 `await asyncio.to_thread(_cleanup_tick)` |
+| **行尾噪声** | 首版把 `backend/app/main.py` 整文件 CRLF→LF（757/744 行纯噪声，淹没真实 hunk） | 恢复 CRLF，使 `git diff da396f3 -- app/main.py` 只剩 **24+/8-** |
+
+局部工具输出（原文）：`49 passed in 4.76s`、`ruff check` 三文件全绿；两处变异实测：注释 `_cleanup_tick` 内调用 ⇒ `test_cleanup_tick_calls_sweep_expired` 红；把 `await asyncio.to_thread(_cleanup_tick)` 改成同步直调 ⇒ `test_periodic_cleanup_runs_tick_in_thread` 红。
 
 ## 9. 门④ 端到端实测（2026-11-04，本地 docker 栈整卷）
 
