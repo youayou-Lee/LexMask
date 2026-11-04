@@ -3,6 +3,7 @@
 import { memo, useCallback, useId, useMemo, useState } from 'react';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { watermarkStripChipText as watermarkStripChipTextFor } from '@/lib/watermark-overlay';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { PaginationRail } from '@/components/PaginationRail';
@@ -44,17 +45,7 @@ function pipelineLabel(t: ReturnType<typeof useT>, key: string): string {
   return formatSourceDetail(key) || key;
 }
 
-/** 水印预处理（Issue#236）：命中即显式报「已摘除 N 页」，避免只显示 ran/0 让人看不出做了什么。 */
-export function watermarkStripChipText(
-  t: ReturnType<typeof useT>,
-  status: ReviewVisionPipelineStatus,
-): string | null {
-  if (status.code !== 'hit' && status.code !== 'guard_refused_pages') return null;
-  const pages = status.pages_stripped;
-  if (typeof pages !== 'number') return null;
-  if (status.source !== 'copy') return null;
-  return t('batchWizard.step4.pipelineWatermarkStripped').replace('{pages}', String(pages));
-}
+export { watermarkStripChipText } from '@/lib/watermark-overlay';
 
 function pipelineStateLabel(
   t: ReturnType<typeof useT>,
@@ -509,9 +500,9 @@ function ReviewImageContentInner({
                   )}
                   title={typeof status.error === 'string' ? status.error : undefined}
                 >
-                  {key === 'watermark_overlay' && watermarkStripChipText(t, status) ? (
+                  {key === 'watermark_overlay' && watermarkStripChipTextFor(t, status) ? (
                     <>
-                      {pipelineLabel(t, key)} {watermarkStripChipText(t, status)}
+                      {pipelineLabel(t, key)} {watermarkStripChipTextFor(t, status)}
                     </>
                   ) : (
                     <>

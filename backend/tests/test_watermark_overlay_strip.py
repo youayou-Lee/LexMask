@@ -910,6 +910,38 @@ def test_preview_renders_original_not_clean_copy(tmp_path, env):
     assert ImageChops.difference(preview, direct).getbbox() is None, "预览像素不是原件渲染"
 
 
+def test_previewed_result_matches_delivery_watermark_policy(tmp_path, env, monkeypatch):
+    """Issue#236：打码结果预览必须与交付件同源——交付去水印时预览也不该带水印。
+
+    否则用户看到「预览有水印、下载没有」（或反过来），等于把口径藏在两个地方。
+    """
+    from app.models.schemas import FileType
+
+    uploads, _outputs = env
+    src = str(uploads / "preview-policy.pdf")
+    build_pdf(src, pages=3)
+    mask = _watermark_mask(src, 0)
+    service = VisionService()
+
+    async def _preview() -> Image.Image:
+        data = await service.preview_redaction(
+            file_path=src, file_type=FileType.PDF, bounding_boxes=[], page=1
+        )
+        return Image.open(io.BytesIO(data)).convert("RGB")
+
+    original = _render_png(src, 0)
+
+    monkeypatch.setattr(settings, "WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK", False)
+    stripped_delta = _masked_delta(asyncio.run(_preview()), original, mask)
+    assert stripped_delta > 5.0, f"交付去水印时预览仍带水印（delta={stripped_delta:.2f}）"
+
+    # 上面那次调用已把净化副本建好，这里只切交付策略
+    monkeypatch.setattr(settings, "WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK", True)
+    kept_delta = _masked_delta(asyncio.run(_preview()), original, mask)
+    assert kept_delta < 3.0, f"交付保留水印时预览却去掉了水印（delta={kept_delta:.2f}）"
+    assert stripped_delta > kept_delta
+
+
 def test_delivery_strips_watermark_by_default(tmp_path, env):
     """AC5-5b：不设环境变量时交付物**不含水印**（2026-11-04 用户裁定：交付件同样去水印）。"""
     uploads, _outputs = env

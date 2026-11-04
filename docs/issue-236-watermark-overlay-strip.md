@@ -47,7 +47,7 @@
 | **原件** | 90,475 | **0.3764**（fragment_kinds=6, max_fragment_pages=149） | **拒绝**（`repeated_fragment_coverage`） | docline 建链 **0 次**；路由=逐页 OCR，与今天一致 |
 | **净化副本** | 47,120 | **0.0407**（fragment_kinds=4, max_fragment_pages=45） | **放行** | **若副本喂文本层 ⇒ docline 接管整卷** |
 
-⇒ 不可协商的边界（数据钉死）：**净化副本只能供渲染**。副本喂文本层会让 coverage 从 0.3764 掉到 0.0407、闸从「拒」翻成「放行」，docline 接管 149 页；按约 22 s/2000 字块估算 ≈ 24 块 ≈ 528 s，而 `BATCH_RECOGNITION_PAGE_TIMEOUT=300 s` 是**页级**计时（O(卷) 工作量撞 O(页) 墙）⇒ **整卷清零**，正是 2026-10-28 事故的形态。因此文本层判定、docline 建链、#203 闸、预览、交付默认路径一律继续吃原件。
+⇒ 不可协商的边界（数据钉死）：**净化副本只能供渲染**。副本喂文本层会让 coverage 从 0.3764 掉到 0.0407、闸从「拒」翻成「放行」，docline 接管 149 页；按约 22 s/2000 字块估算 ≈ 24 块 ≈ 528 s，而 `BATCH_RECOGNITION_PAGE_TIMEOUT=300 s` 是**页级**计时（O(卷) 工作量撞 O(页) 墙）⇒ **整卷清零**，正是 2026-10-28 事故的形态。因此文本层判定、docline 建链、#203 闸、**原件视图端点**一律继续吃原件；「打码结果预览」随交付策略（见 §3.3 接线表）。
 
 ### 2.3 检测与摘除成本实测
 
@@ -110,7 +110,7 @@
 |---|---|---|
 | `vision_service.py:298` 识别取图（批量/playground/重识别/重试都经此） | 净化副本 | 默认 `allow_strip=True` |
 | `vl_md_pipeline_service.py:192` 供料 VL-MD 渲染 | 净化副本 | 默认 |
-| `vision_service.py:2263` 预览红框底图 | 原件 | 显式 `allow_strip=False` |
+| `vision_service.py:2263` 预览红框底图 | **随交付策略**（默认去水印 ⇒ 副本） | `_delivery_source()` 解析后 `allow_strip=False`；与交付同源，避免「预览有水印、下载没有」 |
 | `api/files.py:822` 文件预览端点 | 原件 | 显式 `allow_strip=False` |
 | `vision_service.py:2228` `_redact_pdf` 交付 PDF 光栅化 | **原件**（默认保留）/ 净化副本（开关关闭时） | 新参数 `source_path`，由交付开关决定 |
 | `text_layer_docline_service.py:195` ink alignment | 原件 | 不动（直连 `get_pixmap`） |
@@ -271,7 +271,8 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 - 5a〔守卫〕预览〔与 5c 同 AC，组件缺席时由 5c 必红〕：`api/files.py` 预览端点返回 PNG 与「原件渲染 PNG」**字节相等**（同 dpi=150、同 `get_pixmap` 参数、无打码叠加层的基线调用）；`preview_redaction` 同理比对**未叠加红框的底图**（先取 `allow_strip=False` 的底图字节做对照）。
 - 5b〔守卫〕交付默认（**不设** `DELIVERY_KEEP_WATERMARK`，验默认值本身）：交付 PDF **水印 GT 命中 = 0**（水印区像素与净化渲染一致、与「保留支路」在水印区显著不同）；反向支路（显式 `=true`）恢复保留；两种支路下 ZIP 内都不含副本文件。
 - 5c 交付反向支路：显式 `DELIVERY_KEEP_WATERMARK=false`：交付 PDF GT **= 0**、每页 `/Contents` **1** 条流、页数=原件；正文保全 = 交付 PDF 每页 150 dpi 渲染 vs 副本渲染：掩码外 `max|Δ| ≤ 8`（JPEG 容差）、**差异面积 in [0.5%, 6%]**（两侧页均非空白，不允许 0 对 0）。
-- 红性：默认值漏传到预览/交付 ⇒ 5a/5b FAIL；只实现默认支路 ⇒ 5c FAIL。
+- **5d〔判据〕预览与交付同源**（Issue#236 二次裁定后补）：`preview_redaction` 的底图在水印笔画带上「默认支路 Δ>5 灰阶（已去水印）、保留支路 Δ<3 灰阶（仍带水印）」，两态都必须钉住——否则「预览有水印、下载没有」这类口径错位无人发现。用例 `test_previewed_result_matches_delivery_watermark_policy`。
+- 红性：默认值漏传到预览/交付 ⇒ 5a/5b FAIL；只实现默认支路 ⇒ 5c FAIL；预览固定吃原件 ⇒ 5d FAIL。
 
 ### AC6 未命中卷零差异（C1–C3，本地可判）
 - 判据：① 原件 sha256 一致；② `stats()["probe_calls"]` 增量 **1**、`duration_ms>0`、`pages_probed ≥ 3`（检测确实执行）；③ `stats()["build_calls"]` 增量 **0**、`copy_created==0`；④ `code ∈ {no_wm_spans, no_isolated_overlay}`、`source=original`；⑤ 副本目录零新增；⑥（云）识别框/文本/实体集合与 OFF 逐页一致（页级失败白名单见 AC13）。
@@ -399,7 +400,7 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 
 ### 8.3 本地已跑通的判据（门③ 本地可判部分）
 
-自动化：`pytest backend/tests/test_watermark_overlay_strip.py` → **49 passed / 4.7s**（head `188a601` + 增量处置），`ruff check` 干净。覆盖 AC1（命中+栅格保全+原件 sha）、AC4（W1 并入主流 / 合法不可见文字层 / 矢量表格三支暖负样本）、AC5（预览原件视图 / 交付默认**去水印** / 交付保留反向支路，像素掩码相对判据）、AC6（冷负样本零文件零构建 + 检测执行证据）、AC7（F4 双流歧义 / F5 残余弃权且不出副本 / F6 合法流不被摘 / F7 单页命中弃权 / F3 异构卷逐页记账 / **F9 合法 ASCII 正文流被字符闸挡住** / **F10 水印与绘制 op 同流判不可摘**）、AC9（0700/0600、页数与 rect、TTL 实清、关闭不探测）、AC10（损坏 / 超限 / 自检失败 fail-open 且不留半成品）、AC11（memo：探测 1 次、构建 1 次、二次调用 0 增量）。
+自动化：`pytest backend/tests/test_watermark_overlay_strip.py` → **50 passed / 5.3s**（head `188a601` + 增量处置），`ruff check` 干净。覆盖 AC1（命中+栅格保全+原件 sha）、AC4（W1 并入主流 / 合法不可见文字层 / 矢量表格三支暖负样本）、AC5（原件视图端点仍吃原件 / **打码结果预览与交付同源（5d 两态）** / 交付默认**去水印** / 交付保留反向支路，像素掩码相对判据）、AC6（冷负样本零文件零构建 + 检测执行证据）、AC7（F4 双流歧义 / F5 残余弃权且不出副本 / F6 合法流不被摘 / F7 单页命中弃权 / F3 异构卷逐页记账 / **F9 合法 ASCII 正文流被字符闸挡住** / **F10 水印与绘制 op 同流判不可摘**）、AC9（0700/0600、页数与 rect、TTL 实清、关闭不探测）、AC10（损坏 / 超限 / 自检失败 fail-open 且不留半成品）、AC11（memo：探测 1 次、构建 1 次、二次调用 0 增量）。
 
 **AC12 变异验证：12/12 KILLED**（M1–M12；每条变异都让具体用例转红；变异脚本为一次性临时件、不入库）：
 

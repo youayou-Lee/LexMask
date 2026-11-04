@@ -2349,9 +2349,13 @@ class VisionService:
         if file_type == FileType.IMAGE:
             image_data = await self.file_parser.read_image(file_path)
         else:
-            # Issue#236：预览是「原件视图」，必须看原卷（含水印），不得用净化副本。
+            # Issue#236：这页是「打码结果预览」，必须与交付件同源。
+            # 交付默认去水印（用户 2026-11-04 裁定）⇒ 预览也从净化副本渲染，
+            # 否则用户看到的是「预览有水印、下载没有」的错位；原件视图仍由
+            # /files/{id}/page-image（allow_strip=False）提供。
+            source_path = await self._delivery_source(file_path)
             image_data = await self.file_parser.get_pdf_page_image(
-                file_path, page, allow_strip=False
+                source_path or file_path, page, allow_strip=False
             )
 
         page_boxes = [b for b in bounding_boxes if b.page == page and b.selected]

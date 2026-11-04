@@ -425,6 +425,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         is_scanned: isScanned,
         page_count: pageCount,
         pages: Array.isArray(parseData.pages) ? parseData.pages : undefined,
+        vision_quality: info.vision_quality as Record<string, unknown> | undefined,
       });
       setContent(parseData.content || '');
       opts.setBoundingBoxes([]);
@@ -528,6 +529,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
           is_scanned: isScanned,
           page_count: pageCount,
           pages: parsedPages,
+          vision_quality: info.vision_quality as Record<string, unknown> | undefined,
         });
         setContent(parsedContent);
         opts.setBoundingBoxes([]);
