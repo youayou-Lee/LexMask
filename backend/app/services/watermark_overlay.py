@@ -306,8 +306,11 @@ def probe(
                             if _try_subset(combo, xrefs=xrefs, base_non=base_non):
                                 passing.append(combo)
                 if len(passing) > 1:
+                    # 防御分支（fail-closed）：对 overlay-classified span 结构性几乎
+                    # 不可达——两个不同子集同时通过 span oracle 会导出代数矛盾。
+                    # 变异 M3（本评审）SURVIVED＝无构造性判据，挂账 PR#242（I-1）。
                     passing = []
-            # len(singles) > 1：多条单流候选 = 歧义，维持弃权。
+            # len(singles) > 1：多条单流候选 = 歧义，维持弃权（同上，防御分支）。
 
             if len(passing) != 1:
                 continue
@@ -370,8 +373,26 @@ def probe_report(path: str) -> dict:
     """检测报告（Issue#244 水印工具面）：probe 结果的脱敏 dict——不含副本路径。
 
     注意：每次调用真实执行探测（不走 memo）；工具页手动触发，代价可接受。
+    开关与阈值读 settings（门⑥ I-2：与识别面同源，防 env 调参后两面静默分叉）；
+    模块关闭时返回 disabled（工具页/上传弹窗不再全量探测）。
     """
-    outcome = probe(path)
+    from app.core.config import settings
+
+    if not bool(getattr(settings, "WATERMARK_OVERLAY_STRIP_ENABLED", False)):
+        return {
+            "code": "disabled", "pages_probed": 0, "pages_hit": 0,
+            "fonts": [], "size_spread": 1.0, "alpha_spread": 1.0,
+            "top_repeats": 0, "elapsed_ms": 0, "error": None,
+        }
+    outcome = probe(
+        path,
+        probes=int(getattr(settings, "WATERMARK_OVERLAY_PROBE_PAGES", 5)),
+        min_hit_pages=int(getattr(settings, "WATERMARK_OVERLAY_MIN_HIT_PAGES", 3)),
+        min_repeats=int(getattr(settings, "WATERMARK_OVERLAY_MIN_REPEATS", 3)),
+        max_size_spread=float(getattr(settings, "WATERMARK_OVERLAY_MAX_SIZE_SPREAD", 1.5)),
+        max_alpha_spread=float(getattr(settings, "WATERMARK_OVERLAY_MAX_ALPHA_SPREAD", 2.0)),
+        max_file_mb=float(getattr(settings, "WATERMARK_OVERLAY_MAX_FILE_MB", 400.0)),
+    )
     data = {
         "code": outcome.code,
         "pages_probed": outcome.pages_probed,

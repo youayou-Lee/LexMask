@@ -581,6 +581,11 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 
 结论：把「识别源解析」提到 `detect_with_dual_pipeline` 入口后，整卷行为与 §9.6 一致（`code=hit/source=copy`、零水印文本框、闸口径不变），并且**文本层识别分支不再回读原件水印层**（§9.8 的回归用例钉住）。
 
+
+### §9.8 落地记录（2026-11-05，#243 已实施）
+
+§9.8 预告的「水印预处理命中 ⇒ docline 强制回落逐页线」已随 PR#242 `4f00f0b` 实施：`text_layer_doc_source._build` 资格链最前置以 `render_source`（memo+单飞）判定，`code=hit` ⇒ `watermark_overlay_hit`（permanent 负缓存）回落逐页线；fail-open。62 卷栈上实测：框 863→159、水印 PII 零命中。判据 5 例（含 W2 不错杀、关闭惰性、故障放行）。
+
 ---
 
 ## §9.10 泛化扩展：双保险水印流组合试摘 + 单 BT 多 Tj 门槛修正（Issue#245，2026-11-05）

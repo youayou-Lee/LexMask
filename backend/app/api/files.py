@@ -801,6 +801,8 @@ async def watermark_clean_download(file_id: str, owner_id: str = Depends(require
     snapshot = await _fms.get_file_snapshot(file_id)
     if not snapshot or _fms.file_owner_id(snapshot) != owner_id:
         raise HTTPException(status_code=404, detail="文件不存在")
+    if str(snapshot.get("file_type") or "") not in {"pdf", "pdf_scanned"}:
+        raise AppError(400, "FILE_NOT_PDF", "水印工具仅支持 PDF")
     file_path = str(snapshot.get("file_path") or "")
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="文件不存在")
