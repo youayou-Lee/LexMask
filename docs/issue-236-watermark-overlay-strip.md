@@ -521,3 +521,21 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 
 诚实边界（同 §9.3）：本轮仍在本机 docker 栈（DCU 云实例 `ksai.scnet.cn:10451` 今日 Connection refused）；`stats()` 是进程内计数器，容器内另起进程读到 0 属正常，判定以 `pipeline_status` + 副本文件为准；交付件为 JPEG 光栅，笔画带判据用相对比较而非绝对像素等值。
 
+### 9.6 增量短审处置后的最终 head 重跑（`cbf344c`）
+
+本轮运行时变化只有「清理节拍 + TTL 下限」，但为保证「最终 head = E2E head」不变式，仍整卷复跑一次（同一本机 docker 栈，镜像由 `cbf344c` 重建，`/health` 200；容器内 `strip=True keep=True ttl=24`、`sweep_expired`/`_cleanup_tick` 均在）：
+
+| 判据 | 观测值 |
+|---|---|
+| 上传原件 | file_id `130b615e-dbc3-4786-acc3-446321920099`；容器内 sha256 `336e449aed87728616afb55a4a0021e7414a85f914d92f582693c4be9fe321fc` = 本地原件（逐字节相同） |
+| 识别任务 | job `42d7c17d-4b2e-4e1d-a831-f19a15462ce1` → 终态 `awaiting_review`，149 页，`failed=0` |
+| 净化标签 | 149/149 页 `{code:"hit", source:"copy", pages_probed:5, pages_hit:5, pages_stripped:149, pages_skipped:0, pages_guard_refused:0, duration_ms:790}`（**全卷唯一状态，无一页 degraded**） |
+| 副本 | `outputs/.watermark_overlay/4627f5bf….pdf` 25,798,037 B、`0600`、目录 `0700`；149 页；原件 90,624 字符 → 副本 **47,253**；「林映峰」1,788 → **0**、「14501201410363675」1,192 → **0**；空白页 16；页 132 正文 1,151 → 860 字符（正文保留） |
+| 零水印残留 | `bounding_boxes` 149 页 **3,502** 框；`林映峰`/`14501201410363675`/`钦州市院` 计数 **0**；`钦州` 61 次全部是正文 |
+| #203 闸不变 | 149/149 页 `text_layer_doc.fallback_reason_code == "repeated_fragment_coverage"`（`repeated_fragment_coverage:0.376`，文本层入口仍吃原件） |
+| 预览面 | `page-image?page=1` → **4,493,427 B**，与容器内原件 150 dpi 渲染 PNG **字节数相同**；副本渲染 4,162,084 B ⇒ 预览走原件 |
+| 未命中卷 | `文本型-叶辉审查报告.pdf` → file_id `747843df-…`，预览 240,682 B；`.watermark_overlay` 文件数 **4 → 4**（零新建） |
+| 清理节拍 | 旧副本（前几轮 E2E 产物，mtime 数小时前）在 TTL=24h 内被保留，未被误删；`sweep_expired()` 在容器内可调用 |
+
+诚实边界（同 §9.3/§9.5）：仍在本机 docker 栈；云实例 `ksai.scnet.cn:10451` 仍 Connection refused。
+
