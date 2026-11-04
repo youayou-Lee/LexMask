@@ -42,6 +42,11 @@ def _patch_render(monkeypatch, status: dict, copy_path: str | None = None):
     )
 
 
+# 假副本路径不写成绝对路径字面量（G4 abs_path 规则扫源码）；运行时用 tmp_path 拼。
+def _fake_copy(tmp_path) -> str:
+    return str(tmp_path / "clean-copy.pdf")
+
+
 def _run_build(monkeypatch, tmp_path, client):
     _patch_extract(monkeypatch)
     monkeypatch.setattr(source, "has_client", client)
@@ -61,7 +66,7 @@ def _run_build(monkeypatch, tmp_path, client):
 def test_probe_hit_refuses_docline_before_ner(monkeypatch, tmp_path):
     """探针命中 ⇒ docline 在 NER 之前拒绝，NER 调用数 = 0，回落逐页线。"""
     monkeypatch.setattr(settings, "WATERMARK_OVERLAY_STRIP_ENABLED", True)
-    _patch_render(monkeypatch, {"code": "hit", "source": "copy"}, copy_path="/tmp/x.pdf")
+    _patch_render(monkeypatch, {"code": "hit", "source": "copy"}, copy_path=_fake_copy(tmp_path))
     client = _RecordingClient()
     with pytest.raises(source._TransientIneligible) as excinfo:
         _run_build(monkeypatch, tmp_path, client)
@@ -72,7 +77,7 @@ def test_probe_hit_refuses_docline_before_ner(monkeypatch, tmp_path):
 def test_probe_hit_refusal_is_permanent_negative_cache(monkeypatch, tmp_path):
     """拒绝落 permanent 负缓存（retry_at=inf）：重试不重建、回落逐页线照常工作。"""
     monkeypatch.setattr(settings, "WATERMARK_OVERLAY_STRIP_ENABLED", True)
-    _patch_render(monkeypatch, {"code": "hit", "source": "copy"}, copy_path="/tmp/x.pdf")
+    _patch_render(monkeypatch, {"code": "hit", "source": "copy"}, copy_path=_fake_copy(tmp_path))
     path = tmp_path / "scan.pdf"
     path.write_bytes(b"%PDF-1.4 stub")
     source.reset_memo()
