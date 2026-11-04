@@ -328,6 +328,14 @@ class VisionService:
         if file_type not in [FileType.IMAGE, FileType.PDF, FileType.PDF_SCANNED]:
             raise ValueError(f"Unsupported file type for vision: {file_type}")
 
+        # Issue#236：扫描件的「文本层识别」分支直接读 PDF 文字层，若读原件就会把
+        # 独立矢量覆盖水印层的文字当成正文框带进识别结果。因此 PDF 先解析一次
+        # 识别源（净化副本或原件），图像渲染与文字层读取共用同一个源。
+        recognition_path = file_path
+        watermark_status: dict | None = None
+        if file_type in [FileType.PDF, FileType.PDF_SCANNED]:
+            recognition_path, watermark_status = await self._recognition_source(file_path)
+
         async def load_image_data() -> bytes:
             nonlocal image_data
             if file_type == FileType.IMAGE:
@@ -335,14 +343,15 @@ class VisionService:
                 pipeline_status["watermark_overlay"] = _initial_wm_label()
                 return image_data
             render_start = time.perf_counter()
-            image_data = await self.file_parser.get_pdf_page_image(file_path, page)
+            image_data = await self.file_parser.get_pdf_page_image(
+                recognition_path, page, allow_strip=False
+            )
             duration_ms["pdf_render_ms"] = _elapsed_ms(render_start)
             duration_ms["pdf_render_cache_hit"] = bool(
                 getattr(self.file_parser, "last_pdf_page_image_cache_hit", False)
             )
-            pipeline_status["watermark_overlay"] = watermark_overlay_label(
-                getattr(self.file_parser, "last_watermark_overlay_status", None)
-            )
+            # watermark_overlay 标签已在本次识别的入口解析（见上方 recognition_path），
+            # 这里不再覆盖，避免把已命中的状态写回 not_run。
             return image_data
 
         async def get_image_data() -> bytes:
@@ -416,6 +425,9 @@ class VisionService:
             # not_applicable；PDF 未开启预处理时由 file_parser 返回 disabled。
             "watermark_overlay": dict(_WM_NOT_APPLICABLE),
         }
+        if watermark_status is not None:
+            # 入口已解析识别源，这里把状态落到本次识别的可观测标签上。
+            pipeline_status["watermark_overlay"] = watermark_overlay_label(watermark_status)
         self.last_pipeline_status = pipeline_status
         self.last_duration_ms = duration_ms
         self.last_warnings: list[str] = []
@@ -454,14 +466,16 @@ class VisionService:
                 async def attempt_pdf_text_layer() -> tuple[list[BoundingBox], str | None] | None:
                     if seal_requested_via_visual_features:
                         return None
-                    if _should_skip_sparse_pdf_text_layer(file_path, file_type):
+                    if _should_skip_sparse_pdf_text_layer(recognition_path, file_type):
                         duration_ms["pdf_text_layer_skipped_sparse_file"] = True
                         return None
                     try:
-                        return await self._detect_with_pdf_text_layer(file_path, page, effective_ocr_has_types)
+                        return await self._detect_with_pdf_text_layer(
+                            recognition_path, page, effective_ocr_has_types
+                        )
                     except ValueError as exc:
                         _record_sparse_pdf_text_layer_probe(
-                            file_path,
+                            recognition_path,
                             file_type,
                             stats=self.last_pdf_text_layer_stats,
                         )
@@ -470,7 +484,7 @@ class VisionService:
                         logger.exception("PDF text layer detection failed; falling back to image OCR")
                     return None
 
-                probe_lock = _get_pdf_text_layer_probe_lock(file_path, file_type)
+                probe_lock = _get_pdf_text_layer_probe_lock(recognition_path, file_type)
                 if probe_lock is not None:
                     async with probe_lock:
                         pdf_text_layer_result = await attempt_pdf_text_layer()
@@ -2236,6 +2250,22 @@ class VisionService:
                 source_path=delivery_source,
             )
         raise ValueError(f"不支持的文件类型进行匿名化: {file_type}")
+
+    async def _recognition_source(self, file_path: str) -> tuple[str, dict | None]:
+        """解析识别用的 PDF 源：开启预处理且本卷命中时返回净化副本。
+
+        fail-open：任何异常都退回原件并记录状态，绝不阻断识别。
+        """
+        if not bool(getattr(settings, "WATERMARK_OVERLAY_STRIP_ENABLED", False)):
+            return file_path, None
+        try:
+            source_path, status = await asyncio.to_thread(
+                watermark_overlay.render_source, file_path
+            )
+        except Exception:  # pragma: no cover - 兜底，模块自身已 fail-open
+            logger.exception("watermark strip resolution failed; falling back to original")
+            return file_path, None
+        return (source_path or file_path), status
 
     async def _delivery_source(self, file_path: str) -> str | None:
         """交付光栅化的源卷：默认原件；仅当显式要求「交付不留水印」时返回净化副本。

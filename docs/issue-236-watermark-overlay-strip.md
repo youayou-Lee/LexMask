@@ -111,7 +111,7 @@
 | `vision_service.py:298` 识别取图（批量/playground/重识别/重试都经此） | 净化副本 | 默认 `allow_strip=True` |
 | `vl_md_pipeline_service.py:192` 供料 VL-MD 渲染 | 净化副本 | 默认 |
 | `vision_service.py:2263` 预览红框底图 | **随交付策略**（默认去水印 ⇒ 副本） | `_delivery_source()` 解析后 `allow_strip=False`；与交付同源，避免「预览有水印、下载没有」 |
-| `api/files.py:822` 文件预览端点 | 原件 | 显式 `allow_strip=False` |
+| `api/files.py:822` 文件预览/标注端点 | **净化视图**（默认 `allow_strip=not raw`） | 上传即见效；`?raw=true` 显式退回原件（诊断用） |
 | `vision_service.py:2228` `_redact_pdf` 交付 PDF 光栅化 | **原件**（默认保留）/ 净化副本（开关关闭时） | 新参数 `source_path`，由交付开关决定 |
 | `text_layer_docline_service.py:195` ink alignment | 原件 | 不动（直连 `get_pixmap`） |
 | `redaction/watermark.py:50` 交付水印合成 | 原件 | 不动 |
@@ -184,7 +184,7 @@
 | `backend/app/services/file_parser.py` | `allow_strip` kwarg、变体缓存键、副本渲染源 |
 | `backend/app/services/vision_service.py` | 写 `pipeline_status["watermark_overlay"]`；预览点 `allow_strip=False`；`_redact_pdf` 交付开关 |
 | `backend/app/services/vl_md_pipeline_service.py` | 默认走副本（确认/无改动） |
-| `backend/app/api/files.py` | 预览点 `allow_strip=False` |
+| `backend/app/api/files.py` | 预览/标注端点默认净化视图 + `raw=true` 逃生口 |
 | ~~`backend/tests/test_watermark_overlay_detect.py`~~ → 合并为 `backend/tests/test_watermark_overlay_strip.py` | 检测：正样本 + **暖负样本组** + 冷负样本 + 异构卷 |
 | ~~`backend/tests/test_watermark_overlay_build.py`~~ → 同上单文件 | 摘除：逐页校验/残余守卫/异构卷/自检失败/原子性 |
 | ~~`backend/tests/test_file_parser_watermark_wiring.py`~~ → 同上单文件 | 变体缓存/预览原件/原件 sha256/串行 memo/TTL/权限/损坏副本 |
@@ -268,7 +268,7 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 - 云侧（同批）：W1 关闭态与开启态识别框/文本集合逐页一致（千分位/空格归一）。
 
 ### AC5 预览面与交付面（默认不设环境变量）
-- 5a〔守卫〕预览〔与 5c 同 AC，组件缺席时由 5c 必红〕：`api/files.py` 预览端点返回 PNG 与「原件渲染 PNG」**字节相等**（同 dpi=150、同 `get_pixmap` 参数、无打码叠加层的基线调用）；`preview_redaction` 同理比对**未叠加红框的底图**（先取 `allow_strip=False` 的底图字节做对照）。
+- 5a〔判据，2026-11-04 二次裁定后改写〕上传后的预览/标注视图**默认就是净化视图**：`api/files.py` 端点返回的 PNG 与「净化副本 150 dpi 渲染」像素相等、与「原件渲染」在水印笔画带上显著不同；`raw=true` 时退回原件视图（诊断逃生口）。接线钉 `test_page_image_endpoint_defaults_to_clean_view` 防回退。
 - 5b〔守卫〕交付默认（**不设** `DELIVERY_KEEP_WATERMARK`，验默认值本身）：交付 PDF **水印 GT 命中 = 0**（水印区像素与净化渲染一致、与「保留支路」在水印区显著不同）；反向支路（显式 `=true`）恢复保留；两种支路下 ZIP 内都不含副本文件。
 - 5c 交付反向支路：显式 `DELIVERY_KEEP_WATERMARK=false`：交付 PDF GT **= 0**、每页 `/Contents` **1** 条流、页数=原件；正文保全 = 交付 PDF 每页 150 dpi 渲染 vs 副本渲染：掩码外 `max|Δ| ≤ 8`（JPEG 容差）、**差异面积 in [0.5%, 6%]**（两侧页均非空白，不允许 0 对 0）。
 - **5d〔判据〕预览与交付同源**（Issue#236 二次裁定后补）：`preview_redaction` 的底图在水印笔画带上「默认支路 Δ>5 灰阶（已去水印）、保留支路 Δ<3 灰阶（仍带水印）」，两态都必须钉住——否则「预览有水印、下载没有」这类口径错位无人发现。用例 `test_previewed_result_matches_delivery_watermark_policy`。
@@ -386,7 +386,7 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 | `.env.example` | 11 键登记（含默认关与边界注释） |
 | `backend/app/services/file_parser.py` | `get_pdf_page_image(..., allow_strip=True)`、clean/raw 变体缓存键、6 元组键类型同步 |
 | `backend/app/services/vision_service.py` | `pipeline_status["watermark_overlay"]`、预览 `allow_strip=False`、`_delivery_source()` + `_redact_pdf(source_path=)` |
-| `backend/app/api/files.py` | 预览端点 `allow_strip=False` |
+| `backend/app/api/files.py` | 预览/标注端点默认净化视图 + `raw=true` 逃生口 |
 | `backend/tests/test_watermark_overlay_strip.py` | 新增 36 例（合成夹具手写内容流，零 testdata 依赖；含 F9/F10 两条变异可红夹具、幂等/未摘页流逐字节不变+未摘页像素零差/日志零 PII/加密卷显式跳过/非水印区逐像素不变/并发单副本/副本目录不可写 fail-open/部分页残留整卷熔断/水平流不误杀/阈值 N−1/pipeline_status 标签 十一条门⑥ 补强判据） |
 | `CHANGELOG.md` | 本轮登记 |
 
@@ -400,7 +400,7 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 
 ### 8.3 本地已跑通的判据（门③ 本地可判部分）
 
-自动化：`pytest backend/tests/test_watermark_overlay_strip.py` → **50 passed / 5.3s**（head `188a601` + 增量处置），`ruff check` 干净。覆盖 AC1（命中+栅格保全+原件 sha）、AC4（W1 并入主流 / 合法不可见文字层 / 矢量表格三支暖负样本）、AC5（原件视图端点仍吃原件 / **打码结果预览与交付同源（5d 两态）** / 交付默认**去水印** / 交付保留反向支路，像素掩码相对判据）、AC6（冷负样本零文件零构建 + 检测执行证据）、AC7（F4 双流歧义 / F5 残余弃权且不出副本 / F6 合法流不被摘 / F7 单页命中弃权 / F3 异构卷逐页记账 / **F9 合法 ASCII 正文流被字符闸挡住** / **F10 水印与绘制 op 同流判不可摘**）、AC9（0700/0600、页数与 rect、TTL 实清、关闭不探测）、AC10（损坏 / 超限 / 自检失败 fail-open 且不留半成品）、AC11（memo：探测 1 次、构建 1 次、二次调用 0 增量）。
+自动化：`pytest backend/tests/test_watermark_overlay_strip.py` → **51 passed / 5.2s**（head `188a601` + 增量处置），`ruff check` 干净。覆盖 AC1（命中+栅格保全+原件 sha）、AC4（W1 并入主流 / 合法不可见文字层 / 矢量表格三支暖负样本）、AC5（原件视图端点仍吃原件 / **打码结果预览与交付同源（5d 两态）** / 交付默认**去水印** / 交付保留反向支路，像素掩码相对判据）、AC6（冷负样本零文件零构建 + 检测执行证据）、AC7（F4 双流歧义 / F5 残余弃权且不出副本 / F6 合法流不被摘 / F7 单页命中弃权 / F3 异构卷逐页记账 / **F9 合法 ASCII 正文流被字符闸挡住** / **F10 水印与绘制 op 同流判不可摘**）、AC9（0700/0600、页数与 rect、TTL 实清、关闭不探测）、AC10（损坏 / 超限 / 自检失败 fail-open 且不留半成品）、AC11（memo：探测 1 次、构建 1 次、二次调用 0 增量）。
 
 **AC12 变异验证：12/12 KILLED**（M1–M12；每条变异都让具体用例转红；变异脚本为一次性临时件、不入库）：
 
@@ -555,3 +555,16 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 **复核界面可见性（同一轮补）**：`pipeline_status.watermark_overlay` 在复核页此前显示为裸键 `watermark_overlay 已运行 0`（`pipelineLabel()` 里没有该键的标签，回落 `formatSourceDetail`）⇒ 用户看不出「到底摘了水印没有」。已补：标签「水印预处理」+ `code=hit/guard_refused_pages 且 source=copy` 时直接显示「**已摘除 N 页**」；其余码回落通用状态（不谎报）。新增前端用例 `frontend/src/features/batch/components/review-image-content.watermark-chip.test.ts`（4 例：命中、部分页熔断、未命中/未跑/关闭、source 非 copy 不显示）。
 
 **识别输入 = 净化页图（直接取证）**：容器内 `FileParser().get_pdf_page_image(orig, page=132)` 默认支路返回 `code=hit / source=copy / pages_stripped=149` 的页图，与 `allow_strip=False` 原件渲染**同尺寸（2553×3642）但字节不同**；对照图 `.tmp/i236/i236-ocr-input.png`（左=原件渲染带水印，右=OCR 实际吃到的页图无水印）。
+
+## §9.8 识别入口统一取净化源（2026-11-04 用户实测反馈后补）
+
+**暴露的问题**：把真卷前三页单独存成试件（`.tmp/i236/第四卷-前3页.pdf`）后跑识别，`bounding_boxes` 里出现 **96 个水印文本框**（`林映峰`，按 45° 平铺位置分布），而 `pipeline_status.watermark_overlay` 却是 `not_applicable` —— 说明扫描件的「PDF 文本层识别」分支（`_detect_with_pdf_text_layer`）**直接读原件的文字层**，既没取页面图、也没解析净化副本；水印层的文字因此被当成正文实体带进识别结果。
+
+**修法**：`VisionService.detect_with_dual_pipeline` 入口先解析一次识别源 `_recognition_source(file_path)`（开关开启且本卷命中 ⇒ 净化副本，否则原件；异常 fail-open 回原件），让**页图渲染与文本层识别共用同一个源**，并把 `watermark_overlay` 状态在入口就写进 `pipeline_status`（不再依赖「页图被渲染过」这一副作用）。回归用例：
+
+- `test_recognition_source_is_clean_copy_when_strip_hits`：`detect_with_dual_pipeline` 跑 `PDF_SCANNED` 时，`_detect_with_pdf_text_layer` 收到的路径必须是副本、状态码 `hit/copy`。
+- `test_recognition_source_falls_back_when_strip_disabled`：开关关闭 ⇒ 源=原件且 `render_calls` 不增长。
+
+**已验证**：3 页试件重新识别后 `watermark_overlay` 三页均 `hit/copy/pages_stripped=3`；`|交付−副本|` 水印带差值 < 2 灰阶。
+
+**已知边界（不在本 Issue 修）**：文档级文本层链（`text_layer_docline`）按设计仍吃原件，其准入靠 #203 的重复片段覆盖率闸（`coverage > 0.15` 拒）。**页数 < 5 或水印页稀疏的卷**覆盖率算不出来 ⇒ 闸放行 ⇒ docline 仍可能从原件水印层取出 `林映峰` 之类字符串并落成实体框（本次 3 页试件即此形态：96 个框全是水印位置）。修法方向是「docline 准入增加『水印预处理命中 ⇒ 强制回落逐页 OCR』一条」，但那会改变 #203 现有的拒因口径（`repeated_fragment_coverage`）并需要重跑整卷 E2E，故留作后续 Issue。

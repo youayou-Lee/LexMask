@@ -1316,7 +1316,7 @@ const enOverrides: Record<string, string> = {
   'playground.outputPreview.failed': 'Failed to render final output',
   'playground.redactedPreviewFailedDesc':
     'The original image is not shown here as a fallback. Return to edit, retry redaction, or download only after confirming the output.',
-  'playground.originalImage': 'Original image',
+  'playground.originalImage': 'Source view (watermark stripped)',
   'playground.waitingConnection': 'Waiting for the main window...',
   'playground.imageHint': 'OCR and image analysis can take longer on larger files.',
   'playground.cpuWarning': 'CPU-only runs may take 30 to 90 seconds.',

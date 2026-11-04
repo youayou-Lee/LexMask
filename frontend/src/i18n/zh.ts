@@ -1230,7 +1230,7 @@ const zhOverrides: Record<string, string> = {
   'playground.outputPreview.failed': '成品渲染失败',
   'playground.redactedPreviewFailedDesc':
     '这里不会回退显示原图。请返回编辑、重新匿名化，或确认产物后再下载。',
-  'playground.originalImage': '原始图像',
+  'playground.originalImage': '原件视图（水印已摘除）',
   'playground.waitingConnection': '正在等待主窗口连接...',
   'playground.imageHint': '大文件的 OCR 和图像分析耗时会更长。',
   'playground.cpuWarning': '如果只用 CPU，通常需要 30 到 90 秒。',

@@ -784,12 +784,14 @@ async def get_page_image(
     file_id: str,
     page: int = 1,
     redacted: bool = False,
+    raw: bool = False,
     owner_id: str = Depends(require_auth),
 ):
     """Render a single page of a PDF as PNG (for history comparison).
 
     - redacted=False → original upload
     - redacted=True  → the redacted output PDF
+    - raw=True       → 强制原件视图（诊断用；默认跟随水印预处理，见 Issue#236）
     """
     from starlette.responses import Response as RawResponse
 
@@ -819,8 +821,12 @@ async def get_page_image(
 
         parser = FileParser()
         try:
-            # Issue#236：预览是原件视图（含水印），不得用识别用的净化副本。
-            image_bytes = await parser.get_pdf_page_image(file_path, page, allow_strip=False)
+            # Issue#236（用户 2026-11-04 二次裁定）：上传后的预览/标注视图默认就是
+            # 「识别实际吃到的页图」＝净化副本，用户上传即见效；要诊断原件像素
+            # 用 raw=true 显式请求。
+            image_bytes = await parser.get_pdf_page_image(
+                file_path, page, allow_strip=not raw
+            )
             # Issue #83：成品预览翻页需要该 PDF 自身真实页数（替换 docx 回转后
             # 可能与原卷不同），随响应头返回；历史对比消费方可选使用
             page_count = await parser.get_pdf_page_count(file_path)

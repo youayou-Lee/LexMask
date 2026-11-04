@@ -910,6 +910,21 @@ def test_preview_renders_original_not_clean_copy(tmp_path, env):
     assert ImageChops.difference(preview, direct).getbbox() is None, "预览像素不是原件渲染"
 
 
+def test_page_image_endpoint_defaults_to_clean_view():
+    """上传后的预览/标注视图默认就是净化视图（用户 2026-11-04 二次裁定）。
+
+    这条是接线钉：端点若不传 `allow_strip=not raw`，预览会退回带水印的原件，
+    用户上传后看不到效果（实测踩过）。
+    """
+    import inspect
+
+    from app.api import files as files_api
+
+    src = inspect.getsource(files_api.get_page_image)
+    assert "raw: bool = False" in src, "端点必须保留 raw 逃生口"
+    assert "allow_strip=not raw" in src, "预览默认必须走净化视图（raw=True 才退回原件）"
+
+
 def test_previewed_result_matches_delivery_watermark_policy(tmp_path, env, monkeypatch):
     """Issue#236：打码结果预览必须与交付件同源——交付去水印时预览也不该带水印。
 
@@ -1340,3 +1355,77 @@ def test_copy_ttl_validator_forbids_zero():
     validator = Settings.__dict__["_validate_wm_overlay_copy_ttl"].__func__
     assert validator(None, 0) == 1
     assert validator(None, 24) == 24
+
+
+def test_recognition_source_is_clean_copy_when_strip_hits(env, monkeypatch):
+    """识别入口必须拿净化副本：扫描件文本层分支与页图渲染共用同一个源。
+
+    回归背景（2026-11-04 用户实测）：3 页试件跑识别后 `bounding_boxes` 里仍有
+    96 个水印文本框、`watermark_overlay` 却是 not_applicable —— 因为识别走了
+    「PDF 文本层」分支，直接读原件文字层，既没取页面图也没解析副本。
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.core.config import settings
+    from app.models.common import FileType
+    from app.services.vision_service import VisionService
+
+    uploads, outputs = env
+    monkeypatch.setattr(settings, "OUTPUT_DIR", str(outputs), raising=False)
+    monkeypatch.setattr(settings, "WATERMARK_OVERLAY_STRIP_ENABLED", True, raising=False)
+
+    src = str(uploads / "recognise-source.pdf")
+    build_pdf(src, pages=3)
+
+    service = VisionService()
+    seen: dict[str, str] = {}
+
+    async def fake_text_layer(self, file_path, page, types):
+        seen["path"] = file_path
+        return [], None
+
+    monkeypatch.setattr(VisionService, "_detect_with_pdf_text_layer", fake_text_layer)
+    monkeypatch.setattr(
+        VisionService, "_should_skip_sparse_pdf_text_layer", lambda *a, **k: False, raising=False
+    )
+
+    source, status = asyncio.run(service._recognition_source(src))
+    assert status is not None and status["code"] == "hit"
+    assert status["source"] == "copy"
+    assert source != src, "命中后识别源必须是净化副本"
+
+    asyncio.run(
+        service.detect_with_dual_pipeline(
+            src,
+            FileType.PDF_SCANNED,
+            page=1,
+            ocr_has_types=[SimpleNamespace(id="PERSON")],
+            visual_feature_types=None,
+            include_result_image=False,
+        )
+    )
+    assert seen.get("path") == source, "PDF 文本层识别也必须读净化副本，不能读原件"
+    label = (service.last_pipeline_status or {}).get("watermark_overlay") or {}
+    assert label["code"] == "hit" and label["source"] == "copy"
+
+
+def test_recognition_source_falls_back_when_strip_disabled(env, monkeypatch):
+    """关闭开关时识别源就是原件（不得顺手建副本）。"""
+    import asyncio
+
+    from app.core.config import settings
+    from app.services import watermark_overlay as wm_mod
+    from app.services.vision_service import VisionService
+
+    uploads, outputs = env
+    monkeypatch.setattr(settings, "OUTPUT_DIR", str(outputs), raising=False)
+    monkeypatch.setattr(settings, "WATERMARK_OVERLAY_STRIP_ENABLED", False, raising=False)
+    before = wm_mod.stats()["render_calls"]
+
+    src = str(uploads / "disabled-source.pdf")
+    build_pdf(src, pages=3)
+
+    source, status = asyncio.run(VisionService()._recognition_source(src))
+    assert source == src and status is None
+    assert wm_mod.stats()["render_calls"] == before, "关闭时不应调用预处理"
