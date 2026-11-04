@@ -241,13 +241,13 @@ def test_worker_mineru_carrier_uses_adapter_not_fileparser(tmp_path, monkeypatch
 
     calls = {"mineru": 0}
 
-    async def fake_mineru_segments(file_info, *, ocr=None, on_progress=None):
+    async def fake_parse_mineru(file_info, *, ocr=None, on_progress=None):
         calls["mineru"] += 1
         if on_progress:
             on_progress(1, 3)
-        return [Seg(text="扫描页文本李四", page_idx=0, source="text")]
+        return [Seg(text="扫描页文本李四", page_idx=0, source="text")], None
 
-    monkeypatch.setattr("app.services.agent_md_batch.build_mineru_segments", fake_mineru_segments)
+    monkeypatch.setattr("app.services.agent_md_batch.parse_mineru_for_batch", fake_parse_mineru)
     monkeypatch.setattr(
         "app.services.hybrid_ner_service.HybridNERService",
         lambda: FakeNER([[("PERSON", "", 5, 7)]]),
@@ -744,7 +744,7 @@ def test_worker_fails_item_when_mineru_parse_is_empty(tmp_path, monkeypatch):
     async def empty_parse(file_info, **kw):
         raise RuntimeError("parse_no_text: MinerU 未解析出任何正文（v1/v2 两路均 0 字符）")
 
-    monkeypatch.setattr("app.services.agent_md_batch.build_mineru_segments", empty_parse)
+    monkeypatch.setattr("app.services.agent_md_batch.parse_mineru_for_batch", empty_parse)
     store = _store(tmp_path)
     fs = _fake_file_store(tmp_path, monkeypatch)
     doc = tmp_path / "s.pdf"

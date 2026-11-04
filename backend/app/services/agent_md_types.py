@@ -59,6 +59,9 @@ class AgentMdTask:
     segs: list[Seg] = field(default_factory=list)
     entities: list[Entity] = field(default_factory=list)
     mapping: list[MappingItem] = field(default_factory=list)
+    # Issue#248：zip 官方结构化 md（表格/标题/页序保全）——确认渲染时替换
+    # 应用在它上面；缺失时回落拍平重建（legacy render_outputs，显式 warning）
+    structured_md: str | None = None
     warnings: list[str] = field(default_factory=list)
     # Issue#212：解析丢弃的可观测性（恒含 empty_table/unhandled 两键，0 也显式）
     dropped_blocks: dict = field(default_factory=dict)

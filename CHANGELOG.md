@@ -55,6 +55,15 @@
 - **测试**：净 +9 例（并发 Barrier 实证 / 默认串行等价 / 并行==串行 / 提交序合并钉 / 闸宽钳制 / raise_on_error 上抛 / jobs 指标 / **finish_reason 经 contextvar 透传判据**（裸 submit 变异必红）/ 夹具前提钉）；变异 4/4 KILLED；全量 2706 passed 零回归。坑：NER 结果缓存类级共享（conftest 只在测试间清），同测试内并行腿前必须清缓存。
 - **实测**（本地隔离栈，NER=NEO001 RTX4060，冷缓存，页并发=1）：提速试点标准样本（testdata/提速试点样本/，第四卷 8 页混合）窗口=1 = 356.0s（34 补查链/171 任务）→ 窗口=4 = 302.0s = **1.18×**；11 页版 p130–140 = 1.20×；窗口=4 下 mode_smoke 20/20 全 PASS（零残留）。诚实边界：主查分组与 OCR 未动；本地卡单补查任务 1~3s（云 6~14s），云上倍率应更高。
 - **边界**：副刀（页并发 2→4）不在本 PR，第一杠杆落地后另测；默认合入零行为变化，试点值 4 由部署 env 显式开启。
+### 功能（Issue#248）供料产物结构保全——脱敏替换应用在官方结构化 md 上，表格/标题/页序原样保留
+
+- **为什么**：执行背调场景（财产调查反馈表以表格为主）供料输出无可读性——`render_outputs` 用拍平 segs 以 `\n\n` join **重建**全文，解析层即使给出 HTML/管道表格，产物行列关系全散，Agent 无法基于产物问答。用户定稿授权：只脱「是谁」，不脱「发生了什么」。
+- **改了什么**（检测与应用分离，NER 检测逻辑零改动）：
+  1. `agent_md_replace.render_outputs_on_structure`：替换应用在 zip 官方结构化 md 上，语义与 legacy `render_outputs` 同构（非排除项全文替换、original 长度降序防嵌套、excluded 记 retained+页码从 segs 推导）。
+  2. 三道机读闸（fail-closed，产物拒绝出厂）：①结构字符闸（replacement 含 `|<>` 反引号/换行 → `replacement_structural_chars`）；②零残留闸（替换后非排除项原文残留 → `zero_residual_violation`）；③结构对账 `verify_structure_integrity`（页标记序列 + HTML table/tr/td/th 计数 + 管道表分块行/竖线数，破坏 → `structure_integrity_violation`）。
+  3. 单文件线 `confirm` 与批量线 `commit_agent_md_item` 接主路径：draft/任务携带 `structured_md`（Stage1 从 `result.md` 留存）；缺失回落 legacy 拍平重建并显式 warning（`structured_md_missing`，不静默）。批量新增 `parse_mineru_for_batch` 返回 `(segs, structured_md)`，`build_mineru_segments` 保留为兼容薄包装。
+- **测试**：+13 例先红后绿（函数级 9 + 管线接线 2 + 批量接线 1 + 管线 FAILED 通道 1）；变异 4/4 KILLED（删管线 verify/删零残留闸/删结构字符闸/删批量结构路径）；全量 2709 passed 零回归（含 #230/#224/#196 既有面）；ruff 清。
+- **边界**：表格质量取决于解析档位（flash 产物本就无表格结构——standard 档才有；档位是部署配置不在本 PR）；电子 PDF/Excel/Word 表格线、跨文件全局映射、台账产物=二期；NER 检测质量=效果线不变。
 
 ## 2026-11-04
 
