@@ -12,6 +12,11 @@ import { t } from '@/i18n';
 import { localizeErrorMessage, messageFromEnvelope } from '@/utils/localizeError';
 import { errorCodeFromEnvelope, firstMessageText } from '@/utils/errorEnvelope';
 import { ACCEPTED_UPLOAD_FILE_TYPES } from '@/utils/fileUploadAccept';
+import { isPdfFamilyFileType } from '@/lib/watermark-tool';
+import {
+  getWatermarkStatus,
+} from '@/features/watermark-tool/watermarkToolApi';
+import { notifyWatermarkUploadStatus } from '@/features/watermark-tool/upload-notify';
 import { safeJson } from '../utils';
 import { boundingBoxesFromServerInfo, planServerCachedResume } from '../lib/playground-draft';
 import {
@@ -380,6 +385,14 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       if (signal.aborted) return;
 
       applyParsedFile(uploadData.file_id, uploadData.filename, uploadData.file_size, parseData);
+
+      // Issue#244 任务 B：PDF 上传成功后查一次水印检测，命中/无法摘除的形态发
+      // 一次性预告 toast；其余 code、请求失败一律静默（弹窗永不阻断上传流程）。
+      if (isPdfFamilyFileType(parseData.file_type || 'pdf')) {
+        void getWatermarkStatus(uploadData.file_id)
+          .then(notifyWatermarkUploadStatus)
+          .catch(() => {});
+      }
     } catch (err) {
       if (signal.aborted) return;
       // 2026-11-03 用户反馈：服务端拒绝只靠 toast 一闪而过，用户误以为产品坏了——

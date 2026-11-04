@@ -1074,6 +1074,7 @@ class RedactionPipelineMixin:
                 image_redaction_strength=int(cfg.get("image_redaction_strength") or 75),
                 image_fill_color=str(cfg.get("image_fill_color") or "#000000"),
                 watermark_text=(str(cfg.get("watermark_text") or "").strip() or None),
+                watermark_delivery=cfg.get("watermark_delivery"),
             )
             await execute_redaction_request(
                 task.file_id,

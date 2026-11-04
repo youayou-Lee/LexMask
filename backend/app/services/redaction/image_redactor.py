@@ -202,6 +202,7 @@ class ImageRedactorMixin:
             strength=strength,
             fill_color=fill_color,
             progress_cb=progress_cb,
+            watermark_delivery=getattr(config, "watermark_delivery", None),
         )
 
         return len(safe_boxes)

@@ -11,6 +11,9 @@ import { deleteJobItem, getJob } from '@/services/jobsApi';
 import { batchGetFileRaw } from '@/services/batchPipeline';
 import { localizeErrorMessage } from '@/utils/localizeError';
 import { ACCEPTED_UPLOAD_FILE_TYPES } from '@/utils/fileUploadAccept';
+import { isPdfFamilyFileType } from '@/lib/watermark-tool';
+import { getWatermarkStatus } from '@/features/watermark-tool/watermarkToolApi';
+import { notifyWatermarkUploadStatus } from '@/features/watermark-tool/upload-notify';
 import {
   RECOGNITION_DONE_STATUSES,
   type BatchRow,
@@ -276,6 +279,13 @@ export function useBatchFiles(
               uploadedUploadKeysRef.current.add(fileUploadKey(file));
               failedFilesRef.current.delete(fileUploadKey(file));
               const fileType = resolveBatchFileType(r.file_type);
+              // Issue#244 任务 B：PDF 上传成功即查一次水印检测（每个文件查一次，
+              // 并发查、失败静默——弹窗永不阻断上传流程）。
+              if (isPdfFamilyFileType(r.file_type)) {
+                void getWatermarkStatus(r.file_id)
+                  .then(notifyWatermarkUploadStatus)
+                  .catch(() => {});
+              }
               uploadedByIndex[index] = {
                 file_id: r.file_id,
                 original_filename: r.filename,

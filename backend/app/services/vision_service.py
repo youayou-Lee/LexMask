@@ -2231,6 +2231,7 @@ class VisionService:
         strength: int = 75,
         fill_color: str = "#000000",
         progress_cb: Callable[[int, int], None] | None = None,
+        watermark_delivery: str | None = None,
     ) -> str:
         if file_type == FileType.IMAGE:
             return await self._redact_image(
@@ -2238,7 +2239,7 @@ class VisionService:
                 progress_cb=progress_cb,
             )
         if file_type in [FileType.PDF, FileType.PDF_SCANNED]:
-            delivery_source = await self._delivery_source(file_path)
+            delivery_source = await self._delivery_source(file_path, delivery=watermark_delivery)
             return await self._redact_pdf(
                 file_path,
                 bounding_boxes,
@@ -2267,14 +2268,21 @@ class VisionService:
             return file_path, None
         return (source_path or file_path), status
 
-    async def _delivery_source(self, file_path: str) -> str | None:
-        """交付光栅化的源卷：默认原件；仅当显式要求「交付不留水印」时返回净化副本。
+    async def _delivery_source(self, file_path: str, delivery: str | None = None) -> str | None:
+        """交付光栅化的源卷：返回净化副本路径（去水印交付）或 None（用原件）。
 
-        Issue#236 边界：副本只供渲染。这里复用同一份渲染副本（不是新机制），
-        因为交付 PDF 的整页图是**光栅化**结果，与识别取图同源；文本层/建链/闸
-        不受影响（它们本来就吃原件）。
+        Issue#244（用户 2026-11-05 裁定）：交付件水印去留由**用户逐次选择**——
+        `delivery="keep"` 保留原水印（None，默认）、`"strip"` 以净化副本光栅化；
+        `None`（旧客户端/测试未传字段）跟随全局 `WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK`。
+
+        副本复用渲染面同一份净化副本（不是新机制）：交付 PDF 的整页图是光栅化
+        结果，与识别取图同源；文本层/建链/闸不受影响（它们本来就吃原件）。
         """
-        if bool(getattr(settings, "WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK", True)):
+        if delivery == "keep":
+            return None
+        if delivery is None and bool(
+            getattr(settings, "WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK", True)
+        ):
             return None
         if not bool(getattr(settings, "WATERMARK_OVERLAY_STRIP_ENABLED", False)):
             return None

@@ -42,12 +42,13 @@ export function showToast(
   // Issue#194 终审 D（AC2）：通知类 toast 可点击直达。sonner 2.0.7 的 toast 本体
   // 无原生 onClick（ExternalToast 不收该键，传了既类型报错又运行时静默丢弃），
   // 故用其受支持的 action 按钮承担点击直达；旧调用不传即无按钮、外观不变。
-  options?: { onClick?: () => void },
+  // Issue#244：水印检测预告/警示要让人读完（6s），默认通知仍 2400ms。
+  options?: { onClick?: () => void; duration?: number },
 ) {
   const Icon = TOAST_ICON[type];
 
   toast(normalizeToastMessage(message), {
-    duration: 2400,
+    duration: options?.duration ?? 2400,
     ...(options?.onClick
       ? { action: { label: t('toast.open'), onClick: options.onClick } }
       : {}),

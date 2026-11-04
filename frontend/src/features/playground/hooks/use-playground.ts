@@ -646,6 +646,10 @@ export function usePlayground() {
           replacement_mode: effectiveReplacementMode,
           custom_replacements: pseudonymReplacements,
           watermark_text: recognition.watermarkText.trim() || undefined,
+          // Issue#244 任务 C：交付水印只在打码分支生效（替换产物是文本，无水印面）。
+          // keep 为后端默认值，仅 strip 时显式写入，避免无关模式带上该键。
+          watermark_delivery:
+            !isPseudonym && recognition.watermarkDelivery === 'strip' ? 'strip' : undefined,
         },
       });
       if (latestFileIdRef.current !== fileId) {
@@ -677,6 +681,7 @@ export function usePlayground() {
     imageCtx.boundingBoxes,
     recognition.processingMode,
     recognition.watermarkText,
+    recognition.watermarkDelivery,
     pseudonymMap,
     replaceUnready,
     textPdfMaskMode,

@@ -1130,7 +1130,7 @@ class Settings(BaseSettings):
     # 交付物是否保留水印。
     # 2026-11-04 用户裁定（第二次）：交付件**同样去水印** —— 原件不动（取证/法规），
     # 但交付 PDF 的整页图从净化副本光栅化，水印不进交付物；置 True 可退回「交付保留水印」。
-    WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK: bool = False
+    WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK: bool = True
 
     @field_validator("REDACTION_PDF_JPEG_QUALITY")
     @classmethod

@@ -741,6 +741,91 @@ async def get_file_info(file_id: str, owner_id: str = Depends(require_auth)):
     return info
 
 
+# ---------------------------------------------------------------------------
+# Issue#244：水印工具（独立去水印小模块的用户面）——检测报告 / 摘除 / 净化件下载。
+# 复用 watermark_overlay 单一实现（与识别面同一份代码），原件字节不动。
+# ---------------------------------------------------------------------------
+
+
+@router.get("/files/{file_id}/watermark-status")
+async def watermark_status(file_id: str, owner_id: str = Depends(require_auth)):
+    """水印检测报告（只读，不产出副本）：code/页数/签名等；fail-open 返回 error 码。"""
+    snapshot = await _fms.get_file_snapshot(file_id)
+    if not snapshot or _fms.file_owner_id(snapshot) != owner_id:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    file_type = str(snapshot.get("file_type") or "")
+    if file_type not in {"pdf", "pdf_scanned"}:
+        raise AppError(400, "FILE_NOT_PDF", "水印工具仅支持 PDF")
+    file_path = str(snapshot.get("file_path") or "")
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    from app.services import watermark_overlay
+
+    try:
+        data = await asyncio.to_thread(watermark_overlay.probe_report, file_path)
+    except Exception as exc:  # noqa: BLE001 - fail-open
+        raise AppError(400, "WATERMARK_PROBE_FAILED", f"水印检测失败：{exc}") from exc
+    return {"file_id": file_id, **data}
+
+
+@router.post("/files/{file_id}/watermark-strip")
+async def watermark_strip(file_id: str, owner_id: str = Depends(require_auth)):
+    """摘除水印并产出净化副本；返回机读报告。未命中/摘不了的形态显式给码。"""
+    snapshot = await _fms.get_file_snapshot(file_id)
+    if not snapshot or _fms.file_owner_id(snapshot) != owner_id:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    file_type = str(snapshot.get("file_type") or "")
+    if file_type not in {"pdf", "pdf_scanned"}:
+        raise AppError(400, "FILE_NOT_PDF", "水印工具仅支持 PDF")
+    file_path = str(snapshot.get("file_path") or "")
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    from app.services import watermark_overlay
+
+    try:
+        copy_path, status = await asyncio.to_thread(watermark_overlay.render_source, file_path)
+    except Exception as exc:  # noqa: BLE001 - fail-open
+        raise AppError(400, "WATERMARK_STRIP_FAILED", f"水印摘除失败：{exc}") from exc
+    data = dict(status)
+    data["file_id"] = file_id
+    data["clean_available"] = bool(copy_path) and os.path.exists(copy_path)
+    audit_log("watermark-strip", "file", file_id, detail={"code": data.get("code")})
+    return data
+
+
+@router.get("/files/{file_id}/watermark-clean")
+async def watermark_clean_download(file_id: str, owner_id: str = Depends(require_auth)):
+    """下载净化副本（水印工具产物）。副本不存在/不可用 ⇒ 400。"""
+    snapshot = await _fms.get_file_snapshot(file_id)
+    if not snapshot or _fms.file_owner_id(snapshot) != owner_id:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    file_path = str(snapshot.get("file_path") or "")
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    from app.services import watermark_overlay
+
+    try:
+        copy_path, status = await asyncio.to_thread(watermark_overlay.render_source, file_path)
+    except Exception as exc:  # noqa: BLE001 - fail-open
+        raise AppError(400, "WATERMARK_CLEAN_FAILED", f"净化副本不可用：{exc}") from exc
+    if not copy_path or not os.path.exists(copy_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"净化副本不可用（code={status.get('code')}）：该卷未命中水印或摘除被守卫拒绝",
+        )
+    original_name = str(snapshot.get("original_filename") or file_id)
+    clean_name = original_name[:-4] + "-无水印.pdf" if original_name.lower().endswith(".pdf") else f"{original_name}-无水印.pdf"
+    return FileResponse(
+        copy_path,
+        media_type="application/pdf",
+        filename=clean_name,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.get("/files/{file_id}/download")
 async def download_file(file_id: str, redacted: bool = False, owner_id: str = Depends(require_auth)):
     """

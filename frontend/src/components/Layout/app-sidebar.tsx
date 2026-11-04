@@ -3,6 +3,7 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   Database,
+  Eraser,
   FileSpreadsheet,
   LayoutDashboard,
   PackageCheck,
@@ -132,6 +133,12 @@ export function AppSidebar() {
       label: t('nav.restore'),
       sublabel: t('nav.restore.sub'),
       icon: Undo2,
+    },
+    {
+      path: '/watermark-tool',
+      label: t('nav.watermarkTool'),
+      sublabel: t('nav.watermarkTool.sub'),
+      icon: Eraser,
     },
     {
       path: '/jobs',

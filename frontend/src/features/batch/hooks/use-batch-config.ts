@@ -198,6 +198,7 @@ export function useBatchConfig(
           imageRedactionMethod: persisted?.imageRedactionMethod ?? 'mosaic',
           imageRedactionStrength: persisted?.imageRedactionStrength ?? 75,
           imageFillColor: persisted?.imageFillColor ?? '#000000',
+          watermarkDelivery: persisted?.watermarkDelivery === 'strip' ? 'strip' : 'keep',
           presetTextId: null,
           presetVisionId: null,
           executionDefault: persisted?.executionDefault === 'local' ? 'local' : 'queue',

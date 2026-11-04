@@ -512,6 +512,8 @@ const PlaygroundInner: FC = () => {
               processingMode={processingMode}
               setProcessingMode={setProcessingMode}
               maskDisabled={!maskAllowed}
+              watermarkDelivery={recognition.watermarkDelivery}
+              setWatermarkDelivery={recognition.setWatermarkDelivery}
               pseudonymMap={pseudonymMap}
               onPseudonymChange={setPseudonymReplacement}
               pseudonymMapLoading={pseudonymMapLoading}

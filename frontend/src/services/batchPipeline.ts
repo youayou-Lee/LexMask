@@ -74,6 +74,8 @@ export interface BatchWizardPersistedConfig {
   imageFillColor?: string;
   /** 成品水印文案（W2-1）；空=不加 */
   watermarkText?: string;
+  /** Issue#244：交付水印——keep=保留原水印（默认）、strip=识别前摘除（仅打码渲染的 PDF 有效） */
+  watermarkDelivery?: 'keep' | 'strip';
   presetTextId?: string | null;
   presetVisionId?: string | null;
   executionDefault?: 'queue' | 'local';

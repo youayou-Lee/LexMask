@@ -433,6 +433,34 @@ function BatchStep1PresetCardsInner({
                     data-testid="batch-watermark-input"
                   />
                 </div>
+                {/* Issue#244 任务 C：交付水印——保留原水印（默认）/ 去除水印（识别前摘除，仅 PDF） */}
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                    {t('batchWizard.step1.watermarkDeliveryLabel')}
+                  </p>
+                  <Select
+                    disabled={disabled}
+                    value={cfg.watermarkDelivery ?? 'keep'}
+                    onValueChange={(value: 'keep' | 'strip') =>
+                      setCfg((current) => ({ ...current, watermarkDelivery: value }))
+                    }
+                  >
+                    <SelectTrigger className="text-xs" data-testid="batch-watermark-delivery-select">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="keep">
+                        {t('batchWizard.step1.watermarkDeliveryKeep')}
+                      </SelectItem>
+                      <SelectItem value="strip">
+                        {t('batchWizard.step1.watermarkDeliveryStrip')}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] leading-4 text-muted-foreground">
+                    {t('batchWizard.step1.watermarkDeliveryHint')}
+                  </p>
+                </div>
               </div>
             </CardContent>
           </Card>

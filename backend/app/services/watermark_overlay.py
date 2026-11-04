@@ -366,6 +366,26 @@ def probe(
             doc.close()
 
 
+def probe_report(path: str) -> dict:
+    """检测报告（Issue#244 水印工具面）：probe 结果的脱敏 dict——不含副本路径。
+
+    注意：每次调用真实执行探测（不走 memo）；工具页手动触发，代价可接受。
+    """
+    outcome = probe(path)
+    data = {
+        "code": outcome.code,
+        "pages_probed": outcome.pages_probed,
+        "pages_hit": outcome.pages_hit,
+        "fonts": list(outcome.fonts),
+        "size_spread": outcome.size_spread,
+        "alpha_spread": outcome.alpha_spread,
+        "top_repeats": outcome.top_repeats,
+        "elapsed_ms": outcome.elapsed_ms,
+        "error": outcome.error,
+    }
+    return data
+
+
 def _line_set(page: fitz.Page) -> Counter:
     return Counter(line.strip() for line in page.get_text().splitlines() if line.strip())
 
