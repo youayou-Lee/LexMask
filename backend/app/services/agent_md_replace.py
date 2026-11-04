@@ -155,20 +155,34 @@ def render_outputs_on_structure(
 
     与 render_outputs 语义同构，差别只在载体：替换落在 zip 官方 md
     （含 HTML/管道表格、标题、页标记）上，检测层 segs 仅用于 excluded
-    项的页码记账。三道机读闸：
+    项的页码记账。四道机读闸：
 
     1. 结构字符闸：非排除项 replacement 含 ``|`` ``<`` ``>`` `` ` `` 或换行
        → ValueError（replacement_structural_chars）——替换值破坏表格结构
        是结构性风险，不许带病进产物；
-    2. 零残留闸：替换完成后任一非排除项 original_text 仍在产物中出现
+    2. 前向覆盖闸（门⑥ C1）：非排除项 original_text 必须在结构化 md 中
+       出现（替换计数 ≥1）→ 缺失即 ValueError（representation_mismatch）。
+       产物文本面=md 而检测面=segs，两者形态失配（拍平剥空白/HTML 转义/
+       表示选择分叉）意味着该检测项在产物上没有被替换——映射侧泄漏面
+       fail-closed；
+    3. 零残留闸：替换完成后任一非排除项 original_text 仍在产物中出现
        → ValueError（zero_residual_violation）——典型成因是替换值回插
        原文（如 replacement="张三丰" 且 original="张三"），机读判据不许
        靠肉眼；
-    3. 结构对账：``verify_structure_integrity(输入md, 输出md)`` 由调用方
+    4. 结构对账：``verify_structure_integrity(输入md, 输出md)`` 由调用方
        在写盘前执行（本函数产出即输入同一字符串，对账交给调用方组装）。
 
-    excluded 项不替换（全文兜底跳过，长文本优先的嵌套语义与 render_outputs
-    一致：若 excluded 文本落在更长被替换文本内部，随长文本整体替换）。
+    已知残留边界（门⑥ C1 处置）：md 中存在 NER 从未扫描的文本（clean_segments
+    丢弃的 header/footer/page_number 块、strip_inline 剥掉的转义形态）——
+    上述闸只覆盖映射侧；该泄漏面用真实卷逐字符对账（门④）取证定级，
+    结论写 CHANGELOG。excluded 项不替换（全文兜底跳过，长文本优先的嵌套
+    语义与 render_outputs 一致：若 excluded 文本落在更长被替换文本内部，
+    随长文本整体替换）。
+
+    retained 口径注（门⑥ M2）：按**实体**记账（每条 excluded 实体一行，
+    页码取实体起点所在 seg 的 page_idx+1），非按出现次数；``_page_of_offset``
+    对越界偏移兜底取末页——与 legacy「span 未完整落入单 seg 则不记账」在
+    台账层面存在口径分歧，记账面放宽（不影响产物文本，仅影响 retained 台账）。
     """
     items = [m for m in mapping if not m.excluded and m.original_text]
     bad = [m for m in items if _REPLACEMENT_STRUCTURAL_RE.search(m.replacement or "")]
@@ -191,6 +205,16 @@ def render_outputs_on_structure(
             )
 
     md = structured_md
+    # 门⑥ C1 前向覆盖闸：检测项必须在产物载体上真实出现并 ≥1 次被替换。
+    # 缺失=检测面（segs）与产物面（md）表示失配——该项在 md 上未被脱敏。
+    uncovered = [m for m in items if m.original_text not in md]
+    if uncovered:
+        names = "、".join(repr(m.original_text) for m in uncovered[:3])
+        raise ValueError(
+            f"representation_mismatch: {len(uncovered)} 个映射项原文在结构化 md 中"
+            f"不存在（{names}{' 等' if len(uncovered) > 3 else ''}）——检测面与产物面"
+            "表示失配，该项在产物上未被替换，禁止出厂"
+        )
     for m in sorted(items, key=lambda m: len(m.original_text), reverse=True):
         md = md.replace(m.original_text, m.replacement)
 

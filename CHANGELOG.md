@@ -40,8 +40,9 @@
   1. `agent_md_replace.render_outputs_on_structure`：替换应用在 zip 官方结构化 md 上，语义与 legacy `render_outputs` 同构（非排除项全文替换、original 长度降序防嵌套、excluded 记 retained+页码从 segs 推导）。
   2. 三道机读闸（fail-closed，产物拒绝出厂）：①结构字符闸（replacement 含 `|<>` 反引号/换行 → `replacement_structural_chars`）；②零残留闸（替换后非排除项原文残留 → `zero_residual_violation`）；③结构对账 `verify_structure_integrity`（页标记序列 + HTML table/tr/td/th 计数 + 管道表分块行/竖线数，破坏 → `structure_integrity_violation`）。
   3. 单文件线 `confirm` 与批量线 `commit_agent_md_item` 接主路径：draft/任务携带 `structured_md`（Stage1 从 `result.md` 留存）；缺失回落 legacy 拍平重建并显式 warning（`structured_md_missing`，不静默）。批量新增 `parse_mineru_for_batch` 返回 `(segs, structured_md)`，`build_mineru_segments` 保留为兼容薄包装。
-- **测试**：+13 例先红后绿（函数级 9 + 管线接线 2 + 批量接线 1 + 管线 FAILED 通道 1）；变异 4/4 KILLED（删管线 verify/删零残留闸/删结构字符闸/删批量结构路径）；全量 2709 passed 零回归（含 #230/#224/#196 既有面）；ruff 清。
-- **边界**：表格质量取决于解析档位（flash 产物本就无表格结构——standard 档才有；档位是部署配置不在本 PR）；电子 PDF/Excel/Word 表格线、跨文件全局映射、台账产物=二期；NER 检测质量=效果线不变。
+- **门⑥（r1 REVISE，处置后自查）**：C1 产物文本面=md 超出检测面（segs 丢弃 header/footer/转义形态）→ 增补**前向覆盖闸** `representation_mismatch`（每个非排除映射原文必须在结构化 md 中出现并被替换，表示失配 fail-closed）+ 门④真实卷逐字符对账取证（见下）；I1 confirm 闸失败原因不可达 → 路由转 422 AppError（机读码=message 前缀：replacement_structural_chars/representation_mismatch/zero_residual_violation/structure_integrity_violation），前端既有 catch 展示；I2 回落零判据 → 补 confirm/批量两条 `structured_md_missing` 判据 + 批量闸 ValueError 契约钉；M1 夹具偏移订正+页 2 excluded 真判据；M2–M5 边界补记。
+- **测试**：+18 例先红后绿（函数级 12 + 管线接线 2 + 批量接线 2 + 路由信封 1 + 回落 2——含前向覆盖闸与路由信封）；变异 4/4 KILLED（删管线 verify/删零残留闸/删结构字符闸/删批量结构路径）；全量 2717 passed 零回归；ruff 清。
+- **边界**：①表格质量取决于解析档位（flash 产物本就无表格结构——standard 档才有；档位是部署配置不在本 PR，执行背调场景部署时显式 `--mineru-tier standard`）；②映射原文自身含 `|` 或换行时替换会移除该字符 → 结构对账拒绝出厂，唯一出路=该映射项 exclude（fail-closed 且有出口）；③结构化产物含图片/链接语法，全文兜底 replace 理论上可命中 URL 区（实体文本与文件名巧合），未豁免、已记载；④页标记对账正则 `<!-- page N of M -->` 与真实 MinerU 4.x 产物格式一致（真实 80 页卷实测），门④将以真实 canary 复钉；⑤电子 PDF/Excel/Word 表格线、跨文件全局映射、台账产物=二期；NER 检测质量=效果线不变。
 
 ## 2026-11-04
 
