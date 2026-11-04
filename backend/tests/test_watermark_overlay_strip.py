@@ -910,55 +910,69 @@ def test_preview_renders_original_not_clean_copy(tmp_path, env):
     assert ImageChops.difference(preview, direct).getbbox() is None, "预览像素不是原件渲染"
 
 
-def test_delivery_keeps_watermark_by_default(tmp_path, env):
-    """AC5-5b：不设环境变量时交付物仍含水印（默认支路，不是死代码）。"""
+def test_delivery_strips_watermark_by_default(tmp_path, env):
+    """AC5-5b：不设环境变量时交付物**不含水印**（2026-11-04 用户裁定：交付件同样去水印）。"""
+    uploads, _outputs = env
+    src = str(uploads / "delivery-strip-default.pdf")
+    build_pdf(src, pages=3)
+    service = VisionService()
+    out = str(tmp_path / "deliver-default.pdf")
+    # 默认值断言走「声明值」，不依赖单例当前状态（其它用例可能已改过单例）
+    assert _declared_default("WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK") is False
+    previous = settings.WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK
+    settings.WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK = False
+    try:
+        asyncio.run(service.apply_redaction(src, _pdf_type(), [], out))
+    finally:
+        settings.WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK = previous
+
+    # 对照：把同卷从原件光栅化（等价于「保留水印」支路）
+    settings.WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK = True
+    try:
+        keep_out = str(tmp_path / "deliver-keep.pdf")
+        asyncio.run(service.apply_redaction(src, _pdf_type(), [], keep_out))
+    finally:
+        settings.WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK = False
+
+    mask = _watermark_mask(src, 0)
+    outside = ImageChops.invert(mask)
+    default_render = _render_png(out, 0)
+    keep_render = _render_png(keep_out, 0)
+    stripped_render = _render_png(_one_shot_copy(src, tmp_path), 0)
+
+    # 默认交付 = 净化副本光栅化：水印区与净化渲染一致、与保留支路显著不同
+    assert _masked_delta(default_render, stripped_render, mask) < 12, "默认交付仍含水印像素"
+    inside_gap = _masked_delta(keep_render, default_render, mask)
+    outside_gap = _masked_delta(keep_render, default_render, outside)
+    assert inside_gap > max(8.0, 3.0 * outside_gap), (
+        f"保留支路必须与去水印支路在水印区显著不同（掩码区 {inside_gap:.1f} vs 区外 {outside_gap:.1f}）"
+    )
+    assert outside_gap < 6, "掩码区外两侧应一致（版式未被改动）"
+
+
+def test_delivery_keep_switch_restores_watermark(tmp_path, env):
+    """AC5-5b 反向支路：显式置 true 时交付物恢复「从原件光栅化、保留水印」。"""
     uploads, _outputs = env
     src = str(uploads / "delivery-keep.pdf")
     build_pdf(src, pages=3)
     service = VisionService()
-    out = str(tmp_path / "deliver-keep.pdf")
-    asyncio.run(service.apply_redaction(src, _pdf_type(), [], out))
-
-    transcribe_out = str(tmp_path / "deliver-strip.pdf")
-    settings.WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK = False
+    settings.WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK = True
     try:
-        copy_path, _status = wm.render_source(src)
-        assert copy_path
-        # 等价于「交付走净化副本」的光栅化结果，用于像素对照
-        asyncio.run(service.apply_redaction(src, _pdf_type(), [], transcribe_out))
-    finally:
-        settings.WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK = True
-
-    original = _render_png(src, 0)
-    keep = _render_png(out, 0)
-    strip = _render_png(transcribe_out, 0)
-    mask = _watermark_mask(src, 0)
-    outside = ImageChops.invert(mask)
-    inside_delta = _masked_delta(keep, strip, mask)
-    outside_delta = _masked_delta(keep, strip, outside)
-    # 交付是 JPEG 光栅，绝对差受压缩影响；判据取「水印区差 ≥3× 区外差」的相对关系
-    assert inside_delta > max(8.0, 3.0 * outside_delta), (
-        f"默认交付必须保留水印（掩码区 {inside_delta:.1f} vs 区外 {outside_delta:.1f}）"
-    )
-    assert outside_delta < 6, "掩码区外两侧应一致"
-    assert _masked_delta(keep, original, mask) < 20, "保留支路应与原件版式一致"
-
-
-def test_delivery_strip_switch_removes_watermark(tmp_path, env):
-    """AC5-5b 反向支路：显式置 false 时交付物不得再含水印像素。"""
-    uploads, _outputs = env
-    src = str(uploads / "delivery-strip.pdf")
-    build_pdf(src, pages=3)
-    service = VisionService()
-    settings.WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK = False
-    try:
-        out = str(tmp_path / "deliver.pdf")
+        out = str(tmp_path / "deliver-keep-only.pdf")
         asyncio.run(service.apply_redaction(src, _pdf_type(), [], out))
     finally:
-        settings.WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK = True
+        settings.WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK = False
     mask = _watermark_mask(src, 0)
-    stripped_render = _render_png(_one_shot_copy(src, tmp_path), 0)
-    assert _masked_delta(_render_png(out, 0), stripped_render, mask) < 12
+    assert _masked_delta(_render_png(out, 0), _render_png(src, 0), mask) < 20, "保留支路应与原件版式一致"
+    assert _masked_delta(_render_png(out, 0), _render_png(_one_shot_copy(src, tmp_path), 0), mask) > 8, (
+        "保留支路不应等于净化渲染（否则开关失效）"
+    )
+
+
+def _declared_default(field: str):
+    from app.core.config import Settings
+
+    return Settings.model_fields[field].default
 
 
 def _one_shot_copy(src: str, tmp_path) -> str:
@@ -975,13 +989,12 @@ def _pdf_type():
 
 def test_shipped_switch_defaults_follow_decision():
     """AC5a/AC13：出厂默认值即拍板结论（不依赖测试夹具的 monkeypatch）。"""
-    from app.core.config import settings as shipped
-
-    assert shipped.WATERMARK_OVERLAY_STRIP_ENABLED is True, "识别面默认开（2026-11-04 拍板）"
-    assert shipped.WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK is True, "交付默认保留水印"
-    assert shipped.WATERMARK_OVERLAY_PROBE_PAGES == 5
-    assert shipped.WATERMARK_OVERLAY_MIN_HIT_PAGES == 3
-    assert shipped.WATERMARK_OVERLAY_COPY_TTL_HOURS == 24
+    # 断言「出厂声明值」而非单例当前值：单例会被其它用例改，声明值才是发货口径
+    assert _declared_default("WATERMARK_OVERLAY_STRIP_ENABLED") is True, "识别面默认开（2026-11-04 拍板）"
+    assert _declared_default("WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK") is False, "交付默认去水印（2026-11-04 用户裁定）"
+    assert _declared_default("WATERMARK_OVERLAY_PROBE_PAGES") == 5
+    assert _declared_default("WATERMARK_OVERLAY_MIN_HIT_PAGES") == 3
+    assert _declared_default("WATERMARK_OVERLAY_COPY_TTL_HOURS") == 24
 
 # ---------------------------------------------------------------------------
 # AC7 fail-closed 夹具补强：M2/M4 变异可红（op 白名单的绘制类判据 + 字符闸）
