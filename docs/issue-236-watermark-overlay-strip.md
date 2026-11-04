@@ -568,3 +568,15 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 **已验证**：3 页试件重新识别后 `watermark_overlay` 三页均 `hit/copy/pages_stripped=3`；`|交付−副本|` 水印带差值 < 2 灰阶。
 
 **已知边界（不在本 Issue 修）**：文档级文本层链（`text_layer_docline`）按设计仍吃原件，其准入靠 #203 的重复片段覆盖率闸（`coverage > 0.15` 拒）。**页数 < 5 或水印页稀疏的卷**覆盖率算不出来 ⇒ 闸放行 ⇒ docline 仍可能从原件水印层取出 `林映峰` 之类字符串并落成实体框（本次 3 页试件即此形态：96 个框全是水印位置）。修法方向是「docline 准入增加『水印预处理命中 ⇒ 强制回落逐页 OCR』一条」，但那会改变 #203 现有的拒因口径（`repeated_fragment_coverage`）并需要重跑整卷 E2E，故留作后续 Issue。
+
+### §9.9 识别入口改造后的整卷复跑（head `5ac8e54`，本机 docker 栈）
+
+| 判据 | 观测 |
+|---|---|
+| 上传 | `testdata/第四卷.pdf` → `file_id=8d39c1cc-6ea3-4fd3-abdd-9d43422d7f0b`（容器内原件 sha256 与本地一致） |
+| 识别任务 | job `cc17c3c7-ad9c-441a-abc5-14d7993efa99` → `awaiting_review`，149 页，失败页 0 |
+| 水印标签 | 149/149 页统一 `code=hit / source=copy / pages_stripped=149 / pages_skipped=0 / pages_guard_refused=0 / duration_ms=798` |
+| 实体框 | 149 页共 **3,517** 框；`林映峰`=**0**、`14501201410363675`=**0**、`钦州市院`=**0**；`钦州`=61（全为「钦州港海关」等正文） |
+| 文档级文本层 | 149 页统一 `fallback_reason_code=repeated_fragment_coverage`（原件 coverage≈0.376 ⇒ 闸仍拒，docline 未接管） |
+
+结论：把「识别源解析」提到 `detect_with_dual_pipeline` 入口后，整卷行为与 §9.6 一致（`code=hit/source=copy`、零水印文本框、闸口径不变），并且**文本层识别分支不再回读原件水印层**（§9.8 的回归用例钉住）。
