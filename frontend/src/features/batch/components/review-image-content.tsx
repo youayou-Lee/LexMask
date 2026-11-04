@@ -40,7 +40,20 @@ export interface ReviewImageContentProps {
 function pipelineLabel(t: ReturnType<typeof useT>, key: string): string {
   if (key === 'ocr_has') return t('batchWizard.step4.pipelineOcrHas');
   if (key === 'visual_features') return t('batchWizard.step4.pipelineVisualFeature');
+  if (key === 'watermark_overlay') return t('batchWizard.step4.pipelineWatermarkOverlay');
   return formatSourceDetail(key) || key;
+}
+
+/** 水印预处理（Issue#236）：命中即显式报「已摘除 N 页」，避免只显示 ran/0 让人看不出做了什么。 */
+export function watermarkStripChipText(
+  t: ReturnType<typeof useT>,
+  status: ReviewVisionPipelineStatus,
+): string | null {
+  if (status.code !== 'hit' && status.code !== 'guard_refused_pages') return null;
+  const pages = status.pages_stripped;
+  if (typeof pages !== 'number') return null;
+  if (status.source !== 'copy') return null;
+  return t('batchWizard.step4.pipelineWatermarkStripped').replace('{pages}', String(pages));
 }
 
 function pipelineStateLabel(
@@ -496,8 +509,16 @@ function ReviewImageContentInner({
                   )}
                   title={typeof status.error === 'string' ? status.error : undefined}
                 >
-                  {pipelineLabel(t, key)} {pipelineStateLabel(t, status)}
-                  {typeof status.region_count === 'number' ? ` ${status.region_count}` : ''}
+                  {key === 'watermark_overlay' && watermarkStripChipText(t, status) ? (
+                    <>
+                      {pipelineLabel(t, key)} {watermarkStripChipText(t, status)}
+                    </>
+                  ) : (
+                    <>
+                      {pipelineLabel(t, key)} {pipelineStateLabel(t, status)}
+                      {typeof status.region_count === 'number' ? ` ${status.region_count}` : ''}
+                    </>
+                  )}
                 </span>
               ))}
               {currentReviewVisionQuality.warnings.map((warning) => (

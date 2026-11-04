@@ -733,6 +733,8 @@ const zhBase: Record<string, string> = {
   'batchWizard.step4.sourceSummaryChipTitle': '{source}：当前页 {count} 个检测区域。',
   'batchWizard.step4.pipelineOcrHas': 'OCR+HaS',
   'batchWizard.step4.pipelineVisualFeature': '视觉特征',
+  'batchWizard.step4.pipelineWatermarkOverlay': '水印预处理',
+  'batchWizard.step4.pipelineWatermarkStripped': '已摘除 {pages} 页',
   'batchWizard.step4.pipelineRan': '已运行',
   'batchWizard.step4.pipelineSkipped': '已跳过',
   'batchWizard.step4.pipelineFailed': '失败',

@@ -834,6 +834,8 @@ const enBase: Record<string, string> = {
     '{source}: {count} detection regions on the current page.',
   'batchWizard.step4.pipelineOcrHas': 'OCR+HaS',
   'batchWizard.step4.pipelineVisualFeature': 'Visual elements',
+  'batchWizard.step4.pipelineWatermarkOverlay': 'Watermark',
+  'batchWizard.step4.pipelineWatermarkStripped': 'stripped {pages} pages',
   'batchWizard.step4.pipelineRan': 'ran',
   'batchWizard.step4.pipelineSkipped': 'skipped',
   'batchWizard.step4.pipelineFailed': 'failed',

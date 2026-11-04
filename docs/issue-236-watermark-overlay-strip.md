@@ -550,3 +550,7 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 | 人工目检 | `.tmp/i236/i236-deliv-check2.png`：三栏（原件水印可见 / 净化副本 / 交付件水印消失），正文与公章完整 |
 
 边界：本次只翻转交付源，**原件仍一字节不动**、文本层/docline/#203 闸/预览一律仍吃原件（§2.2 的数据钉死不变）；把 `WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK=true` 可随时退回「交付保留水印」。
+
+**复核界面可见性（同一轮补）**：`pipeline_status.watermark_overlay` 在复核页此前显示为裸键 `watermark_overlay 已运行 0`（`pipelineLabel()` 里没有该键的标签，回落 `formatSourceDetail`）⇒ 用户看不出「到底摘了水印没有」。已补：标签「水印预处理」+ `code=hit/guard_refused_pages 且 source=copy` 时直接显示「**已摘除 N 页**」；其余码回落通用状态（不谎报）。新增前端用例 `frontend/src/features/batch/components/review-image-content.watermark-chip.test.ts`（4 例：命中、部分页熔断、未命中/未跑/关闭、source 非 copy 不显示）。
+
+**识别输入 = 净化页图（直接取证）**：容器内 `FileParser().get_pdf_page_image(orig, page=132)` 默认支路返回 `code=hit / source=copy / pages_stripped=149` 的页图，与 `allow_strip=False` 原件渲染**同尺寸（2553×3642）但字节不同**；对照图 `.tmp/i236/i236-ocr-input.png`（左=原件渲染带水印，右=OCR 实际吃到的页图无水印）。
