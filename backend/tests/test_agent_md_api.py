@@ -263,3 +263,25 @@ def test_confirm_gate_failure_envelope(fake_pipeline):
     body = r.json()
     assert body["error_code"] == "structure_integrity_violation"
     assert "structure_integrity_violation" in body["message"]
+
+
+@pytest.mark.parametrize("code", [
+    "replacement_structural_chars",
+    "representation_mismatch",
+    "zero_residual_violation",
+    "structure_integrity_violation",
+])
+def test_confirm_gate_failure_envelope_all_codes(fake_pipeline, code):
+    """门⑥ M-1（#248）：四条闸机读码各一条路由级判据——error_code=message 前缀
+    隐式契约不许格式漂移。"""
+    fake_pipeline.t.state = TaskState.MAPPING_READY
+
+    async def confirm_gate_fail(task_id, decisions):
+        fake_pipeline.t.state = TaskState.FAILED
+        fake_pipeline.t.message = f"{code}: 测试细节"
+        return fake_pipeline.t
+
+    fake_pipeline.confirm = confirm_gate_fail
+    r = client.post("/api/v1/agent-md/tk-1/confirm", json={"decisions": []})
+    assert r.status_code == 422
+    assert r.json()["error_code"] == code

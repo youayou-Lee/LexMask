@@ -390,3 +390,32 @@ def test_batch_commit_gate_failure_raises_valueerror(tmp_path):
         batch.commit_agent_md_item(
             dict(_FS().get("f1"), file_id="f1"),
             [{"id": "m1", "action": "custom", "replacement": "韦|某"}])
+
+
+# ---- 门⑥ N1：img_ocr/sentinel 来源实体豁免前向覆盖闸 -----------------------
+
+
+def test_img_ocr_entity_exempt_from_coverage_gate():
+    """图片 OCR 实体的文本只在检测面（img_ocr seg）、不在 zip md——不构成失配。
+
+    r1 C1 闸初版误杀此类（带文字图片案卷 confirm 必失败）；r2 N1 修正后
+    该夹具必须通过。变异钉：删豁免分支，此测试必须红。"""
+    md_no_img = "# 报告\n\n正文：无表格。\n"  # 图片文本不在 md
+    segs = [
+        Seg(text="![](images/img_0_0.jpg)", page_idx=0, source="text"),
+        Seg(text="户名 李四四 账号 6222020200112233445", page_idx=0, source="img_ocr"),
+        Seg(text="正文：无表格。", page_idx=0, source="text"),
+    ]
+    ents = [
+        # e1 锚在 img_ocr seg：文本不在 md → 必须豁免
+        Entity(id="e1", text="李四四", type="PERSON", start=30, end=33),
+        # e2 锚在 text seg 且文本在 md → 正常覆盖
+        Entity(id="e2", text="无表格", type="OTHER", start=41, end=44),
+    ]
+    mapping = [
+        MappingItem(id="m1", original_text="李四四", entity_type="PERSON", replacement="李某2"),
+        MappingItem(id="m2", original_text="无表格", entity_type="OTHER", replacement="[保留词]"),
+    ]
+    out, _mj, _rt = render_outputs_on_structure(md_no_img, segs, ents, mapping)
+    assert "李某2" not in out and "李四四" not in out  # 图片文本本就不在产物，无泄漏
+    assert "[保留词]" in out  # md 内实体照常替换

@@ -136,14 +136,22 @@ def _find_type(mapping: list[MappingItem], original: str) -> str:
 # ---- Issue#248：结构保全渲染（应用在官方结构化 md 上） --------------------
 
 
-def _page_of_offset(segs: list[Seg], offset: int) -> int:
-    """实体全局偏移 → 1 起始页码（与 render_outputs 的 seg.page_idx+1 口径一致）。"""
+def _seg_of_offset(segs: list[Seg], offset: int) -> Seg | None:
+    """实体全局偏移 → 所在 seg（越界/跨界兜底 None）。"""
     cursor = 0
     for seg in segs:
         end = cursor + len(seg.text)
         if cursor <= offset < end:
-            return seg.page_idx + 1
+            return seg
         cursor = end + len(_SEP)
+    return None
+
+
+def _page_of_offset(segs: list[Seg], offset: int) -> int:
+    """实体全局偏移 → 1 起始页码（与 render_outputs 的 seg.page_idx+1 口径一致）。"""
+    seg = _seg_of_offset(segs, offset)
+    if seg is not None:
+        return seg.page_idx + 1
     return (segs[-1].page_idx + 1) if segs else 1
 
 
@@ -164,7 +172,10 @@ def render_outputs_on_structure(
        出现（替换计数 ≥1）→ 缺失即 ValueError（representation_mismatch）。
        产物文本面=md 而检测面=segs，两者形态失配（拍平剥空白/HTML 转义/
        表示选择分叉）意味着该检测项在产物上没有被替换——映射侧泄漏面
-       fail-closed；
+       fail-closed。**豁免**（门⑥ N1）：锚定 seg 来源为 ``img_ocr``/``sentinel``
+       的实体——其文本只经 OCR 进检测面、从不在 zip 官方 md 里（md 只有
+       图片引用），且结构化产物只写 .md 不带 images/，该文本根本不出现在
+       产物中，不存在泄漏；硬拦反而误杀带文字图片案卷（流水截图/凭证）。
     3. 零残留闸：替换完成后任一非排除项 original_text 仍在产物中出现
        → ValueError（zero_residual_violation）——典型成因是替换值回插
        原文（如 replacement="张三丰" 且 original="张三"），机读判据不许
@@ -207,7 +218,14 @@ def render_outputs_on_structure(
     md = structured_md
     # 门⑥ C1 前向覆盖闸：检测项必须在产物载体上真实出现并 ≥1 次被替换。
     # 缺失=检测面（segs）与产物面（md）表示失配——该项在 md 上未被脱敏。
-    uncovered = [m for m in items if m.original_text not in md]
+    # 门⑥ N1 豁免：锚定 seg 为 img_ocr/sentinel 的实体（其文本只经 OCR 进
+    # 检测面、不在 zip 官方 md、也不进结构化产物——无泄漏面，不构成失配）。
+    exempt = set()
+    for ent in entities:
+        seg = _seg_of_offset(segs, ent.start)
+        if seg is not None and seg.source in ("img_ocr", "sentinel"):
+            exempt.add(ent.text)
+    uncovered = [m for m in items if m.original_text not in md and m.original_text not in exempt]
     if uncovered:
         names = "、".join(repr(m.original_text) for m in uncovered[:3])
         raise ValueError(
