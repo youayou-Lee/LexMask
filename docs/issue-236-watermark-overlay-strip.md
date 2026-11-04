@@ -535,7 +535,7 @@ GT json 结构（F1 落盘一份，其余由 `build_pdf()` 现算）：`{"page":
 | #203 闸不变 | 149/149 页 `text_layer_doc.fallback_reason_code == "repeated_fragment_coverage"`（`repeated_fragment_coverage:0.376`，文本层入口仍吃原件） |
 | 预览面 | `page-image?page=1` → **4,493,427 B**，与容器内原件 150 dpi 渲染 PNG **字节数相同**；副本渲染 4,162,084 B ⇒ 预览走原件 |
 | 未命中卷 | `文本型-叶辉审查报告.pdf` → file_id `747843df-…`，预览 240,682 B；`.watermark_overlay` 文件数 **4 → 4**（零新建） |
-| 清理节拍 | 旧副本（前几轮 E2E 产物，mtime 数小时前）在 TTL=24h 内被保留，未被误删；`sweep_expired()` 在容器内可调用 |
+| 清理节拍（活体验证） | 容器内实跑 `sweep_expired()`：4 份真实副本（age 0.5/2.4/3.1/3.9 h，均 < TTL 24h）⇒ `removed=0`、一份未删；再放一个 `utime=0` 的探针文件 ⇒ `removed=1` 且探针被删、4 份真实副本不受影响 ⇒ AC9「TTL 实清 / 不误删保鲜副本」在生产数据上成立 |
 
 诚实边界（同 §9.3/§9.5）：仍在本机 docker 栈；云实例 `ksai.scnet.cn:10451` 仍 Connection refused。
 
