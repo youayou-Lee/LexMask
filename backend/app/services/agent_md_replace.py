@@ -224,7 +224,10 @@ def render_outputs_on_structure(
     _has_ws = re.compile(r"\s")
     _flex = [m for m in items if _has_ws.search(m.original_text)]
     _plain = [m for m in items if not _has_ws.search(m.original_text)]
-    _flex_res = {m.id: re.compile(r"\s*".join(re.escape(p) for p in re.split(r"\s+", m.original_text)))
+    # 门⑥ r3 M-1：切段滤空——带首尾空白的原文会产出前置/后置 `\s*`（吞段间
+    # 空白造成行合并）乃至零宽模式（纯空白原文全文插值）；NER 实体实际不带
+    # 首尾空白，此处为健壮性收口。
+    _flex_res = {m.id: re.compile(r"\s*".join(re.escape(p) for p in re.split(r"\s+", m.original_text) if p))
                  for m in _flex}
     # 门⑥ C1 前向覆盖闸：检测项必须在产物载体上真实出现并 ≥1 次被替换。
     # 缺失=检测面（segs）与产物面（md）表示失配——该项在 md 上未被脱敏。
@@ -244,10 +247,15 @@ def render_outputs_on_structure(
             f"不存在（{names}{' 等' if len(uncovered) > 3 else ''}）——检测面与产物面"
             "表示失配，该项在产物上未被替换，禁止出厂"
         )
-    for m in sorted(_plain, key=lambda m: len(m.original_text), reverse=True):
-        md = md.replace(m.original_text, m.replacement)
-    for m in sorted(_flex, key=lambda m: len(m.original_text), reverse=True):
-        md = _flex_res[m.id].sub(m.replacement, md)
+    # 门⑥ r3 I-1：**单一循环全局 len 降序**——plain/flex 两段循环会破坏
+    # legacy 的防嵌套保证（plain 短项先跑会吃掉 flex 复合项的前缀，使 flex
+    # pattern 空转、尾段残留产物且三闸全放行）。并回单循环：plain 走
+    # 字节级 replace、flex 走 pattern.sub，排序语义与 legacy 逐一同构。
+    for m in sorted(_plain + _flex, key=lambda m: len(m.original_text), reverse=True):
+        if m.id in _flex_res:
+            md = _flex_res[m.id].sub(m.replacement, md)
+        else:
+            md = md.replace(m.original_text, m.replacement)
 
     residual = [m for m in _plain if m.original_text in md]
     residual += [m for m in _flex if _flex_res[m.id].search(md)]

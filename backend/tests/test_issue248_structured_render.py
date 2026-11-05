@@ -468,3 +468,34 @@ def test_whitespace_flexible_uncovered_gate():
                            entity_type="LICENSE_PLATE", replacement="某车牌1")]
     with pytest.raises(ValueError, match="representation_mismatch"):
         render_outputs_on_structure(md_no_plate, segs, ents, mapping)
+
+
+# ---- 门⑥ r3 I-1：plain/flex 单循环全局降序（防嵌套） ------------------------
+
+
+def test_plain_prefix_does_not_starve_flex_composite():
+    """plain 短项是 flex 复合项的前缀时，长项必须先替换（legacy 全局降序语义）。
+
+    r3 实证漏洞：两段循环让 plain「桂A」先跑，flex「桂A\\n2026D」pattern
+    空转、尾段 2026D 残留产物且三闸全放行。单循环修复后：复合项整体替换、
+    独立出现处照常替换、零残留。删单循环排序（回到两段式）此测试必须红。"""
+    md = (
+        "<!-- page 1 of 1 -->\n\n"
+        "| 车牌 | 状态 |\n| --- | --- |\n| 桂A 2026D | 正常 |\n| 桂A | 注销 |\n\n"
+    )
+    segs = [Seg(text="车牌 桂A\n2026D 状态 正常 桂A 注销", page_idx=0, source="table")]
+    ents = [
+        Entity(id="e1", text="桂A\n2026D", type="LICENSE_PLATE", start=3, end=10),
+        Entity(id="e2", text="桂A", type="LICENSE_PLATE", start=20, end=22),
+    ]
+    mapping = [
+        MappingItem(id="m_long", original_text="桂A\n2026D",
+                    entity_type="LICENSE_PLATE", replacement="某车牌1"),
+        MappingItem(id="m_short", original_text="桂A",
+                    entity_type="LICENSE_PLATE", replacement="某车牌2"),
+    ]
+    out, _mj, _rt = render_outputs_on_structure(md, segs, ents, mapping)
+    assert "2026D" not in out            # 复合项尾段不得残留（r3 I-1 漏洞判据）
+    assert out.count("某车牌1") == 1     # 复合项整体替换
+    assert out.count("某车牌2") == 1     # 独立短项照常替换
+    verify_structure_integrity(md, out)
