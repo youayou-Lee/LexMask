@@ -153,12 +153,22 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
                 replacement = f"{surname}某{_cn_numeral(per_surname[surname])}"
         else:
             replacement = f"{_type_label(ent.type)}{numbers[key]}"
+        # 门④真机事故修复（用户 UI 确认默认路径，2026-11-06）：单字符原文
+        # （退化检测如 CASE_NUMBER:'0'）整文 replace 会命中全卷高频字符——
+        # 页标记 `<!-- page 8**0** -->` 全灭、数字全毁，结构对账 src=80/out=0。
+        # 默认 excluded=True（映射表可见、律师可改），渲染层另有硬闸兜底。
+        excluded = len(ent.text) == 1
+        # 策略表（用户定稿）：机构名保留原文——ORG 默认 excluded=True（泛词
+        # 「证券/保险/支行」整文替换还会毁掉列头）；律师可逐条改 keep。
+        if ent.type == "ORG":
+            excluded = True
         items.append(
             MappingItem(
                 id=f"e{len(items) + 1}",
                 original_text=ent.text,
                 entity_type=ent.type,
                 replacement=replacement,
+                excluded=excluded,
             )
         )
     return items

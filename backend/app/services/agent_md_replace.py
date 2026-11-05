@@ -196,6 +196,17 @@ def render_outputs_on_structure(
     台账层面存在口径分歧，记账面放宽（不影响产物文本，仅影响 retained 台账）。
     """
     items = [m for m in mapping if not m.excluded and m.original_text]
+    # 门④真机事故硬闸（2026-11-06）：单字符原文整文 replace 命中全卷高频
+    # 字符（'0' 毁掉全部页标记/数字）——草稿默认已排除，此处拦用户在审阅
+    # 里显式改 keep→replace 的路径，fail-closed 不给默认流程留暗雷。
+    degenerate = [m for m in items if len(m.original_text) == 1]
+    if degenerate:
+        first = degenerate[0]
+        raise ValueError(
+            f"degenerate_original: {len(degenerate)} 个映射项原文为单字符"
+            f"（{first.original_text!r} 等）——整文替换会命中全卷高频字符毁掉"
+            "产物（页标记/数字全灭），该类项必须保留原文（excluded）"
+        )
     bad = [m for m in items if _REPLACEMENT_STRUCTURAL_RE.search(m.replacement or "")]
     if bad:
         first = bad[0]

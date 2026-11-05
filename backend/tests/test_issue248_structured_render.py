@@ -499,3 +499,18 @@ def test_plain_prefix_does_not_starve_flex_composite():
     assert out.count("某车牌1") == 1     # 复合项整体替换
     assert out.count("某车牌2") == 1     # 独立短项照常替换
     verify_structure_integrity(md, out)
+
+
+# ---- 门④真机事故（2026-11-06）：单字符原文整文替换毁全卷 -------------------
+
+
+def test_degenerate_single_char_original_hard_gate():
+    """单字符原文（CASE_NUMBER:'0'）非排除 → degenerate_original 拒绝出厂。
+
+    用户 UI 默认路径实弹：'0' 整文替换把 80 个页标记（全部含 0）与全部数字
+    毁掉，结构对账 src=80/out=0。草稿默认已排除；此处拦审阅改 keep 的路径。
+    删此闸此测试必红。"""
+    mapping = [MappingItem(id="m1", original_text="0", entity_type="CASE_NUMBER",
+                           replacement="案号9")]
+    with pytest.raises(ValueError, match="degenerate_original"):
+        render_outputs_on_structure(STRUCTURED_MD, SEGS, [], mapping)
