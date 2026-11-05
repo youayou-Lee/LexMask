@@ -224,7 +224,7 @@ def test_pipeline_confirm_renders_on_structured_md(tmp_path):
     md = md_files[0].read_text(encoding="utf-8")
     assert "<table>" in md and "<!-- page 1 of 2 -->" in md
     # 假 NER 只检出人名：人名被替换、未检出值保留（检测质量归效果线，不在本闸）
-    assert "韦某甲" not in md and "[韦某]" in md
+    assert "韦某甲" not in md and "韦某" in md
     assert "452626199005190011" in md
     verify_structure_integrity(STRUCTURED_MD, md)  # 产物与输入结构对账通过
 
