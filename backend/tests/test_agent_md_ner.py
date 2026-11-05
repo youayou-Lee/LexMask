@@ -104,3 +104,19 @@ def test_build_mapping_draft_non_person_zh_short_no_bracket():
     assert got["(2025)桂0103执恢769号"] == "案号1"
     assert got["140331055810018"] == "银行卡1"
     assert got["452626199005190011"] == "证件号1"
+
+
+def test_build_mapping_draft_degenerate_and_org_default_excluded():
+    """门④真机事故：单字符原文与 ORG 默认 excluded=True（律师可改）。"""
+    ents = [
+        Entity(id="a", text="0", type="CASE_NUMBER", start=0, end=1),
+        Entity(id="b", text="百色靖西长江村镇银行", type="ORG", start=5, end=15),
+        Entity(id="c", text="韦日俊", type="PERSON", start=20, end=23),
+        Entity(id="d", text="140331055810018", type="BANK_CARD", start=25, end=40),
+    ]
+    items = build_mapping_draft(ents)
+    got = {m.original_text: m for m in items}
+    assert got["0"].excluded is True            # 单字符退化项默认保留
+    assert got["百色靖西长江村镇银行"].excluded is True  # ORG 策略表默认保留
+    assert got["韦日俊"].excluded is False      # 人名照常替换
+    assert got["140331055810018"].excluded is False
