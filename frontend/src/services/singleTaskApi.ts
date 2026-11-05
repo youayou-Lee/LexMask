@@ -63,6 +63,8 @@ export function submitRedactionTask(
       replacement_mode: 'mask' | 'pseudonym';
       custom_replacements?: Record<string, string>;
       watermark_text?: string;
+      /** Issue#244：交付水印——keep=保留原水印（默认）、strip=识别前摘除（打码模式可传） */
+      watermark_delivery?: 'keep' | 'strip';
     };
   },
 ): Promise<SingleRedactReceipt> {

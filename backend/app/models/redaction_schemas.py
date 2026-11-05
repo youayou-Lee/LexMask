@@ -59,6 +59,12 @@ class RedactionConfig(BaseModel):
         max_length=64,
         description="成品水印文案（图像/PDF 输出平铺半透明叠加）；空=不加",
     )
+    # Issue#244（用户 2026-11-05 裁定）：交付件水印去留由用户逐次选择，默认保留。
+    # None=未传（旧客户端/测试）⇒ 跟随全局 WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK。
+    watermark_delivery: Literal["keep", "strip"] | None = Field(
+        default=None,
+        description="交付件水印：keep=保留原水印（默认），strip=以净化副本光栅化（无水印）",
+    )
 
 
 class RedactionRequest(BaseModel):

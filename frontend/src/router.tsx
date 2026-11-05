@@ -80,6 +80,9 @@ const AgentMd = React.lazy(() =>
 const Restore = React.lazy(() =>
   import('./features/restore').then((m) => ({ default: m.RestorePage })),
 );
+const WatermarkTool = React.lazy(() =>
+  import('./features/watermark-tool').then((m) => ({ default: m.WatermarkToolPage })),
+);
 
 function DelayedSpinner() {
   const [show, setShow] = React.useState(false);
@@ -348,6 +351,14 @@ export const router = createBrowserRouter([
         element: (
           <LazyPage>
             <Restore />
+          </LazyPage>
+        ),
+      },
+      {
+        path: 'watermark-tool',
+        element: (
+          <LazyPage>
+            <WatermarkTool />
           </LazyPage>
         ),
       },

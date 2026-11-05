@@ -1122,6 +1122,29 @@ class Settings(BaseSettings):
     PDF_PAGE_IMAGE_CACHE_PAGES: int = 32
     PDF_PAGE_TEXT_BLOCK_CACHE_PAGES: int = 64
 
+    # Issue#236：独立矢量覆盖水印流的检测与摘除（识别前预处理，仅内部副本）。
+    # 出厂默认**开**（2026-11-04 用户拍板）：只把**渲染取图**换成净化副本，
+    # 文本层建链/闸/预览/交付光栅化仍吃原件；任何异常 fail-open 回原件。
+    # 关掉即回到「零预处理」的旧行为（见 docs/issue-236-watermark-overlay-strip.md §7）。
+    WATERMARK_OVERLAY_STRIP_ENABLED: bool = True
+    # 每卷抽样页数/最少命中页（探针是卷级决策：抽样未达命中数则整卷弃权）。
+    WATERMARK_OVERLAY_PROBE_PAGES: int = 5
+    WATERMARK_OVERLAY_MIN_HIT_PAGES: int = 3
+    # 指纹闸：同一水印的页间一致性（实测族 A 卷 size 极差比 1.02、alpha 恒定）。
+    WATERMARK_OVERLAY_MIN_REPEATS: int = 3
+    WATERMARK_OVERLAY_MAX_SIZE_SPREAD: float = 1.5
+    WATERMARK_OVERLAY_MAX_ALPHA_SPREAD: float = 2.0
+    # 旋转/半透明判定阈值（dir.y 绝对值下限、alpha 上限）；本族实测 0.707 / 51。
+    WATERMARK_OVERLAY_TILT_MIN: float = 0.2
+    WATERMARK_OVERLAY_ALPHA_MAX: int = 220
+    # 体积闸与副本 TTL（副本只供渲染，过期即删；不参与交付/归档）。
+    WATERMARK_OVERLAY_MAX_FILE_MB: int = 400
+    WATERMARK_OVERLAY_COPY_TTL_HOURS: int = 24
+    # 交付物是否保留水印。
+    # 2026-11-04 用户裁定（第二次）：交付件**同样去水印** —— 原件不动（取证/法规），
+    # 但交付 PDF 的整页图从净化副本光栅化，水印不进交付物；置 True 可退回「交付保留水印」。
+    WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK: bool = True
+
     @field_validator("REDACTION_PDF_JPEG_QUALITY")
     @classmethod
     def _validate_redaction_pdf_jpeg_quality(cls, v: int) -> int:
@@ -1136,6 +1159,37 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_pdf_page_text_block_cache_pages(cls, v: int) -> int:
         return max(0, min(512, v))
+
+    @field_validator("WATERMARK_OVERLAY_PROBE_PAGES")
+    @classmethod
+    def _validate_wm_overlay_probe_pages(cls, v: int) -> int:
+        return max(1, min(64, v))
+
+    @field_validator("WATERMARK_OVERLAY_MIN_HIT_PAGES", "WATERMARK_OVERLAY_MIN_REPEATS")
+    @classmethod
+    def _validate_wm_overlay_positive_ints(cls, v: int) -> int:
+        return max(1, min(10_000, v))
+
+    @field_validator("WATERMARK_OVERLAY_TILT_MIN")
+    @classmethod
+    def _validate_wm_overlay_tilt_min(cls, v: float) -> float:
+        return max(0.0, min(1.0, v))
+
+    @field_validator("WATERMARK_OVERLAY_ALPHA_MAX")
+    @classmethod
+    def _validate_wm_overlay_alpha_max(cls, v: int) -> int:
+        return max(1, min(255, v))
+
+    @field_validator("WATERMARK_OVERLAY_MAX_FILE_MB")
+    @classmethod
+    def _validate_wm_overlay_non_negative_ints(cls, v: int) -> int:
+        return max(0, min(1_000_000, v))
+
+    @field_validator("WATERMARK_OVERLAY_COPY_TTL_HOURS")
+    @classmethod
+    def _validate_wm_overlay_copy_ttl(cls, v: int) -> int:
+        # 下限 1：0 会让 sweep/memo 双双「永不过期」，AC9 的 TTL 实清被静默废掉（门⑥ I3）。
+        return max(1, min(1_000_000, v))
 
     @field_validator("VISUAL_SEAL_SOURCE", mode="before")
     @classmethod

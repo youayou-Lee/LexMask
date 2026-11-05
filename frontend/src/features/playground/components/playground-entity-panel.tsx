@@ -53,6 +53,9 @@ export interface PlaygroundEntityPanelProps {
   pseudonymConflicts: Set<string>;
   watermarkText: string;
   setWatermarkText: (text: string) => void;
+  /** Issue#244 任务 C：交付水印选项（打码模式显示；替换模式隐藏） */
+  watermarkDelivery: 'keep' | 'strip';
+  setWatermarkDelivery: (value: 'keep' | 'strip') => void;
   clearPlaygroundTextPresetTracking: () => void;
   /** Issue #70：识别清单快速切换（识别后页面），由页面层构建传入 */
   presetQuickSwitch?: ReactNode;
@@ -93,6 +96,8 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
     pseudonymConflicts,
     watermarkText,
     setWatermarkText,
+    watermarkDelivery,
+    setWatermarkDelivery,
     clearPlaygroundTextPresetTracking,
     presetQuickSwitch,
     onRerunNer,
@@ -228,6 +233,13 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
               replaceDisabled={replacementLocked}
               maskDisabled={maskDisabled}
             />
+            {/* Issue#244 任务 C：交付水印选项——只在打码模式显示；替换产物是文本，无水印面 */}
+            {processingMode === 'mask' && (
+              <WatermarkDeliverySelector
+                value={watermarkDelivery}
+                onChange={setWatermarkDelivery}
+              />
+            )}
             {/* Issue #79 v3：打码=直接涂黑，无子选项（执行固定 mask）；
                 替换（化名）分支唯一方案=化名对照表确认流，「打码方式」选择已删除 */}
             {!replacementLocked && processingMode === 'replace' && (
@@ -472,6 +484,63 @@ const ProcessingModeSelector: FC<{
           {t('playground.processingModeScannedNotice')}
         </p>
       )}
+    </div>
+  );
+};
+
+// Issue#244 任务 C：交付水印二选一（保留原水印默认 / 去除水印），
+// 与 ProcessingModeSelector 同款卡片选项样式。
+const WatermarkDeliverySelector: FC<{
+  value: 'keep' | 'strip';
+  onChange: (value: 'keep' | 'strip') => void;
+}> = ({ value, onChange }) => {
+  const t = useT();
+  const options: { value: 'keep' | 'strip'; label: string; desc: string }[] = [
+    {
+      value: 'keep',
+      label: t('playground.watermarkDeliveryKeep'),
+      desc: t('playground.watermarkDeliveryKeepDesc'),
+    },
+    {
+      value: 'strip',
+      label: t('playground.watermarkDeliveryStrip'),
+      desc: t('playground.watermarkDeliveryStripDesc'),
+    },
+  ];
+
+  return (
+    <div className="space-y-2">
+      <label className="block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {t('playground.watermarkDeliveryLabel')}
+      </label>
+      <div className="grid grid-cols-2 gap-1.5">
+        {options.map((item) => {
+          const selected = value === item.value;
+          return (
+            <label
+              key={item.value}
+              data-testid={`playground-watermark-delivery-${item.value}`}
+              className={ModeOptionCardClasses(selected)}
+            >
+              <input
+                type="radio"
+                name="watermarkDelivery"
+                value={item.value}
+                checked={selected}
+                onChange={() => onChange(item.value)}
+                className="sr-only"
+              />
+              <span className="flex items-center gap-1.5">
+                <ModeRadioDot active={selected} />
+                <span className={ModeOptionLabelClasses(selected)}>{item.label}</span>
+              </span>
+              <span className="truncate text-[10px] leading-3 text-muted-foreground">
+                {item.desc}
+              </span>
+            </label>
+          );
+        })}
+      </div>
     </div>
   );
 };

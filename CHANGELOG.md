@@ -2,6 +2,30 @@
 
 ## 2026-11-05
 
+### 增强（Issue#244）水印产品化三件套：独立工具页 + 上传检测弹窗 + 导出水印逐次选择
+
+- **为什么**：用户验证通过后追加产品需求——去水印作为独立小模块的完整用户面：a) 与识别流程解耦，出问题可单独测这个环节；b) 用户多一个功能选择（只要净化件的场景）；c) 检测到水印要主动告知（此前「干对事但不吭声」）。
+- **交付默认值裁定反转**：`WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK` 默认 **true**（2026-11-05 用户裁定：交付件默认保留水印，用户导出时逐次选择；覆盖 11-04 的「默认去除」）。`RedactionConfig` 新增 `watermark_delivery: "keep"|"strip"`（None=跟随全局），逐请求覆盖全局设置；`_delivery_source(delivery=...)` keep→原件 / strip→净化副本，与 5d「预览与交付同源」语义保持一致（打码结果预览随默认保留=原件视图；上传标注视图 `/files/{id}/page-image` 默认净化不变）。
+- **水印工具 API**（files.py，归属校验与 download 同款）：`GET /files/{id}/watermark-status`（只读检测报告，`probe_report` 脱敏 dict 不含路径）、`POST /files/{id}/watermark-strip`（执行摘除 + 机读报告）、`GET /files/{id}/watermark-clean`（净化件下载；无可用副本 400 带码）。
+- **前端三件套**：侧边栏新增「水印工具」页（上传→检测报告→去水印→下载净化 PDF，code 人话映射 zh/en）；单次/批量上传后水印检测弹窗三态（检测到能摘 / 检测到摘不了给原因 / 未检测到静默，失败静默不阻断）；导出「水印」选项（保留/去除，默认保留，替换模式下隐藏）。
+- **测试**：新增 `tests/test_issue244_watermark_tool_api.py`（报告 hit/负样本/归属 404/strip+净化件下载零令牌/400 码/非 PDF 拒绝 6 例）；交付两测试按新默认重写（默认保留 + 显式 strip/keep 逐次覆盖）；前端 vitest（映射纯函数 + 弹窗三态）。
+
+### 修正（Issue#243）水印预处理命中 ⇒ 文档级链（docline）弃权回落逐页线
+
+- **为什么**：62（证据材料卷51）在栈上实识别暴露（2026-11-05）：探针命中（可见水印流已摘、预览已净化）但 **docline 吃原件文字层建链 872 实体 / 650 个水印框**——文字层里还有一份可读水印文字（4 字「百色市院」×65/页），恰好低于 #203 重复片段闸的「≥10 字长词」判据 ⇒ 闸放行。这是 #236 设计即知的盲区（§9.8 预告），用户实测卷上爆发后按既有修法方向落地。
+- **改了什么**：`text_layer_doc_source._build` 资格链最前置加闸——`render_source`（memo+单飞，不膨胀 probe_calls 计数）`code=hit` ⇒ `_TransientIneligible(watermark_overlay_hit, permanent)` 负缓存，回落逐页线（逐页 OCR 吃净化副本页图、文本层分支吃净化副本文字层，均无水印）；fail-open：水印模块故障不改变 docline 既有路由。
+- **实测**（栈上 62 卷）：`docline=watermark_overlay_hit`、识别框 863→**159**、「百色市院」命中 **0**、类型分布回到正文实体。
+- **测试**：+5 例（命中拒+NER 零调用 / permanent 负缓存 retry_at=inf / 未命中放行不错杀 W2 / 关闭惰性 / render_source 故障放行）。
+
+### 增强（Issue#245）水印摘除泛化：双保险水印流组合试摘 + 单 BT 多 Tj 形态门槛修正
+
+- **为什么**：用户以真实卷验证泛化性时撞出两种新形态，旧判据全部弃权——①`水印卷-6号案卷-p1-10.pdf`（10 页）：同一水印**画两遍**（每页 `/Contents=[图, 6862B 水印×2]`，`徐汉勇+1450120161077595` 真实办案人 PII）；②`62（证据材料卷51）朱海松-p1-5.pdf`（5 页）：30° 旋转、纯黑无 `rg` 填色、65 份水印**塞进单个 BT…ET 块**（130 个 `Tm` 携 65 个 `Tj`）。①单流差分 oracle 天然失效（摘一条另一条还在 ⇒ 0 候选）；②被「每流 ≥3 个 BT 块」门槛误拒（BT=1）。两种形态均经独立实验证实**可无损摘除**（图像 XObject sha256 逐字节不变、非覆盖 span 逐字段不变、渲染差异恰为水印覆盖、PII 零残留）。
+- **改了什么**（`watermark_overlay.py`，探针与构建两侧）：
+  1. **组合试摘**：单流候选全败时，对页内合格流做组合枚举（升序、合格流 ≤6 封顶），要求「摘后无覆盖 span 且非覆盖 span 逐字段不变」的通过组合**唯一**，多于一组仍判歧义弃权；单流命中路径零改动（既有卷快路径不受影响）。探针产物 `slot_by_page` 从 `(page, slot)` 泛化为 `(page, (slot,…))`，构建按整组同摘。
+  2. **构建侧三层新守卫**：探针验证过的子集走廉价行集校验；**其余组合必须过全套 span oracle**（防止借组合之名删正文）；**接受前守卫**——摘后不得残留覆盖 span（双保险页只摘到一层宁可熔断也不产出「看似净化实则带水印」的副本）。
+  3. **文字门槛修正**：`_MIN_BT_PER_STREAM`（数 BT 块）改为 `_MIN_TEXT_OPS`（按 `Tj/TJ/'/"` 文字绘制 op 计数 ≥3）——BT 块数是形态相关信号，62 卷单块 65 Tj 形态被它误杀。
+- **真卷证据（新代码模块级 E2E）**：6号案卷 10 页 `hit`（组合 `(0,2)`×5 页）→ `stripped 10/10`、222ms；62 卷 5 页 `hit`（单流 `(2,)`）→ `stripped 5/5`、66ms；两卷图像 sha 不变、非覆盖 span 不变、PII 零残留。单层回归：canary `hit/stripped 3/3`、第四卷 149 页 `hit/stripped 149/149`、916ms——行为与旧版一致。
+- **测试**：54 例（F4 语义反转为「双保险整组摘除」含正文像素级对照；新增 62 卷单 BT 多 Tj 夹具形态钉；新增组合守卫三层负样本——混合流[倾斜水印+水平数字正文同流]必须三层全拒；F5/W1/F6/异构卷等既有负样本判据不变）；宿主全量回归 **2751 passed / 0 failed**；`ruff` 干净。
 ### 性能（Issue#216）截断补查链并发化——单文件识别提速第一杠杆
 
 - **为什么**：#216 挂账「补查并行化 + 单请求死线」。补查链（截断恢复时按文本块 × 类型批重查）是双重串行 for，每段 6~14s、9~12 段接龙能吃光页预算（#209 页 133 老病）；串行接龙是单文件扫描线剩的最大乘法。
@@ -11,6 +35,24 @@
 - **边界**：副刀（页并发 2→4）不在本 PR，第一杠杆落地后另测；默认合入零行为变化，试点值 4 由部署 env 显式开启。
 
 ## 2026-11-04
+
+### 变更（Issue#236）独立矢量覆盖水印流：识别取图前检测并摘除（仅内部副本）
+
+- **为什么**：族 A 案卷（如「第四卷」149 页）每页 `/Contents=[A,B]`——A 是整页扫描图 + 不可见 OCR 文字层，B 是 5384B 的独立水印层（30 组 45° 半透明 `BT…Tj…ET`，`0.25098 rg` + `/Gs1 gs` alpha 51 + `NotoSansCJKsc-Regular` 29.22）。这类水印会污染 OCR 取图（浅灰字被当正文）与后续 PII 召回；而把它「当文本过滤」会连带擦掉正文（#206 实测 43,449→8,468 字符）。摘 B 是无损的：原件字节不动，只是内部渲染副本少一层。
+- **改了什么**：
+  1. 新模块 `backend/app/services/watermark_overlay.py`：卷级**差分 oracle 探针**（抽样页逐条内容流试摘 → 要求「水印 span 消失且非水印 span 逐字段相等」且候选唯一）→ 指纹闸（字体/尺寸极差/alpha/重复次数）→ 逐页摘除（op 白名单 + 行集合校验 + 残余水印令牌守卫）→ 副本落 `OUTPUT_DIR/.watermark_overlay`（0700/0600、TTL 清理、页数自检、原子 `os.replace`）。进程级 memo + 单飞：每卷只付一次探测/构建。
+  2. `file_parser.get_pdf_page_image(..., allow_strip=True)`：识别/VL-MD 走净化副本，**页图缓存键加 clean/raw 变体**（否则预览与识别互相污染）；预览两点（`vision_service.preview_redaction`、`api/files.py` 预览端点）显式 `allow_strip=False`。
+  3. `vision_service`：`pipeline_status` 新增 `watermark_overlay` 段（code/source/pages_probed/pages_hit/pages_stripped/pages_skipped/duration_ms），随任务指标与结果页透出；交付光栅化新增 `_delivery_source()`（**默认交付去水印**：交付 PDF 整页图从净化副本光栅化；置 `WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK=true` 退回保留水印）。
+  4. 配置 11 键（识别面默认开：`WATERMARK_OVERLAY_STRIP_ENABLED=true`；**交付默认去水印**，2026-11-04 用户裁定）——开关、探测页数、命中页下限、指纹阈值、倾斜/α 阈值、体积闸、副本 TTL、交付保留开关。
+- **测试**：新增 `backend/tests/test_watermark_overlay_strip.py` 53 例（合成夹具手写内容流：命中摘除+栅格保全、暖负样本[水印并入主流/合法不可见文字层/矢量表格]、`[A,B1,B2]` 歧义、单页命中弃权、异构卷逐页记账、残余水印弃权且**不产出带水印副本**、合法流不被误摘、冷负样本零文件零构建、副本权限/TTL/结构、关闭时不探测、损坏/超限/自检失败 fail-open、预览原件视图、交付默认保留+反向支路像素级对照；门⑥ 两轮评审 + 增量短审补强的页级熔断/码表/负缓存/插槽映射/清理节拍接线运行时钉/TTL 下限等）；`ruff` 干净；变异验证 **12/12 KILLED**（M1–M12，每条改动都让具体用例转红）。
+- **复核界面水印可见性**：`pipeline_status.watermark_overlay` 原先渲染成裸键「watermark_overlay 已运行 0」（前端 `pipelineLabel()` 无该键映射）⇒ 补「水印预处理」标签 + `code=hit/guard_refused_pages && source=copy` 时显示「已摘除 N 页」；新增 4 例前端用例。
+- **上传后预览/标注视图默认净化**：`GET /api/v1/files/{id}/page-image` 从「固定原件视图」改为 `allow_strip=not raw`（默认净化副本；`?raw=true` 退回原件，诊断用），用户上传后翻页即见水印已摘除，不用等识别跑完。接线钉 `test_page_image_endpoint_defaults_to_clean_view`。
+- **打码结果预览与交付同源**：`preview_redaction` 底图改走 `_delivery_source()`（默认即净化副本；原件视图仍由 `/files/{id}/page-image` 提供），修掉「预览有水印、下载没有」的口径错位；新增 AC5-5d 两态判据 `test_previewed_result_matches_delivery_watermark_policy`（默认 Δ>5 灰阶 / 保留支路 Δ<3 灰阶）。
+- **单次处理结果页报「水印预处理 已摘除 N 页」**：新增共享读法 `frontend/src/lib/watermark-overlay.ts`（`watermarkOverlayStatusFromVisionQuality` + `watermarkStripChipText`），`playground-result-action-bar` 渲染 chip；草稿快照缺 `vision_quality` 时自取一次文件详情，未命中/未跑/关闭不显示（不谎报）。前端 47 文件 / 363 例全过。
+- **交付件去水印（2026-11-04 用户裁定）**：`WATERMARK_OVERLAY_DELIVERY_KEEP_WATERMARK` 默认改 `false`，交付 PDF 整页图从净化副本光栅化。真卷复验（149 页，`output_file_id=4ce1e303-…`，69,507,957 B）：水印墨迹像素上 `|交付−净化副本|=1.66/0.97/2.00`、`|交付−原件|=35.87/35.95/35.65` ⇒ 交付件已无水印；原件仍一字节不动，预览/文本层/闸继续吃原件。测试改两条：默认支路断言「交付=净化渲染」、反向支路断言「置 true 恢复保留」（原「默认保留」用例同步改名）。
+- **门④ 实测（本机 docker 栈整卷，149 页真卷）**：识别 149/149 页 `code=hit/source=copy`；副本文本 90,624→47,253 字符、水印令牌 1,788→0；OCR 实体框 3,499 个、水印串命中 0；`text_layer_doc` 仍按原件 coverage 0.376 弃用建链（#203 闸行为不变）；预览端点仍为原件视图；探针+构建 660 ms；未命中卷零新建副本；门⑥ 二轮处置后在最终 head 复跑：149/149 仍 `hit/copy`、`pages_guard_refused=0`、副本 25,798,037 B / 47,253 字符 / 令牌 0、实体框 3,540、预览 4,493,427 B（原件视图）、交付件 85,278,328 B 且水印笔画带内「交付↔原件 6.91 < 交付↔副本 19.91」；全量回归 18 failed（既有 `/dev/shm` 环境性）+ 2,722 passed，与基线失败集合逐条一致；增量短审处置后在 head `cbf344c` 第三次整卷复跑同样 149/149 `hit/copy`、`pages_guard_refused=0`、副本 47,253 字符/令牌 0、实体框 3,502、预览字节数=原件渲染、未命中卷零新建、清理节拍 790 ms。
+- **识别入口统一解析净化源（2026-11-04 用户实测反馈后补）**：扫描件的「PDF 文本层识别」分支原先直接读**原件**文字层，水印层的文字会被当正文带进识别框（3 页试件上出现 96 个「林映峰」水印框而 `watermark_overlay` 却是 `not_applicable`）。现在 `VisionService.detect_with_dual_pipeline` 入口先解析一次 `_recognition_source()`（开关开启且本卷命中 ⇒ 净化副本），**页图渲染与文本层识别共用同一个源**，并把状态在入口写进 `pipeline_status`；回归用例 `test_recognition_source_is_clean_copy_when_strip_hits` / `test_recognition_source_falls_back_when_strip_disabled`。整卷复跑（149 页，head `5ac8e54`）：149/149 `hit/copy`、`pages_stripped=149`、`pages_guard_refused=0`、798 ms；实体框 3,517 个，`林映峰`/`14501201410363675`/`钦州市院` 命中 0（`钦州` 61 次为正文）。
+- **边界**：只处理「独立矢量流」形态——烧进像素的水印、文字层内的水印碎片不在本 Change（#215 后续阶段）；文本层建链与 #203 闸**仍吃原件**（副本仅渲染，实测副本 coverage 0.0407 < 闸 0.15 会让 docline 接管并撞 300s 页墙）；agent_md（MinerU）走原件字节，不在本 Change。
 
 ### 修正（Issue#232/#237）错误信封机读化：拒收文案按码本地化 + 下载路径空 detail 出 "{}" + healthcheck 敲错门牌
 

@@ -26,6 +26,11 @@ export interface FileInfo {
   is_scanned?: boolean;
   page_count?: number;
   pages?: string[];
+  /**
+   * Issue#236：文件详情的 `vision_quality`（页号字符串键 → 页记录），
+   * 用来在结果页报「水印预处理 已摘除 N 页」。仅在回场/识别后填充。
+   */
+  vision_quality?: Record<string, unknown>;
 }
 
 export interface Entity {

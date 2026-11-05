@@ -87,6 +87,14 @@ export interface ReviewVisionPipelineStatus {
   failed?: boolean;
   region_count?: number;
   error?: string | null;
+  /** 水印预处理（Issue#236）机读字段；其它阶段不填。 */
+  code?: string;
+  source?: string;
+  pages_probed?: number;
+  pages_hit?: number;
+  pages_stripped?: number;
+  pages_skipped?: number;
+  pages_guard_refused?: number;
 }
 
 export interface ReviewVisionPageQuality {

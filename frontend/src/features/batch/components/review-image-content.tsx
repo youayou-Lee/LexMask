@@ -3,6 +3,7 @@
 import { memo, useCallback, useId, useMemo, useState } from 'react';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { watermarkStripChipText as watermarkStripChipTextFor } from '@/lib/watermark-overlay';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { PaginationRail } from '@/components/PaginationRail';
@@ -40,8 +41,11 @@ export interface ReviewImageContentProps {
 function pipelineLabel(t: ReturnType<typeof useT>, key: string): string {
   if (key === 'ocr_has') return t('batchWizard.step4.pipelineOcrHas');
   if (key === 'visual_features') return t('batchWizard.step4.pipelineVisualFeature');
+  if (key === 'watermark_overlay') return t('batchWizard.step4.pipelineWatermarkOverlay');
   return formatSourceDetail(key) || key;
 }
+
+export { watermarkStripChipText } from '@/lib/watermark-overlay';
 
 function pipelineStateLabel(
   t: ReturnType<typeof useT>,
@@ -496,8 +500,16 @@ function ReviewImageContentInner({
                   )}
                   title={typeof status.error === 'string' ? status.error : undefined}
                 >
-                  {pipelineLabel(t, key)} {pipelineStateLabel(t, status)}
-                  {typeof status.region_count === 'number' ? ` ${status.region_count}` : ''}
+                  {key === 'watermark_overlay' && watermarkStripChipTextFor(t, status) ? (
+                    <>
+                      {pipelineLabel(t, key)} {watermarkStripChipTextFor(t, status)}
+                    </>
+                  ) : (
+                    <>
+                      {pipelineLabel(t, key)} {pipelineStateLabel(t, status)}
+                      {typeof status.region_count === 'number' ? ` ${status.region_count}` : ''}
+                    </>
+                  )}
                 </span>
               ))}
               {currentReviewVisionQuality.warnings.map((warning) => (

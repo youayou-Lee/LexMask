@@ -221,6 +221,8 @@ export function buildJobConfigForWorker(
     image_redaction_strength: c.imageRedactionStrength,
     image_fill_color: c.imageFillColor,
     watermark_text: (c.watermarkText || '').trim() || undefined,
+    // Issue#244：交付水印只在打码渲染分支生效；keep 为后端默认值，仅 strip 显式写入。
+    watermark_delivery: c.watermarkDelivery === 'strip' ? 'strip' : undefined,
     batch_wizard_mode: wizardMode,
     preferred_execution: c.executionDefault === 'local' ? 'local' : 'queue',
     wizard_furthest_step: wizardFurthestStep,
@@ -264,6 +266,7 @@ export function mergeJobConfigIntoWizardCfg(
     imageFillColor:
       typeof jc.image_fill_color === 'string' ? jc.image_fill_color : c.imageFillColor,
     watermarkText: typeof jc.watermark_text === 'string' ? jc.watermark_text : c.watermarkText,
+    watermarkDelivery: jc.watermark_delivery === 'strip' ? 'strip' : c.watermarkDelivery,
   };
 }
 

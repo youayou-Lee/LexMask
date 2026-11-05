@@ -1,12 +1,17 @@
 ﻿// Copyright 2026 LexMask Contributors
 
-import { useState, type FC } from 'react';
+import { useEffect, useState, type FC } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { getEntityTypeName } from '@/config/entityTypes';
 import { useI18n, useT } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { authFetch } from '@/services/api-client';
 import type { FileInfo } from '../types';
+import {
+  watermarkOverlayStatusFromVisionQuality,
+  watermarkStripChipText,
+} from '@/lib/watermark-overlay';
 
 export interface PlaygroundResultActionBarProps {
   fileInfo: FileInfo | null;
@@ -33,6 +38,37 @@ export const PlaygroundResultActionBar: FC<PlaygroundResultActionBarProps> = ({
   const t = useT();
   const locale = useI18n((state) => state.locale);
   const flowCopy = resultActionFlowCopy(locale, redactedCount);
+  // Issue#236：水印预处理命中时显式报「已摘除 N 页」——`region_count` 恒 0，
+  // 只靠通用状态行用户看不出这一步到底做了什么。
+  // 草稿快照恢复回来的会话（老 draft）可能没带 vision_quality：自取一次文件详情，
+  // 否则用户点「继续审阅」回场就看不到这行证据。
+  const [fetchedVisionQuality, setFetchedVisionQuality] = useState<unknown>(undefined);
+  const fileId = fileInfo?.file_id;
+  const hasInlineQuality = fileInfo?.vision_quality !== undefined;
+  useEffect(() => {
+    if (!fileId || hasInlineQuality) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await authFetch(`/api/v1/files/${fileId}`);
+        if (!res.ok || cancelled) return;
+        const info = (await res.json()) as Record<string, unknown>;
+        if (!cancelled) setFetchedVisionQuality(info.vision_quality);
+      } catch {
+        // 取不到就不显示 chip：宁可少一行，也不谎报「已摘除」
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId, hasInlineQuality]);
+
+  const watermarkChip = watermarkStripChipText(
+    t,
+    watermarkOverlayStatusFromVisionQuality(
+      hasInlineQuality ? fileInfo?.vision_quality : fetchedVisionQuality,
+    ),
+  );
   const [downloading, setDownloading] = useState(false);
 
   const handleDownloadClick = () => {
@@ -63,6 +99,16 @@ export const PlaygroundResultActionBar: FC<PlaygroundResultActionBarProps> = ({
                   : t('playground.redactedPreviewPreparing')}
               </p>
               <p className="truncate text-xs text-background/70">{flowCopy.countLabel}</p>
+              {watermarkChip ? (
+                <p
+                  className="mt-1.5 flex items-center gap-1 text-[11px] font-medium text-background"
+                  data-testid="playground-watermark-chip"
+                >
+                  <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-background/35 bg-background/15 px-2 py-0.5">
+                    {t('batchWizard.step4.pipelineWatermarkOverlay')} {watermarkChip}
+                  </span>
+                </p>
+              ) : null}
               <div className="mt-1.5 hidden items-center gap-1.5 lg:flex">
                 {flowCopy.steps.map((step, index) => (
                   <span

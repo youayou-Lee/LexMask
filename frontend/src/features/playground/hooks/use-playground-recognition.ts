@@ -178,6 +178,10 @@ export function usePlaygroundRecognition() {
   }, []);
   // 成品水印文案（W2-1）：只作用于最终执行输出，预览不加
   const [watermarkText, setWatermarkText] = useState('');
+  // Issue#244 任务 C：交付水印选项——保留原水印（默认）/ 去除水印（识别前摘除）。
+  // 只对打码（mask）模式有意义；替换（structured/pseudonym）产物是文本，无水印面，
+  // 提交侧会忽略该值且面板隐藏选项。
+  const [watermarkDelivery, setWatermarkDelivery] = useState<'keep' | 'strip'>('keep');
   const [playgroundPresets, setPlaygroundPresets] = useState<RecognitionPreset[]>([]);
   const [playgroundPresetTextId, setPlaygroundPresetTextId] = useState<string | null>(null);
   const [playgroundPresetVisionId, setPlaygroundPresetVisionId] = useState<string | null>(null);
@@ -665,6 +669,8 @@ export function usePlaygroundRecognition() {
     setReplacementMode,
     watermarkText,
     setWatermarkText,
+    watermarkDelivery,
+    setWatermarkDelivery,
     textPresetsPg,
     visionPresetsPg,
     playgroundPresetTextId,
