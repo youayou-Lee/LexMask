@@ -22,7 +22,8 @@ _SEP = "\n\n"
 _TYPE_ZH = {
     "PERSON": "人名", "BIRTH_DATE": "出生日期", "ID_NUMBER": "证件号",
     "BANK_CARD": "银行卡", "PHONE": "电话", "PLATE": "车牌", "ADDRESS": "地址",
-    "ORG": "机构",
+    "ORG": "机构", "CASE_NUMBER": "案号", "ID_CARD": "证件号",
+    "LICENSE_PLATE": "车牌",
 }
 
 
@@ -108,9 +109,11 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
 
     终审 I2：每 (原文, 类型) 只出一行——render_outputs 的查找 dict 是 last-row-wins，
     重复行会让用户对非末行决策被静默忽略；去重后行 id 与 (text,type) 一一对应。
-    PERSON 化名口径（用户定稿 2026-10-08）：替换值一律 [..] 括号包裹；该姓唯一实体
-    → [袁某]；同姓多个 → 汉字序号 [袁某一]/[袁某二]…（≥100 回退阿拉伯数字）。
-    其余类型保持 [类型_N] 占位符——机构/地址化名口径后续对齐 Issue#50 T4。
+    化名口径（用户 2026-11-05 裁定，修订 2026-10-08 括号稿）：**不带括号**——
+    供料产物是给下游 Agent 吃的自然文本，带 [..] 语法标记会被 Agent 复述时
+    变形（丢括号），映射表精确反查就断了。该姓唯一实体 → 廖某；同姓多个 →
+    汉字序号 廖某一/廖某二…（≥100 回退阿拉伯数字）。其余类型 中文短名+序号
+    （案号1/银行卡2）——同 reason，`类型_N` 括号形态一并废弃。
     """
     # 第一遍：按 (原文, 类型) 去重，首次出现顺序做类型内全局编号。
     numbers: dict[tuple[str, str], int] = {}
@@ -145,11 +148,11 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
             surname = ent.text.strip(WRAPPING_QUOTE_CHARS)[:1]
             per_surname[surname] = per_surname.get(surname, 0) + 1
             if surname_totals[surname] == 1:
-                replacement = f"[{surname}某]"
+                replacement = f"{surname}某"
             else:
-                replacement = f"[{surname}某{_cn_numeral(per_surname[surname])}]"
+                replacement = f"{surname}某{_cn_numeral(per_surname[surname])}"
         else:
-            replacement = f"[{_type_label(ent.type)}_{numbers[key]}]"
+            replacement = f"{_type_label(ent.type)}{numbers[key]}"
         items.append(
             MappingItem(
                 id=f"e{len(items) + 1}",

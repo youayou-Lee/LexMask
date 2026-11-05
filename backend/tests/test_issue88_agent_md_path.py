@@ -67,7 +67,7 @@ def test_draft_surname_defensive_strip():
     # 防御层：即便上游漏剥，映射草稿姓氏也不取到引号
     items = build_mapping_draft([Entity(id="e1", text="“李四”", type="PERSON",
                                         start=0, end=4, source="has")])
-    assert items[0].replacement == "[李某]", items[0].replacement
+    assert items[0].replacement == "李某", items[0].replacement
 
 
 def test_pipeline_bare_and_quoted_merge_single_row():
@@ -78,4 +78,4 @@ def test_pipeline_bare_and_quoted_merge_single_row():
     items = build_mapping_draft(ents)
     assert len(items) == 1, [(i.original_text, i.replacement) for i in items]
     assert items[0].original_text == "李四"
-    assert items[0].replacement == "[李某]"
+    assert items[0].replacement == "李某"
