@@ -105,6 +105,7 @@ async def parse_file(file_id: str) -> dict[str, Any]:
                 "pages": result.pages,
                 "page_count": result.page_count,
                 "is_scanned": result.is_scanned,
+                "watermark_inline_filtered": getattr(result, "watermark_inline_filtered", 0),
             })
 
     result.file_id = file_id

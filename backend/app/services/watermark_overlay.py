@@ -369,6 +369,59 @@ def probe(
             doc.close()
 
 
+def is_overlay_line(line: dict, *, tilt_min: float = _TILT_MIN, alpha_max: int = _ALPHA_MAX) -> bool:
+    """get_text("dict") 行级覆盖水印判定（Issue#250 inline 形态）。
+
+    行倾斜 + 行内任一 span 半透明（alpha∈[1, alpha_max]）⇒ 覆盖水印行。
+    正文（水平不透明）与扫描件不可见 OCR 层（alpha=0）天然不命中。
+    """
+    direction = line.get("dir") or (1.0, 0.0)
+    if abs(float(direction[1])) < tilt_min:
+        return False
+    for span in line.get("spans", []) or []:
+        alpha = int(span.get("alpha", 255))
+        if _ALPHA_MIN <= alpha <= alpha_max and str(span.get("text", "")).strip():
+            return True
+    return False
+
+
+def overlay_filtered_text(page: fitz.Page, *, enabled: bool | None = None) -> tuple[str, int]:
+    """`page.get_text()` 的识别面净化版（Issue#250）：剔除覆盖水印行后按阅读序重组。
+
+    页面无覆盖行（或功能关闭）时返回 `page.get_text()` **逐字节原样**——零扰动由
+    构造保证。返回 `(文本, 剔除行数)`。
+    """
+    from app.core.config import settings
+
+    if enabled is None:
+        enabled = bool(getattr(settings, "WATERMARK_OVERLAY_STRIP_ENABLED", False))
+    if not enabled:
+        return page.get_text(), 0
+    raw = page.get_text("dict")
+    has_overlay = any(
+        is_overlay_line(line)
+        for block in raw.get("blocks", [])
+        if block.get("type") == 0
+        for line in block.get("lines", []) or []
+    )
+    if not has_overlay:
+        return page.get_text(), 0
+    kept: list[str] = []
+    removed = 0
+    for block in raw.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []) or []:
+            spans = line.get("spans", []) or []
+            line_text = "".join(str(span.get("text", "")) for span in spans)
+            if is_overlay_line(line):
+                removed += 1
+                continue
+            if line_text.strip():
+                kept.append(line_text)
+    return ("\n".join(kept), removed) if kept else ("", removed)
+
+
 def probe_report(path: str) -> dict:
     """检测报告（Issue#244 水印工具面）：probe 结果的脱敏 dict——不含副本路径。
 
