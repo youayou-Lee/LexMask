@@ -216,6 +216,16 @@ def render_outputs_on_structure(
             )
 
     md = structured_md
+    # 门④实弹修正：拍平 segs 的实体文本可能含换行（跨单元格拼接，如车牌
+    # ``桂A\\n2026``），结构化 md 里同事实是连续/异形空白形态——字节级
+    # replace 替换不到。含空白项改走**空白柔性匹配**：按空白切段、逐段
+    # re.escape、以 ``\\s*`` 连接做正则替换（语义=同事实的空白形态差，
+    # 不放宽到其他字符）；纯项保持字节级 replace（快路径不变）。
+    _has_ws = re.compile(r"\s")
+    _flex = [m for m in items if _has_ws.search(m.original_text)]
+    _plain = [m for m in items if not _has_ws.search(m.original_text)]
+    _flex_res = {m.id: re.compile(r"\s*".join(re.escape(p) for p in re.split(r"\s+", m.original_text)))
+                 for m in _flex}
     # 门⑥ C1 前向覆盖闸：检测项必须在产物载体上真实出现并 ≥1 次被替换。
     # 缺失=检测面（segs）与产物面（md）表示失配——该项在 md 上未被脱敏。
     # 门⑥ N1 豁免：锚定 seg 为 img_ocr/sentinel 的实体（其文本只经 OCR 进
@@ -225,7 +235,8 @@ def render_outputs_on_structure(
         seg = _seg_of_offset(segs, ent.start)
         if seg is not None and seg.source in ("img_ocr", "sentinel"):
             exempt.add(ent.text)
-    uncovered = [m for m in items if m.original_text not in md and m.original_text not in exempt]
+    uncovered = [m for m in _plain if m.original_text not in md and m.original_text not in exempt]
+    uncovered += [m for m in _flex if not _flex_res[m.id].search(md) and m.original_text not in exempt]
     if uncovered:
         names = "、".join(repr(m.original_text) for m in uncovered[:3])
         raise ValueError(
@@ -233,10 +244,13 @@ def render_outputs_on_structure(
             f"不存在（{names}{' 等' if len(uncovered) > 3 else ''}）——检测面与产物面"
             "表示失配，该项在产物上未被替换，禁止出厂"
         )
-    for m in sorted(items, key=lambda m: len(m.original_text), reverse=True):
+    for m in sorted(_plain, key=lambda m: len(m.original_text), reverse=True):
         md = md.replace(m.original_text, m.replacement)
+    for m in sorted(_flex, key=lambda m: len(m.original_text), reverse=True):
+        md = _flex_res[m.id].sub(m.replacement, md)
 
-    residual = [m for m in items if m.original_text in md]
+    residual = [m for m in _plain if m.original_text in md]
+    residual += [m for m in _flex if _flex_res[m.id].search(md)]
     if residual:
         names = "、".join(repr(m.original_text) for m in residual[:3])
         raise ValueError(
