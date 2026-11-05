@@ -33,3 +33,12 @@ def test_birth_date_iso_with_time_dropped():
                    start=0, end=19, source="has")]
     out = _cross(ents, text)
     assert not [e for e in out if e.type == "BIRTH_DATE"]
+
+
+def test_birth_date_timestamp_ocr_space_separator_dropped():
+    """门④第二轮实弹：OCR 分隔符空白形态差（`2025 -12-01 14:26:30`）同属时间戳。"""
+    text = "申请日期 2025 -12-01 14:26:30 反馈完毕"
+    ents = [Entity(id="a", text="2025 -12-01 14:26:30", type="BIRTH_DATE",
+                   start=5, end=25, source="has")]
+    out = _cross(ents, text)
+    assert not [e for e in out if e.type == "BIRTH_DATE"]

@@ -590,7 +590,8 @@ class HybridNERService:
         # 用户场景裁定（2026-11-05，执行背调真卷 26 项误检）：带时分秒的时间戳
         # （yyyy-MM-dd HH:mm[:ss]）是事件时间线（申请/反馈日期），不可能是出生
         # 日期——出生日期从不含 HH:mm。普适形态规则，所有线受益。
-        _ts_re = re.compile(r"\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?\s+\d{1,2}:\d{2}")
+        # 分隔符容许 OCR 空白形态差（真卷实弹：`2025 -12-01 14:26:30`）。
+        _ts_re = re.compile(r"\d{4}\s*[-/年]\s*\d{1,2}\s*[-/月]\s*\d{1,2}日?\s*\d{1,2}:\d{2}")
         entities = [e for e in entities
                     if not (e.type == "BIRTH_DATE" and _ts_re.search(e.text))]
 
