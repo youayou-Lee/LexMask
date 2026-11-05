@@ -419,3 +419,52 @@ def test_img_ocr_entity_exempt_from_coverage_gate():
     out, _mj, _rt = render_outputs_on_structure(md_no_img, segs, ents, mapping)
     assert "李某2" not in out and "李四四" not in out  # 图片文本本就不在产物，无泄漏
     assert "[保留词]" in out  # md 内实体照常替换
+
+
+# ---- 门④实弹修正：空白柔性匹配（跨单元格实体） ------------------------------
+
+
+def test_whitespace_flexible_replacement_across_cells():
+    """拍平面含换行的实体（车牌跨格拼接）在结构化 md 上按空白柔性匹配替换。
+
+    门④真实卷抓到的缺口：字节级 replace 替换不到 `桂A\\n2026` 在 md 里的
+    `桂A2026`/`桂A 2026` 形态——柔性匹配后必须替换且零残留。"""
+    md_with_plate = (
+        "<!-- page 1 of 1 -->\n\n"
+        "| 车牌 | 状态 |\n| --- | --- |\n| 桂A2026D | 正常 |\n\n"
+        "另见 桂A 2026D 车辆。\n"
+    )
+    segs = [
+        Seg(text="车牌 桂A\n2026D 状态 正常", page_idx=0, source="table"),
+        Seg(text="另见 桂A 2026D 车辆。", page_idx=0, source="text"),
+    ]
+    ents = [Entity(id="p1", text="桂A\n2026D", type="LICENSE_PLATE", start=3, end=10)]
+    mapping = [MappingItem(id="m1", original_text="桂A\n2026D",
+                           entity_type="LICENSE_PLATE", replacement="某车牌1")]
+    out, _mj, _rt = render_outputs_on_structure(md_with_plate, segs, ents, mapping)
+    assert "桂A2026D" not in out and "桂A 2026D" not in out  # 两种空白形态都被替换
+    assert out.count("某车牌1") == 2
+    assert "| 某车牌1 | 正常 |" in out  # 表格结构保留
+    verify_structure_integrity(md_with_plate, out)
+
+
+def test_whitespace_flexible_zero_residual_violation():
+    """柔性项替换值回插原文同样触发零残留闸。"""
+    md_with_plate = "| 车牌 |\n| --- |\n| 桂A2026D |\n"
+    segs = [Seg(text="车牌 桂A\n2026D", page_idx=0, source="table")]
+    ents = [Entity(id="p1", text="桂A\n2026D", type="LICENSE_PLATE", start=3, end=10)]
+    mapping = [MappingItem(id="m1", original_text="桂A\n2026D",
+                           entity_type="LICENSE_PLATE", replacement="某车牌1之桂A2026D")]
+    with pytest.raises(ValueError, match="zero_residual_violation"):
+        render_outputs_on_structure(md_with_plate, segs, ents, mapping)
+
+
+def test_whitespace_flexible_uncovered_gate():
+    """柔性项在 md 中完全不存在 → 前向覆盖闸照常拒绝（柔性不豁免失配）。"""
+    md_no_plate = "# 报告\n\n无车辆信息。\n"
+    segs = [Seg(text="车牌 桂A\n2026D", page_idx=0, source="table")]
+    ents = [Entity(id="p1", text="桂A\n2026D", type="LICENSE_PLATE", start=3, end=10)]
+    mapping = [MappingItem(id="m1", original_text="桂A\n2026D",
+                           entity_type="LICENSE_PLATE", replacement="某车牌1")]
+    with pytest.raises(ValueError, match="representation_mismatch"):
+        render_outputs_on_structure(md_no_plate, segs, ents, mapping)
