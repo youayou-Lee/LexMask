@@ -119,12 +119,35 @@ def _word_boxes(page: fitz.Page) -> list[TextLayerWord]:
     rotation = int(getattr(page, "rotation", 0) or 0)
     matrix = page.rotation_matrix if rotation % 360 else None
     out: list[TextLayerWord] = []
+    # Issue#250：inline 水印卷 probe 不 hit ⇒ #243 闸放行 ⇒ docline 会吃到主流里
+    # 的倾斜半透明水印词。词中心点落在覆盖 span 外接框内 ⇒ 剔（识别面净化，
+    # 不动原件；正文词中心不在覆盖框内，无误伤面）。
+    from app.core.config import settings as _settings
+    if bool(getattr(_settings, "WATERMARK_OVERLAY_STRIP_ENABLED", False)):
+        from app.services.watermark_overlay import is_overlay_line
+        overlay_rects: list[tuple[float, float, float, float]] = []
+        raw = page.get_text("dict")
+        for block in raw.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []) or []:
+                if is_overlay_line(line):
+                    for span in line.get("spans", []) or []:
+                        if span.get("bbox"):
+                            b = span["bbox"]
+                            overlay_rects.append((float(b[0]), float(b[1]), float(b[2]), float(b[3])))
+    else:
+        overlay_rects = []
     for x0, y0, x1, y1, text, *_rest in page.get_text("words"):
         rect = fitz.Rect(x0, y0, x1, y1)
         if matrix is not None:
             rect = rect * matrix
         cleaned = str(text or "").strip()
         if cleaned:
+            if overlay_rects:
+                cx, cy = (rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2
+                if any(bx0 <= cx <= bx1 and by0 <= cy <= by1 for bx0, by0, bx1, by1 in overlay_rects):
+                    continue
             out.append(TextLayerWord(rect.x0, rect.y0, rect.x1, rect.y1, cleaned))
     out.sort(key=lambda w: (round(w.y0, 1), w.x0))
     return out

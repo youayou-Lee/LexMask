@@ -92,6 +92,10 @@ class ParseResult(BaseModel):
     page_count: int = 1
     pages: list[str] = Field(default_factory=list, description="分页文本内容")
     is_scanned: bool = Field(default=False, description="是否为扫描件")
+    watermark_inline_filtered: int = Field(
+        default=0,
+        description="Issue#250：文字层中剔除的覆盖水印行数（inline 平铺水印形态；0=无）",
+    )
 
 
 class DecryptRequest(BaseModel):

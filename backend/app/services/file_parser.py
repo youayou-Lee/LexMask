@@ -502,9 +502,16 @@ class FileParser:
         scanned_page_count = 0
         fragmented_page_count = 0
 
+        # Issue#250：识别面净化——inline 平铺水印（并入主内容流的倾斜半透明文字）
+        # 不在独立流里，探针管不了；文本层提取时按 span 特征剔除（正文/不可见
+        # OCR 层天然不命中）。零覆盖行的页逐字节原样（构造保证）。
+        from app.services.watermark_overlay import overlay_filtered_text
+
+        watermark_inline_filtered = 0
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
-            text = page.get_text()
+            text, removed = overlay_filtered_text(page)
+            watermark_inline_filtered += removed
             pages.append(text)
             total_chars += len(text.strip())
             scanned = self._is_scanned_page(page)
@@ -544,6 +551,7 @@ class FileParser:
             page_count=page_count,
             pages=pages if not is_scanned else [],
             is_scanned=is_scanned,
+            watermark_inline_filtered=watermark_inline_filtered,
         )
 
     @staticmethod
@@ -789,10 +797,17 @@ class FileParser:
             page_height = max(1, int(round(pdf_page.rect.height * zoom)))
             raw = pdf_page.get_text("dict")
             blocks: list[OCRTextBlock] = []
+            # Issue#250：inline 水印卷的副本=原件（probe 不 hit），页级文本层分支
+            # 会读到主流里的倾斜半透明水印文字——同判据行级剔除。
+            from app.core.config import settings as _settings
+            from app.services.watermark_overlay import is_overlay_line
+            _wm_enabled = bool(getattr(_settings, "WATERMARK_OVERLAY_STRIP_ENABLED", False))
             for block in raw.get("blocks", []):
                 if block.get("type") != 0:
                     continue
                 for line in block.get("lines", []):
+                    if _wm_enabled and is_overlay_line(line):
+                        continue
                     spans = line.get("spans", [])
                     text = "".join(str(span.get("text", "")) for span in spans).strip()
                     if not text:
