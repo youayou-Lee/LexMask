@@ -335,3 +335,32 @@ def test_redact_endpoint_missing_job_404_without_stubs(store):
     """
     resp = client.post("/api/v1/jobs/ghost-job/items/i1/redact", json={})
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Issue#254：取消态 item 提交匿名化 → 400 中文可读文案（原英文句在 zh 界面
+# 会被兜底文案「匿名化失败」吞掉，用户无从知道需要重新识别）
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_submit_redaction_cancelled_item_raises_zh_guidance(store, monkeypatch):
+    _enqueue_capture(monkeypatch)
+    file_id = _seed_file()
+    job_id, item_id = _make_awaiting_single_job(store, file_id)
+    # 复现律师路径：任务被取消（store.cancel_job 为裸 SQL 直改状态，绕过
+    # VALID_ITEM_TRANSITIONS——awaiting_review/processing 均可落 cancelled）
+    store.cancel_job(job_id)
+
+    with pytest.raises(ValueError) as excinfo:
+        await sts.submit_single_redaction(
+            store,
+            job_id=job_id,
+            item_id=item_id,
+            entities=[],
+            bounding_boxes=[],
+            redact_config={"replacement_mode": "mask"},
+            owner_id="u1",
+        )
+    msg = str(excinfo.value)
+    assert "已取消" in msg, msg
+    assert "重新识别" in msg, msg
+    assert "item not awaiting_review" not in msg, "不得再输出英文原句（zh 界面会吞成兜底文案）"
