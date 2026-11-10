@@ -134,3 +134,53 @@ class TestSubmit:
         assert enqueued[0].meta["pages"] == [5]
         assert enqueued[0].job_id == jid
         assert enqueued[0].item_id == iid
+
+
+def test_submit_writes_state_before_marker_and_delivers_last(tmp_path):
+    """写入顺序（Min-4，变异 f 曾 SURVIVED）：状态 → 标记 → 投递。
+
+    理由：先落标记再改状态，进程在两者之间崩溃会留下「标记在、状态未变」的
+    死锁（准入认为忙、补偿看不到 PROCESSING）；先改状态则最多回落整卷重识别，
+    慢但正确。投递必须在两者之后，否则 worker 可能读到半成品状态。
+
+    顺序本身只能靠调用序列钉住（崩溃窗口在进程内不可观测），所以用记录代理
+    store 捕获调用顺序，而不是只断言最终状态。
+    """
+    store, jid, iid = _make_item(tmp_path)
+    calls: list[str] = []
+
+    class _RecordingStore:
+        def __getattr__(self, name):  # 其余方法直接转给真 store
+            return getattr(store, name)
+
+        def update_item_status(self, *args, **kwargs):
+            calls.append("update_item_status")
+            return store.update_item_status(*args, **kwargs)
+
+        def update_item_performance(self, *args, **kwargs):
+            calls.append("update_item_performance")
+            return store.update_item_performance(*args, **kwargs)
+
+        def touch_job_updated(self, *args, **kwargs):
+            calls.append("touch_job_updated")
+            return store.touch_job_updated(*args, **kwargs)
+
+    def _enqueue(task):
+        calls.append("enqueue")
+
+    asyncio.run(
+        page_retry_service.submit_page_retry(
+            store=_RecordingStore(),
+            job=store.get_job(jid),
+            item=store.get_item(iid),
+            pages=[5],
+            enqueue=_enqueue,
+        )
+    )
+
+    assert calls == [
+        "update_item_status",
+        "update_item_performance",
+        "touch_job_updated",
+        "enqueue",
+    ], f"写入顺序不对：{calls}"

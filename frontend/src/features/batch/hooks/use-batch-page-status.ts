@@ -35,6 +35,8 @@ export function useBatchPageStatus(params: {
   const [loading, setLoading] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  /** 重新武装轮询的入口：手动 refresh 拿到「还在跑」的快照后要接着轮询。 */
+  const resumeRef = useRef<(() => void) | null>(null);
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -61,6 +63,9 @@ export function useBatchPageStatus(params: {
       if (!mountedRef.current) return;
       setStatus(next);
       setError(null);
+      // 手动刷新（例如刚触发单页重试）拿到的还是 running 时，必须重新武装轮询，
+      // 否则行会永远停在 running、按钮全灰，只能折叠再展开才更新。
+      if (next && !TERMINAL_STATES.has(next.recognition_state)) resumeRef.current?.();
     } catch (err) {
       if (!mountedRef.current) return;
       setError(err instanceof Error ? err.message : String(err));
@@ -108,9 +113,16 @@ export function useBatchPageStatus(params: {
       }
     };
 
+    resumeRef.current = () => {
+      if (stopped) return;
+      clearTimer();
+      void tick();
+    };
+
     void tick();
     return () => {
       stopped = true;
+      resumeRef.current = null;
       clearTimer();
     };
   }, [clearTimer, enabled, fetchOnce, itemId, jobId]);

@@ -19,7 +19,8 @@
   - NER 瞬时重试：`RETRYABLE_HTTPX` 增 `ReadError/WriteError/RemoteProtocolError/PoolTimeout`，**不**把 `TransportError` 父类拉进来（`ProxyError`/`UnsupportedProtocol` 是本地配置写错，重试只会掩盖真因）；`_classify_ner_error` 增 `read_error/write_error/remote_protocol` 观测桶。
   - 端点：`POST /api/jobs/{job_id}/items/{item_id}/retry-pages`（202；`item_busy`/`retry_requires_awaiting_review` 走 409，参数错 400，越权 404）。
   - 前端：红叉页可直接点击重试 + 「重试失败页(n)」批量按钮（仅识别完成且无重试在飞时可用），409 错误码翻成人话（`item_busy` / 已完成提示走二期断点续跑 / 页不在失败清单等）。
-- **测试**：后端 +31 例（服务层准入全枚举、真库+真队列任务全链含页记录与其余页逐字节不变、草稿合并、重启补偿派发三态、NER 重试计数恰 3 与 400/ProxyError 只 1 次、端点契约 8 例）；全量 2846 passed，18 failed 与 preview 基线同集合（容器信号量权限问题）。前端 +6 例（红叉页点单页 / running 态禁用 / 批量提交 / 409 文案化 / 未知码不吞），全量 392 passed，`tsc` 双配置与 `vite build` 通过。
+  - 门⑥ 返修（PR#261 评审）：重启补偿的 `page_retry` 任务不带 meta 时从 `recognition.page_retry_pages` 回落页清单（否则清标记后空转、item 永久停在 pending）；重试页的**实体**也按页并入审阅草稿（自动来源整页换新、`manual` 保留），避免交付 seed 整份覆盖时丢掉新 NER 实体；前端 `refresh()` 拿到 running 快照后重新武装轮询（否则重试后行永远 running）；补写入顺序契约测试（状态→标记→投递）。
+- **测试**：后端 +34 例（服务层准入全枚举与写入顺序、真库+真队列任务全链含页记录与其余页逐字节不变、草稿框与实体按页合并、无 meta 重启补偿回落、重启补偿派发三态、NER 重试计数恰 3 与 400/ProxyError 只 1 次、端点契约 8 例）；全量 2892 passed，18 failed 与 preview 基线同集合（容器信号量权限问题）。前端 +7 例（红叉页点单页 / running 态禁用 / 批量提交 / 409 文案化 / 未知码不吞 / 手动 refresh 重新武装轮询），全量 398 passed，`tsc` 双配置与 `vite build` 通过。
 
 ### 增强（Issue#257 一期之一）大案卷页级勾选格 + 部分导出（只导选中页 + 说明页 + 导出记录）
 

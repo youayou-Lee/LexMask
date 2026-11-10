@@ -75,11 +75,38 @@ def _failed_pages_error_summary(failed_pages: dict[str, str], total_pages: int =
     return f"{scope} failed recognition (pages {listed}); not scanned for sensitive data"
 
 
+def _entity_page(entity: Any) -> int:
+    try:
+        return int((entity or {}).get("page") or 1)
+    except (AttributeError, TypeError, ValueError):
+        return 1
+
+
+def _entity_source(entity: Any) -> str:
+    return str((entity or {}).get("source") or "")
+
+
 def _box_page(box: Any) -> int:
     try:
         return int((box or {}).get("page") or 1)
     except (AttributeError, TypeError, ValueError):
         return 1
+
+
+def _as_entity_dicts(raw: Any) -> list[dict[str, Any]]:
+    """file_store 的 entities 可能是模型对象或 dict；统一成 dict 方便按页过滤。"""
+    out: list[dict[str, Any]] = []
+    for entity in raw if isinstance(raw, list) else []:
+        if isinstance(entity, dict):
+            out.append(entity)
+        elif hasattr(entity, "model_dump"):
+            try:
+                dumped = entity.model_dump()
+            except Exception:  # noqa: BLE001 - 脏数据跳过即可
+                continue
+            if isinstance(dumped, dict):
+                out.append(dumped)
+    return out
 
 
 def _boxes_by_page(raw: Any) -> dict[int, list[dict[str, Any]]]:
@@ -323,6 +350,13 @@ class RecognitionPipelineMixin:
             return
 
         pages = [int(p) for p in (task.meta or {}).get("pages") or []]
+        if not pages:
+            # 重启补偿（watchdog → repair_stale_processing_items）重建的 TaskItem 只带
+            # task_type、不带 meta，页清单必须从 performance 里的标记回落；否则会清标记
+            # 后直接返回，item 停在 PENDING 永久卡死（评审 Critical-1）。
+            from app.services.page_retry_service import in_flight_pages
+
+            pages = in_flight_pages(item)
         item_status = str(item.get("status") or "")
         job_status = str(job.get("status") or "")
         cancelled = item_status == JobItemStatus.CANCELLED.value or job_status == JobStatus.CANCELLED.value
@@ -489,9 +523,13 @@ class RecognitionPipelineMixin:
     ) -> None:
         """把重试成功页的新框并进已保存的审阅草稿。
 
-        草稿在交付时会经 ``seed_file_store_from_draft_payload`` 覆盖 file_store，
-        若只更新 file_store 而不动草稿，用户重试后交付出去的还是「该页无框」的旧草稿。
-        文本实体不按页归属，这里只重写 ``bounding_boxes`` 的对应页（实体保持不动）。
+        草稿在交付时会经 ``seed_file_store_from_draft_payload`` **整份**覆盖 file_store 的
+        entities 与 bounding_boxes，所以框和实体都必须并进草稿，否则：
+          - 框：交付出去的还是「该页无框」的旧草稿；
+          - 实体：重试页新认出的 NER 实体被丢掉，交付实体集/映射表缺条目（合规风险，
+            评审 Important-3）。
+        合并口径：重试页的**自动来源**实体（regex/llm/has）整页换新，人工加的（source=manual）
+        保留不动——既不丢用户编辑，也不留陈旧检测结果。
         """
         from app.services.file_management_service import file_store
 
@@ -514,7 +552,35 @@ class RecognitionPipelineMixin:
             merged = list(kept)
             for page in sorted(wanted):
                 merged.extend(fresh_by_page.get(page, []))
-            draft = dict(draft)
+            draft_entities = draft.get("entities")
+            if isinstance(draft_entities, list):
+                fresh_entities = [
+                    entity
+                    for entity in _as_entity_dicts(info.get("entities"))
+                    if _entity_page(entity) in wanted
+                ]
+                kept_entities = [
+                    entity
+                    for entity in draft_entities
+                    if not (
+                        isinstance(entity, dict)
+                        and _entity_page(entity) in wanted
+                        and _entity_source(entity) != "manual"
+                    )
+                ]
+                seen_ids: set[str] = set()
+                entities_merged: list[Any] = []
+                for entity in [*kept_entities, *fresh_entities]:
+                    key = str((entity or {}).get("id") or "") if isinstance(entity, dict) else ""
+                    if key and key in seen_ids:
+                        continue
+                    if key:
+                        seen_ids.add(key)
+                    entities_merged.append(entity)
+                draft = dict(draft)
+                draft["entities"] = entities_merged
+            else:
+                draft = dict(draft)
             draft["bounding_boxes"] = merged
             store.save_item_review_draft(item_id, draft)
         except Exception:

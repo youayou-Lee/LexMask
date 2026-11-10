@@ -167,3 +167,83 @@ def test_retry_success_merges_review_draft_boxes_for_that_page(
     assert "old5" not in ids  # 该页旧框被替换
     assert "new5" in ids
     assert set(ids) == {"keep4", "keep6", "new5"}
+
+
+def test_redispatched_task_without_meta_falls_back_to_marker(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Critical-1：watchdog 重建的 TaskItem 不带 meta，页清单必须回落到标记。
+
+    否则「标记已落、页没跑完」的崩溃窗口里会清标记后空转返回，item 永久 PENDING。
+    """
+    harness = _Harness(tmp_path)
+    _boxes_by_page(harness, {"5": []})
+    _patch_detect(monkeypatch, harness, behaviour="ok")
+    # 模拟崩溃现场：状态已被 repair 置回 PENDING/或仍 PROCESSING，标记还在
+    harness.store.update_item_performance(
+        harness.iid, {"recognition": {"page_retry_pages": [5]}}
+    )
+    harness.store.update_item_status(harness.iid, JobItemStatus.PROCESSING)
+
+    # watchdog 重建的任务只有 task_type，没有 meta
+    redispatch = tq.TaskItem(
+        job_id=harness.jid,
+        item_id=harness.iid,
+        file_id=_FILE_ID,
+        task_type="page_retry",
+    )
+    asyncio.run(harness.queue._run_page_retry(redispatch))
+
+    assert [page for _f, page, _kw in harness.calls] == [5], "页清单未从标记回落"
+    recognition = harness.perf()["recognition"]
+    assert recognition.get("page_retry_pages") == []
+    assert "5" not in (recognition.get("failed_pages") or {})
+    assert harness.store.get_item(harness.iid)["status"] == JobItemStatus.AWAITING_REVIEW.value
+
+
+def test_retry_success_refreshes_draft_entities_for_that_page(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Important-3：草稿实体也要按页刷新，否则交付 seed 会覆盖掉新 NER 实体。
+
+    口径：重试页的自动来源实体整页换新；人工加的（source=manual）保留。
+    """
+    harness = _Harness(tmp_path)
+    harness.store.save_item_review_draft(
+        harness.iid,
+        {
+            "entities": [
+                {"id": "old5", "text": "旧名", "type": "PERSON", "start": 0, "end": 2, "page": 5, "source": "has"},
+                {"id": "manual5", "text": "手填", "type": "PERSON", "start": 10, "end": 12, "page": 5, "source": "manual"},
+                {"id": "keep4", "text": "别页", "type": "PERSON", "start": 20, "end": 22, "page": 4, "source": "has"},
+            ],
+            "bounding_boxes": [
+                {"id": "b5", "page": 5, "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.05, "type": "PERSON"}
+            ],
+        },
+    )
+    _boxes_by_page(harness, {"5": []})
+    _patch_detect(monkeypatch, harness, behaviour="ok")
+
+    from app.services.file_management_service import file_store
+
+    file_store.set(
+        _FILE_ID,
+        {
+            "file_id": _FILE_ID,
+            "bounding_boxes": {"5": []},
+            "entities": [
+                {"id": "new5", "text": "新名", "type": "PERSON", "start": 0, "end": 2, "page": 5, "source": "has"},
+                {"id": "keep4", "text": "别页", "type": "PERSON", "start": 20, "end": 22, "page": 4, "source": "has"},
+            ],
+        },
+    )
+
+    asyncio.run(harness.queue._run_page_retry(harness.task([5])))
+
+    draft = harness.store.get_item_review_draft(harness.iid) or {}
+    ids = {entity["id"] for entity in draft.get("entities") or []}
+    assert "old5" not in ids, "重试页的陈旧自动实体必须被换掉"
+    assert "new5" in ids, "重试页新认出的实体必须写进草稿"
+    assert "manual5" in ids, "人工加的实体不得被自动结果冲掉"
+    assert "keep4" in ids, "其它页实体原样保留"
