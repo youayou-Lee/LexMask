@@ -960,7 +960,6 @@ const enBase: Record<string, string> = {
 
   'emptyState.noFiles': 'No files yet',
   'emptyState.noFilesDesc': 'Processed files will appear here after upload and review.',
-  'playground.loading': 'Loading...',
 
   'safety.cleanup.success': 'Cleared {files} files and {jobs} job records',
   'safety.cleanup.failed': 'Cleanup failed',
@@ -1203,40 +1202,14 @@ const enOverrides: Record<string, string> = {
   'playground.upload.rejectTooMany': 'Upload one file at a time.',
   'playground.upload.rejectGeneric': 'This file cannot be uploaded. Check the format and size.',
   'playground.recognitionTypes': 'Recognition types',
-  'playground.text': 'Text',
-  'playground.vision': 'Vision',
-  'playground.ocrShort': 'OCR+HaS',
-  'playground.imageTextRange': 'Text vision',
-  'playground.visualRegionRange': 'Image vision',
   'playground.visualServiceDown': 'Service not running',
-  'playground.selected': 'selected',
   'playground.presetChipGroup': 'Recognition scope',
   'playground.presetLegal': 'Legal case file (default)',
   'playground.presetAll': 'All types',
   'playground.advancedTypes': 'Advanced · fine-tune types',
   'playground.advancedReview': 'Advanced · per-type / per-box selection',
-  'playground.textPresetLabel': 'Text recognition list',
-  'playground.saveAsTextPreset': 'Save text list',
-  'playground.visionPresetLabel': 'Image recognition list',
-  'playground.saveAsVisionPreset': 'Save image list',
-  'playground.defaultPreset': 'Default list',
-  'playground.fullPreset': 'Full',
-  'playground.clear': 'Clear',
-  'playground.selectRecommended': 'Select Recommended',
   'playground.group.regex': 'Fixed format',
   'playground.group.semantic': 'Semantic recognition',
-  'playground.textConfigUnavailableTitle': 'Text recognition items are unavailable right now',
-  'playground.textConfigUnavailableDesc':
-    'The real text recognition items will appear here after the backend reconnects.',
-  'playground.textConfigEmptyTitle': 'No text recognition items are available yet',
-  'playground.textConfigEmptyDesc':
-    'Configure text recognition items in Recognition Item Settings, then come back here to pick them.',
-  'playground.visionConfigUnavailableTitle': 'Image recognition items are unavailable right now',
-  'playground.visionConfigUnavailableDesc':
-    'The real image recognition items will appear here after the backend reconnects.',
-  'playground.visionConfigEmptyTitle': 'No image recognition items are available yet',
-  'playground.visionConfigEmptyDesc':
-    'Configure image recognition items in Recognition Item Settings, then come back here to pick them.',
   'playground.popout': 'Pop out',
   'playground.reRecognize': 'Run recognition again',
   'playground.reconfigTypes': 'Adjust recognition items',
@@ -1859,7 +1832,6 @@ Object.assign(enOverrides, {
   'settings.visualFeatureSampleLabelPlaceholder': 'Sample note',
   'settings.visualFeatureSampleRemove': 'Remove sample',
   'settings.visualFeatureSampleAlt': 'Sample image',
-  'playground.visualFeatureShort': 'Visual elements',
   'batchWizard.step1.visualFeatureTypes': 'Visual element checklist',
 });
 
@@ -1879,9 +1851,7 @@ Object.assign(enOverrides, {
 });
 
 Object.assign(enOverrides, {
-  'playground.visualRegionRange': 'Image vision',
   'playground.visualServiceDown': 'Service not running',
-  'playground.visualFeatureShort': 'Visual features',
   'health.service.visual_features': 'Visual feature service',
   'history.previewImageRegion': 'Visual feature',
   'settings.pipelineDisplayName.image': 'Visual features',
@@ -1917,10 +1887,6 @@ Object.assign(enOverrides, {
   'settings.pipelineDescription.image': 'GLM-4.6V detects fixed visual elements.',
   'playground.group.regex': 'Custom fallback',
   'playground.group.semantic': 'HaS text recognition',
-  'playground.customFallbackEmpty':
-    'No default setup is needed. Custom fallback items will appear here as soon as you add them.',
-  'playground.visionPipelineEmpty':
-    'This pipeline has no selectable items yet. New configuration items will appear here.',
   'settings.redaction.regexEmptyInline':
     'No default setup is needed. Custom fallback items will appear here as soon as you add them.',
   'settings.redaction.pipelineEmptyInline':
@@ -2799,6 +2765,36 @@ Object.assign(enOverrides, {
   'tasks.tab.active': 'In progress',
   'tasks.tab.review': 'Awaiting review',
   'tasks.tab.done': 'Completed',
+});
+
+// Issue#262 wave 2 Task 10b: recognition scope dialog (NER / character-presence / visual + schemes)
+Object.assign(enOverrides, {
+  'playground.scope.title': 'Recognition scope',
+  'playground.scope.subtitle':
+    'Three zones cover text, character-presence and visual cues. Ticks apply immediately and are used as-is for recognition.',
+  'playground.scope.schemeLabel': 'Scheme',
+  'playground.scope.schemeMyGroup': 'My schemes',
+  'playground.scope.schemeCustom': 'Custom (manual selection)',
+  'playground.scope.schemeSave': 'Save as scheme',
+  'playground.scope.schemeNamePlaceholder': 'Scheme name, e.g. "Case intake"',
+  'playground.scope.schemeSaveConfirm': 'Save',
+  'playground.scope.schemeSaved': 'Scheme "{name}" saved',
+  'playground.scope.zoneNer': 'Semantic recognition',
+  'playground.scope.zoneNerDesc': 'Finds names, IDs, case numbers and other text entities.',
+  'playground.scope.zoneOcr': 'Character presence check',
+  'playground.scope.zoneOcrDesc': 'Checks which sensitive phrases appear on each scanned page.',
+  'playground.scope.zoneLa': 'Visual feature locator',
+  'playground.scope.zoneLaDesc': 'Locates seals, signatures and handwritten marks on the page.',
+  'playground.scope.zoneOffline': 'This zone is not taking part in recognition; it returns automatically once the service recovers.',
+  'playground.scope.zoneNa': 'This file is plain text; this zone does not apply.',
+  'playground.scope.pageLabel': 'Page {page}/{total} - {count} types',
+  'playground.scope.prevPage': 'Previous page',
+  'playground.scope.nextPage': 'Next page',
+  'playground.scope.zoneAll': 'Select all',
+  'playground.scope.zoneNone': 'Clear all',
+  'playground.scope.selectedCount': '{count} types selected',
+  'playground.scope.footerNote':
+    'Ticks apply immediately - no save needed. Save frequent combinations as a scheme for next time.',
 });
 
 export const en: Record<string, string> = {

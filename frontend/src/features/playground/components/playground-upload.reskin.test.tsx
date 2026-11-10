@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { resolveLegalTextSelection } from '@/config/legalPreset';
 import { useI18n } from '@/i18n';
 import type { ServicesHealth } from '@/hooks/use-service-health';
@@ -14,16 +14,16 @@ import { PlaygroundUpload } from './playground-upload';
  * Issue#262 Task 9b：上传页重皮对齐界面稿（紧凑页头 / 上传大卡 / 摘要卡 / 告警人话化）组件钉。
  *
  * - 摘要卡：playground-type-panel 容器沿用，内含 chip 行（法律卷宗（默认）/ 全部类型）、
- *   「高级 · 按类型微调」入口（本任务仍开 T6 抽屉，Task 10b 才换弹窗）、
- *   标签墙（selectedTypes 实时镜像，抽屉勾选同步）、说明行。
+ *   「高级 · 按类型微调」入口（Task 10b 起开识别范围三区弹窗）、
+ *   标签墙（selectedTypes 实时镜像，弹窗勾选同步）、说明行。
  * - 告警：playground-offline-hint 沿用——仅「视觉特征服务离线 且 当前选中含视觉要素」
  *   走人话主文案；黑话细节（./start_local.sh 等）收进「详情」折叠，默认不铺开。
  * - 页头紧凑化：playground-page.tsx 不再引用旧 kicker / 大标题键；dropzone 内装饰性
  *   格式 tabs 行（standards）删除（经核实为纯文案、无状态无回调，非功能选择器）。
  *
- * useServiceHealth 经 vi.mock 注入（PlaygroundUpload 与 VisionPipelines 内部都会调用，
- * 避免 jsdom 网络轮询）；rec mock 逐键对齐 use-playground-recognition 返回形状
- * （同 playground-upload.legal-preset.test.tsx 的 mock 约定）。
+ * useServiceHealth / use-presets 经 vi.mock 注入（PlaygroundUpload 与三区弹窗内部都会调用，
+ * 避免 jsdom 网络轮询/QueryClient 缺失）；rec mock 逐键对齐 use-playground-recognition
+ * 返回形状（同 playground-upload.legal-preset.test.tsx 的 mock 约定）。
  */
 
 const mockHealthState = vi.hoisted(() => ({
@@ -39,6 +39,16 @@ vi.mock('@/hooks/use-service-health', () => ({
     refresh: vi.fn(),
   }),
 }));
+
+// Task 10b：高级入口改开识别范围三区弹窗（recognition-scope-dialog）——弹窗打开时
+// 会跑 usePresets，按 redact-task 测试的稳定引用约定 mock，避免 jsdom 无 QueryClient。
+vi.mock('@/services/hooks/use-presets', () => {
+  const stablePresets: never[] = [];
+  return {
+    usePresets: () => ({ data: stablePresets, isLoading: false }),
+    useInvalidatePresets: () => async () => {},
+  };
+});
 
 type PlaygroundApi = ReturnType<typeof usePlayground>;
 type RecognitionCtx = PlaygroundApi['recognition'];
@@ -159,9 +169,10 @@ describe('Task 9b：摘要卡（chip 行 / 标签墙 / 说明行 / 高级入口�
     expect(container.querySelector('[data-testid="playground-type-panel"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="playground-preset-chip-legal"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="playground-preset-chip-all"]')).not.toBeNull();
-    const toggle = container.querySelector('[data-testid="playground-advanced-types-toggle"]');
-    expect(toggle).not.toBeNull();
-    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    const entry = container.querySelector('[data-testid="playground-scope-entry"]');
+    expect(entry).not.toBeNull();
+    expect(entry?.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(entry?.getAttribute('aria-expanded')).toBe('false');
     // 标签墙初始 = 法律默认 4 类（后端默认集之外的 BANK_CARD 在法律集内、MED_PATIENT 不在）
     expect(container.querySelector('[data-testid="playground-selected-tags"]')).not.toBeNull();
     for (const id of ['PERSON', 'PHONE', 'BANK_CARD', 'CASE_NUMBER']) {
@@ -193,15 +204,19 @@ describe('Task 9b：摘要卡（chip 行 / 标签墙 / 说明行 / 高级入口�
     expect(container.querySelectorAll('[data-testid="playground-selected-tags"] > span')).toHaveLength(2);
   });
 
-  it('高级入口点击仍展开 T6 抽屉（本任务抽屉保持原样可用）', () => {
+  it('高级入口点击打开识别范围三区弹窗（Task 10b：T6 抽屉已替换为弹窗）', () => {
     const rec = makeRec({ entityTypes: CATALOG_A, selectedTypes: [...LEGAL_IDS] });
     const { container } = render(<PlaygroundUpload ctx={makeCtx(rec)} />);
-    const toggle = container.querySelector('[data-testid="playground-advanced-types-toggle"]');
-    expect(toggle).not.toBeNull();
-    expect(container.querySelector('[data-testid="playground-tab-text"]')).toBeNull();
-    fireEvent.click(toggle as Element);
-    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
-    expect(container.querySelector('[data-testid="playground-tab-text"]')).not.toBeNull();
+    const entry = container.querySelector('[data-testid="playground-scope-entry"]');
+    expect(entry).not.toBeNull();
+    expect(screen.queryByTestId('playground-scope-dialog')).toBeNull();
+    fireEvent.click(entry as Element);
+    expect(entry?.getAttribute('aria-expanded')).toBe('true');
+    // Radix Dialog 渲染进 portal（document.body），用 screen 查询
+    expect(screen.queryByTestId('playground-scope-dialog')).not.toBeNull();
+    expect(screen.queryByTestId('playground-scope-zone-ner')).not.toBeNull();
+    expect(screen.queryByTestId('playground-scope-zone-ocr')).not.toBeNull();
+    expect(screen.queryByTestId('playground-scope-zone-la')).not.toBeNull();
   });
 });
 
