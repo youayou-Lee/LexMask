@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import type { BatchWizardMode } from '@/services/batchPipeline';
+import { batchRecognitionMessageKey } from '../lib/step3-recognition-message';
 
 import {
   type BatchRow,
@@ -154,25 +155,9 @@ function BatchStep3RecognizeInner({
       return t('batchWizard.step3.fileTextProgress');
     }
     if (!rawMessage) return null;
-    switch (rawMessage) {
-      case 'text_recognition_running':
-      case 'Text recognition running':
-        return t('batchWizard.step3.fileTextProgress');
-      case 'text_recognition_complete':
-      case 'Text recognition complete':
-        return t('batchWizard.step3.fileTextComplete');
-      case 'vision_recognition_complete':
-      case 'Vision recognition complete':
-        return t('batchWizard.step3.fileVisionComplete');
-      // Issue#256：LA 不可用时视觉段被跳过的识别终态——照常完成但印章/签字未识别，
-      // 显式提示不静默（PR#235 同语义）。
-      case 'vision_recognition_complete_visual_skipped':
-        return t('batchWizard.step3.fileVisionCompleteSkipped');
-      case 'Requeued after stale processing heartbeat':
-        return t('batchWizard.step3.requeuedAfterStale');
-      default:
-        return rawMessage;
-    }
+    // Issue#256：映射抽到 lib/step3-recognition-message.ts（纯函数，契约测试共用）。
+    const key = batchRecognitionMessageKey(rawMessage);
+    return key ? t(key) : rawMessage;
   };
 
   const pct = rows.length > 0 ? Math.min(100, (visibleProgressCount / rows.length) * 100) : 0;

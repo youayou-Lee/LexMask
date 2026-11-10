@@ -7,7 +7,7 @@
 
 - **为什么**：本地栈（无 LocateAnything）扫描件识别整卷误报「all N page(s) failed recognition」而 OCR 框/NER 实体实际全部产出（canary 10 页 22s 复现）。根因有二：①PR#235「LA 不可用不拦截识别」只在 playground 前端提交侧执行，API/队列载荷无此保护——队列两段式第二段（视觉特征识别）逐页进 `detect_vision`，每页撞 Issue#217 的 LA fail-closed 预检，`AppError(visual_service_unavailable)` 使全部页记入 `failed_pages`；②`AppError.__init__` 从未调 `super().__init__`，kwargs 构造（生产全部预检类抛点同款）时 `args=()` ⇒ `str(exc)==""`，页失败 reason 只剩「AppError: 」，错误码与指引全丢、排障全盲（「双账本分裂」表象 = deep-merge 账面残留第一段 completed 字段）。
 - **改了什么**：①`_run_vision` 调度前探测一次 LA（勾选视觉要素时）：不可用 ⇒ 剔除视觉要素（空数组=显式不跑该段）+ `recognition.visual_detection_skipped` 结构化落账 + WARNING + 进度消息 `visual_detection_skipped_la_unavailable`，OCR+HaS 成果照常交付；预检自身意外异常不吞（fail-closed 不降级）；LA 在场（云端）行为零变化。②`AppError` 补 `super().__init__(message)`，`str(exc)` 从此携带 message（kwargs/位置参数两形态同口径）。
-- **测试**：+6 例（AppError str 两形态、两段式跳过全流程到 awaiting_review 且零失败摘要、单页剔除视觉要素、LA 可用两段式契约钉、预检意外异常穿透）；共享桩 `_vision_stubs` 默认 LA 可用（既有两段式用例不受新探测影响）。后端全量 2791 passed 零回归。
+- **测试**：后端 +7 例（AppError str 两形态、两段式跳过全流程到 awaiting_review 且零失败摘要、单页剔除视觉要素、LA 可用两段式契约钉、预检意外异常穿透、LA 恢复重跑清陈旧跳过账——判据读 deep-merge 合并视图）；共享桩 `_vision_stubs` 默认 LA 可用（既有两段式用例不受新探测影响）。前端 +3 例（step3 识别消息映射抽纯函数 `lib/step3-recognition-message.ts` 后的契约钉，含视觉跳过终态与未知消息回落）。后端全量 2792 passed 零回归、前端 381 passed。
 
 ## 2026-11-09
 
