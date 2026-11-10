@@ -51,10 +51,6 @@ def _la_down_probe() -> None:
     )
 
 
-def _la_calls() -> list[dict[str, Any]]:
-    return []
-
-
 def _recording_detect(calls: list[dict[str, Any]]):
     async def _detect(file_id: str, page: int, **kwargs: Any) -> dict[str, Any]:
         calls.append(
