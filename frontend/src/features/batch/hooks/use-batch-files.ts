@@ -29,6 +29,8 @@ import {
   resolveBatchFileTypeFromName,
 } from '../utils/file-type';
 import { isBatchRowReadyForDelivery } from '../lib/batch-export-report';
+import { sameNumberList } from '@/features/batch/lib/page-failures';
+import type { BatchJobDetail } from './use-batch-polling';
 
 // 并发上传：串行 1 在万级文件下极慢。4 路并发 + 幂等键（fileApi.upload 发
 // X-Idempotency-Key，后端去重）→ 重复/重试不会重复注册。
@@ -396,6 +398,82 @@ export function useBatchFiles(
   // sync the step4 UI would still route scanned PDFs through the text review pane.
   const syncedFileInfoRef = useRef<Set<string>>(new Set());
 
+  /**
+   * 把 job detail 的 item 字段合并进批量行（识别进度 / 失败页账本 / 终局文案数据源）。
+   *
+   * 抽出来是为了两条路径共用：识别进行中的轮询，以及「识别已结束、只补拉一次」的终局路径
+   * —— 后者不补拉的话，完成后行上取不到 `recognition_failed_pages`，终局文案永远不出现。
+   */
+  const mergeJobDetailIntoRows = useCallback(
+    (prev: BatchRow[], detail: BatchJobDetail): BatchRow[] => {
+      const itemMap = new Map(detail.items.map((it) => [it.file_id, it]));
+      let changed = false;
+      const next = prev.map((r) => {
+        const item = itemMap.get(r.file_id);
+        if (!item) return r;
+        const analyzeStatus = mapBackendStatus(item.status);
+        const reviewConfirmed = deriveReviewConfirmed(item);
+        const hasOutput = Boolean(item.has_output);
+        const hasReviewDraft = Boolean(item.has_review_draft);
+        const isImageMode = r.isImageMode ?? false;
+        const analyzeError =
+          item.status === 'failed' || item.status === 'cancelled'
+            ? item.error_message || t('batchWizard.actionFailed')
+            : undefined;
+        const entityCount =
+          typeof item.entity_count === 'number' ? item.entity_count : r.entity_count;
+        const recognitionStage = item.progress_stage ?? null;
+        const recognitionCurrent =
+          typeof item.progress_current === 'number' ? item.progress_current : undefined;
+        const recognitionTotal =
+          typeof item.progress_total === 'number' ? item.progress_total : undefined;
+        const recognitionMessage = item.progress_message ?? null;
+        const recognitionFailedPages = item.recognition_failed_pages ?? [];
+        const recognitionSuccessPages = item.recognition_success_pages;
+        const pageCount = item.page_count || r.page_count;
+        if (
+          r.analyzeStatus === analyzeStatus &&
+          r.reviewConfirmed === reviewConfirmed &&
+          r.has_output === hasOutput &&
+          r.hasReviewDraft === hasReviewDraft &&
+          r.isImageMode === isImageMode &&
+          r.analyzeError === analyzeError &&
+          r.entity_count === entityCount &&
+          r.recognitionStage === recognitionStage &&
+          r.recognitionCurrent === recognitionCurrent &&
+          r.recognitionTotal === recognitionTotal &&
+          r.recognitionMessage === recognitionMessage &&
+          r.page_count === pageCount &&
+          r.recognitionSuccessPages === recognitionSuccessPages &&
+          sameNumberList(r.recognitionFailedPages ?? [], recognitionFailedPages)
+        ) {
+          return r;
+        }
+        changed = true;
+        return {
+          ...r,
+          analyzeStatus,
+          reviewConfirmed,
+          has_output: hasOutput,
+          hasReviewDraft,
+          isImageMode,
+          analyzeError,
+          entity_count: entityCount,
+          page_count: pageCount,
+          recognitionSuccessPages,
+          recognitionStage,
+          recognitionCurrent,
+          recognitionTotal,
+          recognitionMessage,
+          recognitionFailedPages,
+        };
+      });
+      return changed ? next : prev;
+    },
+    // t 是模块级 i18n 常量，不随渲染变化，故不列入依赖
+    [],
+  );
+
   useEffect(() => {
     if (isPreviewMode) return;
     if (step !== 3 || !activeJobId || !hasItemsInProgress || analyzeRunning) return;
@@ -429,62 +507,7 @@ export function useBatchFiles(
       try {
         const detail = await getJob(activeJobId, { performance: false });
         if (cancelled) return;
-        const itemMap = new Map(detail.items.map((it) => [it.file_id, it]));
-        setRows((prev) => {
-          let changed = false;
-          const next = prev.map((r) => {
-            const item = itemMap.get(r.file_id);
-            if (!item) return r;
-            const analyzeStatus = mapBackendStatus(item.status);
-            const reviewConfirmed = deriveReviewConfirmed(item);
-            const hasOutput = Boolean(item.has_output);
-            const hasReviewDraft = Boolean(item.has_review_draft);
-            const isImageMode = r.isImageMode ?? false;
-            const analyzeError =
-              item.status === 'failed' || item.status === 'cancelled'
-                ? item.error_message || t('batchWizard.actionFailed')
-                : undefined;
-            const entityCount =
-              typeof item.entity_count === 'number' ? item.entity_count : r.entity_count;
-            const recognitionStage = item.progress_stage ?? null;
-            const recognitionCurrent =
-              typeof item.progress_current === 'number' ? item.progress_current : undefined;
-            const recognitionTotal =
-              typeof item.progress_total === 'number' ? item.progress_total : undefined;
-            const recognitionMessage = item.progress_message ?? null;
-            if (
-              r.analyzeStatus === analyzeStatus &&
-              r.reviewConfirmed === reviewConfirmed &&
-              r.has_output === hasOutput &&
-              r.hasReviewDraft === hasReviewDraft &&
-              r.isImageMode === isImageMode &&
-              r.analyzeError === analyzeError &&
-              r.entity_count === entityCount &&
-              r.recognitionStage === recognitionStage &&
-              r.recognitionCurrent === recognitionCurrent &&
-              r.recognitionTotal === recognitionTotal &&
-              r.recognitionMessage === recognitionMessage
-            ) {
-              return r;
-            }
-            changed = true;
-            return {
-              ...r,
-              analyzeStatus,
-              reviewConfirmed,
-              has_output: hasOutput,
-              hasReviewDraft,
-              isImageMode,
-              analyzeError,
-              entity_count: entityCount,
-              recognitionStage,
-              recognitionCurrent,
-              recognitionTotal,
-              recognitionMessage,
-            };
-          });
-          return changed ? next : prev;
-        });
+        setRows((prev) => mergeJobDetailIntoRows(prev, detail));
 
         // For each item that's past parsing, refresh file_type/isImageMode from
         // the authoritative file_store so scanned PDFs get routed correctly.
@@ -555,7 +578,34 @@ export function useBatchFiles(
         document.removeEventListener('visibilitychange', handleVisibilityChange);
       }
     };
-  }, [step, activeJobId, hasItemsInProgress, hasReviewableRows, analyzeRunning, isPreviewMode]);
+  }, [
+    step,
+    activeJobId,
+    hasItemsInProgress,
+    hasReviewableRows,
+    analyzeRunning,
+    isPreviewMode,
+    mergeJobDetailIntoRows,
+  ]);
+
+  // 识别结束后的终局补拉：轮询只在 `hasItemsInProgress` 时跑，完成后要补一次才能拿到
+  // `recognition_failed_pages`/`page_count`（Issue#257 终局文案「完成(148/149，第 133 页失败)」）。
+  const terminalRefreshRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (isPreviewMode || step !== 3 || !activeJobId) return;
+    if (hasItemsInProgress || analyzeRunning) return;
+    if (terminalRefreshRef.current === activeJobId) return;
+    terminalRefreshRef.current = activeJobId;
+    let cancelled = false;
+    void (async () => {
+      const detail = await getJob(activeJobId, { performance: false });
+      if (cancelled || !detail) return;
+      setRows((prev) => mergeJobDetailIntoRows(prev, detail));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeJobId, analyzeRunning, hasItemsInProgress, isPreviewMode, mergeJobDetailIntoRows, step]);
 
   // Reset the sync cache whenever we switch jobs so a new job re-syncs cleanly.
   useEffect(() => {

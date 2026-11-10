@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ import app.services.job_management_service as _jms
 import app.services.single_task_service as _sts
 from app.core.audit import audit_log
 from app.core.auth import require_auth, require_bulk_confirm
+from app.core.errors import AppError
 from app.models.errors import ConflictError, NotFoundError, ValidationError
 from app.models.schemas import (
     BatchDetailsBody,
@@ -38,6 +40,7 @@ from app.models.schemas import (
     ReviewDraftResponse,
 )
 from app.models.single_task_schemas import SingleRedactBody, SingleRedactResult
+from app.services import file_operations, page_status_service, partial_export_service
 from app.services.job_store import JobItemStatus, JobStatus, JobStore, get_job_store
 
 router = APIRouter(prefix="/jobs", tags=["batch jobs"])
@@ -304,6 +307,192 @@ async def export_job_data(
     )
     audit_log("export", "job_data", task.export_id, detail={"job_id": job_id})
     return task.public()
+
+
+# ---------------------------------------------------------------------------
+# Issue#257 一期：页级韧性（页状态投影 / 部分导出 / 导出记录）
+# ---------------------------------------------------------------------------
+
+
+def _require_item(
+    store: JobStore, job_id: str, item_id: str, owner_id: str | None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """job 归属 + item 归属校验；一律 404（不泄露"存在但不是你的"）。"""
+    job = store.get_job(job_id)
+    try:
+        _jms.assert_job_owner(job, owner_id)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="job not found")
+    item = store.get_item(item_id)
+    if not item or str(item.get("job_id") or "") != str(job_id):
+        raise HTTPException(status_code=404, detail="item not found")
+    return job or {}, item
+
+
+def _job_config_of(job: dict[str, Any]) -> dict[str, Any]:
+    """job 行的 config_json → dict（坏 JSON 回落空 dict，不阻断导出）。"""
+    raw = job.get("config_json") if isinstance(job, dict) else None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _redactable_pages_of(file_info: dict[str, Any] | None) -> set[int]:
+    """框账里「已选框都能落到本页」的页集合（干净页=空框账，也算安全）。
+
+    账页号与框自带的 ``page`` 不一致时，重映射会静默丢框、产物就把该页原样
+    栅格化进包（文本层消失后连"零残留"检查都抓不到）⇒ 这类页 fail-closed。
+    """
+    raw = (file_info or {}).get("bounding_boxes") or {}
+    safe: set[int] = set()
+    if not isinstance(raw, dict):
+        return safe
+    for key, boxes in raw.items():
+        try:
+            page_no = int(key)
+        except (TypeError, ValueError):
+            continue
+        parsed = partial_export_service.normalize_boxes(boxes, strict=True)
+        if all(int(box.page or 1) == page_no for box in parsed if box.selected):
+            safe.add(page_no)
+    return safe
+
+
+def _boxes_pages_of(file_info: dict[str, Any] | None) -> set[int]:
+    """file_store 里有框账条目的页号集合（校验「选了没跑过视觉识别的页」）。"""
+    raw = (file_info or {}).get("bounding_boxes") or {}
+    pages: set[int] = set()
+    if isinstance(raw, dict):
+        for key in raw:
+            try:
+                pages.add(int(key))
+            except (TypeError, ValueError):
+                continue
+    elif isinstance(raw, list):
+        for box in raw:
+            if isinstance(box, dict):
+                try:
+                    pages.add(int(box.get("page") or 1))
+                except (TypeError, ValueError):
+                    continue
+    return pages
+
+
+def _load_file_info(file_id: Any) -> dict[str, Any] | None:
+    if not file_id:
+        return None
+    try:
+        info = file_operations.get_file_info(str(file_id))
+    except Exception:  # noqa: BLE001 - 文件元数据读取失败按"文件不可用"处理
+        logger.warning("unable to load file info for %s", file_id, exc_info=True)
+        return None
+    return info if isinstance(info, dict) else None
+
+
+@router.get("/{job_id}/items/{item_id}/page-status")
+async def get_item_page_status(
+    job_id: str,
+    item_id: str,
+    store: JobStore = Depends(get_job_store),
+    owner_id: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """页格矩阵/选页器的数据源：每页 success/failed/pending 三态 + 失败原因。
+
+    单独端点而非塞进 job detail：150 页卷 × 每页一张卡的详情接口已经到 38MB 量级
+    （轻量 `?performance=false` 就是为这个加的），页格要高频轮询，必须是独立小响应。
+    """
+    _, item = _require_item(store, job_id, item_id, owner_id)
+    file_info = _load_file_info(item.get("file_id"))
+    if file_info is None:
+        raise HTTPException(status_code=404, detail="file not found")
+    return page_status_service.build_page_status(item, file_info)
+
+
+@router.post("/{job_id}/items/{item_id}/partial-export", status_code=202)
+async def export_item_pages(
+    job_id: str,
+    item_id: str,
+    pages: list[int] = Body(..., embed=True, description="要导出的原卷页号（1-based，可乱序）"),
+    acknowledge_failed_excluded: bool = Body(
+        False,
+        embed=True,
+        description="所选页范围内含识别失败页时，必须显式为 true（失败页永不进包）",
+    ),
+    store: JobStore = Depends(get_job_store),
+    owner_id: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """页级部分导出：只含选中页 + 说明页，异步任务走 /files/batch/export 下载。"""
+    job, item = _require_item(store, job_id, item_id, owner_id)
+    file_info = _load_file_info(item.get("file_id"))
+    if file_info is None:
+        raise HTTPException(status_code=404, detail="file not found")
+
+    page_count = page_status_service.page_count_of(item, file_info)
+    try:
+        selection = partial_export_service.validate_partial_export_pages(
+            pages,
+            page_count=page_count,
+            failed_pages=set(page_status_service.failed_page_numbers(item)),
+            recognized_pages=page_status_service.recognized_page_numbers(item, page_count),
+            acknowledge_failed_excluded=acknowledge_failed_excluded,
+            file_type=file_info.get("file_type"),
+            boxes_pages=_boxes_pages_of(file_info),
+            redactable_pages=_redactable_pages_of(file_info),
+        )
+    except partial_export_service.PartialExportError as exc:
+        # 知情确认是 409（可重试、需要用户动作），参数错误是 400。
+        # 走 AppError 的统一信封：前端按 error_code 路由文案，message 是人话。
+        raise AppError(
+            status_code=409 if exc.code == "failed_pages_ack_required" else 400,
+            error_code=exc.code,
+            message=exc.message or exc.code,
+            detail=exc.detail,
+        )
+
+    config = partial_export_service.config_from_job_config(
+        _job_config_of(job)
+    )
+    task = await partial_export_service.submit_partial_export(
+        owner_id=owner_id,
+        item_row=item,
+        file_info=file_info,
+        config=config,
+        pages=selection["pages"],
+        excluded_failed_pages=selection["excluded_failed_pages"],
+        snapshot_at=datetime.now(UTC).isoformat(),
+    )
+    audit_log(
+        "export",
+        "partial_redaction",
+        task.export_id,
+        detail={
+            "job_id": job_id,
+            "item_id": item_id,
+            "pages": selection["pages"],
+            "excluded_failed_pages": selection["excluded_failed_pages"],
+        },
+    )
+    return task.public()
+
+
+@router.get("/{job_id}/items/{item_id}/exports")
+async def get_item_exports(
+    job_id: str,
+    item_id: str,
+    store: JobStore = Depends(get_job_store),
+    owner_id: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """该 item 的历史导出记录（含重启后的记录——从 export-status.json 扫盘重建）。"""
+    _require_item(store, job_id, item_id, owner_id)
+    return partial_export_service.list_item_exports(
+        owner_id=owner_id, job_id=job_id, item_id=item_id
+    )
 
 
 @router.post("/{job_id}/submit", response_model=JobResponse)

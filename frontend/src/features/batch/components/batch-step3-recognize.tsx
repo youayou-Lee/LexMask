@@ -21,6 +21,8 @@ import {
   type Step,
 } from '../types';
 import { getBatchModeReadiness } from '../lib/batch-mode-readiness';
+import { BatchRowPages } from './batch-row-pages';
+import { PartialExportDialog } from './partial-export-dialog';
 
 interface BatchStep3RecognizeProps {
   mode?: BatchWizardMode;
@@ -33,6 +35,16 @@ interface BatchStep3RecognizeProps {
 }
 
 type StatusFilter = 'all' | 'active' | 'ready' | 'failed' | 'pending';
+
+/** 页级视图只对可栅格化的类型有意义（与后端 page_status_service.PAGED_FILE_TYPES 对齐）。 */
+function isPagedRow(row: BatchRow): boolean {
+  return row.file_type === 'pdf' || row.file_type === 'pdf_scanned' || row.file_type === 'image';
+}
+
+/** 部分导出只支持 PDF（扫描件/带框 PDF）；图片走单文件打码，不做页级选页导出。 */
+function canExportPages(row: BatchRow): boolean {
+  return row.file_type === 'pdf' || row.file_type === 'pdf_scanned';
+}
 
 function BatchStep3RecognizeInner({
   mode = 'smart',
@@ -61,6 +73,13 @@ function BatchStep3RecognizeInner({
   const [submitting, setSubmitting] = useState(false);
   const [requeueing, setRequeueing] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  // Issue#257：展开哪一行的逐页视图（同一时刻只展开一行，避免一屏塞满请求）。
+  const [expandedFileId, setExpandedFileId] = useState<string | null>(null);
+  const [exportTarget, setExportTarget] = useState<{
+    itemId: string | null;
+    filename: string;
+    pages: number[];
+  } | null>(null);
 
   const isProcessing =
     (everSubmitted || workingCount > 0) &&
@@ -158,6 +177,26 @@ function BatchStep3RecognizeInner({
     // Issue#256：映射抽到 lib/step3-recognition-message.ts（纯函数，契约测试共用）。
     const key = batchRecognitionMessageKey(rawMessage);
     return key ? t(key) : rawMessage;
+  };
+
+  /**
+   * Issue#257 终局文案：识别跑完但仍有失败页时，给一行可读的结论而不是只留「待审阅」。
+   * 形如「完成(148/149，第 133 页失败)」；页数缺失（file_store 丢 page_count）时不出文案。
+   */
+  const finalProgressLabel = (row: BatchRow): string | null => {
+    const failedPages = row.recognitionFailedPages ?? [];
+    const total = Number(row.page_count ?? row.recognitionTotal ?? 0);
+    if (!failedPages.length || total <= 0) return null;
+    if (!RECOGNITION_DONE_STATUSES.has(row.analyzeStatus)) return null;
+    // 已完成页数只用后端算好的「识别成功页数」——用 total - failed 会把未跑页也算成完成。
+    const done =
+      typeof row.recognitionSuccessPages === 'number'
+        ? Math.min(row.recognitionSuccessPages, total)
+        : Math.max(0, total - failedPages.length);
+    return t('batchWizard.pages.finalWithFailures')
+      .replace('{done}', String(done))
+      .replace('{total}', String(total))
+      .replace('{pages}', failedPages.join('、'));
   };
 
   const pct = rows.length > 0 ? Math.min(100, (visibleProgressCount / rows.length) * 100) : 0;
@@ -311,22 +350,44 @@ function BatchStep3RecognizeInner({
             </div>
           ) : (
             filteredRows.map((r) => {
-              const detail = rowProgressLabel(r);
+              // 终局文案优先：重试结束后进度消息可能停在最后一页，结论比进度更该被看见。
+              const detail = finalProgressLabel(r) ?? rowProgressLabel(r);
+              const paged = isPagedRow(r);
+              const expanded = expandedFileId === r.file_id;
               return (
+                <div key={r.file_id}>
                 <div
-                  key={r.file_id}
                   className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 px-3 py-2 text-sm md:grid-cols-[minmax(0,1.2fr)_minmax(0,13rem)_auto_minmax(0,12rem)] md:py-1.5"
                   data-testid={`recognition-row-${r.file_id}`}
                 >
                   <span className="min-w-0 truncate" title={r.original_filename}>
                     {r.original_filename}
                   </span>
-                  <span
-                    className="col-span-2 min-w-0 truncate text-xs text-muted-foreground md:col-auto"
-                    title={detail ?? undefined}
-                    data-testid={`row-progress-${r.file_id}`}
-                  >
-                    {detail ?? ''}
+                  <span className="col-span-2 flex min-w-0 items-center gap-2 text-xs text-muted-foreground md:col-auto">
+                    <span
+                      className="min-w-0 truncate"
+                      title={detail ?? undefined}
+                      data-testid={`row-progress-${r.file_id}`}
+                    >
+                      {detail ?? ''}
+                    </span>
+                    {paged && (
+                      <button
+                        type="button"
+                        className="shrink-0 whitespace-nowrap text-primary underline underline-offset-2"
+                        onClick={() =>
+                          setExpandedFileId((current) =>
+                            current === r.file_id ? null : r.file_id,
+                          )
+                        }
+                        aria-expanded={expanded}
+                        data-testid={`page-matrix-toggle-${r.file_id}`}
+                      >
+                        {expanded
+                          ? t('batchWizard.pages.toggleCollapse')
+                          : t('batchWizard.pages.toggle')}
+                      </button>
+                    )}
                   </span>
                   <Badge
                     variant={
@@ -349,11 +410,36 @@ function BatchStep3RecognizeInner({
                     {r.analyzeError ?? ''}
                   </span>
                 </div>
+                {expanded && (
+                  <div className="px-3 pb-2">
+                    <BatchRowPages
+                      jobId={activeJobId}
+                      itemId={r.item_id ?? null}
+                      exportable={canExportPages(r)}
+                      onExportPages={(pages) =>
+                        setExportTarget({
+                          itemId: r.item_id ?? null,
+                          filename: r.original_filename,
+                          pages,
+                        })
+                      }
+                    />
+                  </div>
+                )}
+                </div>
               );
             })
           )}
         </div>
       </CardContent>
+      <PartialExportDialog
+        open={exportTarget !== null}
+        jobId={activeJobId}
+        itemId={exportTarget?.itemId ?? null}
+        filename={exportTarget?.filename ?? ''}
+        initialSelected={exportTarget?.pages ?? null}
+        onClose={() => setExportTarget(null)}
+      />
     </Card>
   );
 }

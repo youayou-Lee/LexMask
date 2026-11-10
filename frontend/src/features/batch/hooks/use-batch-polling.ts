@@ -11,6 +11,7 @@ import {
 } from '../types';
 import { deriveReviewConfirmed, mapBackendStatus } from './use-batch-wizard-utils';
 import { isBatchImageMode, resolveBatchFileType } from '../utils/file-type';
+import { sameNumberList } from '@/features/batch/lib/page-failures';
 
 const STEP3_FIRST_REVIEWABLE_REFRESH_MS = 250;
 const STEP3_RECOGNITION_REFRESH_MS = 1000;
@@ -95,6 +96,8 @@ export function useBatchPolling(
               const recognitionTotal =
                 typeof item.progress_total === 'number' ? item.progress_total : undefined;
               const recognitionMessage = item.progress_message ?? null;
+              const recognitionFailedPages = item.recognition_failed_pages ?? [];
+              const recognitionSuccessPages = item.recognition_success_pages;
               if (
                 row.analyzeStatus === analyzeStatus &&
                 row.reviewConfirmed === reviewConfirmed &&
@@ -107,7 +110,8 @@ export function useBatchPolling(
                 row.recognitionStage === recognitionStage &&
                 row.recognitionCurrent === recognitionCurrent &&
                 row.recognitionTotal === recognitionTotal &&
-                row.recognitionMessage === recognitionMessage
+                row.recognitionMessage === recognitionMessage &&
+                sameNumberList(row.recognitionFailedPages ?? [], recognitionFailedPages)
               ) {
                 return row;
               }
@@ -126,6 +130,8 @@ export function useBatchPolling(
                 recognitionCurrent,
                 recognitionTotal,
                 recognitionMessage,
+                recognitionSuccessPages,
+                recognitionFailedPages,
               };
             });
             return changed ? next : prev;
