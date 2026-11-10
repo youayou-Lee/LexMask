@@ -46,14 +46,14 @@ def test_run_ner_shifts_offsets_and_sets_page():
 
 def test_build_mapping_draft_occurrence_order_and_merge():
     """4 实体含重复（张三×2）→ 去重后 3 行唯一 (text,type)；PERSON 化名 [姓某]
-    （张三/张三同文去重后张姓唯一→[张某]，李四→[李某]），其余类型 [类型_N] 占位符。"""
+    （张三/张三同文去重后张姓唯一→张某，李四→李某），其余类型 中文短名占位符（无括号，用户 2026-11-05 裁定）。"""
     e1 = Entity(id="a", text="张三", type="PERSON", start=0, end=2)
     e2 = Entity(id="b", text="李四", type="PERSON", start=5, end=7)
     e3 = Entity(id="c", text="张三", type="PERSON", start=9, end=11)
     e4 = Entity(id="d", text="6222", type="BANK_CARD", start=20, end=24)
     items = build_mapping_draft([e1, e2, e3, e4])
     assert len(items) == 3
-    assert [m.replacement for m in items] == ["[张某]", "[李某]", "[银行卡_1]"]
+    assert [m.replacement for m in items] == ["张某", "李某", "银行卡1"]
     # 行唯一且行 id 唯一：render_outputs 查找 dict 不再有 last-row-wins 覆写
     keys = {(m.original_text, m.entity_type) for m in items}
     assert len(keys) == 3
@@ -73,8 +73,9 @@ def test_cn_numeral():
 
 
 def test_build_mapping_draft_same_surname_multiple_get_cn_numerals():
-    """同姓多个实体：唯一→[袁某] 不加序号；多个→[袁某一]/[袁某二] 汉字序号；
-    张三/李四异姓各自唯一→[张某]/[李某]。"""
+    """同姓多个实体：唯一→袁某 不加序号；多个→袁某一/袁某二 汉字序号；
+    张三/李四异姓各自唯一→张某/李某（用户 2026-11-05 裁定：化名不带括号——
+    Agent 复述化名时不会变形，映射表可精确反查）。"""
     ents = [
         Entity(id="a", text="袁吃霄", type="PERSON", start=0, end=3),
         Entity(id="b", text="张三", type="PERSON", start=5, end=7),
@@ -84,7 +85,38 @@ def test_build_mapping_draft_same_surname_multiple_get_cn_numerals():
     ]
     items = build_mapping_draft(ents)
     got = {m.original_text: m.replacement for m in items}
-    assert got["袁吃霄"] == "[袁某一]"
-    assert got["袁飞"] == "[袁某二]"
-    assert got["张三"] == "[张某]"
-    assert got["李四"] == "[李某]"
+    assert got["袁吃霄"] == "袁某一"
+    assert got["袁飞"] == "袁某二"
+    assert got["张三"] == "张某"
+    assert got["李四"] == "李某"
+
+
+def test_build_mapping_draft_non_person_zh_short_no_bracket():
+    """非 PERSON 占位符：中文短形态不带括号下划线（案号1/银行卡2）；
+    _TYPE_ZH 缺键的 id（CASE_NUMBER/ID_CARD/LICENSE_PLATE）必须补中文名。"""
+    ents = [
+        Entity(id="a", text="(2025)桂0103执恢769号", type="CASE_NUMBER", start=0, end=15),
+        Entity(id="b", text="140331055810018", type="BANK_CARD", start=20, end=35),
+        Entity(id="c", text="452626199005190011", type="ID_CARD", start=40, end=58),
+    ]
+    items = build_mapping_draft(ents)
+    got = {m.original_text: m.replacement for m in items}
+    assert got["(2025)桂0103执恢769号"] == "案号1"
+    assert got["140331055810018"] == "银行卡1"
+    assert got["452626199005190011"] == "证件号1"
+
+
+def test_build_mapping_draft_degenerate_and_org_default_excluded():
+    """门④真机事故：单字符原文与 ORG 默认 excluded=True（律师可改）。"""
+    ents = [
+        Entity(id="a", text="0", type="CASE_NUMBER", start=0, end=1),
+        Entity(id="b", text="百色靖西长江村镇银行", type="ORG", start=5, end=15),
+        Entity(id="c", text="韦日俊", type="PERSON", start=20, end=23),
+        Entity(id="d", text="140331055810018", type="BANK_CARD", start=25, end=40),
+    ]
+    items = build_mapping_draft(ents)
+    got = {m.original_text: m for m in items}
+    assert got["0"].excluded is True            # 单字符退化项默认保留
+    assert got["百色靖西长江村镇银行"].excluded is True  # ORG 策略表默认保留
+    assert got["韦日俊"].excluded is False      # 人名照常替换
+    assert got["140331055810018"].excluded is False
