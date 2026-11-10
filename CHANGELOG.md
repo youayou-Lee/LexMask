@@ -3,7 +3,6 @@
 
 ## 2026-11-11
 
-<<<<<<< HEAD
 ### 修正（Issue#256）本地栈扫描线整卷误记全页失败：队列路径 LA 不可用整段跳过视觉识别 + AppError str 可读
 
 - **为什么**：本地栈（无 LocateAnything）扫描件识别整卷误报「all N page(s) failed recognition」而 OCR 框/NER 实体实际全部产出（canary 10 页 22s 复现）。根因有二：①PR#235「LA 不可用不拦截识别」只在 playground 前端提交侧执行，API/队列载荷无此保护——队列两段式第二段（视觉特征识别）逐页进 `detect_vision`，每页撞 Issue#217 的 LA fail-closed 预检，`AppError(visual_service_unavailable)` 使全部页记入 `failed_pages`；②`AppError.__init__` 从未调 `super().__init__`，kwargs 构造（生产全部预检类抛点同款）时 `args=()` ⇒ `str(exc)==""`，页失败 reason 只剩「AppError: 」，错误码与指引全丢、排障全盲（「双账本分裂」表象 = deep-merge 账面残留第一段 completed 字段）。
@@ -41,6 +40,10 @@
 - 法律默认档（Issue#262）：侧边栏 8→6、任务中心+处理结果合并单入口、/single 识别前法律预设 chip+高级抽屉、复核态右栏精简、配置三页页签化进高级设置、开始页移除（登录落单次处理）、产品名定稿墨隐。
 - 清扫（同 PR 收尾，Task 8）：i18n 死键 zh/en 双侧对称删除——`start.*` 全组（仅保留 OnboardingGuide 仍引用的 `start.entry.playground.cta`）、`page.start.*`、`nav.recognitionSettings(.sub)`、`page.history.sub`、`page.redactionList(.title/.sub)`（header /settings/redaction 死分支删除后零引用）；app-header `/settings/redaction` 死分支删除；router prefetch 删除冗余的 features/history 预取（jobs chunk 已静态引入 HistoryView）；AuthRoute `shouldUseHome` 更名 `isRegisterLanding`（开始页已删，行为等价）；补 `/history` 重定向渲染钉（router.test.tsx）+ tasks done 页签「无计数」断言收紧为无计数 span 元素；删 app-sidebar.test.ts 与渲染钉信息冗余的 fabricated-input 全列用例（保留 filterHiddenNavItems 三个机制钉）。
 - 测试：前端全量 55 文件 / 400 例全绿 + tsc + build 绿（本机）；e2e 路由冒烟 14 路由全过 + /history→/jobs?view=done 真机重定向验证（worktree dev server × 本地栈 backend）；门④云真机走查待用户。
+- 二期 Task 9b（1926d73）：上传页重皮对齐界面稿——页头紧凑化（kicker/title/desc/configDesc 长文案键删除）、上传大卡+摘要卡标签墙（选中类型实时镜像 playground-selected-tags）、告警人话化（视觉特征离线走专属文案且仅当选中含视觉要素时显示，黑话细节默认折叠 playground-offline-hint-details）。
+- 二期 Task 10b（4423584）：T6「高级 · 按类型微调」内联抽屉删除，上传页改开识别范围三区弹窗（RecognitionScopeDialog）——ner/ocr/la 三区并排（<1100px 纵叠）、每区 8 类/页翻页+区内全选/全不选、即点即存直写 rec 状态、服务 offline 整区暗化+区内红条、纯文本文件 OCR/LA 两区「不适用」（na≠离线）；方案三态 select 派生（法律卷宗/全部/我的方案/手动改勾落 custom），「保存为方案」复用 createPreset(kind:'full')+invalidatePresets+自动套用；上传页旧 PresetSelectors/PresetSaveDialog 摘除（playground-upload-presets.tsx 删除，法律预设 chip 与识别范围入口保留，请求层 submitRecognitionTask 透传契约不动）。
+- 二期评审 fix（05c0797）：方案下拉一致性——tracking 判定收紧为「文本/视觉两维 tracking 指向同一 full 方案且当前三清单与该方案按目录过滤后期望形态一致」（单维 tracking 在跨区手改后不再假绿显示方案名）+「不适用」优先于「离线」（纯文本文件无论服务状态都显示不适用，服务徽标仍如实显示离线）+ i18n 死键清扫（preset.saveText.prompt / preset.saveVision.prompt）。
+- 二期测试：recognition-scope-dialog.test.tsx 694 行、playground-upload.reskin.test.tsx 325 行（两期提交累计）；前端全量 62 文件 / 469 例全绿 + tsc + build 绿（本机；换基并入 preview #257/#259/#261 后复跑口径）。e2e：golden_single 选择器路径逐点核对全存续、无需改动（其点击的 playground-advanced-toggle 是复核态实体面板高级抽屉 testid，并非二期删除的上传页 playground-advanced-types-toggle，泄漏断言原样）；smoke_routes 16 路由全过 + /single 识别范围三区弹窗真机探针 PASS（vite preview 新 dist × 本地栈 backend :8000，compose :3000 为旧 preview 构建不承载二期验证）；e2e 公共件 common.py 补登录后关闭引导浮卡（OnboardingGuide fixed z-40 每个新浏览器 profile 必现，实测拦截页尾右侧控件点击，locale 无关 aside 选择器+超时直通）；golden_single 全链需 has_ner 识别服务，本地栈无该容器，全链留待门④云真机。
 
 ## 2026-11-09
 
