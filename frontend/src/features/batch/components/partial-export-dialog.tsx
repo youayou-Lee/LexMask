@@ -355,7 +355,8 @@ export function PartialExportDialog({
                           data-testid={`partial-export-record-meta-${record.export_id}`}
                         >
                           {t('batchWizard.partialExport.recordSummary')
-                            .replace('{pages}', String(record.pages.length))
+                            // 产物 = 选中页 + 说明页 1 页，摘要必须报包内页数而不是选中页数
+                            .replace('{pages}', String(record.pages.length + 1))
                             .replace('{total}', String(record.page_count))
                             .replace('{excluded}', String(record.excluded_failed_pages?.length ?? 0))}
                         </span>

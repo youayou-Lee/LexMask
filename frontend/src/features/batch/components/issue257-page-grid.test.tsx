@@ -194,6 +194,9 @@ describe('部分导出对话框（Issue#257）', () => {
           volumes: [{ name: 'part001.zip', size_bytes: 1024 }],
           total_bytes: 1024,
           file_count: 1,
+          pages: [1, 2, 3],
+          page_count: 12,
+          excluded_failed_pages: [4],
           created_at: '2026-11-11T00:00:00+00:00',
           finished_at: '2026-11-11T00:00:30+00:00',
         },
@@ -213,6 +216,11 @@ describe('部分导出对话框（Issue#257）', () => {
     const link = record.querySelector('a');
     expect(link).toBeTruthy();
     expect(link?.getAttribute('href')).toContain('/files/batch/export/abc123/volumes/part001.zip');
+    // 摘要报的是「包内页数」= 选中页 + 说明页 1 页，不是选中页数
+    const meta = await screen.findByTestId('partial-export-record-meta-abc123');
+    expect(meta.textContent).toContain('本包 4 页');
+    expect(meta.textContent).toContain('原卷 12 页');
+    expect(meta.textContent).toContain('排除失败页 1 页');
   });
 
   it('不可分页类型给出明确不支持文案而不是空页格', async () => {
