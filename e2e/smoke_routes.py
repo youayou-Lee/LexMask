@@ -17,11 +17,15 @@ ROUTES = [
     "/restore",
     # Issue#262 A1：/history 已重定向进 /jobs?view=done，冒烟改走新深链
     "/jobs?view=done",
+    # Issue#262 终审：旧 /history 深链重定向本体也保留冒烟覆盖（带 query 透传）
+    "/history?source=batch&jobId=x",
     "/jobs",
     "/settings",
     "/settings/system",
     # Issue#262 D3：旧 /settings/redaction 已重定向进 /settings?tab=redaction，冒烟改走新深链
     "/settings?tab=redaction",
+    # Issue#262 终审：旧 /settings/redaction 重定向本体也保留冒烟覆盖
+    "/settings/redaction",
     "/model-settings/text",
     "/model-settings/vision",
 ]

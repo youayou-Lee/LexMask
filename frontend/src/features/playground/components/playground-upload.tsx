@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FC } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { resolveLegalTextSelection } from '@/config/legalPreset';
+import { resolveLegalTextSelection, sameIdSelection } from '@/config/legalPreset';
 import type { EntityTypeConfig } from '@/config/entityTypes';
 import { Card } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -48,13 +48,6 @@ function serviceSummary(entries: ServiceEntry[], t: Translate) {
   return entries
     .map((entry) => `${t(`health.service.${entry.key}`)}: ${serviceStatusLabel(entry.service.status, t)}`)
     .join(', ');
-}
-
-// 集合相等（忽略顺序）：selectedTypes 的写入路径既保序追加也做过滤，语义是集合。
-function sameIdSelection(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) return false;
-  const ids = new Set(b);
-  return a.every((id) => ids.has(id));
 }
 
 export const PlaygroundUpload: FC<PlaygroundUploadProps> = ({ ctx }) => {

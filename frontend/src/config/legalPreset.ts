@@ -33,3 +33,15 @@ export function resolveLegalTextSelection(availableIds: string[]): string[] {
   const legalIds = LEGAL_TEXT_TYPE_IDS.filter((id) => available.has(id));
   return legalIds.length > 0 ? [...legalIds] : [...availableIds];
 }
+
+/**
+ * 集合相等（忽略顺序与重复）：selectedTypes 的写入路径既保序追加也做过滤，语义是集合。
+ * 防御性收紧（Issue#262 终审）：比较去重后长度——重复 id 不与不同 id 判等
+ * （[X,X] vs [X,Y] → false，两个集合去重后大小不同）。
+ */
+export function sameIdSelection(a: readonly string[], b: readonly string[]): boolean {
+  const left = new Set(a);
+  const right = new Set(b);
+  if (left.size !== right.size) return false;
+  return [...left].every((id) => right.has(id));
+}
