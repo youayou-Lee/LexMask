@@ -30,6 +30,23 @@ ACTIVE_SINGLE_STATUSES: tuple[str, ...] = ("queued", "processing", "running", "r
 # 模块级锁保证「查守门 → 建任务 → 提交」对并发提交原子，恰好一胜。
 _submit_lock = asyncio.Lock()
 
+# Issue#254：item 状态的中文标签（redact 拒绝文案用）——覆盖 legacy 别名，
+# 未知值原样透出，避免静默吞状态
+_ITEM_STATUS_ZH: dict[str, str] = {
+    JobItemStatus.PENDING.value: "排队中",
+    JobItemStatus.QUEUED.value: "排队中",
+    JobItemStatus.PROCESSING.value: "识别处理中",
+    JobItemStatus.PARSING.value: "解析中",
+    JobItemStatus.NER.value: "识别中",
+    JobItemStatus.VISION.value: "识别中",
+    JobItemStatus.AWAITING_REVIEW.value: "待审核",
+    JobItemStatus.REVIEW_APPROVED.value: "已确认",
+    JobItemStatus.REDACTING.value: "匿名化中",
+    JobItemStatus.COMPLETED.value: "已完成",
+    JobItemStatus.FAILED.value: "已失败",
+    JobItemStatus.CANCELLED.value: "已取消",
+}
+
 
 class SingleTaskConflictError(Exception):
     """同账号已有计算中的单文件任务（D2）。
@@ -203,7 +220,13 @@ async def submit_single_redaction(
     if not items:
         raise KeyError(item_id)
     if items[0]["status"] != JobItemStatus.AWAITING_REVIEW.value:
-        raise ValueError(f"item not awaiting_review: {items[0]['status']}")
+        # Issue#254：报错必须是中文可读——英文原句（item not awaiting_review: …）
+        # 在 zh 界面会被前端兜底文案「匿名化失败」吞掉，用户无从知道下一步该做什么
+        label = _ITEM_STATUS_ZH.get(items[0]["status"], items[0]["status"])
+        raise ValueError(
+            f"识别任务当前状态为「{label}」，无法开始匿名化；请刷新页面后重试，"
+            "若任务已取消或已失败，请重新识别"
+        )
     async with _submit_lock:
         running = _active_single_task(store, owner_id)
         if running and running["id"] != job_id:

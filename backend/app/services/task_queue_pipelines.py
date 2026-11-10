@@ -860,6 +860,20 @@ class RecognitionPipelineMixin:
         # 迁移是 no-op 时会把上一次的陈旧摘要带到干净条目（假阳性警示）。这里显式
         # 重算：有失败页 ⇒ 明确摘要；无失败页 ⇒ None（清空）。
         failed_pages, total_pages = _recognition_failure_state(store, task.item_id)
+        # Issue#254：识别完成撞取消态——取消不打断在飞识别（#233 语义），完成回调
+        # 若照常写 awaiting_review 会撞状态机（cancelled 不可达 awaiting_review），
+        # 表现为 ERROR 堆栈 + item 永久卡取消态而文件快照带全部结果（用户视角的
+        # 「识别完成却无法匿名化」）。此处显式落账：结果保留在 file_store，item
+        # 维持取消态，留一条可读 WARNING；redact 侧（single_task_service）会以
+        # 中文文案引导用户重新识别。
+        current_item = store.get_item(task.item_id) or {}
+        if current_item.get("status") == JobItemStatus.CANCELLED.value:
+            logger.warning(
+                "[queue] item=%s recognition finished but item is cancelled; "
+                "results retained in file_store, item state unchanged (Issue#254)",
+                task.item_id[:8],
+            )
+            return
         skip_review = bool(job.get("skip_item_review"))
         if skip_review:
             # Issue#199 守卫（冷审 C1a）：识别存在失败页的条目**不 honor**

@@ -570,7 +570,9 @@ export function usePlayground() {
         }
       }
       if (!jobId || !itemId) {
-        throw new Error(t('playground.redactFailed'));
+        // Issue#254：笼统的「匿名化失败」会让用户误判为系统故障——解析不到
+        // 进行中的任务时给出可行动指引（刷新重试 / 重新识别）
+        throw new Error(t('playground.redactNoActiveTask'));
       }
 
       // Issue#199（泄漏安全）：识别存在失败页时，打码前必须知情确认——失败页

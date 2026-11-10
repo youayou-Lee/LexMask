@@ -1208,6 +1208,7 @@ const zhOverrides: Record<string, string> = {
   'playground.cancelled': '\u5df2\u53d6\u6d88\u5f53\u524d\u5904\u7406\u3002',
   'playground.recognizeFailed': '识别失败。',
   'playground.redactFailed': '匿名化失败。',
+  'playground.redactNoActiveTask': '未找到进行中的识别任务：请刷新页面后重试；若任务已取消或已失败，请重新识别。',
   'playground.redactFailedPagesConfirm': '第 {pages} 页识别失败：这些页不会被脱敏（未识别 ≠ 无敏感内容）。确定继续吗？可先取消并单独重试失败页。',
   'playground.redactPagesUnknownRetry': '未能确认是否有识别失败的页（查询失败）。为避免把未脱敏页当干净页提交，本次打码已停止；请稍后重试。',
   'playground.redactAlreadyDone': '该文件已完成匿名化，已为你打开结果。',

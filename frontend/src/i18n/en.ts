@@ -1288,6 +1288,7 @@ const enOverrides: Record<string, string> = {
   'playground.recognitionPausedModelServices':
     'Recognition is paused because required model services are unavailable: {services}. Start the services, then run recognition again.',
   'playground.redactFailed': 'Redaction failed.',
+  'playground.redactNoActiveTask': 'No active recognition task found. Refresh the page and retry; if the task was cancelled or failed, run recognition again.',
   'playground.redactFailedPagesConfirm': 'Page(s) {pages} failed recognition: they will NOT be redacted (not recognized ≠ no sensitive content). Continue anyway? Cancel to retry the failed pages first.',
   'playground.redactPagesUnknownRetry': 'Could not verify whether any pages failed recognition (lookup failed). Redaction was stopped to avoid treating un-redacted pages as clean; please retry.',
   'playground.redactAlreadyDone': 'Already redacted — opened the result view for you.',

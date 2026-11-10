@@ -673,7 +673,7 @@ describe('Issue#194 Bug#2：刷新后 awaiting_review 态打码兜底解析', ()
     expect(screen.getByTestId('stage').textContent).toBe('preview');
   });
 
-  it('兜底解析也查无任务 → 报「匿名化失败。」且不提交', async () => {
+  it('兜底解析也查无任务 → 报「未找到进行中的识别任务」指引且不提交（Issue#254）', async () => {
     await seedRefreshedPreview();
 
     vi.mocked(resolveAwaitingReviewTask).mockResolvedValue(null);
@@ -682,7 +682,12 @@ describe('Issue#194 Bug#2：刷新后 awaiting_review 态打码兜底解析', ()
       fireEvent.click(screen.getByTestId('redact-btn'));
     });
 
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith('匿名化失败。', 'error'));
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        '未找到进行中的识别任务：请刷新页面后重试；若任务已取消或已失败，请重新识别。',
+        'error',
+      ),
+    );
     expect(submitRedactionTask).not.toHaveBeenCalled();
     expect(screen.getByTestId('stage').textContent).toBe('preview');
   });

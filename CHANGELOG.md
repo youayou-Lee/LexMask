@@ -8,6 +8,12 @@
 - **为什么**：云端（MinerU 3.4.5，content_list 口径）供料模式识别大扫描卷 100% 失败——实弹取证（第四卷抽页直打 16581）证实 v1 `*_content_list.json` 的 `table_caption`/`table_footnote`/`image_footnote` 是 **list** 类型：空 list（falsy）被 `or ""` 碰巧兜住，非空 list（真实表格标题/脚注）直达 `.strip()` 抛 AttributeError。无表格小件侥幸通过，任何带标注表格的卷必崩（实测：第四卷 149 页、合并文档 89 页双双整单 failed）。
 - **改了什么**：`clean_segments` 表格分支 `table_caption`/`table_footnote` 与图像分支 `image_footnote` 三处改走既有 `_parts_text()`（#231 引入：str 直通 / list[str] / 部件数组归一，空值 → 不加行）——与 v2 归一层 `_v2_block_to_flat` 的既有处理同口径；v2 路经 normalize 后复用同一 `clean_segments`，一并覆盖。
 - **测试**：+4 例（非空 list 标题/脚注不崩且进段文本、空 list 与修复前逐字节一致、list 图注进段、str 形态回归钉）；变异验证回退修复 2 红/恢复 2 绿；adapter 54 例 + 同族 89 例全绿。
+
+### 修正（Issue#254）取消态竞态：识别完成撞取消 item 卡死 + redact 400 英文报错被吞成「匿名化失败」
+
+- **为什么**：律师实测识别完成后点「开始匿名化」只弹笼统的「匿名化失败」。四相确认根因有二：①用户取消任务后识别工人不中断（#233 语义），完成回调对 cancelled item 写 `awaiting_review` 撞状态机（`InvalidStatusTransition`），回写 FAILED 同样被拒——item 永久卡取消态而文件快照带全部结果，UI 照常给出必然失败的匿名化入口；②该路径 400 返回英文 `item not awaiting_review: cancelled`，`HTTP_400` 不在前端错误码映射表，英文原句在 zh 界面按 localizeError 既有规则被替换为兜底文案「匿名化失败。」——真实原因对用户完全不可见（云实例实弹信封逐字复现）。
+- **改了什么**：①`_mark_recognition_complete` 识别完成前检查 item 状态，取消态显式落账（结果保留在 file_store、item 维持取消态、一条可读 WARNING），不再 ERROR 堆栈刷屏；②`submit_single_redaction` 的拒绝 ValueError 改中文可读文案（状态中文名+「刷新重试/重新识别」指引），zh 界面原样透传；③前端 jobId/itemId 解析失败的抛错从笼统 `redactFailed` 换为专用指引词包 `playground.redactNoActiveTask`（zh/en）。
+- **测试**：+2 例（取消态 redact 中文文案含「已取消/重新识别」且无英文原句——走真实 `store.cancel_job` 裸 SQL 路径；识别完成撞取消态不写 awaiting_review、不直通打码），前端兜底解析用例断言更新为新指引文案。后端全量 2781 passed 零回归、前端 378 passed。
 ## 2026-11-05
 
 ### 修正（Issue#250）inline 平铺水印（并入主流/文本型 PDF）识别面过滤

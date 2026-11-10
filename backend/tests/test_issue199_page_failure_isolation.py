@@ -24,14 +24,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
 from typing import Any
 
 import pytest
-
-import app.services.task_queue as tq
-from app.core.config import settings
-from app.services.job_store import JobItemStatus
 from test_issue139_pipeline_asyncio_timeout import (
     _Fake310AsyncTimeoutError,
     _FakeStore,
@@ -41,6 +36,9 @@ from test_issue139_pipeline_asyncio_timeout import (
     _run,
     _vision_stubs,
 )
+
+import app.services.task_queue as tq
+from app.services.job_store import JobItemStatus
 
 _VISION_CFG: dict[str, Any] = {"visual_feature_types": [], "ocr_has_types": ["姓名"]}
 
@@ -421,3 +419,24 @@ def test_u11_failed_page_records_stage_status_and_error(monkeypatch: pytest.Monk
 
     # 同 item 其它页不得被这条失败记录污染
     assert store.page_entry(2).get("status") == "completed", store.performance
+
+
+# ---------------------------------------------------------------------------
+# Issue#254：识别完成撞取消态——完成回调对 cancelled item 优雅落账，
+# 不写 awaiting_review、不抛状态机异常（识别结果保留在 file_store）
+# ---------------------------------------------------------------------------
+def test_issue254_cancelled_item_recognition_complete_skips_awaiting_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _FakeStore(item_status=JobItemStatus.CANCELLED.value)
+    queue = _queue(store)
+    enqueued: list[tq.TaskItem] = []
+    monkeypatch.setattr(queue, "enqueue", lambda task: enqueued.append(task))
+
+    # 此前：InvalidStatusTransition (cancelled -> awaiting_review) 上抛，
+    # 落入通用 except Exception 记「unexpected」+ 堆栈，item 永久卡取消态。
+    queue._mark_recognition_complete(_item(), {}, store)
+
+    statuses = [c["status"] for c in store.status_calls]
+    assert JobItemStatus.AWAITING_REVIEW.value not in statuses, store.status_calls
+    assert not enqueued, "取消态不得直通打码"
