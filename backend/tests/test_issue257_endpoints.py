@@ -55,9 +55,14 @@ def _file_info(tmp_path: Path) -> dict:
         "page_count": 6,
         "original_filename": "卷.pdf",
         "file_path": str(src),
+        # 已识别页（1/2/3/5）必须都有框账条目——空列表也算「跑过视觉识别」；
+        # 4 是失败页、6 未跑，不参与导出校验（评审 Important-2）。
         "bounding_boxes": {
             1: [{"id": "b1", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.05, "type": "PERSON", "page": 1}],
+            2: [],
+            3: [],
             4: [{"id": "b4", "x": 0.1, "y": 0.2, "width": 0.2, "height": 0.05, "type": "PERSON", "page": 4}],
+            5: [],
         },
     }
 
@@ -344,3 +349,15 @@ def test_exports_endpoint_reads_disk_records(wired, store, tmp_path, monkeypatch
     )
     assert [record["export_id"] for record in payload["exports"]] == ["expA"]
     assert payload["exports"][0]["pages"] == [1, 2, 3]
+
+
+def test_partial_export_rejects_pages_without_boxes(store, wired, tmp_path):
+    """Important-2：选中页没有框账条目 ⇒ 400（不能原样渲染出厂）。"""
+    job_id, item_id, info = wired
+    info["bounding_boxes"] = {1: info["bounding_boxes"][1]}
+    with pytest.raises(AppError) as excinfo:
+        asyncio.run(
+            export_item_pages(job_id, item_id, pages=[3], acknowledge_failed_excluded=False, store=store, owner_id="admin")
+        )
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.error_code == "pages_without_boxes"

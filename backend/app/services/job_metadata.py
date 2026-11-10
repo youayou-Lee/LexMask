@@ -289,6 +289,7 @@ def item_to_out(row: dict[str, Any], *, owner_id: str | None = None, job_id: str
     """Convert a job item row to output dict with file metadata."""
     file_meta = file_meta_for_item(str(row["file_id"]), owner_id=owner_id, job_id=job_id or str(row["job_id"]))
     paged = page_status_service.is_paged_file_type(file_meta.get("file_type"))
+    page_count = page_status_service.page_count_of(row, file_meta) if paged else 0
     return {
         "id": row["id"],
         "job_id": row["job_id"],
@@ -314,6 +315,9 @@ def item_to_out(row: dict[str, Any], *, owner_id: str | None = None, job_id: str
         # Issue#257：轻量列表也要能画页格与「完成(x/y，第 z 页失败)」终局文案，
         # 但不带上整份 performance（万级 item 的全量载荷问题）。
         "paged": paged,
-        "page_count": page_status_service.page_count_of(row, file_meta) if paged else 0,
+        "page_count": page_count,
+        "recognition_success_pages": page_status_service.recognized_page_count(row, page_count)
+        if paged
+        else 0,
         "recognition_failed_pages": page_status_service.failed_page_numbers(row),
     }

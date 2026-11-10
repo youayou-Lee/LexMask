@@ -41,6 +41,11 @@ function isPagedRow(row: BatchRow): boolean {
   return row.file_type === 'pdf' || row.file_type === 'pdf_scanned' || row.file_type === 'image';
 }
 
+/** 部分导出只支持 PDF（扫描件/带框 PDF）；图片走单文件打码，不做页级选页导出。 */
+function canExportPages(row: BatchRow): boolean {
+  return row.file_type === 'pdf' || row.file_type === 'pdf_scanned';
+}
+
 function BatchStep3RecognizeInner({
   mode = 'smart',
   rows,
@@ -183,7 +188,11 @@ function BatchStep3RecognizeInner({
     const total = Number(row.page_count ?? row.recognitionTotal ?? 0);
     if (!failedPages.length || total <= 0) return null;
     if (!RECOGNITION_DONE_STATUSES.has(row.analyzeStatus)) return null;
-    const done = Math.max(0, total - failedPages.length);
+    // 已完成页数只用后端算好的「识别成功页数」——用 total - failed 会把未跑页也算成完成。
+    const done =
+      typeof row.recognitionSuccessPages === 'number'
+        ? Math.min(row.recognitionSuccessPages, total)
+        : Math.max(0, total - failedPages.length);
     return t('batchWizard.pages.finalWithFailures')
       .replace('{done}', String(done))
       .replace('{total}', String(total))
@@ -406,6 +415,7 @@ function BatchStep3RecognizeInner({
                     <BatchRowPages
                       jobId={activeJobId}
                       itemId={r.item_id ?? null}
+                      exportable={canExportPages(r)}
                       onExportPages={(pages) =>
                         setExportTarget({
                           itemId: r.item_id ?? null,

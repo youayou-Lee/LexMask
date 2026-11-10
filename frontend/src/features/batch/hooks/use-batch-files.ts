@@ -429,6 +429,7 @@ export function useBatchFiles(
           typeof item.progress_total === 'number' ? item.progress_total : undefined;
         const recognitionMessage = item.progress_message ?? null;
         const recognitionFailedPages = item.recognition_failed_pages ?? [];
+        const recognitionSuccessPages = item.recognition_success_pages;
         const pageCount = item.page_count || r.page_count;
         if (
           r.analyzeStatus === analyzeStatus &&
@@ -443,6 +444,7 @@ export function useBatchFiles(
           r.recognitionTotal === recognitionTotal &&
           r.recognitionMessage === recognitionMessage &&
           r.page_count === pageCount &&
+          r.recognitionSuccessPages === recognitionSuccessPages &&
           sameNumberList(r.recognitionFailedPages ?? [], recognitionFailedPages)
         ) {
           return r;
@@ -458,6 +460,7 @@ export function useBatchFiles(
           analyzeError,
           entity_count: entityCount,
           page_count: pageCount,
+          recognitionSuccessPages,
           recognitionStage,
           recognitionCurrent,
           recognitionTotal,

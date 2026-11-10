@@ -8,7 +8,7 @@
 //  - pending = 还没有该页的终态记录（未跑到或正在跑）
 // 失败页**不可选**：#199 红线规定失败页不进交付，这里从选择层面就挡住。
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -24,6 +24,9 @@ interface BatchPageMatrixProps {
   disabled?: boolean;
 }
 
+/** 首次渲染的页格数：200+ 页整卷一次性铺 DOM 会明显拖慢展开（评审 Important-3）。 */
+const PAGE_CHUNK = 50;
+
 const STATE_STYLES: Record<PageCellState, string> = {
   success: 'border-[var(--success-border)] bg-[var(--success-surface)] text-[var(--success-foreground)]',
   failed: 'border-destructive/40 bg-destructive/10 text-destructive',
@@ -32,6 +35,15 @@ const STATE_STYLES: Record<PageCellState, string> = {
 
 export function BatchPageMatrix({ status, selected, onChange, disabled = false }: BatchPageMatrixProps) {
   const t = useT();
+  const [visibleCount, setVisibleCount] = useState(PAGE_CHUNK);
+  useEffect(() => {
+    setVisibleCount(PAGE_CHUNK);
+  }, [status.item_id, status.page_count]);
+  const visiblePages = useMemo(
+    () => status.pages.slice(0, visibleCount),
+    [status.pages, visibleCount],
+  );
+  const hiddenCount = status.pages.length - visiblePages.length;
   const counts = useMemo(() => {
     const tally = { success: 0, failed: 0, pending: 0 };
     status.pages.forEach((cell) => {
@@ -100,7 +112,7 @@ export function BatchPageMatrix({ status, selected, onChange, disabled = false }
 
       <div className="max-h-56 overflow-y-auto rounded-lg border border-border/70 bg-background p-1.5">
         <div className="grid grid-cols-[repeat(auto-fill,minmax(2rem,1fr))] gap-1">
-          {status.pages.map((cell) => {
+          {visiblePages.map((cell) => {
             const isSelected = selected.has(cell.page);
             const reasonLabel = cell.reason ? `：${cell.reason}` : '';
             return (
@@ -134,6 +146,20 @@ export function BatchPageMatrix({ status, selected, onChange, disabled = false }
             );
           })}
         </div>
+        {hiddenCount > 0 && (
+          <div className="flex justify-center pt-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-xs"
+              onClick={() => setVisibleCount((n) => n + PAGE_CHUNK)}
+              data-testid="page-matrix-show-more"
+            >
+              {t('batchWizard.pages.showMore').replace('{count}', String(hiddenCount))}
+            </Button>
+          </div>
+        )}
       </div>
 
       {counts.failed > 0 && (

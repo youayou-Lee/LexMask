@@ -97,6 +97,7 @@ export function useBatchPolling(
                 typeof item.progress_total === 'number' ? item.progress_total : undefined;
               const recognitionMessage = item.progress_message ?? null;
               const recognitionFailedPages = item.recognition_failed_pages ?? [];
+              const recognitionSuccessPages = item.recognition_success_pages;
               if (
                 row.analyzeStatus === analyzeStatus &&
                 row.reviewConfirmed === reviewConfirmed &&
@@ -129,6 +130,7 @@ export function useBatchPolling(
                 recognitionCurrent,
                 recognitionTotal,
                 recognitionMessage,
+                recognitionSuccessPages,
                 recognitionFailedPages,
               };
             });

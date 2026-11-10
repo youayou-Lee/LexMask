@@ -242,6 +242,74 @@ describe('step3 行内展开（Issue#257）', () => {
     expect(onExportPages.mock.calls[0][0]).toEqual([1, 2, 3, 5]);
   });
 });
+describe('评审返修（Issue#257 门⑥）：分块 / 类型门控 / 终局计数', () => {
+  function bigStatus(count: number): ItemPageStatus {
+    return makeStatus({
+      page_count: count,
+      pages: Array.from({ length: count }, (_, i) => ({
+        page: i + 1,
+        state: 'success' as const,
+        duration_ms: 100,
+        cache_hit: false,
+      })),
+      failed_pages: [],
+    });
+  }
+
+  it('200+ 页首屏只铺 50 格，点「显示更多」再放 50 格（Important-3）', () => {
+    hookState.status = bigStatus(200);
+    render(<BatchPageMatrix status={bigStatus(200)} selected={new Set()} onChange={vi.fn()} />);
+
+    expect(screen.getAllByTestId(/^page-cell-/).length).toBe(50);
+    fireEvent.click(screen.getByTestId('page-matrix-show-more'));
+    expect(screen.getAllByTestId(/^page-cell-/).length).toBe(100);
+    expect(screen.getByTestId('page-matrix-show-more').textContent).toContain('100');
+  });
+
+  it('图片行不给导出入口，只给「暂不支持页级导出」提示（Important-4）', () => {
+    const onExportPages = vi.fn();
+    render(
+      <BatchRowPages jobId="job-1" itemId="item-1" onExportPages={onExportPages} exportable={false} />,
+    );
+
+    expect(screen.getByTestId('page-matrix-export-unsupported')).toBeTruthy();
+    expect(screen.queryByTestId('page-matrix-export')).toBeNull();
+    expect(onExportPages).not.toHaveBeenCalled();
+  });
+
+  it('终局文案用后端「识别成功页数」，不把未跑页算成完成', () => {
+    render(
+      <BatchStep3Recognize
+        rows={[
+          {
+            file_id: 'file-partial',
+            original_filename: '测试卷.pdf',
+            file_size: 1024,
+            file_type: FileType.PDF,
+            has_output: false,
+            entity_count: 0,
+            analyzeStatus: 'awaiting_review',
+            item_id: 'item-1',
+            job_id: 'job-1',
+            page_count: 149,
+            recognitionSuccessPages: 100,
+            recognitionFailedPages: [133],
+          } as BatchRow,
+        ]}
+        activeJobId="job-1"
+        failedRows={[]}
+        goStep={vi.fn()}
+        submitQueueToWorker={vi.fn(async () => {})}
+        requeueFailedItems={vi.fn(async () => {})}
+      />,
+    );
+
+    const cell = screen.getByTestId('row-progress-file-partial');
+    expect(cell.textContent).toContain('完成(100/149');
+    expect(cell.textContent).not.toContain('完成(148/149');
+  });
+});
+
 describe('step3 接线（Issue#257）', () => {
   function row(overrides: Partial<BatchRow>): BatchRow {
     return {

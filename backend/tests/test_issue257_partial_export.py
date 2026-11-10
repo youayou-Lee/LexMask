@@ -295,3 +295,76 @@ def test_cover_page_renders_chinese(synthetic_pdf, tmp_path):
             assert line in text
     finally:
         doc.close()
+
+
+# ---------------------------------------------------------------------------
+# 评审 Important-1/2：失败清理 + 无框页拒收
+# ---------------------------------------------------------------------------
+
+def test_partial_export_cleans_unmasked_subset_when_render_fails(
+    synthetic_pdf, output_dir, tmp_path, monkeypatch
+):
+    """Important-1：渲染/插页任一环节抛错，未打码的选中页副本不得留在导出目录。"""
+    from app.services import redactor as redactor_module
+
+    boxes = [_box(p, f"b{p}") for p in (1, 2)]
+    work = tmp_path / "work"
+
+    async def _boom(self, *args, **kwargs):
+        raise RuntimeError("render exploded")
+
+    monkeypatch.setattr(redactor_module.Redactor, "redact", _boom)
+
+    with pytest.raises(RuntimeError, match="render exploded"):
+        asyncio.run(
+            pes.build_partial_package(
+                source_path=synthetic_pdf,
+                pages=[1, 2],
+                boxes=boxes,
+                config=_config(),
+                cover_lines=["【部分导出说明】"],
+                out_dir=str(work),
+                final_name="部分导出.pdf",
+            )
+        )
+
+    leftovers = sorted(p.name for p in work.iterdir()) if work.exists() else []
+    assert "subset.pdf" not in leftovers, f"未打码切片残留：{leftovers}"
+    assert "部分导出.pdf" not in leftovers
+    assert not [p for p in leftover_redacted(work)], "半成品打码件不得留下"
+
+
+def leftover_redacted(work):
+    if not work.exists():
+        return []
+    return [p for p in work.iterdir() if p.is_file() and p.name != "subset.pdf"]
+
+
+def test_validation_rejects_pages_without_boxes():
+    """Important-2：选中页没有框账条目 ⇒ 拒收（否则原样渲染、零遮蔽出厂）。"""
+    with pytest.raises(pes.PartialExportError) as excinfo:
+        pes.validate_partial_export_pages(
+            [1, 2],
+            page_count=6,
+            failed_pages=set(),
+            recognized_pages={1, 2},
+            acknowledge_failed_excluded=False,
+            file_type="pdf_scanned",
+            boxes_pages={1},
+        )
+    assert excinfo.value.code == "pages_without_boxes"
+    assert excinfo.value.detail["pages"] == [2]
+
+
+def test_validation_accepts_pages_with_empty_boxes_entries():
+    """空框列表（跑过视觉识别但零命中）仍然合法，不能被上面那条误杀。"""
+    selection = pes.validate_partial_export_pages(
+        [1, 2],
+        page_count=6,
+        failed_pages=set(),
+        recognized_pages={1, 2},
+        acknowledge_failed_excluded=False,
+        file_type="pdf_scanned",
+        boxes_pages={1, 2},
+    )
+    assert selection["pages"] == [1, 2]

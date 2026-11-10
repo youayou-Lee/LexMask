@@ -112,6 +112,7 @@ def validate_partial_export_pages(
     recognized_pages: set[int],
     acknowledge_failed_excluded: bool,
     file_type: Any = None,
+    boxes_pages: Iterable[int] | None = None,
 ) -> dict[str, Any]:
     """校验并规范化选页。返回 ``{"pages": [...], "excluded_failed_pages": [...]}``。
 
@@ -121,7 +122,10 @@ def validate_partial_export_pages(
     * ``pages_empty`` / ``pages_out_of_range``——空选、越界（含 0/负数/超页数）；
     * ``failed_pages_not_allowed``——**任何**参数路径都不得把失败页放进产物（#199 红线）；
     * ``pages_not_recognized``——选了还没识别完的页（不能导出空白页冒充成品）；
-    * ``failed_pages_ack_required``——所选区间内**存在**被排除的失败页，必须显式知情确认。
+    * ``failed_pages_ack_required``——所选区间内**存在**被排除的失败页，必须显式知情确认；
+    * ``pages_without_boxes``——选中页在 file_store 里**没有框账条目**（该页没跑过视觉识别）。
+      这种页即使被记成 completed，打码阶段也无框可打，导出会得到一份「原样渲染、零遮蔽」的副本，
+      属于 fail-open，必须拒收（评审 Important-2）。
     """
     if file_type is not None and not is_supported_export_type(file_type):
         raise PartialExportError(
@@ -166,6 +170,16 @@ def validate_partial_export_pages(
             "所选页尚未识别完成",
             pages=not_recognized,
         )
+
+    if boxes_pages is not None:
+        with_boxes = {int(p) for p in boxes_pages}
+        missing = [p for p in normalized if p not in with_boxes]
+        if missing:
+            raise PartialExportError(
+                "pages_without_boxes",
+                "所选页没有视觉识别框记录，无法保证遮蔽效果，拒绝导出",
+                pages=missing,
+            )
 
     lo, hi = normalized[0], normalized[-1]
     excluded = sorted(p for p in failed_pages if lo <= p <= hi)
@@ -301,6 +315,14 @@ def remap_boxes_to_subset(boxes: Iterable[BoundingBox], pages: Sequence[int]) ->
     return remapped
 
 
+def _remove_quietly(path: str) -> None:
+    """删临时文件（不存在/被占用都忽略），避免未打码切片在导出目录残留。"""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def insert_cover_page(pdf_path: str, lines: Sequence[str]) -> None:
     """把说明页插到第 1 页（页尺寸随原第 1 页）。"""
     if not lines:
@@ -356,14 +378,8 @@ async def build_partial_package(
 
     os.makedirs(out_dir, exist_ok=True)
     subset_path = os.path.join(out_dir, "subset.pdf")
-
     delivery = getattr(config, "watermark_delivery", None)
     source = await _resolve_delivery_source(source_path, delivery)
-
-    def _sync_slice() -> None:
-        slice_pdf_pages(source, pages, subset_path)
-
-    await asyncio.to_thread(_sync_slice)
     remapped = remap_boxes_to_subset(boxes, pages)
 
     # 源已净化 ⇒ 让 Redactor 不要再解析交付源（避免对切片文件二次净化/失败）。
@@ -374,20 +390,44 @@ async def build_partial_package(
         pass
 
     file_info = {"file_path": subset_path, "file_type": FileType.PDF_SCANNED, "is_scanned": True}
-    result = await Redactor().redact(file_info, [], remapped, config_copy, progress_cb=progress_cb)
-    redacted_path = str(result["output_path"])
-
-    def _sync_cover() -> None:
-        insert_cover_page(redacted_path, cover_lines)
-
-    await asyncio.to_thread(_sync_cover)
-
+    redacted_path = ""
     final_path = os.path.join(out_dir, final_name)
-    await asyncio.to_thread(os.replace, redacted_path, final_path)
     try:
-        os.remove(subset_path)
-    except OSError:
-        pass
+        def _sync_slice() -> None:
+            slice_pdf_pages(source, pages, subset_path)
+
+        await asyncio.to_thread(_sync_slice)
+        result = await Redactor().redact(
+            file_info, [], remapped, config_copy, progress_cb=progress_cb
+        )
+        redacted_path = str(result["output_path"])
+
+        def _sync_cover() -> None:
+            insert_cover_page(redacted_path, cover_lines)
+
+        await asyncio.to_thread(_sync_cover)
+        await asyncio.to_thread(os.replace, redacted_path, final_path)
+
+        expected = len(set(pages)) + 1
+        with fitz.open(final_path) as doc:
+            actual = doc.page_count
+        if actual != expected:
+            raise PartialExportError(
+                "partial_export_page_count_mismatch",
+                f"产物页数 {actual} != 预期 {expected}",
+                expected=expected,
+                actual=actual,
+            )
+    except BaseException:
+        # 中途失败绝不能把「未打码的选中页副本」留在导出目录里（原样含文本层）。
+        _remove_quietly(subset_path)
+        if redacted_path:
+            _remove_quietly(redacted_path)
+        _remove_quietly(final_path)
+        raise
+    finally:
+        _remove_quietly(subset_path)
+
     return {
         "pdf_path": final_path,
         "bytes": os.path.getsize(final_path),

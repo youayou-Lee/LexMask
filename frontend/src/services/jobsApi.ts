@@ -69,6 +69,7 @@ export type JobItemRow = {
    */
   paged?: boolean;
   page_count?: number;
+  recognition_success_pages?: number;
   recognition_failed_pages?: number[];
   /**
    * Issue#194：原始 performance_json（getJob 默认 performance=true 时透出）。
@@ -294,6 +295,8 @@ function normalizeJobItemRow(rawItem: unknown): JobItemRow {
     reviewer: asNullableString(item.reviewer),
     paged: item.paged === true,
     page_count: asNumber(item.page_count),
+    recognition_success_pages:
+      typeof item.recognition_success_pages === 'number' ? item.recognition_success_pages : undefined,
     recognition_failed_pages: Array.isArray(item.recognition_failed_pages)
       ? item.recognition_failed_pages.filter((value): value is number => typeof value === 'number')
       : [],

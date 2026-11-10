@@ -17,9 +17,16 @@ interface BatchRowPagesProps {
   jobId: string | null;
   itemId: string | null;
   onExportPages: (pages: number[]) => void;
+  /** 后端只支持 PDF 的页级导出；image 行仍可看页格，但不给导出入口。 */
+  exportable?: boolean;
 }
 
-export function BatchRowPages({ jobId, itemId, onExportPages }: BatchRowPagesProps) {
+export function BatchRowPages({
+  jobId,
+  itemId,
+  onExportPages,
+  exportable = true,
+}: BatchRowPagesProps) {
   const t = useT();
   const { status, error } = useBatchPageStatus({ jobId, itemId, enabled: true });
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -58,17 +65,23 @@ export function BatchRowPages({ jobId, itemId, onExportPages }: BatchRowPagesPro
   return (
     <div className="flex flex-col gap-2" data-testid="page-matrix-block">
       <BatchPageMatrix status={status} selected={selected} onChange={setSelected} />
-      <div className="flex items-center justify-end">
-        <Button
-          type="button"
-          variant="outline"
-          className="h-8 text-xs"
-          disabled={orderedSelected.length === 0}
-          onClick={() => onExportPages(orderedSelected)}
-          data-testid="page-matrix-export"
-        >
-          {t('batchWizard.pages.partialExport')}（{orderedSelected.length}）
-        </Button>
+      <div className="flex items-center justify-end gap-2">
+        {exportable ? (
+          <Button
+            type="button"
+            variant="outline"
+            className="h-8 text-xs"
+            disabled={orderedSelected.length === 0}
+            onClick={() => onExportPages(orderedSelected)}
+            data-testid="page-matrix-export"
+          >
+            {t('batchWizard.pages.partialExport')}（{orderedSelected.length}）
+          </Button>
+        ) : (
+          <span className="text-xs text-muted-foreground" data-testid="page-matrix-export-unsupported">
+            {t('batchWizard.pages.exportPdfOnly')}
+          </span>
+        )}
       </div>
     </div>
   );

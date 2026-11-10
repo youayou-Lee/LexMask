@@ -343,6 +343,26 @@ def _job_config_of(job: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _boxes_pages_of(file_info: dict[str, Any] | None) -> set[int]:
+    """file_store 里有框账条目的页号集合（校验「选了没跑过视觉识别的页」）。"""
+    raw = (file_info or {}).get("bounding_boxes") or {}
+    pages: set[int] = set()
+    if isinstance(raw, dict):
+        for key in raw:
+            try:
+                pages.add(int(key))
+            except (TypeError, ValueError):
+                continue
+    elif isinstance(raw, list):
+        for box in raw:
+            if isinstance(box, dict):
+                try:
+                    pages.add(int(box.get("page") or 1))
+                except (TypeError, ValueError):
+                    continue
+    return pages
+
+
 def _load_file_info(file_id: Any) -> dict[str, Any] | None:
     if not file_id:
         return None
@@ -401,6 +421,7 @@ async def export_item_pages(
             recognized_pages=page_status_service.recognized_page_numbers(item, page_count),
             acknowledge_failed_excluded=acknowledge_failed_excluded,
             file_type=file_info.get("file_type"),
+            boxes_pages=_boxes_pages_of(file_info),
         )
     except partial_export_service.PartialExportError as exc:
         # 知情确认是 409（可重试、需要用户动作），参数错误是 400。

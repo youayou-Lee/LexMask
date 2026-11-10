@@ -14,7 +14,3 @@ export function sameNumberList(a: readonly number[], b: readonly number[]): bool
   return true;
 }
 
-/** 页号清单 → 「第 133 页」「第 5、7 页」；空清单返回空串。 */
-export function formatPageList(pages: readonly number[]): string {
-  return pages.join('、');
-}

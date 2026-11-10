@@ -349,8 +349,19 @@ export function PartialExportDialog({
                       <span className="min-w-0 flex-1 truncate font-medium" title={record.title}>
                         {record.title || record.export_id}
                       </span>
+                      {record.page_count && record.pages?.length ? (
+                        <span
+                          className="shrink-0 text-muted-foreground tabular-nums"
+                          data-testid={`partial-export-record-meta-${record.export_id}`}
+                        >
+                          {t('batchWizard.partialExport.recordSummary')
+                            .replace('{pages}', String(record.pages.length))
+                            .replace('{total}', String(record.page_count))
+                            .replace('{excluded}', String(record.excluded_failed_pages?.length ?? 0))}
+                        </span>
+                      ) : null}
                       <span className="shrink-0 text-muted-foreground tabular-nums">
-                        {record.created_at}
+                        {new Date(record.created_at).toLocaleString()}
                       </span>
                       {record.status === 'completed' ? (
                         record.volumes.map((volume) => (

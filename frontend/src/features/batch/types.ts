@@ -57,6 +57,7 @@ export interface BatchRow extends FileListItem {
   recognitionTotal?: number;
   recognitionMessage?: string | null;
   /** Issue#257：终局文案用（「完成(148/149，第 133 页失败)」）。 */
+  recognitionSuccessPages?: number;
   recognitionFailedPages?: number[];
 }
 
