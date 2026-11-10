@@ -1270,6 +1270,7 @@ const enOverrides: Record<string, string> = {
   'playground.presetLegal': 'Legal case file (default)',
   'playground.presetAll': 'All types',
   'playground.advancedTypes': 'Advanced · fine-tune types',
+  'playground.advancedReview': 'Advanced · per-type / per-box selection',
   'playground.textPresetLabel': 'Text recognition list',
   'playground.saveAsTextPreset': 'Save text list',
   'playground.visionPresetLabel': 'Image recognition list',

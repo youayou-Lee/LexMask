@@ -6,8 +6,10 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
   useMemo,
+  useState,
   memo,
 } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -109,6 +111,9 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
     onRemoveEntity,
   }) => {
     const t = useT();
+    // Issue#262 A2：复核态右栏精简——细粒度操作（逐类型统计/逐框逐实体列表/
+    // 水印文本输入）收进底部「高级」抽屉，默认收起；主控件区只留全局操作。
+    const [advancedOpen, setAdvancedOpen] = useState(false);
     const stats = useMemo(
       () => (!isImageMode && displayStats ? displayStats : computeEntityStats(entities)),
       [displayStats, entities, isImageMode],
@@ -233,13 +238,6 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
               replaceDisabled={replacementLocked}
               maskDisabled={maskDisabled}
             />
-            {/* Issue#244 任务 C：交付水印选项——只在打码模式显示；替换产物是文本，无水印面 */}
-            {processingMode === 'mask' && (
-              <WatermarkDeliverySelector
-                value={watermarkDelivery}
-                onChange={setWatermarkDelivery}
-              />
-            )}
             {/* Issue #79 v3：打码=直接涂黑，无子选项（执行固定 mask）；
                 替换（化名）分支唯一方案=化名对照表确认流，「打码方式」选择已删除 */}
             {!replacementLocked && processingMode === 'replace' && (
@@ -254,7 +252,55 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
                 typeNameById={typeNameById}
               />
             )}
+            {/* Issue#244 任务 C：交付水印选项——只在打码模式显示；替换产物是文本，无水印面 */}
+            {processingMode === 'mask' && (
+              <WatermarkDeliverySelector
+                value={watermarkDelivery}
+                onChange={setWatermarkDelivery}
+              />
+            )}
+          </CardContent>
+        </Card>
 
+        {disabledReason && !isLoading && (
+          <RedactionBlockedNotice
+            totalCount={totalCount}
+            reason={disabledReason}
+            onRerunNer={onRerunNer}
+            onSelectAll={onSelectAll}
+          />
+        )}
+        <Button
+          onClick={onRedact}
+          disabled={shownSelectedCount === 0 || isLoading || Boolean(replaceUnready)}
+          aria-describedby={disabledReason ? 'playground-redact-disabled-reason' : undefined}
+          className={cn(
+            'h-11 shrink-0 rounded-[20px] text-sm font-semibold shadow-[var(--shadow-control)]',
+            (shownSelectedCount === 0 || Boolean(replaceUnready)) && 'opacity-50',
+          )}
+          data-testid="playground-redact-btn"
+        >
+          {isLoading
+            ? t('playground.processing')
+            : `${t('playground.startRedact')} (${shownSelectedCount})`}
+        </Button>
+
+        {/* Issue#262 A2：底部「高级」抽屉（默认收起）——原 Card 2 尾部的水印文本输入、
+            逐类型统计块与原 Card 3 列表三块 JSX 原样搬入，内部逻辑/testid 不改 */}
+        <button
+          type="button"
+          data-testid="playground-advanced-toggle"
+          aria-expanded={advancedOpen}
+          onClick={() => setAdvancedOpen((open) => !open)}
+          className="flex w-full items-center justify-between gap-2 rounded-xl border border-border/70 bg-muted/35 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/35 hover:text-foreground"
+        >
+          {t('playground.advancedReview')}
+          <ChevronDown
+            className={cn('size-3.5 shrink-0 transition-transform', advancedOpen && 'rotate-180')}
+          />
+        </button>
+        {advancedOpen && (
+          <div className="flex min-h-0 flex-col gap-2.5">
             <div className="space-y-1">
               <Label htmlFor="playground-watermark" className="text-xs text-muted-foreground">
                 {t('playground.watermarkLabel')}
@@ -314,59 +360,36 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
                 })}
               </div>
             )}
-          </CardContent>
-        </Card>
 
-        <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-muted/30 px-3.5">
-            <div className="min-w-0">
-              <span className="block truncate text-sm font-semibold text-foreground">
-                {listTitle}
-              </span>
-              <p className="truncate text-xs text-muted-foreground">
-                {t('playground.clickToEdit')}
-              </p>
-            </div>
-            <Badge variant="secondary" className="shrink-0 rounded-full px-2.5 py-1">
-              {totalCount}
-            </Badge>
+            <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-muted/30 px-3.5">
+                <div className="min-w-0">
+                  <span className="block truncate text-sm font-semibold text-foreground">
+                    {listTitle}
+                  </span>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {t('playground.clickToEdit')}
+                  </p>
+                </div>
+                <Badge variant="secondary" className="shrink-0 rounded-full px-2.5 py-1">
+                  {totalCount}
+                </Badge>
+              </div>
+              <ScrollArea className="flex-1">
+                {isImageMode ? (
+                  <BoxList boxes={visibleBoxes} onToggle={onToggleBox} typeNameById={typeNameById} />
+                ) : (
+                  <EntityList
+                    entities={entities}
+                    typeNameById={typeNameById}
+                    onClick={onEntityClick}
+                    onRemove={onRemoveEntity}
+                  />
+                )}
+              </ScrollArea>
+            </Card>
           </div>
-          <ScrollArea className="flex-1">
-            {isImageMode ? (
-              <BoxList boxes={visibleBoxes} onToggle={onToggleBox} typeNameById={typeNameById} />
-            ) : (
-              <EntityList
-                entities={entities}
-                typeNameById={typeNameById}
-                onClick={onEntityClick}
-                onRemove={onRemoveEntity}
-              />
-            )}
-          </ScrollArea>
-        </Card>
-
-        {disabledReason && !isLoading && (
-          <RedactionBlockedNotice
-            totalCount={totalCount}
-            reason={disabledReason}
-            onRerunNer={onRerunNer}
-            onSelectAll={onSelectAll}
-          />
         )}
-        <Button
-          onClick={onRedact}
-          disabled={shownSelectedCount === 0 || isLoading || Boolean(replaceUnready)}
-          aria-describedby={disabledReason ? 'playground-redact-disabled-reason' : undefined}
-          className={cn(
-            'h-11 shrink-0 rounded-[20px] text-sm font-semibold shadow-[var(--shadow-control)]',
-            (shownSelectedCount === 0 || Boolean(replaceUnready)) && 'opacity-50',
-          )}
-          data-testid="playground-redact-btn"
-        >
-          {isLoading
-            ? t('playground.processing')
-            : `${t('playground.startRedact')} (${shownSelectedCount})`}
-        </Button>
       </div>
     );
   },

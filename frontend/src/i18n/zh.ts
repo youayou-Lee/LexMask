@@ -1194,6 +1194,7 @@ const zhOverrides: Record<string, string> = {
   'playground.presetLegal': '法律卷宗（默认）',
   'playground.presetAll': '全部类型',
   'playground.advancedTypes': '高级 · 按类型微调',
+  'playground.advancedReview': '高级 · 逐类型 / 逐框勾选',
   'playground.textPresetLabel': '文本配置清单',
   'playground.saveAsTextPreset': '保存文本清单',
   'playground.visionPresetLabel': '图像配置清单',
