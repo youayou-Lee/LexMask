@@ -7,6 +7,7 @@ import json
 import logging
 import sqlite3
 import uuid
+from collections.abc import Collection
 from functools import lru_cache
 from typing import Any
 
@@ -21,7 +22,7 @@ from app.services.job_models import (
     JobStatus,
     JobType,
     _coerce_performance,
-    _deep_merge_dict,
+    _merge_with_replace_paths,
     _utc_iso,
 )
 from app.services.job_store_repair import RepairMixin
@@ -584,8 +585,20 @@ class JobStore(RepairMixin):
             )
             conn.commit()
 
-    def update_item_performance(self, item_id: str, patch: dict[str, Any]) -> dict[str, Any]:
-        """Merge best-effort timing/cache diagnostics into a job item."""
+    def update_item_performance(
+        self,
+        item_id: str,
+        patch: dict[str, Any],
+        *,
+        replace_paths: Collection[tuple[str, ...]] = (),
+    ) -> dict[str, Any]:
+        """Merge best-effort timing/cache diagnostics into a job item.
+
+        ``replace_paths``：逐条路径整体替换（而不是深合并）。页账里
+        ``recognition.failed_pages`` 与 ``recognition.pages.<p>`` 需要「表/新结果」
+        语义——深合并清不掉失败清单、也清不掉同一页上一次失败的 error（Issue#257
+        F1）。默认空集合 ⇒ 既有调用点行为不变。
+        """
         if not isinstance(patch, dict) or not patch:
             return self.get_item_performance(item_id)
         now = _utc_iso()
@@ -596,7 +609,9 @@ class JobStore(RepairMixin):
             ).fetchone()
             if not row:
                 raise KeyError(item_id)
-            data = _deep_merge_dict(_coerce_performance(row["performance_json"]), patch)
+            data = _merge_with_replace_paths(
+                _coerce_performance(row["performance_json"]), patch, replace_paths
+            )
             conn.execute(
                 """
                 UPDATE job_items

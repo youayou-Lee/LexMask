@@ -9,6 +9,18 @@
 - **改了什么**：①`_run_vision` 调度前探测一次 LA（勾选视觉要素时）：不可用 ⇒ 剔除视觉要素（空数组=显式不跑该段）+ `recognition.visual_detection_skipped` 结构化落账 + WARNING + 进度消息 `visual_detection_skipped_la_unavailable`，OCR+HaS 成果照常交付；预检自身意外异常不吞（fail-closed 不降级）；LA 在场（云端）行为零变化。②`AppError` 补 `super().__init__(message)`，`str(exc)` 从此携带 message（kwargs/位置参数两形态同口径）。
 - **测试**：后端 +7 例（AppError str 两形态、两段式跳过全流程到 awaiting_review 且零失败摘要、单页剔除视觉要素、LA 可用两段式契约钉、预检意外异常穿透、LA 恢复重跑清陈旧跳过账——判据读 deep-merge 合并视图）；共享桩 `_vision_stubs` 默认 LA 可用（既有两段式用例不受新探测影响）。前端 +3 例（step3 识别消息映射抽纯函数 `lib/step3-recognition-message.ts` 后的契约钉，含视觉跳过终态与未知消息回落）。后端全量 2792 passed 零回归、前端 381 passed。
 
+### 增强（Issue#257 一期之一）大案卷页级勾选格 + 部分导出（只导选中页 + 说明页 + 导出记录）
+
+- **为什么**：200 页的真卷识别要跑很久，律师等不到结束就要先用已完成的页——一页亮一勾、跑到 100 页能先导出前 100 页、跑完再导完整版；同时大卷里单页离线是常态（#199 已做页级隔离），但交付面只有「整卷导出」，用户拿不到「已完成的部分」。这条能力把 #199 的逐页账本变成产品面。
+- **改了什么**：
+  - 新增 `page_status_service`（页状态投影，单一真源）：`recognition_state` 以 item 状态机为权威，页三态 = `completed`→success / `failed|timeout`→failed / 缺记录→pending，失败原因优先取 `recognition.failed_pages` 码、回落页记录 `error`；只对 pdf/pdf_scanned/image 提供（`paged`）。
+  - 新增 `partial_export_service`：锁内取快照 → 解析交付源（去水印副本，避免二次解析）→ `insert_pdf` 切页（原卷升序）→ 框页号重映射到子集页序 → 直接调 `Redactor.redact`（**不写 file_store**，主产物逐字节不变）→ 中文说明页插首（页范围/共 N 页/原卷总页数/排除的失败页及原因码/快照时间/生成时间/导出 ID/免责句，不出现任何案卷文本）→ `write_export_volumes` 打包。
+  - `ExportTask` 增 `meta`（job_id/item_id/pages/excluded_failed_pages/page_count/snapshot_at/recognized_pages_at_export），`get()/volume_path()` 增**磁盘回落**（重启后记录仍可查可下）；`GET .../exports` 扫 `export-status.json` 列出该 item 全部导出。
+  - 端点：`GET /api/jobs/{job_id}/items/{item_id}/page-status`（轻量投影）、`POST .../partial-export`（202，异步任务）、`GET .../exports`。失败页永不进包：选区间内含失败页必须 `acknowledge_failed_excluded=true`，否则 409 `failed_pages_ack_required`。
+  - F1（前置缺陷）：`update_item_performance` 增 `replace_paths`，路径命中整体替换——修复深合并「空 dict 不删键」导致失败页清单清不掉、页记录重写残留旧 `error`；默认参数保持旧行为。
+  - 前端：step3 文件行展开逐页格（成功/失败 hover 原因/未跑），失败页在**选择层**就不可勾；部分导出对话框（默认全选成功页、失败页知情确认、202 后轮询到终态、导出记录列表可直接下载）；识别进行中也允许导出（导出侧另取快照并在说明页写明快照时间）。
+- **测试**：后端 +55 例（F1 真 `JobStore` 红性/页投影三态与计数/切页与逐页图像流 sha256 对齐全量参照件/端点契约与错误码/真 `ExportTaskManager` 全链含重启后下载）；全量 2815 passed，18 failed 与 preview 基线**同集合**（容器 `ProcessPoolExecutor` 信号量权限问题，非本 PR 引入）。前端 +8 例（页格三态与失败页不可选/ack 门控不发请求/记录下载链接/step3 接线展开收起），i18n 双语 parity 2 例。
+
 ## 2026-11-09
 
 ### 修正（Issue#252）供料模式 P0：MinerU 3.4.5 表格 caption/footnote 是 list，clean_segments 按 str 处理必崩

@@ -6,7 +6,9 @@
 """
 from __future__ import annotations
 
+import copy
 import json
+from collections.abc import Collection
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
@@ -138,6 +140,39 @@ def _deep_merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, A
             base[key] = _deep_merge_dict(dict(base[key]), value)
         else:
             base[key] = value
+    return base
+
+
+def _merge_with_replace_paths(
+    base: dict[str, Any],
+    patch: dict[str, Any],
+    replace_paths: Collection[tuple[str, ...]],
+    *,
+    _prefix: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """深合并 + 指定路径「整体替换」（Issue#257 一期的 F1 前置缺陷修复）。
+
+    为什么必须有替换语义：``_deep_merge_dict`` 只能增/改、不能删。页账里两个
+    结构需要「表」语义而不是「字典」语义：
+
+    * ``recognition.failed_pages``——空 dict 的语义是「没有失败页了」。深合并下
+      写空 dict 是空操作（``#199`` 注释宣称的「空 dict 清旧键」从不成立），单页重试
+      成功后失败清单永远清不掉，交付闸（``_is_ready_for_delivery``）会继续判不可交付；
+    * ``recognition.pages.<p>``——同一页的二次写入是一次新的页结果。深合并会把
+      上一次失败留下的 ``error``/``stage_duration_ms`` 留进「成功」页记录里。
+
+    ``replace_paths`` 里的每条路径命中时**整体覆盖**目标子树（允许变成 ``{}``）；
+    未命中的路径沿用深合并。默认参数为空 ⇒ 既有调用点行为逐字节不变。
+    """
+    replace = set(replace_paths or ())
+    for key, value in patch.items():
+        path = _prefix + (key,)
+        if path in replace:
+            base[key] = copy.deepcopy(value)
+        elif isinstance(value, dict) and isinstance(base.get(key), dict):
+            base[key] = _merge_with_replace_paths(base[key], value, replace, _prefix=path)
+        else:
+            base[key] = copy.deepcopy(value)
     return base
 
 

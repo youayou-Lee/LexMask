@@ -692,3 +692,182 @@ export function commitAllReviews(jobId: string): Promise<CommitAllReviewsResult>
     {},
   );
 }
+
+// ─── Issue#257 一期：页级韧性（页状态 / 部分导出 / 导出记录）───────────────
+//
+// 「页格三态」的数据源：后端 page-status 端点把 performance.recognition.pages
+// 投影成每页一条 {page,state,reason}，失败清单（failed_pages）是 reason 的权威来源。
+// 缺页记录 = 还没跑到（pending），不区分「识别中」与「未开始」——那是文件名行的事。
+
+export type PageCellState = 'success' | 'failed' | 'pending';
+export type ItemRecognitionState = 'not_started' | 'running' | 'done' | 'failed' | 'cancelled';
+
+export type ItemPageCell = {
+  page: number;
+  state: PageCellState;
+  reason?: string | null;
+  duration_ms?: number | null;
+  cache_hit?: boolean;
+};
+
+export type ItemPageStatus = {
+  item_id: string;
+  job_id: string;
+  file_id: string;
+  /** false = 该文件类型不支持页级视图/页级导出（docx/txt/md…）。 */
+  paged: boolean;
+  page_count: number;
+  recognition_state: ItemRecognitionState;
+  snapshot_at: string;
+  pages: ItemPageCell[];
+  failed_pages: number[];
+};
+
+export type BatchExportVolume = {
+  name: string;
+  size_bytes?: number;
+  file_count?: number;
+};
+
+export type PartialExportTask = {
+  export_id: string;
+  kind: string;
+  title: string;
+  status: string;
+  error?: string | null;
+  progress?: { stage?: string; current?: number; total?: number };
+  volumes: BatchExportVolume[];
+  total_bytes?: number;
+  file_count?: number;
+  created_at: string;
+  finished_at?: string | null;
+  job_id?: string;
+  item_id?: string;
+  pages?: number[];
+  page_count?: number;
+  excluded_failed_pages?: number[];
+  snapshot_at?: string;
+};
+
+const PAGE_CELL_STATES: ReadonlySet<string> = new Set(['success', 'failed', 'pending']);
+
+function normalizePageCell(raw: unknown, fallbackPage: number): ItemPageCell {
+  const cell = asRecord(raw);
+  const state = asString(cell.state, 'pending');
+  return {
+    page: asNumber(cell.page, fallbackPage),
+    state: (PAGE_CELL_STATES.has(state) ? state : 'pending') as PageCellState,
+    reason: cell.reason == null ? null : asString(cell.reason),
+    duration_ms: cell.duration_ms == null ? null : asNumber(cell.duration_ms),
+    cache_hit: cell.cache_hit === true,
+  };
+}
+
+export function normalizeItemPageStatus(raw: unknown): ItemPageStatus {
+  const payload = asRecord(raw);
+  const pages = Array.isArray(payload.pages)
+    ? payload.pages.map((cell, index) => normalizePageCell(cell, index + 1))
+    : [];
+  return {
+    item_id: asString(payload.item_id),
+    job_id: asString(payload.job_id),
+    file_id: asString(payload.file_id),
+    paged: payload.paged === true,
+    page_count: asNumber(payload.page_count, pages.length),
+    recognition_state: asString(
+      payload.recognition_state,
+      'not_started',
+    ) as ItemRecognitionState,
+    snapshot_at: asString(payload.snapshot_at),
+    pages,
+    failed_pages: Array.isArray(payload.failed_pages)
+      ? payload.failed_pages.map((value) => asNumber(value)).filter((value) => value > 0)
+      : [],
+  };
+}
+
+export function normalizePartialExportTask(raw: unknown): PartialExportTask {
+  const task = asRecord(raw);
+  const progress = asRecord(task.progress);
+  const volumes = Array.isArray(task.volumes)
+    ? task.volumes.map((volume) => {
+        const record = asRecord(volume);
+        return {
+          name: asString(record.name),
+          size_bytes: asNumber(record.size_bytes),
+          file_count: asNumber(record.file_count),
+        };
+      })
+    : [];
+  const pages = Array.isArray(task.pages)
+    ? task.pages.map((value) => asNumber(value)).filter((value) => value > 0)
+    : [];
+  const excluded = Array.isArray(task.excluded_failed_pages)
+    ? task.excluded_failed_pages.map((value) => asNumber(value)).filter((value) => value > 0)
+    : [];
+  return {
+    export_id: asString(task.export_id),
+    kind: asString(task.kind, 'partial_redaction'),
+    title: asString(task.title),
+    status: asString(task.status, 'queued'),
+    error: task.error == null ? null : asString(task.error),
+    progress: {
+      stage: asString(progress.stage),
+      current: asNumber(progress.current),
+      total: asNumber(progress.total),
+    },
+    volumes,
+    total_bytes: asNumber(task.total_bytes),
+    file_count: asNumber(task.file_count),
+    created_at: asString(task.created_at),
+    finished_at: task.finished_at == null ? null : asString(task.finished_at),
+    job_id: asString(task.job_id),
+    item_id: asString(task.item_id),
+    pages,
+    page_count: asNumber(task.page_count),
+    excluded_failed_pages: excluded,
+    snapshot_at: asString(task.snapshot_at),
+  };
+}
+
+/** 页格三态投影。识别进行中也可以调（每页状态是快照）。 */
+export function getItemPageStatus(jobId: string, itemId: string): Promise<ItemPageStatus> {
+  return get(
+    `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/page-status`,
+  ).then(normalizeItemPageStatus);
+}
+
+/**
+ * 部分导出：只导出选中页（原卷页号）+ 一张说明页。
+ *
+ * `acknowledgeFailedExcluded` = 用户已确认「区间内的失败页会被排除」——后端在
+ * 区间含失败页且未确认时返回 409 failed_pages_ack_required。
+ */
+export function startPartialExport(
+  jobId: string,
+  itemId: string,
+  pages: number[],
+  acknowledgeFailedExcluded = false,
+): Promise<PartialExportTask> {
+  return post(
+    `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/partial-export`,
+    { pages, acknowledge_failed_excluded: acknowledgeFailedExcluded },
+  ).then(normalizePartialExportTask);
+}
+
+export function getPartialExport(exportId: string): Promise<PartialExportTask> {
+  return get(`/files/batch/export/${encodeURIComponent(exportId)}`).then(normalizePartialExportTask);
+}
+
+export async function listItemExports(
+  jobId: string,
+  itemId: string,
+): Promise<{ exports: PartialExportTask[]; unavailable: string[] }> {
+  const payload = asRecord(
+    await get(`/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/exports`),
+  );
+  const exports = Array.isArray(payload.exports)
+    ? payload.exports.map(normalizePartialExportTask)
+    : [];
+  return { exports, unavailable: asStringArray(payload.unavailable) };
+}

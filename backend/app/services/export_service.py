@@ -137,6 +137,24 @@ def write_export_volumes(
 Runner = Callable[["ExportTask", Callable[..., None]], Awaitable[list[dict[str, Any]]]]
 
 
+#: ``public()`` 的基础键；扫盘重建时其余键视为 ``meta``（Issue#257 部分导出元数据）。
+_PUBLIC_TASK_KEYS: frozenset[str] = frozenset(
+    {
+        "export_id",
+        "kind",
+        "title",
+        "status",
+        "error",
+        "progress",
+        "volumes",
+        "total_bytes",
+        "file_count",
+        "created_at",
+        "finished_at",
+    }
+)
+
+
 @dataclass
 class ExportTask:
     export_id: str
@@ -153,9 +171,12 @@ class ExportTask:
     created_at: str = ""
     finished_at: str | None = None
     runner: Runner | None = None
+    #: 附加元数据（Issue#257 部分导出用：job_id/item_id/pages/…）。随
+    #: ``export-status.json`` 一起落盘，重启后扫盘仍能还原"这条导出属于谁"。
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def public(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "export_id": self.export_id,
             "kind": self.kind,
             "title": self.title,
@@ -168,6 +189,9 @@ class ExportTask:
             "created_at": self.created_at,
             "finished_at": self.finished_at,
         }
+        if self.meta:
+            payload.update(dict(self.meta))
+        return payload
 
 
 def exports_root() -> str:
@@ -254,6 +278,7 @@ class ExportTaskManager:
         title: str = "",
         total_bytes: int = 0,
         file_count: int = 0,
+        meta: dict[str, Any] | None = None,
     ) -> ExportTask:
         self.cleanup_expired()
         export_id = uuid.uuid4().hex[:16]
@@ -269,6 +294,7 @@ class ExportTaskManager:
             file_count=file_count,
             created_at=datetime.now(UTC).isoformat(),
             runner=runner,
+            meta=dict(meta or {}),
         )
         self._tasks[export_id] = task
         self._persist(task)
@@ -277,10 +303,55 @@ class ExportTaskManager:
         return task
 
     def get(self, export_id: str, owner_id: str) -> ExportTask | None:
+        """内存优先；**内存里没有时回落扫盘**（重启后仍能查询状态/继续下载）。
+
+        导出任务表只活在内存里，但每次状态变更都会把 ``export-status.json`` 落盘
+        （含 Issue#257 的部分导出记录）。没有这层回落，一次重启就会让历史导出变成
+        「记录看得见、点下载 404」——AC1.7 钉的正是这一点。
+        """
         task = self._tasks.get(export_id)
-        if task is None or task.owner_id != owner_id:
+        if task is not None and task.owner_id == owner_id:
+            return task
+        return self._load_persisted(export_id, owner_id)
+
+    def _load_persisted(self, export_id: str, owner_id: str) -> ExportTask | None:
+        export_id = str(export_id or "")
+        if not export_id or not re.fullmatch(r"[0-9a-f]{8,32}", export_id):
             return None
-        return task
+        out_dir = os.path.join(_safe_owner_dir(owner_id), export_id)
+        status_path = os.path.join(out_dir, "export-status.json")
+        if not os.path.isfile(status_path):
+            return None
+        try:
+            with open(status_path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or str(data.get("export_id") or "") != export_id:
+            return None
+        meta = {
+            key: value
+            for key, value in data.items()
+            if key not in _PUBLIC_TASK_KEYS
+        }
+        progress = data.get("progress")
+        return ExportTask(
+            export_id=export_id,
+            owner_id=owner_id,
+            kind=str(data.get("kind") or ""),
+            out_dir=out_dir,
+            title=str(data.get("title") or ""),
+            status=str(data.get("status") or "completed"),
+            error=data.get("error"),
+            progress=dict(progress) if isinstance(progress, dict) else {},
+            volumes=[v for v in (data.get("volumes") or []) if isinstance(v, dict)],
+            total_bytes=int(data.get("total_bytes") or 0),
+            file_count=int(data.get("file_count") or 0),
+            created_at=str(data.get("created_at") or ""),
+            finished_at=data.get("finished_at"),
+            runner=None,
+            meta=meta,
+        )
 
     def volume_path(self, export_id: str, owner_id: str, name: str) -> str | None:
         """租户校验 + 文件名白名单 + 目录穿越双保险。"""
