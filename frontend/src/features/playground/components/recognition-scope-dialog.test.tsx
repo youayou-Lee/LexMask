@@ -420,6 +420,26 @@ describe('Task 10b：服务离线 / 降级 / 检测', () => {
     // 离线区不渲染 chip 墙
     expect(screen.queryByTestId('playground-scope-chip-PERSON')).toBeNull();
   });
+
+  it('纯文本 + LA 离线（组合态）→ na 优先：OCR/LA 区显示 na 文案、不暗区、无离线红条；服务徽标仍如实显示离线', () => {
+    mockHealthState.health = makeHealth({ visual_features: 'offline' });
+    const rec = makeRec({
+      selectedVisualFeatureTypes: ['OFFICIAL_SEAL'],
+    });
+    renderDialog(rec, { visionApplicable: false });
+
+    for (const id of ['ocr', 'la'] as const) {
+      expect(zone(id).textContent).toContain('本文件是纯文本，不走此区');
+      expect(zone(id).textContent).not.toContain('本区暂不参与识别');
+      expect(zone(id).className).not.toContain('grayscale');
+      expect(zoneAll(id).disabled).toBe(true);
+    }
+    // 服务徽标如实显示离线（信息不丢）
+    expect(zone('la').textContent).toContain('离线');
+    // NER 区照常可用，页脚计数只含 NER
+    expect(chip('PERSON').disabled).toBe(false);
+    expect(screen.getByTestId('playground-scope-selected-count').textContent).toContain('4');
+  });
 });
 
 describe('Task 10b：纯文本不适用（na 态 ≠ 离线）', () => {
@@ -463,14 +483,61 @@ describe('Task 10b：方案三态与自定义态', () => {
     expect((screen.getByTestId('playground-scheme-select') as HTMLSelectElement).value).toBe('all');
   });
 
-  it('user 态：tracking 指向 preset-1 → select value=preset-1', () => {
+  it('user 态：两维 tracking 一致指向 preset-1 且三清单与方案吻合 → select value=preset-1', () => {
     const rec = makeRec({
+      selectedTypes: ['PERSON'],
+      selectedOcrHasTypes: ['OCR_ID'],
+      selectedVisualFeatureTypes: ['OFFICIAL_SEAL'],
       playgroundPresetTextId: 'preset-1',
       playgroundPresetVisionId: 'preset-1',
     });
     renderDialog(rec);
     expect((screen.getByTestId('playground-scheme-select') as HTMLSelectElement).value).toBe(
       'preset-1',
+    );
+  });
+
+  it('跨维 tracking 不一致（保存→套用→手动改 NER chip：text 维清空、vision 维仍指方案）→ 下拉进自定义态', () => {
+    // 自动套用后的现场：三清单 = 方案A 清单，两维 tracking 都指 preset-1
+    const rec = makeRec({
+      selectedTypes: ['PERSON'],
+      selectedOcrHasTypes: ['OCR_ID'],
+      selectedVisualFeatureTypes: ['OFFICIAL_SEAL'],
+      playgroundPresetTextId: 'preset-1',
+      playgroundPresetVisionId: 'preset-1',
+    });
+    const ctx = { rec };
+    const { rerender } = render(
+      <RecognitionScopeDialog open onOpenChange={vi.fn()} rec={rec} visionApplicable />,
+    );
+    expect((screen.getByTestId('playground-scheme-select') as HTMLSelectElement).value).toBe(
+      'preset-1',
+    );
+
+    // 用户点一颗 NER chip（真 hook：setSelectedTypes 函数式生效 + 只清 text 维 tracking）
+    fireEvent.click(chip('PHONE'));
+    ctx.rec.selectedTypes = ['PERSON', 'PHONE'];
+    ctx.rec.playgroundPresetTextId = null;
+    rerender(
+      <RecognitionScopeDialog open onOpenChange={vi.fn()} rec={ctx.rec} visionApplicable />,
+    );
+    // 旧实现 null ?? visionId 仍解析出方案名 → 失真；修复后跨维不一致 → 自定义态
+    expect((screen.getByTestId('playground-scheme-select') as HTMLSelectElement).value).toBe(
+      'custom',
+    );
+  });
+
+  it('两维 tracking 一致但当前三清单已偏离方案 → 不显示方案名（状态一致性校验）', () => {
+    const rec = makeRec({
+      selectedTypes: ['PERSON', 'PHONE'], // 文本侧已偏离 preset-1 的 ['PERSON']
+      selectedOcrHasTypes: ['OCR_ID'],
+      selectedVisualFeatureTypes: ['OFFICIAL_SEAL'],
+      playgroundPresetTextId: 'preset-1',
+      playgroundPresetVisionId: 'preset-1',
+    });
+    renderDialog(rec);
+    expect((screen.getByTestId('playground-scheme-select') as HTMLSelectElement).value).toBe(
+      'custom',
     );
   });
 

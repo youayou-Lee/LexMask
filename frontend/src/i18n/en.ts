@@ -336,9 +336,7 @@ const enBase: Record<string, string> = {
   'page.visionModel.title': 'Vision Service',
   'page.visionModel.sub': 'OCR and image recognition service connection',
 
-  'preset.saveText.prompt': 'Save this text recognition list: enter a name',
   'preset.saveText.success': 'Text recognition list saved.',
-  'preset.saveVision.prompt': 'Save this image recognition list: enter a name',
   'preset.saveVision.success': 'Image recognition list saved.',
   'preset.save.failed': 'Save failed',
 

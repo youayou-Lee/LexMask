@@ -330,9 +330,7 @@ const zhBase: Record<string, string> = {
   'page.visionModel.title': '高级设置',
   'page.visionModel.sub': 'OCR 与图像识别服务连接',
 
-  'preset.saveText.prompt': '保存当前文本配置清单：请输入名称',
   'preset.saveText.success': '已另存为文本配置清单。',
-  'preset.saveVision.prompt': '保存当前图像配置清单：请输入名称',
   'preset.saveVision.success': '已另存为图像配置清单。',
   'preset.save.failed': '保存失败',
 

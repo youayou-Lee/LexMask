@@ -16,7 +16,7 @@ import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { resolveLegalTextSelection, sameIdSelection } from '@/config/legalPreset';
 import { buildDefaultPipelineTypeIds } from '@/services/defaultRedactionPreset';
-import { createPreset } from '@/services/presetsApi';
+import { createPreset, presetAppliesText, presetAppliesVision } from '@/services/presetsApi';
 import { useInvalidatePresets, usePresets } from '@/services/hooks/use-presets';
 import { localizeRecognitionTypeName } from '@/features/settings/lib/redaction-display';
 import { localizeErrorMessage } from '@/utils/localizeError';
@@ -127,8 +127,9 @@ export const RecognitionScopeDialog: FC<{
     return service.status;
   };
   const isZoneOffline = (zone: ZoneDef) => zoneStatus(zone) === 'offline';
-  const isZoneNa = (zone: ZoneDef) =>
-    zone.id !== 'ner' && !visionApplicable && !isZoneOffline(zone);
+  // na 优先于 offline（预览口径）：纯文本文件不走 OCR/LA 两区，无论服务是否离线
+  // 都显示「不适用」；服务徽标仍如实显示离线状态。
+  const isZoneNa = (zone: ZoneDef) => zone.id !== 'ner' && !visionApplicable;
   const isZoneActive = (zone: ZoneDef) => !isZoneOffline(zone) && !isZoneNa(zone);
 
   // ── 方案三态（派生值）：tracking > legal 形态 > all 形态 > custom ──
@@ -145,9 +146,41 @@ export const RecognitionScopeDialog: FC<{
   const ocrAllIds = useMemo(() => ocrTypes.map((type) => type.id), [ocrTypes]);
   const visualAllIds = useMemo(() => laTypes.map((type) => type.id), [laTypes]);
 
-  const trackedPresetId = rec.playgroundPresetTextId ?? rec.playgroundPresetVisionId;
+  // hook 的 tracking 按维度清（clearPlaygroundTextPresetTracking 只清 text 维、
+  // toggleVisionType 只清 vision 维），单看任一维都会在「保存→套用→手动改另一区」
+  // 后仍显示方案名而配置已失真。这里要求两维 tracking 指向同一方案（覆盖 full-kind）、
+  // 且当前三清单与该方案按应用时同款目录过滤后的期望形态一致，否则落入形态比较/custom。
+  const trackedPresetId = (() => {
+    const textId = rec.playgroundPresetTextId;
+    if (textId === null || textId !== rec.playgroundPresetVisionId) return null;
+    const preset = userPresets.find((item) => item.id === textId);
+    if (!preset || !presetAppliesText(preset) || !presetAppliesVision(preset)) return null;
+    const enabledTextIds = new Set(
+      rec.entityTypes.filter((type) => type.enabled !== false).map((type) => type.id),
+    );
+    if (
+      !sameIdSelection(
+        rec.selectedTypes,
+        preset.selectedEntityTypeIds.filter((id) => enabledTextIds.has(id)),
+      )
+    ) {
+      return null;
+    }
+    if (!sameIdSelection(rec.selectedOcrHasTypes, preset.ocrHasTypes.filter((id) => ocrAllIds.includes(id)))) {
+      return null;
+    }
+    if (
+      !sameIdSelection(
+        rec.selectedVisualFeatureTypes,
+        (preset.visualFeatureTypes ?? []).filter((id) => visualAllIds.includes(id)),
+      )
+    ) {
+      return null;
+    }
+    return textId;
+  })();
   const schemeValue = (() => {
-    if (trackedPresetId && userPresets.some((preset) => preset.id === trackedPresetId)) {
+    if (trackedPresetId) {
       return trackedPresetId;
     }
     if (
@@ -437,7 +470,8 @@ export const RecognitionScopeDialog: FC<{
                 data-testid={`playground-scope-zone-${zone.id}`}
                 className={cn(
                   'flex min-h-0 flex-col rounded-2xl border border-border/70 bg-[var(--surface-control)] p-3',
-                  offline && 'pointer-events-none opacity-60 grayscale',
+                  // na 优先：纯文本区显示「不适用」文案时不暗化（可读性），离线红态仍由徽标如实呈现
+                  offline && !na && 'pointer-events-none opacity-60 grayscale',
                 )}
               >
                 <div className="flex min-w-0 items-center gap-1.5">
