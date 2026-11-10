@@ -340,6 +340,68 @@ class RecognitionPipelineMixin:
             total=pages,
             message=f"Vision recognition queued for {pages} page(s)",
         )
+        # Issue#256：视觉要素在队列路径的可用性预检。playground 前端已在提交侧剔除
+        # 视觉要素（PR#235 语义：LA 不可用不拦截识别、显式提示不静默丢功能），但
+        # API/脚本载荷没有这层保护——此前两段式第二段逐页撞 detect_vision 内的 LA
+        # 预检（Issue#217 fail-closed），整卷每页记进 failed_pages（本地无 LA 栈上
+        # canary 10 页全失败）。这里在调度前探测一次：LA 不可用 ⇒ 剔除视觉要素
+        # （空数组=显式不跑该段）+ 显式落账，OCR+HaS 成果照常交付；LA 在场（云端）
+        # 探测即过，行为零变化。预检自身的意外异常不吞（fail-closed 不降级）。
+        la_available: bool | None = None  # None=未勾选任何视觉要素（或显式空单），无需探测
+        if visual_feature_types is None or len(visual_feature_types) > 0:
+            from app.core.errors import AppError
+            from app.services.redaction_orchestrator import ensure_visual_service_available
+
+            try:
+                await ensure_visual_service_available()
+                la_available = True
+            except AppError as exc:
+                if getattr(exc, "error_code", "") != "visual_service_unavailable":
+                    raise
+                la_available = False
+        if la_available is False:
+            visual_feature_types = []
+            self._record_item_performance(
+                store,
+                task.item_id,
+                {
+                    "recognition": {
+                        "visual_detection_skipped": {
+                            "at": _utc_iso(),
+                            "reason": "la_unavailable",
+                            "error_code": "visual_service_unavailable",
+                            "message": (
+                                "视觉检测服务（LocateAnything）未启动：已跳过视觉识别项"
+                                "（印章/签字等），本次仅完成 OCR+HaS 识别；如需视觉识别，"
+                                "请启动视觉服务后重新识别。"
+                            ),
+                        }
+                    }
+                },
+            )
+            logger.warning(
+                "[queue] item=%s visual detection skipped: LocateAnything unavailable "
+                "(visual types stripped, OCR+HaS unaffected)",
+                task.item_id[:8],
+            )
+            store.update_item_progress(
+                task.item_id,
+                stage="vision",
+                current=0,
+                total=pages,
+                message="visual_detection_skipped_la_unavailable",
+            )
+        elif la_available is True:
+            # 冷审 I1 同款意图（failed_pages 先例）：LA 恢复后重跑必须掉陈旧的
+            # visual_detection_skipped，否则条目永远带着「已跳过视觉」的假账。
+            # 注意清账写 **None** 而非空 dict——deep-merge 对空 dict 是递归合并
+            # （旧键存活，#199 的 failed_pages 清账正因此在生产未生效，另案），
+            # None 才会整体覆盖。
+            self._record_item_performance(
+                store,
+                task.item_id,
+                {"recognition": {"visual_detection_skipped": None}},
+            )
         # Issue#238：段数动态——两段式只在「勾选视觉要素且多页」时存在；单段不编号。
         # current_segment 随段起跑覆写（段号/段数/段名/该段实际并发），前端数字行、
         # 段名行编号与「并行处理中」都从这里取，不靠前端猜配置。
@@ -721,7 +783,11 @@ class RecognitionPipelineMixin:
                 message=(
                     "vision_recognition_complete_with_failures"
                     if failed_pages
-                    else "vision_recognition_complete"
+                    else (
+                        "vision_recognition_complete_visual_skipped"
+                        if la_available is False
+                        else "vision_recognition_complete"
+                    )
                 ),
             )
             self._record_item_performance(

@@ -779,6 +779,7 @@ const enBase: Record<string, string> = {
   'batchWizard.step3.fileTextProgress': 'Text recognition running',
   'batchWizard.step3.fileTextComplete': 'Text recognition complete',
   'batchWizard.step3.fileVisionComplete': 'Vision recognition complete',
+  'batchWizard.step3.fileVisionCompleteSkipped': 'Recognition complete (visual detections skipped: LocateAnything unavailable)',
   'batchWizard.step3.requeuedAfterStale': 'Requeued after stale processing heartbeat',
   'batchWizard.step3.nextReview': 'Next: Review',
   'batchWizard.step4.originalText': 'Original',
