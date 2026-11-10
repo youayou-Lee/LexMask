@@ -29,6 +29,7 @@ import {
   resolveBatchFileTypeFromName,
 } from '../utils/file-type';
 import { isBatchRowReadyForDelivery } from '../lib/batch-export-report';
+import { sameNumberList } from '@/features/batch/lib/page-failures';
 
 // 并发上传：串行 1 在万级文件下极慢。4 路并发 + 幂等键（fileApi.upload 发
 // X-Idempotency-Key，后端去重）→ 重复/重试不会重复注册。
@@ -452,6 +453,7 @@ export function useBatchFiles(
             const recognitionTotal =
               typeof item.progress_total === 'number' ? item.progress_total : undefined;
             const recognitionMessage = item.progress_message ?? null;
+            const recognitionFailedPages = item.recognition_failed_pages ?? [];
             if (
               r.analyzeStatus === analyzeStatus &&
               r.reviewConfirmed === reviewConfirmed &&
@@ -463,7 +465,8 @@ export function useBatchFiles(
               r.recognitionStage === recognitionStage &&
               r.recognitionCurrent === recognitionCurrent &&
               r.recognitionTotal === recognitionTotal &&
-              r.recognitionMessage === recognitionMessage
+              r.recognitionMessage === recognitionMessage &&
+              sameNumberList(r.recognitionFailedPages ?? [], recognitionFailedPages)
             ) {
               return r;
             }
@@ -481,6 +484,7 @@ export function useBatchFiles(
               recognitionCurrent,
               recognitionTotal,
               recognitionMessage,
+              recognitionFailedPages,
             };
           });
           return changed ? next : prev;

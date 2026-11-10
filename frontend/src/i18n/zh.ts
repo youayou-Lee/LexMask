@@ -719,6 +719,7 @@ const zhBase: Record<string, string> = {
   'batchWizard.pages.failedHint': '失败页不可选（永不进入交付包）：第 {pages} 页',
   'batchWizard.pages.loading': '正在读取逐页状态…',
   'batchWizard.pages.unsupported': '该文件类型没有页级视图（仅 PDF / 扫描件）。',
+  'batchWizard.pages.finalWithFailures': '完成({done}/{total}，第 {pages} 页失败)',
   'batchWizard.partialExport.title': '部分导出（只导出选中页）',
   'batchWizard.partialExport.loading': '正在读取逐页状态…',
   'batchWizard.partialExport.unsupportedType':

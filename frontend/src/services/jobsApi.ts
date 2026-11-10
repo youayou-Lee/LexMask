@@ -64,6 +64,13 @@ export type JobItemRow = {
   reviewed_at?: string | null;
   reviewer?: string | null;
   /**
+   * Issue#257：页级视图入口（轻量 `?performance=false` 详情也带，无需拉全量 performance）。
+   * `paged` 仅 pdf / pdf_scanned / image 为 true；`recognition_failed_pages` 是 #199 逐页失败账本。
+   */
+  paged?: boolean;
+  page_count?: number;
+  recognition_failed_pages?: number[];
+  /**
    * Issue#194：原始 performance_json（getJob 默认 performance=true 时透出）。
    * 处理详情卡消费；轻量模式（performance:false）下为 null。
    */
@@ -285,6 +292,11 @@ function normalizeJobItemRow(rawItem: unknown): JobItemRow {
     error_message: asNullableString(item.error_message),
     reviewed_at: asNullableString(item.reviewed_at),
     reviewer: asNullableString(item.reviewer),
+    paged: item.paged === true,
+    page_count: asNumber(item.page_count),
+    recognition_failed_pages: Array.isArray(item.recognition_failed_pages)
+      ? item.recognition_failed_pages.filter((value): value is number => typeof value === 'number')
+      : [],
     performance: isRecord(item.performance) ? item.performance : null,
     created_at: createdAt,
     updated_at: asString(item.updated_at, createdAt),

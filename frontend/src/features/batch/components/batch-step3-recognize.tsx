@@ -174,6 +174,22 @@ function BatchStep3RecognizeInner({
     return key ? t(key) : rawMessage;
   };
 
+  /**
+   * Issue#257 终局文案：识别跑完但仍有失败页时，给一行可读的结论而不是只留「待审阅」。
+   * 形如「完成(148/149，第 133 页失败)」；页数缺失（file_store 丢 page_count）时不出文案。
+   */
+  const finalProgressLabel = (row: BatchRow): string | null => {
+    const failedPages = row.recognitionFailedPages ?? [];
+    const total = Number(row.page_count ?? row.recognitionTotal ?? 0);
+    if (!failedPages.length || total <= 0) return null;
+    if (!RECOGNITION_DONE_STATUSES.has(row.analyzeStatus)) return null;
+    const done = Math.max(0, total - failedPages.length);
+    return t('batchWizard.pages.finalWithFailures')
+      .replace('{done}', String(done))
+      .replace('{total}', String(total))
+      .replace('{pages}', failedPages.join('、'));
+  };
+
   const pct = rows.length > 0 ? Math.min(100, (visibleProgressCount / rows.length) * 100) : 0;
   const displayPct = isProcessing && pct === 0 ? 3 : pct;
   const modeReadiness = getBatchModeReadiness(mode, health);
@@ -325,7 +341,7 @@ function BatchStep3RecognizeInner({
             </div>
           ) : (
             filteredRows.map((r) => {
-              const detail = rowProgressLabel(r);
+              const detail = rowProgressLabel(r) ?? finalProgressLabel(r);
               const paged = isPagedRow(r);
               const expanded = expandedFileId === r.file_id;
               return (

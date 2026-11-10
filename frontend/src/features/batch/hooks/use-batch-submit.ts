@@ -57,6 +57,7 @@ function applyAuthoritativeJobItems(rows: BatchRow[], items: JobItemRow[]): Batc
       recognitionTotal:
         typeof item.progress_total === 'number' ? item.progress_total : row.recognitionTotal,
       recognitionMessage: item.progress_message ?? row.recognitionMessage,
+      recognitionFailedPages: item.recognition_failed_pages ?? row.recognitionFailedPages,
     };
   });
 }

@@ -271,6 +271,36 @@ describe('step3 接线（Issue#257）', () => {
     );
   }
 
+  it('终局文案：识别完成但有失败页时给「完成(148/149，第 133 页失败)」', () => {
+    renderStep3([
+      row({
+        analyzeStatus: 'awaiting_review',
+        page_count: 149,
+        recognitionFailedPages: [133],
+      }),
+    ]);
+
+    const cell = screen.getByTestId('row-progress-file-1');
+    expect(cell.textContent).toContain('完成(148/149');
+    expect(cell.textContent).toContain('第 133 页失败');
+  });
+
+  it('无失败页/页数未知时不冒充终局文案', () => {
+    renderStep3([
+      row({ file_id: 'file-clean', analyzeStatus: 'awaiting_review', page_count: 149 }),
+      row({
+        file_id: 'file-unknown',
+        item_id: 'item-2',
+        analyzeStatus: 'awaiting_review',
+        page_count: 0,
+        recognitionFailedPages: [7],
+      }),
+    ]);
+
+    expect(screen.getByTestId('row-progress-file-clean').textContent).not.toContain('完成(');
+    expect(screen.getByTestId('row-progress-file-unknown').textContent).not.toContain('完成(');
+  });
+
   it('可分页行有逐页入口，点击后挂载页格；docx 行没有', async () => {
     renderStep3([row({}), row({ file_id: 'file-2', file_type: FileType.DOCX, item_id: 'item-2' })]);
 

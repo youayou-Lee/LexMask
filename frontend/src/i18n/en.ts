@@ -800,6 +800,7 @@ const enBase: Record<string, string> = {
     'Failed pages cannot be selected (they never enter a delivery package): page {pages}',
   'batchWizard.pages.loading': 'Loading per-page status…',
   'batchWizard.pages.unsupported': 'This file type has no per-page view (PDF / scanned only).',
+  'batchWizard.pages.finalWithFailures': 'Done ({done}/{total}, page {pages} failed)',
   'batchWizard.partialExport.title': 'Partial export (selected pages only)',
   'batchWizard.partialExport.loading': 'Loading per-page status…',
   'batchWizard.partialExport.unsupportedType':
