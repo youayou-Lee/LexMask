@@ -467,7 +467,8 @@ export function useBatchFiles(
       });
       return changed ? next : prev;
     },
-    [t],
+    // t 是模块级 i18n 常量，不随渲染变化，故不列入依赖
+    [],
   );
 
   useEffect(() => {
@@ -574,7 +575,15 @@ export function useBatchFiles(
         document.removeEventListener('visibilitychange', handleVisibilityChange);
       }
     };
-  }, [step, activeJobId, hasItemsInProgress, hasReviewableRows, analyzeRunning, isPreviewMode]);
+  }, [
+    step,
+    activeJobId,
+    hasItemsInProgress,
+    hasReviewableRows,
+    analyzeRunning,
+    isPreviewMode,
+    mergeJobDetailIntoRows,
+  ]);
 
   // 识别结束后的终局补拉：轮询只在 `hasItemsInProgress` 时跑，完成后要补一次才能拿到
   // `recognition_failed_pages`/`page_count`（Issue#257 终局文案「完成(148/149，第 133 页失败)」）。
