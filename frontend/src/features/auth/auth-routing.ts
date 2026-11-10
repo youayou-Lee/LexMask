@@ -3,7 +3,7 @@
 export type AuthMode = 'login' | 'register';
 
 export function sanitizeNextPath(next: string | null | undefined): string {
-  if (!next || !next.startsWith('/') || next.startsWith('//')) return '/';
+  if (!next || !next.startsWith('/') || next.startsWith('//')) return '/single';
   return next;
 }
 

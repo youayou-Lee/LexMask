@@ -16,9 +16,6 @@ const AuthPage = React.lazy(() =>
 const Playground = React.lazy(() =>
   import('./features/playground').then((m) => ({ default: m.Playground })),
 );
-const StartPage = React.lazy(() =>
-  import('./features/home').then((m) => ({ default: m.StartPage })),
-);
 const Batch = React.lazy(() => import('./features/batch').then((m) => ({ default: m.Batch })));
 const BatchHub = React.lazy(() =>
   import('./features/batch').then((m) => ({ default: m.BatchHub })),
@@ -135,7 +132,6 @@ function AuthStatusErrorPage() {
 const prefetchRoutes = () => {
   const routes = [
     () => import('./features/playground'),
-    () => import('./features/home'),
     () => import('./features/batch'),
     () => import('./features/structured'),
     () => import('./features/dicom'),
@@ -197,7 +193,7 @@ function AuthRoute() {
   if (!status) return <AuthStatusErrorPage />;
   if (!status.auth_enabled || status.authenticated) {
     const shouldUseHome = status.authenticated && isRegisterRoute;
-    return <Navigate to={shouldUseHome ? '/' : next} replace />;
+    return <Navigate to={shouldUseHome ? '/single' : next} replace />;
   }
 
   return (
@@ -255,11 +251,7 @@ export const router = createBrowserRouter([
     children: [
       {
         index: true,
-        element: (
-          <LazyPage>
-            <StartPage />
-          </LazyPage>
-        ),
+        element: <Navigate to="/single" replace />,
       },
       {
         path: 'single',

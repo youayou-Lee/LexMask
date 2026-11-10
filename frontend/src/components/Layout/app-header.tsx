@@ -125,7 +125,6 @@ function getPageHeader(
   pathname: string,
   t: (key: string) => string,
 ): { title: string; sub?: string } {
-  if (pathname === '/') return { title: t('page.start.title'), sub: t('page.start.sub') };
   if (pathname === '/batch' || pathname.startsWith('/batch/'))
     return { title: t('page.batch.title'), sub: t('page.batch.sub') };
   if (pathname === '/structured')

@@ -8,7 +8,6 @@ from __future__ import annotations
 from common import BASE_URL, login, run
 
 ROUTES = [
-    "/",
     "/single",
     "/batch",
     "/structured",

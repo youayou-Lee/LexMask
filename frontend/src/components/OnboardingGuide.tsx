@@ -8,7 +8,7 @@ import { STORAGE_KEYS } from '@/constants/storage-keys';
 import { getStorageItem, setStorageItem } from '@/lib/storage';
 import { Button } from '@/components/ui/button';
 
-const ONBOARDING_ROUTES = new Set(['/batch']);
+const ONBOARDING_ROUTES = new Set(['/batch', '/single']);
 
 export function OnboardingGuide() {
   const location = useLocation();
