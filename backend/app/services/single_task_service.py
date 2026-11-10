@@ -102,6 +102,13 @@ def redispatch_task_type_for(job: dict, item: dict) -> str | None:
     """
     status = item["status"]
     if status in _REDISPATCH_RECOGNITION_STATUSES:
+        # Issue#257：页级重试的在场页清单只活在 ``recognition.page_retry_pages`` 标记里，
+        # 重派时必须带着它走 ``page_retry``，否则整卷重识别会白烧一轮、且标记没人清
+        # （单页重试接口此后永久 409 item_busy —— 完整评审 Critical-1）。
+        from app.services.page_retry_service import in_flight_pages
+
+        if in_flight_pages(item):
+            return "page_retry"
         return "structured" if job.get("job_type") == "structured_batch" else "recognition"
     if status in _REDISPATCH_REDACTION_STATUSES:
         return "redaction"

@@ -9,6 +9,20 @@
 - **改了什么**：①`_run_vision` 调度前探测一次 LA（勾选视觉要素时）：不可用 ⇒ 剔除视觉要素（空数组=显式不跑该段）+ `recognition.visual_detection_skipped` 结构化落账 + WARNING + 进度消息 `visual_detection_skipped_la_unavailable`，OCR+HaS 成果照常交付；预检自身意外异常不吞（fail-closed 不降级）；LA 在场（云端）行为零变化。②`AppError` 补 `super().__init__(message)`，`str(exc)` 从此携带 message（kwargs/位置参数两形态同口径）。
 - **测试**：后端 +7 例（AppError str 两形态、两段式跳过全流程到 awaiting_review 且零失败摘要、单页剔除视觉要素、LA 可用两段式契约钉、预检意外异常穿透、LA 恢复重跑清陈旧跳过账——判据读 deep-merge 合并视图）；共享桩 `_vision_stubs` 默认 LA 可用（既有两段式用例不受新探测影响）。前端 +3 例（step3 识别消息映射抽纯函数 `lib/step3-recognition-message.ts` 后的契约钉，含视觉跳过终态与未知消息回落）。后端全量 2792 passed 零回归、前端 381 passed。
 
+### 增强（Issue#257 一期之二）失败页单页重试 + NER 连接类错误改可重试瞬时
+
+- **为什么**：大卷里单页失败（OCR/NER 超时、模型侧闪断）现在只能整卷重识别——200 页真卷一次十几分钟，用户实际动作是「先把红叉页补上再交」。另一条是事故教训：NEO001 网络闪断抛 `httpx.ReadError/RemoteProtocolError`，旧重试集合只认 `ConnectError/Timeout`，一次闪断就被判成确定性失败、进而整卷熔断。
+- **改了什么**：
+  - 新增 `page_retry_service`：`validate_page_retry` 把准入钉成一张表——仅 `awaiting_review`、仅视觉类（pdf/pdf_scanned/image）、仅失败清单内的页，识别中或已有在飞标记一律 409 `item_busy`；`submit_page_retry` 写序为 **状态→标记→投递**（先标记会造「标记在、状态未变」死锁；先状态则崩溃后回落整卷重识别，慢但正确）。
+  - `task_queue` 增 `page_retry` 任务类型 + `RecognitionPipelineMixin._run_page_retry`：逐页 `vision_detect(..., merge_existing=True, force=True)`（**force 必须**，否则吃页级缓存假成功），页级超时/异常只记该页，成功后整体替换页记录并从 `failed_pages` 消账（`replace_paths` 保证旧 `error`/`stage_duration_ms` 清零），收尾清标记、重算失败摘要、回 `awaiting_review`，并把该页新框并入既有审阅草稿（旧框按页剔除）。
+  - 重启补偿：`repair_stale_processing_items` 按 `recognition.page_retry_pages` 非空判 `page_retry`，不再把中断的单页重试当成整卷重识别。
+  - NER 瞬时重试：`RETRYABLE_HTTPX` 增 `ReadError/WriteError/RemoteProtocolError/PoolTimeout`，**不**把 `TransportError` 父类拉进来（`ProxyError`/`UnsupportedProtocol` 是本地配置写错，重试只会掩盖真因）；`_classify_ner_error` 增 `read_error/write_error/remote_protocol` 观测桶。
+  - 端点：`POST /api/jobs/{job_id}/items/{item_id}/retry-pages`（202；`item_busy`/`retry_requires_awaiting_review` 走 409，参数错 400，越权 404）。
+  - 前端：红叉页可直接点击重试 + 「重试失败页(n)」批量按钮（仅识别完成且无重试在飞时可用），409 错误码翻成人话（`item_busy` / 已完成提示走二期断点续跑 / 页不在失败清单等）。
+  - 完整评审返修（C1/C2/C3/I1/I3/I5/I6 + Minor）：重启恢复也走 `page_retry` 并带页清单（`redispatch_task_type_for` 复用标记，`main` 投递带 meta），整卷识别起跑清标记，「忙」只认处理中状态——三条合起来消灭「重试中途重启 ⇒ 标记永不清 ⇒ 永久 409」；重试页**人工框**保留、自动框换新（与实体同口径，交付 seed 整份覆盖时不再丢手框）；整卷识别的失败清单与页记录改**整体替换**（`replace_paths`），重跑成功不再留旧 `failed_pages` 卡死交付闸；提交前重读状态兜并发双提交；空页清单的空转任务把状态落回 `awaiting_review`；前端重试入口只认 `awaiting_review`（`page_status` 新增原始 `item_status`），`completed/已确认` 不再给必错按钮；轮询 `refresh` 改为只重排队、不再立刻重复取一次。
+  - 门⑥ 返修（PR#261 评审）：重启补偿的 `page_retry` 任务不带 meta 时从 `recognition.page_retry_pages` 回落页清单（否则清标记后空转、item 永久停在 pending）；重试页的**实体**也按页并入审阅草稿（自动来源整页换新、`manual` 保留），避免交付 seed 整份覆盖时丢掉新 NER 实体；前端 `refresh()` 拿到 running 快照后重新武装轮询（否则重试后行永远 running）；补写入顺序契约测试（状态→标记→投递）。
+- **测试**：后端 +41 例（完整评审返修 7 例：重启带页清单重派/标记不清不再永久 busy/人工框保留/整卷重跑清失败账/页记录整体替换/并发双提交只过一笔/空清单落回审阅 + 服务层准入全枚举与写入顺序、真库+真队列任务全链含页记录与其余页逐字节不变、草稿框与实体按页合并、无 meta 重启补偿回落、重启补偿派发三态、NER 重试计数恰 3 与 400/ProxyError 只 1 次、端点契约 8 例）；全量 2903 passed，18 failed 与 preview 基线同集合（容器信号量权限问题）。前端 +8 例（红叉页点单页 / running 态禁用 / 批量提交 / 409 文案化 / 未知码不吞 / 手动 refresh 重新武装轮询 / 已完成条目不给重试入口），全量 402 passed，`tsc` 双配置与 `vite build` 通过。
+
 ### 增强（Issue#257 一期之一）大案卷页级勾选格 + 部分导出（只导选中页 + 说明页 + 导出记录）
 
 - **为什么**：200 页的真卷识别要跑很久，律师等不到结束就要先用已完成的页——一页亮一勾、跑到 100 页能先导出前 100 页、跑完再导完整版；同时大卷里单页离线是常态（#199 已做页级隔离），但交付面只有「整卷导出」，用户拿不到「已完成的部分」。这条能力把 #199 的逐页账本变成产品面。

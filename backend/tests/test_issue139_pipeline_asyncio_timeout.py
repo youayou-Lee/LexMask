@@ -97,7 +97,7 @@ class _FakeStore:
         self.error_message_calls.append({"item_id": item_id, "error_message": error_message})
         self.item["error_message"] = error_message
 
-    def update_item_performance(self, item_id: str, patch: dict[str, Any]) -> None:
+    def update_item_performance(self, item_id: str, patch: dict[str, Any], **kwargs: Any) -> None:
         # 真实 JobStore 把补丁**深合并**进 job_items.performance_json（因此 get_item
         # 回读可见，见 job_store.py:585-607）；替身必须同样建模，否则「写 performance
         # → 从 item 行回读」的接线在测试里断裂——门⑥ 二段 F7 的摘要正是这样读的。

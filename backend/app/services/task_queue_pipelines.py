@@ -75,6 +75,65 @@ def _failed_pages_error_summary(failed_pages: dict[str, str], total_pages: int =
     return f"{scope} failed recognition (pages {listed}); not scanned for sensitive data"
 
 
+def _entity_page(entity: Any) -> int:
+    try:
+        return int((entity or {}).get("page") or 1)
+    except (AttributeError, TypeError, ValueError):
+        return 1
+
+
+def _entity_source(entity: Any) -> str:
+    return str((entity or {}).get("source") or "")
+
+
+def _box_source(box: Any) -> str:
+    return str((box or {}).get("source") or "")
+
+
+def _box_page(box: Any) -> int:
+    try:
+        return int((box or {}).get("page") or 1)
+    except (AttributeError, TypeError, ValueError):
+        return 1
+
+
+def _as_entity_dicts(raw: Any) -> list[dict[str, Any]]:
+    """file_store 的 entities 可能是模型对象或 dict；统一成 dict 方便按页过滤。"""
+    out: list[dict[str, Any]] = []
+    for entity in raw if isinstance(raw, list) else []:
+        if isinstance(entity, dict):
+            out.append(entity)
+        elif hasattr(entity, "model_dump"):
+            try:
+                dumped = entity.model_dump()
+            except Exception:  # noqa: BLE001 - 脏数据跳过即可
+                continue
+            if isinstance(dumped, dict):
+                out.append(dumped)
+    return out
+
+
+def _boxes_by_page(raw: Any) -> dict[int, list[dict[str, Any]]]:
+    """把 ``bounding_boxes``（按页 dict 或扁平 list）归一成 page → [box dict]。"""
+    out: dict[int, list[dict[str, Any]]] = {}
+    items: list[Any] = []
+    if isinstance(raw, dict):
+        for value in raw.values():
+            if isinstance(value, list):
+                items.extend(value)
+            elif isinstance(value, dict):
+                items.append(value)
+    elif isinstance(raw, list):
+        items = list(raw)
+    for box in items:
+        if hasattr(box, "model_dump"):
+            box = box.model_dump()
+        if not isinstance(box, dict):
+            continue
+        out.setdefault(_box_page(box), []).append(box)
+    return out
+
+
 class RecognitionPipelineMixin:
     """识别流水线：解析 -> NER/Vision -> 完成识别（可选入队匿名化）。"""
 
@@ -110,6 +169,14 @@ class RecognitionPipelineMixin:
             return
 
         cfg = json.loads(job.get("config_json") or "{}")
+
+        # Issue#257：整卷识别会覆盖所有页，所以在飞页标记必须在这里清掉——否则
+        # 一次"页重试中途崩溃 → 启动/看门狗回落整卷重识别"成功后标记仍非空，
+        # 单页重试与准入判断都会被这个幽灵标记永远判 busy（完整评审 Critical-1）。
+        from app.services.page_retry_service import in_flight_pages
+
+        if in_flight_pages(item):
+            self._clear_page_retry_marker(store, task.item_id)
 
         try:
             # 标记处理中
@@ -269,6 +336,307 @@ class RecognitionPipelineMixin:
             total=1,
             message="text_recognition_complete",
         )
+
+    # ------------------------------------------------------------------
+    # Issue#257 单页重试：只跑被点名的失败页，跑完把页账翻新并消账
+    # ------------------------------------------------------------------
+    async def _run_page_retry(self, task: TaskItem) -> None:
+        """重试失败页（能力 2）。
+
+        与整卷识别共用 ``vision_detect``，但语义有三处硬要求：
+
+        * ``merge_existing=True``：保页内既有框（审阅里手工加的框不被冲掉）；
+        * ``force=True``：绕开视觉缓存，否则「重试」可能直接拿回旧结果、页永远翻不绿；
+        * 页记录与失败清单用 **replace_paths 整体替换**：深合并会把旧的
+          ``error``/``stage_duration_ms`` 留在「成功」页上（F1），交付闸会继续读失败账。
+        """
+        from app.services import file_operations, page_status_service
+        from app.services.job_store import JobItemStatus, JobStatus
+        from app.services.vision_config import resolve_optional_type_list
+
+        store = self._get_store()
+        item = store.get_item(task.item_id)
+        job = store.get_job(task.job_id)
+        if not item or not job:
+            logger.warning("page retry: item/job missing, skip (item=%s)", task.item_id[:8])
+            return
+
+        pages = [int(p) for p in (task.meta or {}).get("pages") or []]
+        if not pages:
+            # 重启补偿（watchdog → repair_stale_processing_items）重建的 TaskItem 只带
+            # task_type、不带 meta，页清单必须从 performance 里的标记回落；否则会清标记
+            # 后直接返回，item 停在 PENDING 永久卡死（评审 Critical-1）。
+            from app.services.page_retry_service import in_flight_pages
+
+            pages = in_flight_pages(item)
+        item_status = str(item.get("status") or "")
+        job_status = str(job.get("status") or "")
+        cancelled = item_status == JobItemStatus.CANCELLED.value or job_status == JobStatus.CANCELLED.value
+        if cancelled or not pages:
+            self._clear_page_retry_marker(store, task.item_id)
+            # submit 是"状态→标记→投递"三段写：崩在标记之前时 item 已是 PROCESSING 却没有
+            # 标记，重派回来的任务没有页清单。这里必须把状态落回可继续的态，否则一条
+            # 空转任务要等 watchdog（≥max(120s, 2×页超时)）才被整卷重跑（评审 Important-6）。
+            if item_status == JobItemStatus.PROCESSING.value:
+                try:
+                    store.update_item_status(task.item_id, JobItemStatus.AWAITING_REVIEW)
+                    store.set_item_error_message(task.item_id, None)
+                except Exception:  # noqa: BLE001
+                    logger.debug("unable to restore item status after empty page retry", exc_info=True)
+            return
+
+        try:
+            cfg = json.loads(job.get("config_json") or "{}")
+        except (TypeError, ValueError):
+            cfg = {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        ocr_types = resolve_optional_type_list(cfg, "ocr_has_types", "selected_ocr_has_types")
+        visual_types = resolve_optional_type_list(
+            cfg, "visual_feature_types", "visualFeatureTypes", "selected_visual_feature_types"
+        )
+        from app.core.config import settings
+
+        page_timeout = float(settings.BATCH_RECOGNITION_PAGE_TIMEOUT)
+
+        recognition = (store.get_item_performance(task.item_id) or {}).get("recognition") or {}
+        failed_map: dict[str, str] = {
+            str(k): str(v) for k, v in (recognition.get("failed_pages") or {}).items()
+        }
+        total_pages = int(recognition.get("page_count") or 0)
+        if total_pages <= 0:
+            # M1：page_count 缺失时不能把总量当 0（错误摘要会误报 "all 0 page(s)"）。
+            total_pages = page_status_service.page_count_of(item, file_info=None)
+
+        records: dict[str, dict[str, Any]] = {}
+        turned_green: list[int] = []
+        for index, page in enumerate(pages, 1):
+            started = time.perf_counter()
+            started_at = _utc_iso()
+            try:
+                store.update_item_progress(
+                    task.item_id,
+                    stage="vision",
+                    current=index,
+                    total=len(pages),
+                    message=f"page retry {index}/{len(pages)}",
+                )
+            except Exception:
+                logger.debug("page retry progress write failed", exc_info=True)
+            logger.info(
+                "[queue] item=%s page retry %d/%d page=%d START",
+                task.item_id[:8], index, len(pages), page,
+            )
+            try:
+                await asyncio.wait_for(
+                    file_operations.vision_detect(
+                        task.file_id,
+                        page,
+                        ocr_has_types=ocr_types,
+                        visual_feature_types=visual_types,
+                        merge_existing=True,
+                        force=True,
+                    ),
+                    timeout=page_timeout,
+                )
+            except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041
+                elapsed = _elapsed_ms(started)
+                records[str(page)] = {
+                    "page": page,
+                    "started_at": started_at,
+                    "finished_at": _utc_iso(),
+                    "duration_ms": elapsed,
+                    "status": "timeout",
+                }
+                failed_map[str(page)] = f"page retry timeout after {page_timeout:.0f}s"
+                logger.warning("[queue] item=%s page %d retry TIMEOUT", task.item_id[:8], page)
+            except Exception as exc:  # 页级隔离：单页再失败不得作废其它页
+                elapsed = _elapsed_ms(started)
+                reason = f"{type(exc).__name__}: {exc}"[:_ERROR_MSG_MAX_LEN]
+                records[str(page)] = {
+                    "page": page,
+                    "started_at": started_at,
+                    "finished_at": _utc_iso(),
+                    "duration_ms": elapsed,
+                    "status": "failed",
+                    "error": reason,
+                }
+                failed_map[str(page)] = reason[:200]
+                logger.warning(
+                    "[queue] item=%s page %d retry FAILED: %s", task.item_id[:8], page, reason
+                )
+            else:
+                elapsed = _elapsed_ms(started)
+                records[str(page)] = {
+                    "page": page,
+                    "started_at": started_at,
+                    "finished_at": _utc_iso(),
+                    "duration_ms": elapsed,
+                    "status": "completed",
+                }
+                failed_map.pop(str(page), None)
+                turned_green.append(page)
+                logger.info(
+                    "[queue] item=%s page %d retry COMPLETED in %dms",
+                    task.item_id[:8], page, elapsed,
+                )
+
+        replace_paths: tuple[tuple[str, ...], ...] = (
+            ("recognition", "failed_pages"),
+            ("recognition", "page_retry_pages"),
+        ) + tuple(("recognition", "pages", str(page)) for page in pages)
+        try:
+            store.update_item_performance(
+                task.item_id,
+                {
+                    "recognition": {
+                        "failed_pages": failed_map,
+                        "page_retry_pages": [],
+                        "pages": records,
+                    }
+                },
+                replace_paths=replace_paths,
+            )
+        except Exception:
+            logger.exception("page retry: failed to persist page ledger for item %s", task.item_id[:8])
+            raise
+
+        if turned_green:
+            self._merge_retried_boxes_into_review_draft(store, task.item_id, turned_green)
+
+        current = store.get_item(task.item_id) or item
+        if str(current.get("status") or "") == JobItemStatus.CANCELLED.value:
+            return
+        try:
+            # 终局进度文案：不写的话行上会一直挂着最后一页的「page retry i/n」陈旧口径。
+            if total_pages > 0:
+                store.update_item_progress(
+                    task.item_id,
+                    stage="vision",
+                    current=total_pages,
+                    total=total_pages,
+                    message=(
+                        "vision_recognition_complete_with_failures"
+                        if failed_map
+                        else "vision_recognition_complete"
+                    ),
+                )
+            store.update_item_status(task.item_id, JobItemStatus.AWAITING_REVIEW)
+            # 摘要单独写：`update_item_status` 在同状态时跳过 UPDATE（no-op 语义），
+            # 而重启补偿后 item 可能已经是 awaiting_review——那时摘要会被静默丢在原地。
+            store.set_item_error_message(
+                task.item_id, _failed_pages_error_summary(failed_map, total_pages)
+            )
+            store.touch_job_updated(task.job_id)
+            self._refresh_job_status(store, task.job_id)
+        except Exception:
+            logger.exception("page retry: failed to restore item status for %s", task.item_id[:8])
+
+    def _clear_page_retry_marker(self, store: Any, item_id: str) -> None:
+        try:
+            store.update_item_performance(
+                item_id,
+                {"recognition": {"page_retry_pages": []}},
+                replace_paths=(("recognition", "page_retry_pages"),),
+            )
+        except Exception:
+            logger.debug("page retry marker clear failed", exc_info=True)
+
+    def _write_failed_pages(
+        self, store: Any, item_id: str, failed_pages: dict[int, str]
+    ) -> None:
+        """整卷识别的失败清单**整体替换**写（清掉上一次的键）。
+
+        深合并语义下"空 dict 不删键"，重跑全成功后旧失败键会永久留着——页格全绿、
+        交付闸却锁死、界面没有重试入口（完整评审 Critical-3）。
+        """
+        self._record_item_performance(
+            store,
+            item_id,
+            {
+                "recognition": {
+                    "failed_pages": {
+                        str(p): reason for p, reason in sorted(failed_pages.items())
+                    }
+                }
+            },
+            replace_paths=(("recognition", "failed_pages"),),
+        )
+
+    def _merge_retried_boxes_into_review_draft(
+        self, store: Any, item_id: str, pages: list[int]
+    ) -> None:
+        """把重试成功页的新框并进已保存的审阅草稿。
+
+        草稿在交付时会经 ``seed_file_store_from_draft_payload`` **整份**覆盖 file_store 的
+        entities 与 bounding_boxes，所以框和实体都必须并进草稿，否则：
+          - 框：交付出去的还是「该页无框」的旧草稿；
+          - 实体：重试页新认出的 NER 实体被丢掉，交付实体集/映射表缺条目（合规风险，
+            评审 Important-3）。
+        合并口径：重试页的**自动来源**实体（regex/llm/has）整页换新，人工加的（source=manual）
+        保留不动——既不丢用户编辑，也不留陈旧检测结果。
+        """
+        from app.services.file_management_service import file_store
+
+        try:
+            draft = store.get_item_review_draft(item_id)
+            if not isinstance(draft, dict):
+                return
+            draft_boxes = draft.get("bounding_boxes")
+            if not isinstance(draft_boxes, list):
+                draft_boxes = []
+            item = store.get_item(item_id) or {}
+            info = file_store.get(str(item.get("file_id") or "")) or {}
+            fresh_by_page = _boxes_by_page(info.get("bounding_boxes"))
+            wanted = set(pages)
+            # 重试页的**自动来源**框整页换新；人工框（source=manual）保留——审阅时手拉的框
+            # 是用户的最终判断，重试不该把它抹掉（交付期草稿整份覆盖 file_store，
+            # 丢了就是漏打码，评审 Critical-2）。
+            kept = [
+                box
+                for box in draft_boxes
+                if not (
+                    isinstance(box, dict)
+                    and _box_page(box) in wanted
+                    and _box_source(box) != "manual"
+                )
+            ]
+            merged = list(kept)
+            for page in sorted(wanted):
+                merged.extend(fresh_by_page.get(page, []))
+            draft_entities = draft.get("entities")
+            if isinstance(draft_entities, list):
+                fresh_entities = [
+                    entity
+                    for entity in _as_entity_dicts(info.get("entities"))
+                    if _entity_page(entity) in wanted
+                ]
+                kept_entities = [
+                    entity
+                    for entity in draft_entities
+                    if not (
+                        isinstance(entity, dict)
+                        and _entity_page(entity) in wanted
+                        and _entity_source(entity) != "manual"
+                    )
+                ]
+                seen_ids: set[str] = set()
+                entities_merged: list[Any] = []
+                for entity in [*kept_entities, *fresh_entities]:
+                    key = str((entity or {}).get("id") or "") if isinstance(entity, dict) else ""
+                    if key and key in seen_ids:
+                        continue
+                    if key:
+                        seen_ids.add(key)
+                    entities_merged.append(entity)
+                draft = dict(draft)
+                draft["entities"] = entities_merged
+            else:
+                draft = dict(draft)
+            draft["bounding_boxes"] = merged
+            store.save_item_review_draft(item_id, draft)
+        except Exception:
+            logger.exception("page retry: review draft merge failed for item %s", item_id[:8])
 
     async def _run_vision(self, task: TaskItem, cfg: dict) -> None:
         """Run OCR and visual feature recognition for images or scanned pages."""
@@ -491,6 +859,7 @@ class RecognitionPipelineMixin:
                             }
                         }
                     },
+                    replace_paths=(("recognition", "pages", str(p)),),
                 )
                 try:
                     result = await asyncio.wait_for(
@@ -524,6 +893,7 @@ class RecognitionPipelineMixin:
                                 }
                             }
                         },
+                    replace_paths=(("recognition", "pages", str(p)),),
                     )
                     # Issue#199 页级隔离：单页超时**不上抛**——记录后由本阶段收尾
                     # 汇入 failed_pages，其余页照常完成（极端页不得作废整卷）。
@@ -554,6 +924,7 @@ class RecognitionPipelineMixin:
                                 }
                             }
                         },
+                    replace_paths=(("recognition", "pages", str(p)),),
                     )
                     # Issue#199 页级隔离：同上。CancelledError/KeyboardInterrupt/
                     # SystemExit 是 BaseException，不在此捕获口径内，照常穿透。
@@ -590,6 +961,7 @@ class RecognitionPipelineMixin:
                                 }
                             }
                         },
+                    replace_paths=(("recognition", "pages", str(p)),),
                     )
                     # Issue#238：失败页同样计入已完成（失败清单另走 failed_pages 账面）。
                     bump_stage_progress(stage_label, stage_pages)
@@ -620,6 +992,7 @@ class RecognitionPipelineMixin:
                                 }
                             }
                         },
+                    replace_paths=(("recognition", "pages", str(p)),),
                     )
                     logger.info(
                         "[queue] item=%s %s page %d/%d DONE elapsed=%.2fs active_pages=%d",
@@ -746,17 +1119,7 @@ class RecognitionPipelineMixin:
                 )
             # Issue#199：失败清单**无条件写**（含空 dict）——深合并语义下，重跑全成功
             # 必须清掉上一次的失败键，否则 reject→重跑留下假警示（冷审 I1）。
-            self._record_item_performance(
-                store,
-                task.item_id,
-                {
-                    "recognition": {
-                        "failed_pages": {
-                            str(p): reason for p, reason in sorted(failed_pages.items())
-                        },
-                    }
-                },
-            )
+            self._write_failed_pages(store, task.item_id, failed_pages)
             if failed_pages:
                 failed_ids = ", ".join(str(p) for p in sorted(failed_pages))
                 summary = (

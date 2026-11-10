@@ -324,6 +324,14 @@ def _classify_ner_error(e: BaseException) -> str:
         return f"http_{status}"
     if isinstance(e, httpx.TimeoutException):
         return "timeout"
+    # Issue#257：瞬时传输错误细分观测桶（NEO001 闪断过去一律落 network/other，
+    # 事故复盘时看不出是半包还是连不上）。不参与重试判定。
+    if isinstance(e, httpx.ReadError):
+        return "read_error"
+    if isinstance(e, httpx.WriteError):
+        return "write_error"
+    if isinstance(e, httpx.RemoteProtocolError):
+        return "remote_protocol"
     if isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
         return "network"
     return "other"

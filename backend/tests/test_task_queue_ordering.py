@@ -23,7 +23,7 @@ class DummyStore:
     def __init__(self) -> None:
         self.status_updates: list[tuple[str, str, str | None]] = []
 
-    def update_item_performance(self, item_id, patch) -> None:
+    def update_item_performance(self, item_id, patch, **kwargs) -> None:
         pass
 
     def update_item_status(self, item_id, status, error_message=None) -> None:

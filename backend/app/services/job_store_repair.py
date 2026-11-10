@@ -22,6 +22,21 @@ from app.services.job_models import (
 )
 
 
+def _redispatch_task_type(job_type: str | None, performance_json: Any) -> str:
+    """Issue#257：单页重试中断后回派 ``page_retry``，而非白烧一轮整卷重识别。"""
+    if job_type == JobType.STRUCTURED_BATCH.value:
+        return "structured"
+    try:
+        performance = json.loads(performance_json) if performance_json else {}
+    except (TypeError, ValueError):
+        performance = {}
+    recognition = performance.get("recognition") if isinstance(performance, dict) else None
+    pages = recognition.get("page_retry_pages") if isinstance(recognition, dict) else None
+    if isinstance(pages, list) and pages:
+        return "page_retry"
+    return "recognition"
+
+
 class RepairMixin:
     def repair_completed_without_output(self) -> int:
         """Reset completed items without an output file to awaiting review."""
@@ -273,9 +288,11 @@ class RepairMixin:
                         "item_id": item_id,
                         "job_id": str(row["job_id"]),
                         "file_id": str(row["file_id"]),
-                        "task": "structured"
-                        if row["job_type"] == JobType.STRUCTURED_BATCH.value
-                        else "recognition",
+                        # Issue#257：单页重试中断后必须回到 page_retry，不能当整卷重识别
+                        # 白烧十几分钟（标记在 performance.recognition.page_retry_pages）。
+                        "task": _redispatch_task_type(
+                            row["job_type"], row["performance_json"]
+                        ),
                     }
                 )
                 logger.warning(

@@ -40,7 +40,12 @@ from app.models.schemas import (
     ReviewDraftResponse,
 )
 from app.models.single_task_schemas import SingleRedactBody, SingleRedactResult
-from app.services import file_operations, page_status_service, partial_export_service
+from app.services import (
+    file_operations,
+    page_retry_service,
+    page_status_service,
+    partial_export_service,
+)
 from app.services.job_store import JobItemStatus, JobStatus, JobStore, get_job_store
 
 router = APIRouter(prefix="/jobs", tags=["batch jobs"])
@@ -493,6 +498,56 @@ async def get_item_exports(
     return partial_export_service.list_item_exports(
         owner_id=owner_id, job_id=job_id, item_id=item_id
     )
+
+
+@router.post("/{job_id}/items/{item_id}/retry-pages", status_code=202)
+async def retry_item_pages(
+    job_id: str,
+    item_id: str,
+    pages: list[int] = Body(..., embed=True, description="要重试的失败页号（1-based）"),
+    store: JobStore = Depends(get_job_store),
+    owner_id: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """单页重试（Issue#257 能力 2）：只跑这些失败页，跑完回审阅态。
+
+    准入：仅 ``awaiting_review``、仅视觉类文件、仅失败清单里的页、且该 item
+    没有在飞的重试（``recognition.page_retry_pages`` 非空即 busy）。
+    """
+    job, item = _require_item(store, job_id, item_id, owner_id)
+    file_info = _load_file_info(item.get("file_id"))
+    if file_info is None:
+        raise HTTPException(status_code=404, detail="file not found")
+
+    page_count = page_status_service.page_count_of(item, file_info)
+    try:
+        selection = page_retry_service.validate_page_retry(
+            item,
+            pages,
+            page_count=page_count,
+            failed_pages=page_status_service.failed_page_reasons(item),
+            file_type=file_info.get("file_type"),
+        )
+    except page_retry_service.PageRetryError as exc:
+        # 忙 / 状态不允许 = 409（等一会儿或换路径就能做）；参数错 = 400。
+        raise AppError(
+            status_code=409
+            if exc.code in {"item_busy", "retry_requires_awaiting_review"}
+            else 400,
+            error_code=exc.code,
+            message=exc.message or exc.code,
+            detail=exc.detail,
+        )
+
+    result = await page_retry_service.submit_page_retry(
+        store=store, job=job, item=item, pages=selection
+    )
+    audit_log(
+        "job",
+        "page_retry",
+        job_id,
+        detail={"job_id": job_id, "item_id": item_id, "pages": selection},
+    )
+    return result
 
 
 @router.post("/{job_id}/submit", response_model=JobResponse)

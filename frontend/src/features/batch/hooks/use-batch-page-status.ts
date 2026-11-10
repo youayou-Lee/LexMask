@@ -35,6 +35,8 @@ export function useBatchPageStatus(params: {
   const [loading, setLoading] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  /** 重新武装轮询的入口：手动 refresh 拿到「还在跑」的快照后要接着轮询。 */
+  const resumeRef = useRef<(() => void) | null>(null);
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -61,6 +63,9 @@ export function useBatchPageStatus(params: {
       if (!mountedRef.current) return;
       setStatus(next);
       setError(null);
+      // 手动刷新（例如刚触发单页重试）拿到的还是 running 时，必须重新武装轮询，
+      // 否则行会永远停在 running、按钮全灰，只能折叠再展开才更新。
+      if (next && !TERMINAL_STATES.has(next.recognition_state)) resumeRef.current?.();
     } catch (err) {
       if (!mountedRef.current) return;
       setError(err instanceof Error ? err.message : String(err));
@@ -86,6 +91,7 @@ export function useBatchPageStatus(params: {
     let stopped = false;
 
     const tick = async () => {
+      if (stopped) return;
       setLoading(true);
       let next: ItemPageStatus | null = null;
       let failed = false;
@@ -104,13 +110,24 @@ export function useBatchPageStatus(params: {
       }
       // 状态还在涨就继续轮询；终态（或取不到）停手，避免后台空转。
       if (next && !TERMINAL_STATES.has(next.recognition_state)) {
-        timerRef.current = setTimeout(() => void tick(), PAGE_STATUS_POLL_MS);
+        arm();
       }
     };
+
+    // 「重新武装」只排下一次 tick，不再立刻取一次：手动 refresh 自己已经 fetch 过，
+    // 这里再 tick 一次就是同一份数据发两遍请求，还会让两条链互相覆写 timerRef。
+    const arm = () => {
+      clearTimer();
+      if (stopped) return;
+      timerRef.current = setTimeout(() => void tick(), PAGE_STATUS_POLL_MS);
+    };
+
+    resumeRef.current = arm;
 
     void tick();
     return () => {
       stopped = true;
+      resumeRef.current = null;
       clearTimer();
     };
   }, [clearTimer, enabled, fetchOnce, itemId, jobId]);

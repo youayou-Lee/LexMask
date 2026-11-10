@@ -167,6 +167,9 @@ def build_page_status(
         "paged": paged,
         "page_count": page_count,
         "recognition_state": recognition_state_for(item_row.get("status")),
+        # 原始状态：``recognition_state`` 为了三态展示把 awaiting_review 与 completed
+        # 都折叠成 done，而页级重试只允许前者（后者属二期缓存续跑），所以必须单列。
+        "item_status": str(item_row.get("status") or ""),
         "snapshot_at": snapshot_at or datetime.now(UTC).isoformat(),
         "pages": pages,
         "failed_pages": sorted(set(failed_pages)),

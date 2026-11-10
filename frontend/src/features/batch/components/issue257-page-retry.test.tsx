@@ -1,0 +1,166 @@
+// Copyright 2026 LexMask Contributors
+// @vitest-environment jsdom
+
+// Issue#257 一期 · 单页重试的 UI 契约（AC2.3 / AC7）。
+//
+// 钉四件事：
+//  1) 红叉页在「识别完成」态可以点，点它就把**那一页**交给 retry-pages；
+//  2) 识别进行中（running）时不许点、批量重试按钮也禁用；
+//  3) 「重试失败页」一次性提交全部失败页；
+//  4) 后端 409（item_busy 等）翻成人话而不是裸错误码。
+
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { ApiError } from '@/services/api-client';
+import type { ItemPageStatus } from '@/services/jobsApi';
+
+const retryItemPages = vi.fn();
+const refresh = vi.fn();
+const useBatchPageStatus = vi.fn();
+
+// vi.mock 会被提升到文件顶部 ⇒ 工厂里只能 import 原模块，不能引用顶层 const。
+vi.mock('@/services/jobsApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/jobsApi')>();
+  return { ...actual, retryItemPages: (...args: unknown[]) => retryItemPages(...args) };
+});
+
+vi.mock('../hooks/use-batch-page-status', () => ({
+  useBatchPageStatus: (...args: unknown[]) => useBatchPageStatus(...args),
+}));
+
+import { BatchRowPages } from './batch-row-pages';
+
+function pageStatus(overrides: Partial<ItemPageStatus> = {}): ItemPageStatus {
+  return {
+    item_id: 'item-1',
+    job_id: 'job-1',
+    file_id: 'file-1',
+    paged: true,
+    page_count: 6,
+    recognition_state: 'done',
+    item_status: 'awaiting_review',
+    snapshot_at: '2026-11-11T01:00:00Z',
+    pages: [
+      { page: 1, state: 'success' },
+      { page: 2, state: 'success' },
+      { page: 3, state: 'success' },
+      { page: 4, state: 'failed', reason: 'ner boom' },
+      { page: 5, state: 'failed', reason: 'page_timeout' },
+      { page: 6, state: 'success' },
+    ],
+    failed_pages: [4, 5],
+    ...overrides,
+  };
+}
+
+function renderRows(status: ItemPageStatus) {
+  useBatchPageStatus.mockReturnValue({ status, error: null, loading: false, refresh });
+  return render(<BatchRowPages jobId="job-1" itemId="item-1" onExportPages={vi.fn()} />);
+}
+
+beforeEach(() => {
+  retryItemPages.mockReset();
+  refresh.mockReset();
+  retryItemPages.mockResolvedValue({ queued_pages: [4] });
+});
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+describe('单页重试', () => {
+  it('点红叉页只提交那一页', async () => {
+    renderRows(pageStatus());
+
+    const cell = screen.getByTestId('page-cell-4');
+    expect(cell.getAttribute('data-state')).toBe('failed');
+    expect(cell.getAttribute('data-retryable')).toBe('true');
+
+    await act(async () => {
+      fireEvent.click(cell);
+    });
+
+    await waitFor(() => expect(retryItemPages).toHaveBeenCalledWith('job-1', 'item-1', [4]));
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+  });
+
+  it('点成功页只改选择，不触发重试', async () => {
+    renderRows(pageStatus());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('page-cell-1'));
+    });
+
+    expect(retryItemPages).not.toHaveBeenCalled();
+    expect(screen.getByTestId('page-cell-1').getAttribute('data-selected')).toBe('false');
+  });
+
+  it('识别进行中时红叉页不可点、批量按钮禁用', async () => {
+    renderRows(pageStatus({ recognition_state: 'running', item_status: 'processing' }));
+
+    const cell = screen.getByTestId('page-cell-4');
+    expect(cell.getAttribute('data-retryable')).toBe('false');
+    await act(async () => {
+      fireEvent.click(cell);
+    });
+    expect(retryItemPages).not.toHaveBeenCalled();
+
+    expect(screen.getByTestId('page-matrix-retry-failed').hasAttribute('disabled')).toBe(true);
+  });
+
+  it('重试失败页一次提交全部失败页', async () => {
+    renderRows(pageStatus());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('page-matrix-retry-failed'));
+    });
+
+    await waitFor(() => expect(retryItemPages).toHaveBeenCalledWith('job-1', 'item-1', [4, 5]));
+  });
+
+  it('409 item_busy 翻成中文提示', async () => {
+    retryItemPages.mockRejectedValueOnce(
+      new ApiError('busy', 409, 'server', 'item_busy', { error_code: 'item_busy' }),
+    );
+    renderRows(pageStatus());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('page-matrix-retry-failed'));
+    });
+
+    const error = await screen.findByTestId('page-retry-error');
+    expect(error.textContent).toContain('正在识别或重试中');
+    expect(error.textContent).not.toContain('item_busy');
+  });
+
+  it('未知错误码保留原文，不吞掉', async () => {
+    retryItemPages.mockRejectedValueOnce(
+      new ApiError('上游炸了', 500, 'server', 'boom_code'),
+    );
+    renderRows(pageStatus());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('page-matrix-retry-failed'));
+    });
+
+    const error = await screen.findByTestId('page-retry-error');
+    expect(error.textContent).toContain('上游炸了');
+  });
+
+  it('已确认/已完成的条目不给重试入口（状态机没有回边，点了必 409）', async () => {
+    renderRows(pageStatus({ item_status: 'completed' }));
+
+    const cell = screen.getByTestId('page-cell-4');
+    expect(cell.getAttribute('data-retryable')).toBe('false');
+    const bulk = screen.getByTestId('page-matrix-retry-failed') as HTMLButtonElement;
+    expect(bulk.disabled).toBe(true);
+
+    await act(async () => {
+      fireEvent.click(cell);
+      fireEvent.click(bulk);
+    });
+    expect(retryItemPages).not.toHaveBeenCalled();
+  });
+});

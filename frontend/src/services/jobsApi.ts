@@ -733,6 +733,8 @@ export type ItemPageStatus = {
   paged: boolean;
   page_count: number;
   recognition_state: ItemRecognitionState;
+  /** 原始条目状态（awaiting_review / completed / …）：页级重试只允许前者。 */
+  item_status: string;
   snapshot_at: string;
   pages: ItemPageCell[];
   failed_pages: number[];
@@ -793,6 +795,7 @@ export function normalizeItemPageStatus(raw: unknown): ItemPageStatus {
       payload.recognition_state,
       'not_started',
     ) as ItemRecognitionState,
+    item_status: asString(payload.item_status),
     snapshot_at: asString(payload.snapshot_at),
     pages,
     failed_pages: Array.isArray(payload.failed_pages)
@@ -885,4 +888,27 @@ export async function listItemExports(
     ? payload.exports.map(normalizePartialExportTask)
     : [];
   return { exports, unavailable: asStringArray(payload.unavailable) };
+}
+
+/** Issue#257 能力 2：单页重试的受理结果（后端 202）。 */
+export interface PageRetryResult {
+  queued_pages: number[];
+}
+
+/** 只重跑这些失败页（后端会先落 ``page_retry_pages`` 标记再投递任务）。 */
+export function retryItemPages(
+  jobId: string,
+  itemId: string,
+  pages: number[],
+): Promise<PageRetryResult> {
+  return post(`/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/retry-pages`, {
+    pages,
+  }).then((payload) => {
+    const record = asRecord(payload);
+    return {
+      queued_pages: Array.isArray(record.queued_pages)
+        ? record.queued_pages.map((value) => asNumber(value)).filter((value) => value > 0)
+        : [],
+    };
+  });
 }
