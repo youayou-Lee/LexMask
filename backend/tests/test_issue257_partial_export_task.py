@@ -122,7 +122,7 @@ async def test_partial_export_task_end_to_end(tmp_path, monkeypatch):
     zip_path = Path(task.out_dir) / "part001.zip"
     with zipfile.ZipFile(zip_path) as zf:
         names = zf.namelist()
-        assert names[0] == "测试卷-部分导出(第1-5页).pdf"
+        assert names[0] == "测试卷-部分导出(第1、2、3、5页).pdf"
         assert names[-1] == "manifest.json"
         payload = zf.read(names[0])
     pdf_path = tmp_path / "extracted.pdf"
@@ -169,3 +169,44 @@ async def test_partial_export_task_end_to_end(tmp_path, monkeypatch):
 
     # 主产物隔离：file_store 里的框/字段一个字节都没动
     assert json.dumps(info, sort_keys=True, ensure_ascii=False) == before
+
+
+def _status_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "OUTPUT_DIR", str(tmp_path))
+    return tmp_path
+
+
+def test_persisted_record_rejects_other_owner_with_colliding_dir(monkeypatch, tmp_path):
+    """目录名归一后可能撞车（a@b 与 a_b），归属必须靠状态文件里的私有键判定。"""
+    out_root = _status_dir(monkeypatch, tmp_path)
+    from app.services.export_service import ExportTaskManager
+
+    manager = ExportTaskManager()
+    export_id = "deadbeef00000001"
+    out_dir = out_root / "exports" / "_safe" / export_id
+    out_dir.mkdir(parents=True)
+    payload = {
+        "export_id": export_id,
+        "kind": "partial_redaction",
+        "title": "t",
+        "status": "completed",
+        "error": None,
+        "progress": {},
+        "volumes": [{"name": "part001.zip", "bytes": 1, "file_count": 1}],
+        "total_bytes": 1,
+        "file_count": 1,
+        "created_at": "2026-11-11T00:00:00+00:00",
+        "finished_at": "2026-11-11T00:00:01+00:00",
+        "_owner_id": "a@b",
+    }
+    (out_dir / "export-status.json").write_text(json.dumps(payload), encoding="utf-8")
+    (out_dir / "part001.zip").write_bytes(b"zip")
+
+    monkeypatch.setattr(
+        "app.services.export_service._safe_owner_dir",
+        lambda owner: str(out_root / "exports" / "_safe"),
+    )
+
+    assert manager.get(export_id, "a@b") is not None
+    assert manager.get(export_id, "a_b") is None
+    assert manager.volume_path(export_id, "a_b", "part001.zip") is None

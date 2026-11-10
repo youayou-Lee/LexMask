@@ -19,7 +19,7 @@
   - 端点：`GET /api/jobs/{job_id}/items/{item_id}/page-status`（轻量投影）、`POST .../partial-export`（202，异步任务）、`GET .../exports`。失败页永不进包：选区间内含失败页必须 `acknowledge_failed_excluded=true`，否则 409 `failed_pages_ack_required`。
   - F1（前置缺陷）：`update_item_performance` 增 `replace_paths`，路径命中整体替换——修复深合并「空 dict 不删键」导致失败页清单清不掉、页记录重写残留旧 `error`；默认参数保持旧行为。
   - 前端：step3 文件行展开逐页格（成功/失败 hover 原因/未跑），失败页在**选择层**就不可勾；部分导出对话框（默认全选成功页、失败页知情确认、202 后轮询到终态、导出记录列表可直接下载）；识别进行中也允许导出（导出侧另取快照并在说明页写明快照时间）。
-- **测试**：后端 +61 例（F1 真 `JobStore` 红性/页投影三态与计数/切页与逐页图像流 sha256 对齐全量参照件/端点契约与错误码/真 `ExportTaskManager` 全链含重启后下载/说明页失败清理/无框页拒收）；全量 2862 passed，18 failed 与 preview 基线（同 revision 2802 passed）**同集合**（容器 `ProcessPoolExecutor` 信号量权限问题，非本 PR 引入）。前端 +13 例（页格三态与失败页不可选/ack 门控不发请求/记录下载链接与页数摘要/step3 接线与终局文案/200+ 页分块 50 格「显示更多」/图片行不给导出入口），全量 394 passed；i18n 双语 parity 2 例。
+- **测试**：后端 +65 例（F1 真 `JobStore` 红性/页投影三态与计数/`failed_pages` 压过页记录的双账本分叉/切页与逐页图像流 sha256 对齐全量参照件/端点契约与错误码/框落不到本页时 fail-closed/真 `ExportTaskManager` 全链含重启后下载与跨 owner 同名目录不可见/说明页失败清理/无框页拒收）；全量 2866 passed，18 failed 与 preview 基线（同 revision 2802 passed）**同集合**（容器 `ProcessPoolExecutor` 信号量权限问题，非本 PR 引入）。前端 +13 例（页格三态与失败页不可选/ack 门控不发请求/记录下载链接与页数摘要/step3 接线与终局文案/200+ 页分块 50 格「显示更多」/图片行不给导出入口），全量 395 passed；i18n 双语 parity 2 例。
 
 ## 2026-11-09
 

@@ -198,6 +198,13 @@ def exports_root() -> str:
     return os.path.join(settings.OUTPUT_DIR, "exports")
 
 
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _safe_filename(name: str) -> str:
     # 与 structured_service.safe_filename 同款语义（目录名安全化）
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name or "data")).strip("._")
@@ -264,8 +271,13 @@ class ExportTaskManager:
 
     def _persist(self, task: ExportTask) -> None:
         try:
+            payload = dict(task.public())
+            # 归属单独写在私有键里：目录名是 ``_safe_owner_dir`` 归一后的结果，不同 owner
+            # 可能落到同一目录（``a@b`` 与 ``a_b``），只凭目录判断归属会让两边互相看到
+            # 记录、甚至被对方的 TTL 清理删掉。私有键不进 HTTP payload。
+            payload["_owner_id"] = task.owner_id
             with open(os.path.join(task.out_dir, "export-status.json"), "w", encoding="utf-8") as f:
-                json.dump(task.public(), f, ensure_ascii=False, indent=2)
+                json.dump(payload, f, ensure_ascii=False, indent=2)
         except OSError:
             logger.warning("unable to persist export status %s", task.export_id, exc_info=True)
 
@@ -329,10 +341,14 @@ class ExportTaskManager:
             return None
         if not isinstance(data, dict) or str(data.get("export_id") or "") != export_id:
             return None
+        # 归属校验：目录名有损，不能只凭目录判断。老记录没有 ``_owner_id`` 时保持原行为。
+        stored_owner = data.get("_owner_id")
+        if stored_owner is not None and str(stored_owner) != str(owner_id):
+            return None
         meta = {
             key: value
             for key, value in data.items()
-            if key not in _PUBLIC_TASK_KEYS
+            if key not in _PUBLIC_TASK_KEYS and not key.startswith("_")
         }
         progress = data.get("progress")
         return ExportTask(
@@ -345,8 +361,8 @@ class ExportTaskManager:
             error=data.get("error"),
             progress=dict(progress) if isinstance(progress, dict) else {},
             volumes=[v for v in (data.get("volumes") or []) if isinstance(v, dict)],
-            total_bytes=int(data.get("total_bytes") or 0),
-            file_count=int(data.get("file_count") or 0),
+            total_bytes=_as_int(data.get("total_bytes")),
+            file_count=_as_int(data.get("file_count")),
             created_at=str(data.get("created_at") or ""),
             finished_at=data.get("finished_at"),
             runner=None,

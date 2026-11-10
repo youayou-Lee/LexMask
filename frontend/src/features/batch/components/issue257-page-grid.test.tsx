@@ -181,6 +181,27 @@ describe('部分导出对话框（Issue#257）', () => {
     expect(mockedStart).toHaveBeenCalledWith('job-1', 'item-1', [1, 2, 3, 5], true);
   });
 
+  it('改了选择之后确认必须重新勾选（确认只对当次选择有效）', async () => {
+    await renderDialog({
+      open: true,
+      jobId: 'job-1',
+      itemId: 'item-1',
+      filename: '测试卷.pdf',
+      initialSelected: [2, 5],
+      onClose: () => {},
+    });
+
+    fireEvent.click(screen.getByTestId('partial-export-ack'));
+    expect((screen.getByTestId('partial-export-ack') as HTMLInputElement).checked).toBe(true);
+
+    // 再点一个成功页（区间仍跨失败页）→ 选择变了 → ack 复位，提交重新被禁用。
+    fireEvent.click(screen.getByTestId('page-cell-1'));
+    await waitFor(() =>
+      expect((screen.getByTestId('partial-export-ack') as HTMLInputElement).checked).toBe(false),
+    );
+    expect((screen.getByTestId('partial-export-submit') as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('导出记录渲染下载链接（跨重启记录来自后端列表）', async () => {
     mockedList.mockResolvedValue({
       exports: [

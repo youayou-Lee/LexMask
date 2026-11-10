@@ -136,6 +136,11 @@ def build_page_status(
         record = raw_pages.get(str(page_no))
         record = record if isinstance(record, dict) else {}
         state = _page_state(record) if record else _PAGE_STATE_PENDING
+        # 失败清单是权威（#199/#257）：只要页号在 failed_pages 里就是失败，即便页记录
+        # 写着 completed。两套账本若因任何路径分叉（旧数据、并发写、手工修库）不一致，
+        # 页格必须以"交付闸会拒收的那一侧"为准，否则会出现"页格全绿但导出被拒"的死局。
+        if str(page_no) in failed_map:
+            state = _PAGE_STATE_FAILED
         reason: str | None = None
         if state == _PAGE_STATE_FAILED:
             reason = failed_map.get(str(page_no)) or str(record.get("error") or "") or None
@@ -179,7 +184,8 @@ def recognized_page_numbers(item_row: dict[str, Any], page_count: int) -> set[in
             continue
         if isinstance(record, dict) and _page_state(record) == _PAGE_STATE_COMPLETED:
             out.add(page)
-    return out
+    # 失败清单页即便记录写着 completed 也不算"识别成功"（与投影、交付闸同口径）。
+    return out - set(failed_page_numbers(item_row))
 
 
 def recognized_page_count(item_row: dict[str, Any], page_count: int) -> int:

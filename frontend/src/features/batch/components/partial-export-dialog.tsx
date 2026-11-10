@@ -152,6 +152,33 @@ export function PartialExportDialog({
     return failedPages.filter((page) => page >= min && page <= max);
   }, [failedPages, orderedSelected]);
 
+  // 页状态会随轮询变化：已选的页转成 failed／未跑时必须从选择集里摘掉，
+  // 否则用户点不掉它、提交会被后端拒。
+  const successKey = useMemo(
+    () =>
+      pages
+        .filter((cell) => cell.state === 'success')
+        .map((cell) => cell.page)
+        .join(','),
+    [pages],
+  );
+  useEffect(() => {
+    const allowed = new Set(
+      successKey ? successKey.split(',').map((value) => Number(value)) : [],
+    );
+    if (allowed.size === 0) return;
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((page) => allowed.has(page)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [successKey]);
+
+  // 确认只对「当次选择」有效：选择一变就必须重新勾选（评审 Minor）。
+  const ackKey = `${orderedSelected.join(',')}|${excludedInSpan.join(',')}`;
+  useEffect(() => {
+    setAck(false);
+  }, [ackKey]);
+
   const handleExport = async () => {
     if (!jobId || !itemId || orderedSelected.length === 0 || submitting) return;
     setSubmitting(true);
@@ -186,7 +213,7 @@ export function PartialExportDialog({
   const recognitionState = status?.recognition_state ?? 'not_started';
   // 识别进行中也允许导出（Issue#257 的核心诉求：跑到 100 页就能先导前 100 页）；
   // 导出侧另取一次快照，产物带 snapshot_at 说明它只是那一刻的结果。
-  const canPick = paged;
+  const canPick = paged; // 文本类型由后端 400 兜底，前端只在 paged 上放开入口
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>

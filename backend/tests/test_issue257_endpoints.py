@@ -315,9 +315,9 @@ def test_exports_endpoint_reads_disk_records(wired, store, tmp_path, monkeypatch
 
     _write_status(
         out_root / "exports",
-        "expA",
+        "aaaaaaaabbbbbbbb",
         {
-            "export_id": "expA",
+            "export_id": "aaaaaaaabbbbbbbb",
             "kind": "partial_redaction",
             "title": "卷-部分导出(第1-3页)",
             "status": "completed",
@@ -347,7 +347,7 @@ def test_exports_endpoint_reads_disk_records(wired, store, tmp_path, monkeypatch
     payload = asyncio.run(
         get_item_exports(job_id, item_id, store=store, owner_id="admin")
     )
-    assert [record["export_id"] for record in payload["exports"]] == ["expA"]
+    assert [record["export_id"] for record in payload["exports"]] == ["aaaaaaaabbbbbbbb"]
     assert payload["exports"][0]["pages"] == [1, 2, 3]
 
 
@@ -361,3 +361,36 @@ def test_partial_export_rejects_pages_without_boxes(store, wired, tmp_path):
         )
     assert excinfo.value.status_code == 400
     assert excinfo.value.error_code == "pages_without_boxes"
+
+def test_partial_export_rejects_boxes_that_cannot_land_on_their_page(wired, store, tmp_path, monkeypatch):
+    """账页号与框自带 page 不一致 ⇒ 重映射会静默丢框，必须 fail-closed（评审 Critical-1）。"""
+    job_id, item_id, file_info = wired
+    manager = _FakeManager(str(tmp_path / "exp"))
+    monkeypatch.setattr(partial_export_service, "export_task_manager", manager)
+    file_info["bounding_boxes"][1] = [
+        {
+            "id": "b-move",
+            "x": 0.1,
+            "y": 0.1,
+            "width": 0.2,
+            "height": 0.05,
+            "type": "PERSON",
+            "page": 4,
+        }
+    ]
+
+    with pytest.raises(AppError) as excinfo:
+        asyncio.run(
+            export_item_pages(
+                job_id,
+                item_id,
+                pages=[1],
+                acknowledge_failed_excluded=True,
+                store=store,
+                owner_id="admin",
+            )
+        )
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.error_code == "pages_with_unmappable_boxes"
+    assert excinfo.value.detail["pages"] == [1]
+    assert manager.calls == []

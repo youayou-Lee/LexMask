@@ -56,7 +56,9 @@ export function BatchPageMatrix({ status, selected, onChange, disabled = false }
     () => new Set(status.pages.filter((cell) => cell.state === 'success').map((cell) => cell.page)),
     [status.pages],
   );
-  const allSelected = allSuccess.size > 0 && selected.size === allSuccess.size;
+  // 逐页判断而不是比 size：选择集可能残留已转 failed 的页（size 相等会误判「已全选」）。
+  const allSelected =
+    allSuccess.size > 0 && [...allSuccess].every((page) => selected.has(page));
 
   const toggle = (page: number, state: PageCellState) => {
     if (disabled || state !== 'success') return;

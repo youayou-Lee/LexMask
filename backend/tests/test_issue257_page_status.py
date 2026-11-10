@@ -17,6 +17,7 @@ import json
 import pytest
 
 from app.services import job_metadata
+from app.services import page_status_service
 from app.services.job_metadata import item_to_out
 from app.services.page_status_service import build_page_status
 
@@ -229,3 +230,44 @@ def test_job_item_response_schema_keeps_page_fields() -> None:
     assert out["paged"] is True
     assert out["page_count"] == 149
     assert out["recognition_failed_pages"] == [133]
+
+
+def _diverged_item() -> dict:
+    """页记录写 completed，但失败清单里仍记着该页（两账本分叉的形态）。"""
+    return {
+        "id": "item-diverged",
+        "job_id": "job-1",
+        "file_id": "file-1",
+        "status": "awaiting_review",
+        "performance": {
+            "recognition": {
+                "page_count": 3,
+                "pages": {
+                    "1": {"status": "completed", "duration_ms": 10},
+                    "2": {"status": "completed", "duration_ms": 20},
+                    "3": {"status": "completed", "duration_ms": 30},
+                },
+                "failed_pages": {"2": "page retry timeout after 2s"},
+            }
+        },
+    }
+
+
+def test_failed_pages_list_wins_over_completed_record():
+    """失败清单是权威：记录写 completed 也必须是 ❌，否则页格全绿而导出被拒。"""
+    status = page_status_service.build_page_status(
+        _diverged_item(), {"file_type": "pdf", "page_count": 3}
+    )
+    cells = {cell["page"]: cell for cell in status["pages"]}
+    assert cells[1]["state"] == "success"
+    assert cells[2]["state"] == "failed"
+    assert cells[2]["reason"] == "page retry timeout after 2s"
+    assert cells[3]["state"] == "success"
+    assert status["failed_pages"] == [2]
+
+
+def test_recognized_pages_exclude_failed_ledger_pages():
+    """识别成功页集合必须减掉失败清单，否则选页白名单会放进导出必拒的页。"""
+    item = _diverged_item()
+    assert page_status_service.recognized_page_numbers(item, 3) == {1, 3}
+    assert page_status_service.recognized_page_count(item, 3) == 2

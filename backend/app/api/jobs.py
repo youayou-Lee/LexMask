@@ -343,6 +343,27 @@ def _job_config_of(job: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _redactable_pages_of(file_info: dict[str, Any] | None) -> set[int]:
+    """框账里「已选框都能落到本页」的页集合（干净页=空框账，也算安全）。
+
+    账页号与框自带的 ``page`` 不一致时，重映射会静默丢框、产物就把该页原样
+    栅格化进包（文本层消失后连"零残留"检查都抓不到）⇒ 这类页 fail-closed。
+    """
+    raw = (file_info or {}).get("bounding_boxes") or {}
+    safe: set[int] = set()
+    if not isinstance(raw, dict):
+        return safe
+    for key, boxes in raw.items():
+        try:
+            page_no = int(key)
+        except (TypeError, ValueError):
+            continue
+        parsed = partial_export_service.normalize_boxes(boxes, strict=True)
+        if all(int(box.page or 1) == page_no for box in parsed if box.selected):
+            safe.add(page_no)
+    return safe
+
+
 def _boxes_pages_of(file_info: dict[str, Any] | None) -> set[int]:
     """file_store 里有框账条目的页号集合（校验「选了没跑过视觉识别的页」）。"""
     raw = (file_info or {}).get("bounding_boxes") or {}
@@ -422,6 +443,7 @@ async def export_item_pages(
             acknowledge_failed_excluded=acknowledge_failed_excluded,
             file_type=file_info.get("file_type"),
             boxes_pages=_boxes_pages_of(file_info),
+            redactable_pages=_redactable_pages_of(file_info),
         )
     except partial_export_service.PartialExportError as exc:
         # 知情确认是 409（可重试、需要用户动作），参数错误是 400。

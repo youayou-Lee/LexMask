@@ -49,6 +49,8 @@ _COVER_MARGIN_X = 56.0
 _COVER_START_Y = 90.0
 _COVER_LINE_HEIGHT = 18.0
 _COVER_PAGES_PER_LINE = 20
+# A4 宽 595pt、左右各留 56pt ⇒ 483pt；取 470 作保守折行上限（横向页更宽，安全）。
+_COVER_TEXT_WIDTH = 470.0
 
 
 class PartialExportError(Exception):
@@ -113,6 +115,7 @@ def validate_partial_export_pages(
     acknowledge_failed_excluded: bool,
     file_type: Any = None,
     boxes_pages: Iterable[int] | None = None,
+    redactable_pages: Iterable[int] | None = None,
 ) -> dict[str, Any]:
     """校验并规范化选页。返回 ``{"pages": [...], "excluded_failed_pages": [...]}``。
 
@@ -180,6 +183,19 @@ def validate_partial_export_pages(
                 "所选页没有视觉识别框记录，无法保证遮蔽效果，拒绝导出",
                 pages=missing,
             )
+    if redactable_pages is not None:
+        # 「有框账条目」不等于「框能落到这一页」：账里某条框的 ``page`` 与账页号不一致时，
+        # 重映射会把它静默丢掉，产物就把这一页原样栅格化进包（文本层消失后连"零残留"
+        # 检查都抓不到）。空框账（干净页）不算问题——只有「框落不到本页」才 fail-closed。
+        blocked = [
+            p for p in normalized if int(p) not in {int(x) for x in redactable_pages}
+        ]
+        if blocked:
+            raise PartialExportError(
+                "pages_with_unmappable_boxes",
+                "所选页的框账有无法落到该页的框，无法保证遮蔽效果，拒绝导出",
+                pages=blocked,
+            )
 
     lo, hi = normalized[0], normalized[-1]
     excluded = sorted(p for p in failed_pages if lo <= p <= hi)
@@ -197,12 +213,60 @@ def validate_partial_export_pages(
 # 说明页（AC1.2 / AC5：只允许页号、时间、原因码、导出 ID）
 # ---------------------------------------------------------------------------
 
-def _page_label_chunks(pages: Sequence[int]) -> list[str]:
+def _page_label_chunks(pages: Sequence[int], *, max_width: float | None = None) -> list[str]:
+    """把页号切成若干行。给了 ``max_width`` 就按真实字宽折行（三位数页号一行 20 个会溢出）。"""
+    if max_width is None:
+        labels: list[str] = []
+        for start in range(0, len(pages), _COVER_PAGES_PER_LINE):
+            chunk = pages[start : start + _COVER_PAGES_PER_LINE]
+            labels.append("、".join(str(p) for p in chunk))
+        return labels
+
     labels: list[str] = []
-    for start in range(0, len(pages), _COVER_PAGES_PER_LINE):
-        chunk = pages[start : start + _COVER_PAGES_PER_LINE]
-        labels.append("、".join(str(p) for p in chunk))
+    current: list[str] = []
+    for page in pages:
+        candidate = "、".join(current + [str(page)])
+        if current and _text_width(candidate) > max_width:
+            labels.append("、".join(current))
+            current = [str(page)]
+        else:
+            current.append(str(page))
+    if current:
+        labels.append("、".join(current))
     return labels
+
+
+def _wrap_to_width(line: str, max_width: float) -> list[str]:
+    if _text_width(line) <= max_width:
+        return [line]
+    out: list[str] = []
+    current = ""
+    for ch in line:
+        if current and _text_width(current + ch) > max_width:
+            out.append(current)
+            current = ch
+        else:
+            current += ch
+    if current:
+        out.append(current)
+    return out
+
+
+def _text_width(text: str, fontsize: float = COVER_FONTSIZE) -> float:
+    try:
+        return float(fitz.get_text_length(text, fontname=COVER_FONT, fontsize=fontsize))
+    except Exception:  # pragma: no cover - 极端字体缺失时按经验值兜底
+        return len(text) * fontsize * 0.6
+
+
+_REASON_MAX_CHARS = 120
+_REASON_UNSAFE_CHARS = re.compile(r"[\r\n\t]+")
+
+
+def _safe_reason(reason: Any) -> str:
+    """失败原因码只允许单行短文本（防止把案卷文本片段带进交付件）。"""
+    text = _REASON_UNSAFE_CHARS.sub(" ", str(reason or "")).strip()
+    return text[:_REASON_MAX_CHARS]
 
 
 def build_cover_lines(
@@ -217,7 +281,7 @@ def build_cover_lines(
 ) -> list[str]:
     """说明页文本。**逐页列举**（不得写成「第 1-5 页」——那会在跳页时撒谎）。"""
     page_list = sorted({_safe_int(p, 0) for p in pages})
-    labels = _page_label_chunks(page_list)
+    labels = _page_label_chunks(page_list, max_width=_COVER_TEXT_WIDTH)
     lines: list[str] = ["【部分导出说明】"]
     if labels:
         lines.append(f"本包含原卷第 {labels[0]} 页")
@@ -225,7 +289,7 @@ def build_cover_lines(
             lines.append(f"（续）第 {extra} 页")
     lines.append(f"共 {len(page_list)} 页（含说明页 1 页）")
     lines.append(f"原卷总页数：{max(_safe_int(page_count, 0), 0)}")
-    excluded_list = [(int(p), str(reason or "")) for p, reason in excluded]
+    excluded_list = [(int(p), _safe_reason(reason)) for p, reason in excluded]
     for page, reason in excluded_list[:_COVER_PAGES_PER_LINE]:
         reason_text = f"（失败原因码：{reason}）" if reason else ""
         lines.append(f"本次排除的失败页：第 {page} 页{reason_text}")
@@ -264,12 +328,15 @@ def slice_pdf_pages(source_path: str, pages: Sequence[int], out_path: str) -> No
             out.close()
 
 
-def normalize_boxes(raw: Any) -> list[BoundingBox]:
+def normalize_boxes(raw: Any, *, strict: bool = False) -> list[BoundingBox]:
     """把 file_store 里的框结构（``{page: [box, ...]}`` 或平铺 list）归一成对象列表。
 
     ``file_store.bounding_boxes`` 是**按页 dict**（#199 之后的形态），键在内核里是
-    int、落 JSON 后变 str；两种都要吃。脏框跳过而不是整包失败——部分导出不该因为
-    一条坏记录直接 500。
+    int、落 JSON 后变 str；两种都要吃。
+
+    ``strict=True`` 时坏框**不再静默丢弃**：历史脏记录若被悄悄跳过，打码集合就会比
+    框账少，产物里留原样页却仍被当作"已遮蔽"——所以导出链路必须 fail-closed
+    （``partial_export_box_invalid``），只有纯展示/统计路径才容错。
     """
     items: list[Any]
     if isinstance(raw, dict):
@@ -282,16 +349,24 @@ def normalize_boxes(raw: Any) -> list[BoundingBox]:
     else:
         return []
     boxes: list[BoundingBox] = []
+    invalid = 0
     for item in items:
         if isinstance(item, BoundingBox):
             boxes.append(item)
             continue
         if not isinstance(item, dict):
+            invalid += 1
             continue
         try:
             boxes.append(BoundingBox.model_validate(item))
-        except Exception:  # noqa: BLE001 - 脏框跳过，不阻断导出
-            continue
+        except Exception:  # noqa: BLE001 - 脏框计数，严格模式由调用方决定是否拒绝
+            invalid += 1
+    if strict and invalid:
+        raise PartialExportError(
+            "partial_export_box_invalid",
+            "框记录里有无法解析的框，无法保证遮蔽效果，拒绝导出",
+            invalid_boxes=invalid,
+        )
     return boxes
 
 
@@ -324,7 +399,7 @@ def _remove_quietly(path: str) -> None:
 
 
 def insert_cover_page(pdf_path: str, lines: Sequence[str]) -> None:
-    """把说明页插到第 1 页（页尺寸随原第 1 页）。"""
+    """把说明页插到第 1 页（页尺寸随原第 1 页，折行与字号按页宽高自适应）。"""
     if not lines:
         return
     with fitz.open(pdf_path) as doc:
@@ -332,16 +407,28 @@ def insert_cover_page(pdf_path: str, lines: Sequence[str]) -> None:
             return
         first = doc[0]
         width, height = first.rect.width, first.rect.height
+        text_width = max(width - 2 * _COVER_MARGIN_X, 120.0)
+        wrapped: list[str] = []
+        for line in lines:
+            wrapped.extend(_wrap_to_width(line, text_width))
+        usable = max(height - _COVER_START_Y - _COVER_MARGIN_X, 60.0)
+        fontsize = COVER_FONTSIZE
+        line_height = _COVER_LINE_HEIGHT
+        while len(wrapped) * line_height > usable and fontsize > 7.0:
+            fontsize -= 0.5
+            line_height = fontsize * 1.6
         cover = doc.new_page(pno=0, width=width, height=height)
         y = _COVER_START_Y
-        for line in lines:
+        for line in wrapped:
+            if y > height - _COVER_MARGIN_X:  # 兜底：宁可截断也不写到页外
+                break
             cover.insert_text(
                 (_COVER_MARGIN_X, y),
                 line,
                 fontname=COVER_FONT,
-                fontsize=COVER_FONTSIZE,
+                fontsize=fontsize,
             )
-            y += _COVER_LINE_HEIGHT
+            y += line_height
         buf = io.BytesIO()
         doc.save(buf, garbage=4, deflate=True)
         buf.seek(0)
@@ -448,10 +535,21 @@ def _safe_name(raw: str, fallback: str = "partial") -> str:
     return (stem or fallback)[:80]
 
 
+_TITLE_PAGE_LIST_LIMIT = 6
+
+
 def build_export_title(*, filename: str | None, pages: Sequence[int]) -> str:
+    """标题里的页号必须与产物一致：跳页时逐页列举（「第1-5页」会撒谎）。"""
     stem = os.path.splitext(str(filename or "案卷"))[0] or "案卷"
     ordered = sorted({_safe_int(p, 0) for p in pages})
-    label = f"{ordered[0]}-{ordered[-1]}" if len(ordered) > 1 else str(ordered[0]) if ordered else "?"
+    if not ordered:
+        return f"{stem}-部分导出"
+    contiguous = len(ordered) == ordered[-1] - ordered[0] + 1
+    if contiguous:
+        label = str(ordered[0]) if len(ordered) == 1 else f"{ordered[0]}-{ordered[-1]}"
+    else:
+        head = "、".join(str(p) for p in ordered[:_TITLE_PAGE_LIST_LIMIT])
+        label = f"{head} 等 {len(ordered)} 页" if len(ordered) > _TITLE_PAGE_LIST_LIMIT else head
     return f"{stem}-部分导出(第{label}页)"
 
 
@@ -581,6 +679,9 @@ def list_item_exports(
     unavailable: list[str] = []
     if os.path.isdir(root):
         for export_id in os.listdir(root):
+            # 目录名直接拼进路径，先按 export_id 格式校验（防 `..`/异常名）。
+            if not re.fullmatch(r"[0-9a-f]{8,32}", export_id):
+                continue
             status_path = os.path.join(root, export_id, "export-status.json")
             if not os.path.isfile(status_path):
                 continue
@@ -594,6 +695,10 @@ def list_item_exports(
             if job_id is not None and str(data.get("job_id") or "") != str(job_id):
                 continue
             if item_id is not None and str(data.get("item_id") or "") != str(item_id):
+                continue
+            # 归属以状态文件里的私有键为准（目录名有损，可能撞车）。
+            stored_owner = data.get("_owner_id")
+            if stored_owner is not None and str(stored_owner) != str(owner_id):
                 continue
             records[str(data.get("export_id") or export_id)] = data
 
