@@ -19,7 +19,8 @@ ROUTES = [
     "/jobs",
     "/settings",
     "/settings/system",
-    "/settings/redaction",
+    # Issue#262 D3：旧 /settings/redaction 已重定向进 /settings?tab=redaction，冒烟改走新深链
+    "/settings?tab=redaction",
     "/model-settings/text",
     "/model-settings/vision",
 ]

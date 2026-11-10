@@ -2775,6 +2775,13 @@ Object.assign(zhOverrides, {
   'agentMd.retainedEmpty': '本次没有保留原文的字段',
 });
 
+// Issue#262 D3 高级设置单入口三页签（/settings?tab=types|redaction|words）
+Object.assign(zhOverrides, {
+  'settings.tab.types': '识别项设置',
+  'settings.tab.redaction': '配置清单',
+  'settings.tab.words': '词库',
+});
+
 export const zh: Record<string, string> = {
   ...zhBase,
   ...zhOverrides,

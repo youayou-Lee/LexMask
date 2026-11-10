@@ -2841,6 +2841,13 @@ Object.assign(enOverrides, {
   'agentMd.retainedEmpty': 'No fields were kept as original text in this run',
 });
 
+// Issue#262 D3 advanced settings single-entry tabs (/settings?tab=types|redaction|words)
+Object.assign(enOverrides, {
+  'settings.tab.types': 'Entity types',
+  'settings.tab.redaction': 'Presets',
+  'settings.tab.words': 'Word pools',
+});
+
 export const en: Record<string, string> = {
   ...enBase,
   ...enOverrides,

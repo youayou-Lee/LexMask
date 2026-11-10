@@ -48,12 +48,6 @@ const DicomWorkspace = React.lazy(() =>
 const Settings = React.lazy(() =>
   import('./features/settings').then((m) => ({ default: m.Settings })),
 );
-const RedactionListSettings = React.lazy(() =>
-  import('./features/settings').then((m) => ({ default: m.RedactionListSettings })),
-);
-const WordPoolsSettings = React.lazy(() =>
-  import('./features/settings').then((m) => ({ default: m.WordPoolsSettings })),
-);
 const SystemSettings = React.lazy(() =>
   import('./features/settings').then((m) => ({ default: m.SystemSettings })),
 );
@@ -394,22 +388,10 @@ export const router = createBrowserRouter([
           </LazyPage>
         ),
       },
-      {
-        path: 'settings/redaction',
-        element: (
-          <LazyPage>
-            <RedactionListSettings />
-          </LazyPage>
-        ),
-      },
-      {
-        path: 'settings/word-pools',
-        element: (
-          <LazyPage>
-            <WordPoolsSettings />
-          </LazyPage>
-        ),
-      },
+      // Issue#262 D3：旧设置路由重定向进高级设置单入口对应页签（深链不断；
+      // 旧 URL 自身的其他 query 参数允许丢弃，只透传 tab）。
+      { path: 'settings/redaction', element: <SettingsTabRedirect tab="redaction" /> },
+      { path: 'settings/word-pools', element: <SettingsTabRedirect tab="words" /> },
       {
         path: 'settings',
         element: (
@@ -439,6 +421,11 @@ export const router = createBrowserRouter([
     ],
   },
 ]);
+
+// Issue#262 D3：旧设置路由 → /settings?tab=<tab> 重定向（replace，避免历史栈堆积中间态）
+function SettingsTabRedirect({ tab }: { tab: string }) {
+  return <Navigate to={`/settings?tab=${tab}`} replace />;
+}
 
 function NotFound() {
   const t = useT();
