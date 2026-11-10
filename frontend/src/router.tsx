@@ -20,10 +20,9 @@ const Batch = React.lazy(() => import('./features/batch').then((m) => ({ default
 const BatchHub = React.lazy(() =>
   import('./features/batch').then((m) => ({ default: m.BatchHub })),
 );
-const History = React.lazy(() =>
-  import('./features/history').then((m) => ({ default: m.History })),
+const TasksPage = React.lazy(() =>
+  import('./features/jobs').then((m) => ({ default: m.TasksPage })),
 );
-const Jobs = React.lazy(() => import('./features/jobs').then((m) => ({ default: m.Jobs })));
 const JobDetailPage = React.lazy(() =>
   import('./features/jobs').then((m) => ({ default: m.JobDetailPage })),
 );
@@ -348,19 +347,13 @@ export const router = createBrowserRouter([
           </LazyPage>
         ),
       },
-      {
-        path: 'history',
-        element: (
-          <LazyPage>
-            <History />
-          </LazyPage>
-        ),
-      },
+      // Issue#262 A1：/history 并入任务中心合并页——旧深链经重定向透传 source/jobId
+      { path: 'history', element: <HistoryRedirect /> },
       {
         path: 'jobs',
         element: (
           <LazyPage>
-            <Jobs />
+            <TasksPage />
           </LazyPage>
         ),
       },
@@ -425,6 +418,15 @@ export const router = createBrowserRouter([
 // Issue#262 D3：旧设置路由 → /settings?tab=<tab> 重定向（replace，避免历史栈堆积中间态）
 function SettingsTabRedirect({ tab }: { tab: string }) {
   return <Navigate to={`/settings?tab=${tab}`} replace />;
+}
+
+// Issue#262 A1：旧 /history 深链 → /jobs?view=done（replace，避免历史栈堆积中间态）；
+// source / jobId 等既有 query 原样透传，由 HistoryView 的 use-history-data URL 同步消费。
+function HistoryRedirect() {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  params.set('view', 'done');
+  return <Navigate to={`/jobs?${params.toString()}`} replace />;
 }
 
 function NotFound() {

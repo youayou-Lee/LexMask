@@ -327,7 +327,7 @@ const zhBase: Record<string, string> = {
   'page.jobDetail.title': '任务详情',
   'page.jobDetail.sub': '队列进度 · 文件复核 · 导出准备',
   'page.jobs.title': '任务中心',
-  'page.jobs.sub': '跟踪混合文件队列与复核状态',
+  'page.jobs.sub': '进度 · 复核 · 下载',
   'page.history.title': '处理结果',
   'page.history.sub': '查看处理结果并导出交付包',
   'page.textModel.title': '高级设置',
@@ -1029,7 +1029,7 @@ const zhOverrides: Record<string, string> = {
   'page.history.title': '处理结果',
   'page.history.sub': '查看结果并导出打包文件',
   'page.jobs.title': '任务中心',
-  'page.jobs.sub': '跟踪混合文件队列与复核状态',
+  'page.jobs.sub': '进度 · 复核 · 下载',
   'page.redactionList.title': '配置清单设置',
   'page.redactionList.sub': '把不同识别项组合成单次、批量共用的识别清单',
   'page.textModel.title': '高级设置',
@@ -2780,6 +2780,13 @@ Object.assign(zhOverrides, {
   'settings.tab.types': '识别项设置',
   'settings.tab.redaction': '配置清单',
   'settings.tab.words': '词库',
+});
+
+// Issue#262 A1 任务中心合并页外层三页签（/jobs?view=active|review|done）
+Object.assign(zhOverrides, {
+  'tasks.tab.active': '进行中',
+  'tasks.tab.review': '待复核',
+  'tasks.tab.done': '已完成',
 });
 
 export const zh: Record<string, string> = {

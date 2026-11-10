@@ -57,7 +57,7 @@ function BatchStep1FooterInner({
           {t('batchHub.jobCenter')}
         </Link>
         <span className="mx-1">&middot;</span>
-        <Link to="/history" className="text-primary hover:underline font-medium">
+        <Link to="/jobs?view=done" className="text-primary hover:underline font-medium">
           {t('batchHub.history')}
         </Link>
       </p>

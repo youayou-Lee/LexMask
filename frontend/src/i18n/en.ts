@@ -336,7 +336,7 @@ const enBase: Record<string, string> = {
   'page.jobDetail.title': 'Job Details',
   'page.jobDetail.sub': 'Queue progress, file review, and export readiness',
   'page.jobs.title': 'Jobs',
-  'page.jobs.sub': 'Track mixed-file queues and review status',
+  'page.jobs.sub': 'Progress · Review · Download',
   'page.history.title': 'Processing Results',
   'page.history.sub': 'Review results and export delivery packages',
   'page.textModel.title': 'Text Model',
@@ -1088,7 +1088,7 @@ const enOverrides: Record<string, string> = {
   'page.history.title': 'Processing Results',
   'page.history.sub': 'Review outputs and export bundles',
   'page.jobs.title': 'Jobs',
-  'page.jobs.sub': 'Track mixed-file queues and review status',
+  'page.jobs.sub': 'Progress · Review · Download',
   'page.redactionList.title': 'Recognition List Settings',
   'page.redactionList.sub':
     'Compose recognition items into reusable lists for single-file and batch workflows',
@@ -2846,6 +2846,13 @@ Object.assign(enOverrides, {
   'settings.tab.types': 'Entity types',
   'settings.tab.redaction': 'Presets',
   'settings.tab.words': 'Word pools',
+});
+
+// Issue#262 A1 tasks hub outer tabs (/jobs?view=active|review|done)
+Object.assign(enOverrides, {
+  'tasks.tab.active': 'In progress',
+  'tasks.tab.review': 'Awaiting review',
+  'tasks.tab.done': 'Completed',
 });
 
 export const en: Record<string, string> = {

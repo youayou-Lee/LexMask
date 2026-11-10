@@ -15,7 +15,8 @@ ROUTES = [
     "/structured/datasets",
     "/structured/delivery",
     "/restore",
-    "/history",
+    # Issue#262 A1：/history 已重定向进 /jobs?view=done，冒烟改走新深链
+    "/jobs?view=done",
     "/jobs",
     "/settings",
     "/settings/system",

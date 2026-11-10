@@ -20,116 +20,114 @@ import { TrashRecycleDialog } from './components/trash-dialog';
 import { HistoryTable } from './components/history-table';
 import { PAGE_SIZE_OPTIONS } from './hooks/use-history';
 
-export function History() {
+// Issue#262 A1：/history 路由已重定向至 /jobs?view=done——本组件由任务中心合并页
+// （features/jobs/tasks-page.tsx）条件渲染。外层 saas-page/page-shell 上移至合并页，
+// 这里只保留内容列（history-page testid 与内部组装原样）。
+export function HistoryView() {
   const t = useT();
   const s = useHistory();
 
   return (
-    <div
-      className="saas-page flex min-h-0 flex-1 flex-col overflow-hidden bg-background"
-      data-testid="history-page"
-    >
-      <div className="page-shell !max-w-[min(100%,2048px)] !px-3 !py-3 sm:!px-4 2xl:!px-5">
-        <HistoryFilters
-          sourceTab={s.sourceTab}
-          onSourceTabChange={s.changeSourceTab}
-          dateFilter={s.dateFilter}
-          onDateFilterChange={s.setDateFilter}
-          fileTypeFilter={s.fileTypeFilter}
-          onFileTypeFilterChange={s.setFileTypeFilter}
-          statusFilter={s.statusFilter}
-          onStatusFilterChange={s.setStatusFilter}
-          hasActiveFilter={s.hasActiveFilter}
-          onClearFilters={s.clearFilters}
-          onRefresh={() => s.load(true, s.page, s.pageSize)}
-          onCleanup={() => s.setCleanupConfirmOpen(true)}
-          onDownloadOriginal={() => s.downloadZip(false)}
-          onDownloadRedacted={() => s.downloadZip(true)}
-          refreshing={s.refreshing}
-          loading={s.initialLoading}
-          tableBusy={s.tableLoading || s.interactionLocked}
-          zipLoading={s.zipLoading}
-          hasSelection={s.selectedIds.length > 0}
-          showFilterMenu={false}
-          metrics={s.statsData}
-        />
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="history-page">
+      <HistoryFilters
+        sourceTab={s.sourceTab}
+        onSourceTabChange={s.changeSourceTab}
+        dateFilter={s.dateFilter}
+        onDateFilterChange={s.setDateFilter}
+        fileTypeFilter={s.fileTypeFilter}
+        onFileTypeFilterChange={s.setFileTypeFilter}
+        statusFilter={s.statusFilter}
+        onStatusFilterChange={s.setStatusFilter}
+        hasActiveFilter={s.hasActiveFilter}
+        onClearFilters={s.clearFilters}
+        onRefresh={() => s.load(true, s.page, s.pageSize)}
+        onCleanup={() => s.setCleanupConfirmOpen(true)}
+        onDownloadOriginal={() => s.downloadZip(false)}
+        onDownloadRedacted={() => s.downloadZip(true)}
+        refreshing={s.refreshing}
+        loading={s.initialLoading}
+        tableBusy={s.tableLoading || s.interactionLocked}
+        zipLoading={s.zipLoading}
+        hasSelection={s.selectedIds.length > 0}
+        showFilterMenu={false}
+        metrics={s.statsData}
+      />
 
-        {s.msg && (
-          <Alert variant={s.msg.tone === 'err' ? 'destructive' : 'default'} className="mb-2">
-            <AlertDescription>{s.msg.text}</AlertDescription>
-          </Alert>
-        )}
+      {s.msg && (
+        <Alert variant={s.msg.tone === 'err' ? 'destructive' : 'default'} className="mb-2">
+          <AlertDescription>{s.msg.text}</AlertDescription>
+        </Alert>
+      )}
 
-        <Card className="page-surface flex min-h-0 flex-1 overflow-visible rounded-[20px] border-border/70 bg-card/95 shadow-[var(--shadow-md)]">
-          <CardContent className="flex min-h-0 flex-1 flex-col overflow-visible p-0">
-            <div className="flex shrink-0 flex-nowrap items-center justify-between gap-3 border-b border-border/70 px-3 py-2.5 sm:px-4">
-              <div className="page-section-heading flex min-w-0 items-center gap-2">
-                <h3 className="truncate text-sm font-semibold tracking-[-0.02em]">
-                  {t('page.history.title')}
-                </h3>
-                <TrashRecycleDialog onChanged={() => s.load(true, s.page, s.pageSize)} />
-              </div>
-              <HistoryFilterMenu
-                sourceTab={s.sourceTab}
-                onSourceTabChange={s.changeSourceTab}
-                dateFilter={s.dateFilter}
-                onDateFilterChange={s.setDateFilter}
-                fileTypeFilter={s.fileTypeFilter}
-                onFileTypeFilterChange={s.setFileTypeFilter}
-                statusFilter={s.statusFilter}
-                onStatusFilterChange={s.setStatusFilter}
-                hasActiveFilter={s.hasActiveFilter}
-                onClearFilters={s.clearFilters}
-              />
+      <Card className="page-surface flex min-h-0 flex-1 overflow-visible rounded-[20px] border-border/70 bg-card/95 shadow-[var(--shadow-md)]">
+        <CardContent className="flex min-h-0 flex-1 flex-col overflow-visible p-0">
+          <div className="flex shrink-0 flex-nowrap items-center justify-between gap-3 border-b border-border/70 px-3 py-2.5 sm:px-4">
+            <div className="page-section-heading flex min-w-0 items-center gap-2">
+              <h3 className="truncate text-sm font-semibold tracking-[-0.02em]">
+                {t('page.history.title')}
+              </h3>
+              <TrashRecycleDialog onChanged={() => s.load(true, s.page, s.pageSize)} />
             </div>
-            <HistoryTable
-              rows={s.filteredRows}
-              loading={s.initialLoading}
-              refreshing={s.refreshing}
-              tableLoading={s.tableLoading}
-              pageSize={s.displayPageSize}
-              selected={s.selected}
-              onToggle={s.toggle}
-              allSelected={s.allSelected}
-              onSelectAll={(checked) => {
-                if (checked) s.setSelected(new Set(s.filteredRows.map((row) => row.file_id)));
-                else s.setSelected(new Set());
-              }}
-              expandedBatchIds={s.expandedBatchIds}
-              onToggleBatchCollapse={s.toggleBatchCollapse}
-              onSelectGroup={(ids, checked) => {
-                const next = new Set(s.selected);
-                for (const id of ids) {
-                  if (checked) next.add(id);
-                  else next.delete(id);
-                }
-                s.setSelected(next);
-              }}
-              onDownload={(row) => void s.downloadRow(row)}
-              onDelete={(row) => s.remove(row.file_id)}
-              onDeleteGroup={(rows) => s.removeGroup(rows.map((row) => row.file_id))}
-              onCompare={(row) => s.openCompareModal(row)}
+            <HistoryFilterMenu
+              sourceTab={s.sourceTab}
+              onSourceTabChange={s.changeSourceTab}
+              dateFilter={s.dateFilter}
+              onDateFilterChange={s.setDateFilter}
+              fileTypeFilter={s.fileTypeFilter}
+              onFileTypeFilterChange={s.setFileTypeFilter}
+              statusFilter={s.statusFilter}
+              onStatusFilterChange={s.setStatusFilter}
+              hasActiveFilter={s.hasActiveFilter}
+              onClearFilters={s.clearFilters}
             />
-          </CardContent>
-        </Card>
-        <div className="mt-2 shrink-0">
-          <PaginationRail
-            page={s.page}
-            pageSize={s.pageSize}
-            totalItems={s.total}
-            totalPages={s.totalPages}
-            onPageChange={s.goPage}
-            onPageSizeChange={s.changePageSize}
-            pageSizeOptions={PAGE_SIZE_OPTIONS}
-            rangeLabel={t('history.showRange')}
-            perPageLabel={t('history.perPage')}
-            itemsUnitLabel={t('history.itemsUnit')}
-            compact
-            disabled={s.initialLoading || s.tableLoading || s.interactionLocked}
-            reserveWhenEmpty
-            className="history-pagination-rail jobs-pagination-rail !min-h-10 !rounded-xl border-border/70 bg-muted/40"
+          </div>
+          <HistoryTable
+            rows={s.filteredRows}
+            loading={s.initialLoading}
+            refreshing={s.refreshing}
+            tableLoading={s.tableLoading}
+            pageSize={s.displayPageSize}
+            selected={s.selected}
+            onToggle={s.toggle}
+            allSelected={s.allSelected}
+            onSelectAll={(checked) => {
+              if (checked) s.setSelected(new Set(s.filteredRows.map((row) => row.file_id)));
+              else s.setSelected(new Set());
+            }}
+            expandedBatchIds={s.expandedBatchIds}
+            onToggleBatchCollapse={s.toggleBatchCollapse}
+            onSelectGroup={(ids, checked) => {
+              const next = new Set(s.selected);
+              for (const id of ids) {
+                if (checked) next.add(id);
+                else next.delete(id);
+              }
+              s.setSelected(next);
+            }}
+            onDownload={(row) => void s.downloadRow(row)}
+            onDelete={(row) => s.remove(row.file_id)}
+            onDeleteGroup={(rows) => s.removeGroup(rows.map((row) => row.file_id))}
+            onCompare={(row) => s.openCompareModal(row)}
           />
-        </div>
+        </CardContent>
+      </Card>
+      <div className="mt-2 shrink-0">
+        <PaginationRail
+          page={s.page}
+          pageSize={s.pageSize}
+          totalItems={s.total}
+          totalPages={s.totalPages}
+          onPageChange={s.goPage}
+          onPageSizeChange={s.changePageSize}
+          pageSizeOptions={PAGE_SIZE_OPTIONS}
+          rangeLabel={t('history.showRange')}
+          perPageLabel={t('history.perPage')}
+          itemsUnitLabel={t('history.itemsUnit')}
+          compact
+          disabled={s.initialLoading || s.tableLoading || s.interactionLocked}
+          reserveWhenEmpty
+          className="history-pagination-rail jobs-pagination-rail !min-h-10 !rounded-xl border-border/70 bg-muted/40"
+        />
       </div>
 
       <Dialog
