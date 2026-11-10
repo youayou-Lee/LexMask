@@ -320,7 +320,7 @@ const enBase: Record<string, string> = {
 
   'onboarding.skip': 'Skip',
   'onboarding.start': 'Get Started',
-  'onboarding.step1.title': 'Welcome to Redaction Assistant',
+  'onboarding.step1.title': 'Welcome to 墨隐',
   'onboarding.step2.title': 'Start With One File',
   'onboarding.step2.desc':
     'Upload a Word, PDF, scan, or image file first. This gives you a clear baseline before creating a batch job.',
@@ -618,7 +618,7 @@ const enBase: Record<string, string> = {
   'system.error.apiKeyCreate': 'Failed to create the API key.',
   'system.error.apiKeyRevoke': 'Failed to revoke the API key.',
 
-  'sidebar.subtitle': 'Anonymization Data Infrastructure',
+  'sidebar.subtitle': 'Legal document anonymization',
 
   'jobDetail.progressTotal': '{n} items total',
   'jobDetail.progressRedacted': '{n} redacted',
@@ -1072,7 +1072,7 @@ const enBase: Record<string, string> = {
 
 const enOverrides: Record<string, string> = {
   'common.download': 'Download',
-  'sidebar.productName': 'Redaction Assistant',
+  'sidebar.productName': '墨隐',
   'nav.playground': 'Process One File',
   'nav.playground.sub': 'Confirm results first',
   'nav.batch': 'Process Many Files',

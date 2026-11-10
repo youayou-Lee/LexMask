@@ -314,7 +314,7 @@ const zhBase: Record<string, string> = {
 
   'onboarding.skip': '跳过引导',
   'onboarding.start': '开始使用',
-  'onboarding.step1.title': '欢迎使用匿名化处理助手',
+  'onboarding.step1.title': '欢迎使用墨隐',
   'onboarding.step2.title': '先从单个文件开始',
   'onboarding.step2.desc': '上传一个 Word、PDF、扫描件或图片，先建立清晰的处理基线。',
   'onboarding.step5.desc': '单文件效果确认后，再创建混合文件批量任务，用同一套标准处理整批文件。',
@@ -550,7 +550,7 @@ const zhBase: Record<string, string> = {
   'system.error.apiKeyCreate': '密钥创建失败',
   'system.error.apiKeyRevoke': '密钥吊销失败',
 
-  'sidebar.subtitle': '匿名化数据基础设施',
+  'sidebar.subtitle': '法律文书匿名化',
 
   'jobDetail.progressTotal': '共 {n} 项',
   'jobDetail.progressRedacted': '已匿名化 {n}',
@@ -1009,7 +1009,7 @@ const zhBase: Record<string, string> = {
 
 const zhOverrides: Record<string, string> = {
   'common.download': '下载',
-  'sidebar.productName': '匿名化处理助手',
+  'sidebar.productName': '墨隐',
   'nav.start': '开始处理',
   'nav.start.sub': '选择下一步',
   'nav.playground': '处理单个文件',
