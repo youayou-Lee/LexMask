@@ -164,6 +164,10 @@ function BatchStep3RecognizeInner({
       case 'vision_recognition_complete':
       case 'Vision recognition complete':
         return t('batchWizard.step3.fileVisionComplete');
+      // Issue#256：LA 不可用时视觉段被跳过的识别终态——照常完成但印章/签字未识别，
+      // 显式提示不静默（PR#235 同语义）。
+      case 'vision_recognition_complete_visual_skipped':
+        return t('batchWizard.step3.fileVisionCompleteSkipped');
       case 'Requeued after stale processing heartbeat':
         return t('batchWizard.step3.requeuedAfterStale');
       default:

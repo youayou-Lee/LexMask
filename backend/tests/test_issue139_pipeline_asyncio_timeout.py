@@ -157,13 +157,24 @@ def _patch_asyncio_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _vision_stubs(monkeypatch: pytest.MonkeyPatch, *, pages: int, detect: Callable[..., Any]) -> None:
-    """把 `_run_vision` 的两个运行期依赖换成桩（该函数在调用时才 import）。"""
+    """把 `_run_vision` 的运行期依赖换成桩（该函数在调用时才 import）。
+
+    Issue#256：LA 可用性预检也是运行期依赖——默认桩成「可用」保两段式既有契约钉
+    不变；要测不可用路径时在用例内覆写
+    ``app.services.redaction_orchestrator.ensure_visual_service_available``。
+    """
     import app.services.file_operations as fo
+    import app.services.redaction_orchestrator as ro
 
     monkeypatch.setattr(
         fo, "get_file_info", lambda file_id: {"file_id": file_id, "page_count": pages, "file_type": "image"}
     )
     monkeypatch.setattr(fo, "vision_detect", detect)
+
+    async def _la_available() -> None:
+        return None
+
+    monkeypatch.setattr(ro, "ensure_visual_service_available", _la_available)
 
 
 def _run(coro_factory: Callable[[], Coroutine[Any, Any, Any]]) -> Any:

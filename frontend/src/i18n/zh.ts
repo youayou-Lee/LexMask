@@ -699,6 +699,7 @@ const zhBase: Record<string, string> = {
   'batchWizard.step3.fileTextProgress': '文本识别中',
   'batchWizard.step3.fileTextComplete': '文本识别完成',
   'batchWizard.step3.fileVisionComplete': '视觉识别完成',
+  'batchWizard.step3.fileVisionCompleteSkipped': '识别完成（视觉项已跳过：LocateAnything 未启动）',
   'batchWizard.step3.requeuedAfterStale': '检测到处理超时，已重新排队',
   'batchWizard.step3.nextReview': '下一步：进入核对',
   'batchWizard.step4.originalText': '原文',

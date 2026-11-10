@@ -25,6 +25,10 @@ def _sanitize_validation_errors(errors: list[dict]) -> list[dict]:
 class AppError(Exception):
     """Application error with error code."""
     def __init__(self, status_code: int, error_code: str, message: str, detail: dict = None):
+        # str(exc) 必须携带 message（Issue#256）：kwargs 构造时 Exception.__new__
+        # 收不到位置参数 ⇒ args=() ⇒ str(exc)==""——队列页失败 reason 曾只剩
+        # 「AppError: 」，错误码/指引全丢，排障全盲。
+        super().__init__(message)
         self.status_code = status_code
         self.error_code = error_code
         self.message = message
