@@ -12,6 +12,7 @@ import bisect
 import json
 import logging
 import time
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -313,9 +314,19 @@ class SimpleTaskQueue(RecognitionPipelineMixin, StructuredPipelineMixin, Redacti
         except Exception:
             logger.debug("unable to record start diagnostics for item %s", task.item_id, exc_info=True)
 
-    def _record_item_performance(self, store: Any, item_id: str, patch: dict[str, Any]) -> None:
+    def _record_item_performance(
+        self,
+        store: Any,
+        item_id: str,
+        patch: dict[str, Any],
+        *,
+        replace_paths: Collection[tuple[str, ...]] = (),
+    ) -> None:
         try:
-            store.update_item_performance(item_id, patch)
+            # ``replace_paths`` 命中即整体替换（允许替换成 ``{}``）：页记录与失败清单都必须
+            # 能"清旧键"，否则整卷重跑成功后旧 error/stage_duration_ms/failed_pages 仍留在
+            # 账上——页格看着全绿、交付闸却永久锁死（评审 Critical-3）。
+            store.update_item_performance(item_id, patch, replace_paths=replace_paths)
         except Exception:
             logger.debug("unable to record performance diagnostics for item %s", item_id, exc_info=True)
 

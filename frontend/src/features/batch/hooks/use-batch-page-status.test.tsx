@@ -28,6 +28,7 @@ function makeStatus(state: ItemPageStatus['recognition_state']): ItemPageStatus 
     paged: true,
     page_count: 3,
     recognition_state: state,
+    item_status: state === 'running' ? 'processing' : 'awaiting_review',
     snapshot_at: '2026-11-11T00:00:00+00:00',
     pages: [
       { page: 1, state: 'success' },

@@ -91,6 +91,7 @@ export function useBatchPageStatus(params: {
     let stopped = false;
 
     const tick = async () => {
+      if (stopped) return;
       setLoading(true);
       let next: ItemPageStatus | null = null;
       let failed = false;
@@ -109,15 +110,19 @@ export function useBatchPageStatus(params: {
       }
       // 状态还在涨就继续轮询；终态（或取不到）停手，避免后台空转。
       if (next && !TERMINAL_STATES.has(next.recognition_state)) {
-        timerRef.current = setTimeout(() => void tick(), PAGE_STATUS_POLL_MS);
+        arm();
       }
     };
 
-    resumeRef.current = () => {
-      if (stopped) return;
+    // 「重新武装」只排下一次 tick，不再立刻取一次：手动 refresh 自己已经 fetch 过，
+    // 这里再 tick 一次就是同一份数据发两遍请求，还会让两条链互相覆写 timerRef。
+    const arm = () => {
       clearTimer();
-      void tick();
+      if (stopped) return;
+      timerRef.current = setTimeout(() => void tick(), PAGE_STATUS_POLL_MS);
     };
+
+    resumeRef.current = arm;
 
     void tick();
     return () => {

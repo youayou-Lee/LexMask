@@ -39,6 +39,7 @@ function pageStatus(overrides: Partial<ItemPageStatus> = {}): ItemPageStatus {
     paged: true,
     page_count: 6,
     recognition_state: 'done',
+    item_status: 'awaiting_review',
     snapshot_at: '2026-11-11T01:00:00Z',
     pages: [
       { page: 1, state: 'success' },
@@ -97,7 +98,7 @@ describe('单页重试', () => {
   });
 
   it('识别进行中时红叉页不可点、批量按钮禁用', async () => {
-    renderRows(pageStatus({ recognition_state: 'running' }));
+    renderRows(pageStatus({ recognition_state: 'running', item_status: 'processing' }));
 
     const cell = screen.getByTestId('page-cell-4');
     expect(cell.getAttribute('data-retryable')).toBe('false');
@@ -146,5 +147,20 @@ describe('单页重试', () => {
 
     const error = await screen.findByTestId('page-retry-error');
     expect(error.textContent).toContain('上游炸了');
+  });
+
+  it('已确认/已完成的条目不给重试入口（状态机没有回边，点了必 409）', async () => {
+    renderRows(pageStatus({ item_status: 'completed' }));
+
+    const cell = screen.getByTestId('page-cell-4');
+    expect(cell.getAttribute('data-retryable')).toBe('false');
+    const bulk = screen.getByTestId('page-matrix-retry-failed') as HTMLButtonElement;
+    expect(bulk.disabled).toBe(true);
+
+    await act(async () => {
+      fireEvent.click(cell);
+      fireEvent.click(bulk);
+    });
+    expect(retryItemPages).not.toHaveBeenCalled();
   });
 });

@@ -93,7 +93,10 @@ def validate_page_retry(
 
     pending = busy_pages if busy_pages is not None else in_flight_pages(item_row)
     status = str(item_row.get("status") or "")
-    if status == JobItemStatus.PROCESSING.value or pending:
+    # 「忙」只认处理中状态：标记非空但状态已回到 awaiting_review，说明上一次重试的
+    # 收尾没走完（或重启把状态改了），这时必须允许重新提交，否则标记会永久卡住这个
+    # item（完整评审 Critical-1）。新提交会覆盖旧标记，页清单取新的那份。
+    if status == JobItemStatus.PROCESSING.value:
         raise PageRetryError(
             "item_busy",
             "another recognition task is running for this item",
@@ -154,6 +157,16 @@ async def submit_page_retry(
     from app.services.task_queue import TaskItem, get_task_queue
 
     item_id = str(item["id"])
+    # 准入是 check-then-act（validate 与 submit 之间隔着一次 await）：并发两笔时第二笔
+    # 会把标记覆盖成自己的页，而队列按 (task_type, item_id) 去重、只跑第一笔的 meta，
+    # 第二笔的页就静默丢了（完整评审 Important-1）。投递前**重读**状态兜一道。
+    fresh = store.get_item(item_id) or {}
+    if str(fresh.get("status") or "") != JobItemStatus.AWAITING_REVIEW.value:
+        raise PageRetryError(
+            "item_busy",
+            "another recognition task is running for this item",
+            pages=in_flight_pages(fresh),
+        )
     store.update_item_status(item_id, JobItemStatus.PROCESSING)
     store.update_item_performance(
         item_id,

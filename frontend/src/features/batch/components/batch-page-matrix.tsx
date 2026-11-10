@@ -75,7 +75,9 @@ export function BatchPageMatrix({
 
   // 只有「识别已完成、且没有被重试任务占着」时才允许重试；
   // recognition_state 为 running 时后端也会 409 item_busy，这里提前挡住。
-  const retryable = status.recognition_state === 'done' && !retrying;
+  // 页级重试只认「识别完成、待审阅」：「已完成/已确认」的条目状态机没有回边，
+  // 后端会 409 retry_requires_awaiting_review —— 前端不能给一个点了必错的按钮。
+  const retryable = status.item_status === 'awaiting_review' && !retrying;
   const failedPages = useMemo(
     () => status.pages.filter((cell) => cell.state === 'failed').map((cell) => cell.page),
     [status.pages],

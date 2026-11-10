@@ -84,6 +84,7 @@ def test_busy_returns_409_item_busy(store, enqueued, monkeypatch):
     _patch_file(monkeypatch)
     job_id, item_id = _make_job(store)
     store.update_item_performance(item_id, {"recognition": {"page_retry_pages": [4]}})
+    store.update_item_status(item_id, JobItemStatus.PROCESSING)
 
     with pytest.raises(AppError) as info:
         _run(retry_item_pages(job_id, item_id, [4], store=store, owner_id="admin"))

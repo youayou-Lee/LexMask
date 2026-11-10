@@ -86,6 +86,10 @@ def _entity_source(entity: Any) -> str:
     return str((entity or {}).get("source") or "")
 
 
+def _box_source(box: Any) -> str:
+    return str((box or {}).get("source") or "")
+
+
 def _box_page(box: Any) -> int:
     try:
         return int((box or {}).get("page") or 1)
@@ -165,6 +169,14 @@ class RecognitionPipelineMixin:
             return
 
         cfg = json.loads(job.get("config_json") or "{}")
+
+        # Issue#257：整卷识别会覆盖所有页，所以在飞页标记必须在这里清掉——否则
+        # 一次"页重试中途崩溃 → 启动/看门狗回落整卷重识别"成功后标记仍非空，
+        # 单页重试与准入判断都会被这个幽灵标记永远判 busy（完整评审 Critical-1）。
+        from app.services.page_retry_service import in_flight_pages
+
+        if in_flight_pages(item):
+            self._clear_page_retry_marker(store, task.item_id)
 
         try:
             # 标记处理中
@@ -338,7 +350,7 @@ class RecognitionPipelineMixin:
         * 页记录与失败清单用 **replace_paths 整体替换**：深合并会把旧的
           ``error``/``stage_duration_ms`` 留在「成功」页上（F1），交付闸会继续读失败账。
         """
-        from app.services import file_operations
+        from app.services import file_operations, page_status_service
         from app.services.job_store import JobItemStatus, JobStatus
         from app.services.vision_config import resolve_optional_type_list
 
@@ -362,6 +374,15 @@ class RecognitionPipelineMixin:
         cancelled = item_status == JobItemStatus.CANCELLED.value or job_status == JobStatus.CANCELLED.value
         if cancelled or not pages:
             self._clear_page_retry_marker(store, task.item_id)
+            # submit 是"状态→标记→投递"三段写：崩在标记之前时 item 已是 PROCESSING 却没有
+            # 标记，重派回来的任务没有页清单。这里必须把状态落回可继续的态，否则一条
+            # 空转任务要等 watchdog（≥max(120s, 2×页超时)）才被整卷重跑（评审 Important-6）。
+            if item_status == JobItemStatus.PROCESSING.value:
+                try:
+                    store.update_item_status(task.item_id, JobItemStatus.AWAITING_REVIEW)
+                    store.set_item_error_message(task.item_id, None)
+                except Exception:  # noqa: BLE001
+                    logger.debug("unable to restore item status after empty page retry", exc_info=True)
             return
 
         try:
@@ -383,6 +404,9 @@ class RecognitionPipelineMixin:
             str(k): str(v) for k, v in (recognition.get("failed_pages") or {}).items()
         }
         total_pages = int(recognition.get("page_count") or 0)
+        if total_pages <= 0:
+            # M1：page_count 缺失时不能把总量当 0（错误摘要会误报 "all 0 page(s)"）。
+            total_pages = page_status_service.page_count_of(item, file_info=None)
 
         records: dict[str, dict[str, Any]] = {}
         turned_green: list[int] = []
@@ -518,6 +542,27 @@ class RecognitionPipelineMixin:
         except Exception:
             logger.debug("page retry marker clear failed", exc_info=True)
 
+    def _write_failed_pages(
+        self, store: Any, item_id: str, failed_pages: dict[int, str]
+    ) -> None:
+        """整卷识别的失败清单**整体替换**写（清掉上一次的键）。
+
+        深合并语义下"空 dict 不删键"，重跑全成功后旧失败键会永久留着——页格全绿、
+        交付闸却锁死、界面没有重试入口（完整评审 Critical-3）。
+        """
+        self._record_item_performance(
+            store,
+            item_id,
+            {
+                "recognition": {
+                    "failed_pages": {
+                        str(p): reason for p, reason in sorted(failed_pages.items())
+                    }
+                }
+            },
+            replace_paths=(("recognition", "failed_pages"),),
+        )
+
     def _merge_retried_boxes_into_review_draft(
         self, store: Any, item_id: str, pages: list[int]
     ) -> None:
@@ -538,16 +583,23 @@ class RecognitionPipelineMixin:
             if not isinstance(draft, dict):
                 return
             draft_boxes = draft.get("bounding_boxes")
-            if not isinstance(draft_boxes, list) or not draft_boxes:
-                return
+            if not isinstance(draft_boxes, list):
+                draft_boxes = []
             item = store.get_item(item_id) or {}
             info = file_store.get(str(item.get("file_id") or "")) or {}
             fresh_by_page = _boxes_by_page(info.get("bounding_boxes"))
             wanted = set(pages)
+            # 重试页的**自动来源**框整页换新；人工框（source=manual）保留——审阅时手拉的框
+            # 是用户的最终判断，重试不该把它抹掉（交付期草稿整份覆盖 file_store，
+            # 丢了就是漏打码，评审 Critical-2）。
             kept = [
                 box
                 for box in draft_boxes
-                if not (isinstance(box, dict) and _box_page(box) in wanted)
+                if not (
+                    isinstance(box, dict)
+                    and _box_page(box) in wanted
+                    and _box_source(box) != "manual"
+                )
             ]
             merged = list(kept)
             for page in sorted(wanted):
@@ -807,6 +859,7 @@ class RecognitionPipelineMixin:
                             }
                         }
                     },
+                    replace_paths=(("recognition", "pages", str(p)),),
                 )
                 try:
                     result = await asyncio.wait_for(
@@ -840,6 +893,7 @@ class RecognitionPipelineMixin:
                                 }
                             }
                         },
+                    replace_paths=(("recognition", "pages", str(p)),),
                     )
                     # Issue#199 页级隔离：单页超时**不上抛**——记录后由本阶段收尾
                     # 汇入 failed_pages，其余页照常完成（极端页不得作废整卷）。
@@ -870,6 +924,7 @@ class RecognitionPipelineMixin:
                                 }
                             }
                         },
+                    replace_paths=(("recognition", "pages", str(p)),),
                     )
                     # Issue#199 页级隔离：同上。CancelledError/KeyboardInterrupt/
                     # SystemExit 是 BaseException，不在此捕获口径内，照常穿透。
@@ -906,6 +961,7 @@ class RecognitionPipelineMixin:
                                 }
                             }
                         },
+                    replace_paths=(("recognition", "pages", str(p)),),
                     )
                     # Issue#238：失败页同样计入已完成（失败清单另走 failed_pages 账面）。
                     bump_stage_progress(stage_label, stage_pages)
@@ -936,6 +992,7 @@ class RecognitionPipelineMixin:
                                 }
                             }
                         },
+                    replace_paths=(("recognition", "pages", str(p)),),
                     )
                     logger.info(
                         "[queue] item=%s %s page %d/%d DONE elapsed=%.2fs active_pages=%d",
@@ -1062,17 +1119,7 @@ class RecognitionPipelineMixin:
                 )
             # Issue#199：失败清单**无条件写**（含空 dict）——深合并语义下，重跑全成功
             # 必须清掉上一次的失败键，否则 reject→重跑留下假警示（冷审 I1）。
-            self._record_item_performance(
-                store,
-                task.item_id,
-                {
-                    "recognition": {
-                        "failed_pages": {
-                            str(p): reason for p, reason in sorted(failed_pages.items())
-                        },
-                    }
-                },
-            )
+            self._write_failed_pages(store, task.item_id, failed_pages)
             if failed_pages:
                 failed_ids = ", ".join(str(p) for p in sorted(failed_pages))
                 summary = (

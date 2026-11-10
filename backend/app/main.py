@@ -284,9 +284,14 @@ async def lifespan(app: FastAPI):
             _task_type = redispatch_task_type_for(_j, _it)
             if _task_type is None:
                 continue
+            _meta: dict = {}
+            if _task_type == "page_retry":
+                from app.services.page_retry_service import in_flight_pages
+
+                _meta = {"pages": in_flight_pages(_it)}
             _task_queue.enqueue(TaskItem(
                 job_id=_j["id"], item_id=_it["id"], file_id=_it["file_id"],
-                task_type=_task_type,
+                task_type=_task_type, meta=_meta,
             ))
             _redispatched += 1
     if _redispatched:

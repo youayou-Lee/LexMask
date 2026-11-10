@@ -32,7 +32,7 @@ class _MiniStore:
     def update_item_status(self, item_id, status, error_message=None) -> None:
         self.status_updates.append((item_id, getattr(status, "value", str(status)), error_message))
 
-    def update_item_performance(self, item_id, patch) -> None:
+    def update_item_performance(self, item_id, patch, **kwargs) -> None:
         pass
 
     def touch_job_updated(self, job_id) -> None:

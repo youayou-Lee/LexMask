@@ -106,7 +106,10 @@ class TestValidation:
 
     def test_in_flight_retry_is_busy(self, tmp_path):
         store, _jid, iid = _make_item(tmp_path)
+        # 「在飞」的判定是真在处理中：标记单独存在不等于忙，否则崩溃后标记会把
+        # item 永久锁死在 item_busy（完整评审 Critical-1）。
         store.update_item_performance(iid, {"recognition": {"page_retry_pages": [5]}})
+        store.update_item_status(iid, JobItemStatus.PROCESSING)
         assert _code_of(lambda: _validate(store, iid, [5])) == "item_busy"
 
 

@@ -58,6 +58,7 @@ function makeStatus(overrides: Partial<ItemPageStatus> = {}): ItemPageStatus {
     paged: true,
     page_count: 6,
     recognition_state: 'running',
+    item_status: 'processing',
     snapshot_at: '2026-11-11T00:00:00+00:00',
     pages: [
       { page: 1, state: 'success', duration_ms: 1200, cache_hit: false },
