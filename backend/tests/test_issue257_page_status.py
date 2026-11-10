@@ -208,3 +208,24 @@ def test_item_to_out_non_paged_type(monkeypatch):
     assert out["paged"] is False
     assert out["page_count"] == 0
     assert out["recognition_failed_pages"] == []
+
+
+def test_job_item_response_schema_keeps_page_fields() -> None:
+    """响应模型必须保留三枚页级字段（门④ 云实测发现 extra="ignore" 会把它们吞掉）。"""
+    from app.models.job_schemas import JobItemResponse
+
+    payload = {
+        "id": "item-1",
+        "job_id": "job-1",
+        "file_id": "file-1",
+        "status": "awaiting_review",
+        "created_at": "2026-11-11T00:00:00Z",
+        "updated_at": "2026-11-11T00:00:00Z",
+        "paged": True,
+        "page_count": 149,
+        "recognition_failed_pages": [133],
+    }
+    out = JobItemResponse.model_validate(payload).model_dump()
+    assert out["paged"] is True
+    assert out["page_count"] == 149
+    assert out["recognition_failed_pages"] == [133]

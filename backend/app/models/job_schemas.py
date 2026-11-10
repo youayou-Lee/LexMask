@@ -146,6 +146,13 @@ class JobItemResponse(BaseModel):
     progress_total: int = 0
     progress_message: str | None = None
     progress_updated_at: str | None = None
+    # Issue#257：页级视图的三枚摘要字段。页格矩阵靠它决定「这一行有没有页级视图」，
+    # 明细仍走 GET /jobs/{job_id}/items/{item_id}/page-status（避免万级任务载荷膨胀）。
+    paged: bool | None = None
+    page_count: int | None = None
+    recognition_failed_pages: list[int] = Field(default_factory=list)
+    # Issue#257：页级视图的三枚摘要字段。页格矩阵靠它决定「这一行有没有页级视图」，
+    # 明细仍走 GET /jobs/{job_id}/items/{item_id}/page-status（避免万级任务载荷膨胀）。
     performance: dict[str, Any] = Field(default_factory=dict)
     queue_wait_ms: int | None = None
     recognition_duration_ms: int | None = None
