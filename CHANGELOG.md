@@ -24,13 +24,25 @@
 - **测试**：+2 例（取消态 redact 中文文案含「已取消/重新识别」且无英文原句——走真实 `store.cancel_job` 裸 SQL 路径；识别完成撞取消态不写 awaiting_review、不直通打码），前端兜底解析用例断言更新为新指引文案。后端全量 2781 passed 零回归、前端 378 passed。
 ## 2026-11-05
 
+### 修正（Issue#248 真机事故）单字符原文整文替换毁全卷——草稿默认排除 + 渲染硬闸
+
+- **为什么**：用户 UI 默认路径实弹（2026-11-06）——映射含退化检测项 `CASE_NUMBER:'0'`（单字符），confirm 整文 replace 把 80 个页标记（`<!-- page 8**0** -->` 全含 0）与全卷数字全灭，结构对账 `src=80/out=0` 拒绝出厂。此前 API 测试全靠手动 exclude 该项掩盖了默认路径；这是「传统脱敏毁上下文」在默认决策上的翻版。
+- **改了什么**：①`build_mapping_draft` 单字符原文默认 `excluded=True`（映射表可见可改）；②`ORG` 默认 `excluded=True`（策略表「机构名保留原文」落到草稿默认，同时防泛词「证券/保险/支行」毁列头）；③`render_outputs_on_structure` 增 `degenerate_original` 硬闸——审阅里显式把单字符项改 keep→replace 时 fail-closed。
+- **测试**：+2 例（渲染硬闸 + 草稿默认），全量 **2808 passed** 零回归；ruff 清。
+
+### 修正（Issue#248 验收反馈）化名去括号 + 中文短占位符 + 出生时间戳误判过滤
+
+- **为什么**：用户验收样张五条反馈——①`[廖某]` 带括号，下游 Agent 复述时必丢括号，映射表反查断裂；②`[CASE_NUMBER_1]` 英文长占位符啰嗦；③执行背调真卷 26 项银行申请/反馈时间戳（`yyyy-MM-dd HH:mm:ss`）被 BIRTH_DATE 误检替换，**事件时间线被毁**（违反「只脱是谁，不脱发生了什么」的用户定稿哲学）；④案号占位符意义确认保留（案号可反查当事人，属 who 载体）。
+- **改了什么**：①`build_mapping_draft` 化名口径修订 2026-10-08 括号稿——PERSON 无括号自然化名（廖某/同姓廖某一/廖某二，同姓区分机制原有），非 PERSON 中文短名+序号（案号1/银行卡2/证件号1），`_TYPE_ZH` 补 CASE_NUMBER/ID_CARD/LICENSE_PLATE 三键；②`hybrid_ner_service._cross_validate` 增普适形态规则——BIRTH_DATE 且文本含时分秒（出生日期从不含 HH:mm）→ 丢弃（+3 例判据：时间戳丢/纯日期留/ISO 形态丢）。
+- **测试**：+6 例（占位符形态 2 + 时间戳过滤 3 + 结构化链路化名 1 顺带），全量 **2805 passed** 零回归；ruff 清。
+- **边界**：还原服务对任意 replacement 形态字面还原（自造夹具不受影响）；场景化策略模板（执行背调预设类型开关+替换策略）挂账二期；CASE_NUMBER:'0' 等检测假阳性属效果线另案。
+
 ### 修正（Issue#250）inline 平铺水印（并入主流/文本型 PDF）识别面过滤
 
 - **为什么**：用户三份新样本（收条/诉讼费退费申请表/律师问卷，testdata/水印测试样本/）实测全部未被处理——水印文字直接在**主内容流文字层**里（45°、alpha 26/128、高频重复，「李游」为办案人名 PII），probe 不命中（无独立流/单页 <3 页下限）⇒ 文本型主链、扫描件页级文本层分支、docline 全部吃到水印文字。与已落地的独立流形态（#236/#245）互补，是 #206 预判的 inline 形态落地。
 - **改了什么**：`watermark_overlay` 新增行级判定 `is_overlay_line`（|dir.y|≥0.2 + alpha∈[1,220]，与既有 span 判据同源——正文不透明水平、扫描件 OCR 层 alpha=0 天然不命中）+ `overlay_filtered_text`（零覆盖行页逐字节原样，零扰动由构造保证）；接入三个识别面提取点：①`_parse_pdf` 页文本（文本型主链）②`get_pdf_page_text_blocks` 行构建 ③docline `_word_boxes`（词中心点落在覆盖 span 外接框内则剔）。`ParseResult` 新增 `watermark_inline_filtered` 计数并落 file_store（弹窗告知面接入）。**渲染面像素不动**（半透明叠底图，span 级擦除伤底图，#206 教训）；交付面按用户裁定默认保留。
 - **测试**：+6 例（inline 过滤保正文/零覆盖行逐字节不变/开关关闭回退/页级 block 剔除/docline 词框剔除/三份真实样本零水印词）。
-
-
+ (fix(#248-验收反馈): 化名去括号+中文短占位符+BIRTH_DATE 时间戳误判过滤)
 
 ### 增强（Issue#244）水印产品化三件套：独立工具页 + 上传检测弹窗 + 导出水印逐次选择
 
@@ -63,6 +75,19 @@
 - **测试**：净 +9 例（并发 Barrier 实证 / 默认串行等价 / 并行==串行 / 提交序合并钉 / 闸宽钳制 / raise_on_error 上抛 / jobs 指标 / **finish_reason 经 contextvar 透传判据**（裸 submit 变异必红）/ 夹具前提钉）；变异 4/4 KILLED；全量 2706 passed 零回归。坑：NER 结果缓存类级共享（conftest 只在测试间清），同测试内并行腿前必须清缓存。
 - **实测**（本地隔离栈，NER=NEO001 RTX4060，冷缓存，页并发=1）：提速试点标准样本（testdata/提速试点样本/，第四卷 8 页混合）窗口=1 = 356.0s（34 补查链/171 任务）→ 窗口=4 = 302.0s = **1.18×**；11 页版 p130–140 = 1.20×；窗口=4 下 mode_smoke 20/20 全 PASS（零残留）。诚实边界：主查分组与 OCR 未动；本地卡单补查任务 1~3s（云 6~14s），云上倍率应更高。
 - **边界**：副刀（页并发 2→4）不在本 PR，第一杠杆落地后另测；默认合入零行为变化，试点值 4 由部署 env 显式开启。
+### 功能（Issue#248）供料产物结构保全——脱敏替换应用在官方结构化 md 上，表格/标题/页序原样保留
+
+- **为什么**：执行背调场景（财产调查反馈表以表格为主）供料输出无可读性——`render_outputs` 用拍平 segs 以 `\n\n` join **重建**全文，解析层即使给出 HTML/管道表格，产物行列关系全散，Agent 无法基于产物问答。用户定稿授权：只脱「是谁」，不脱「发生了什么」。
+- **改了什么**（检测与应用分离，NER 检测逻辑零改动）：
+  1. `agent_md_replace.render_outputs_on_structure`：替换应用在 zip 官方结构化 md 上，语义与 legacy `render_outputs` 同构（非排除项全文替换、original 长度降序防嵌套、excluded 记 retained+页码从 segs 推导）。
+  2. 三道机读闸（fail-closed，产物拒绝出厂）：①结构字符闸（replacement 含 `|<>` 反引号/换行 → `replacement_structural_chars`）；②零残留闸（替换后非排除项原文残留 → `zero_residual_violation`）；③结构对账 `verify_structure_integrity`（页标记序列 + HTML table/tr/td/th 计数 + 管道表分块行/竖线数，破坏 → `structure_integrity_violation`）。
+  3. 单文件线 `confirm` 与批量线 `commit_agent_md_item` 接主路径：draft/任务携带 `structured_md`（Stage1 从 `result.md` 留存）；缺失回落 legacy 拍平重建并显式 warning（`structured_md_missing`，不静默）。批量新增 `parse_mineru_for_batch` 返回 `(segs, structured_md)`，`build_mineru_segments` 保留为兼容薄包装。
+- **门⑥（r1 REVISE + r2 REVISE，处置后自查）**：C1 产物文本面=md 超出检测面（segs 丢弃 header/footer/转义形态）→ 增补**前向覆盖闸** `representation_mismatch`（每个非排除映射原文必须在结构化 md 中出现并被替换，表示失配 fail-closed）+ 门④真实卷逐字符对账取证（见下）；I1 confirm 闸失败原因不可达 → 路由转 422 AppError（机读码=message 前缀：replacement_structural_chars/representation_mismatch/zero_residual_violation/structure_integrity_violation），前端既有 catch 展示；I2 回落零判据 → 补 confirm/批量两条 `structured_md_missing` 判据 + 批量闸 ValueError 契约钉；M1 夹具偏移订正+页 2 excluded 真判据；M2–M5 边界补记。
+- **门④实弹修正（真实 80 页卷 confirm 首跑当场抓到）**：拍平 segs 的实体文本可含换行（跨单元格拼接，如车牌 `桂A\n2026`），结构化 md 同事实是连续/异形空白形态，字节级 replace 替换不到——前向覆盖闸正确拒绝出厂后，改走**空白柔性匹配**（空白切段逐段 re.escape、`\s*` 连接做正则替换；纯项快路径不变）+3 例判据（跨格两形态替换/柔性零残留/柔性失配照拒）。**门⑥ r3 APPROVE with fixes 处置**：I-1（plain/flex 两段循环破坏全局 len 降序防嵌套——plain 短项先跑吃掉 flex 复合项前缀致尾段残留且三闸放行，评审实证）→ 并回单循环全局降序 + 回归判据（删单循环排序必红）；M-1 柔性切段滤空。+4 例；换基后全量 2801 passed 零回归（含 #236/#245/#243/#244 水印线并行合入，无交互）。
+- **r2 新发现处置**：N1（Critical）前向覆盖闸误杀 img_ocr 来源实体——图片 OCR 文本只在检测面、不在 zip md、也不进结构化产物（无泄漏面），硬拦会让带文字图片案卷 confirm 必然失败 → 豁免 img_ocr/sentinel 锚定实体（专属判据 `test_img_ocr_entity_exempt_from_coverage_gate`，删豁免即红）；N2（Important）结构化产物不含图片区域 OCR 文本（legacy 拍平产物含）→ **边界记载于此**：带文字图片（流水截图/凭证）的内容不进供料结构化产物，正经修法=图片 OCR 文本按附录/占位写回产物（挂账后续，未实现前属已知行为差异）；M-1 四条闸机读码各一条路由级判据（防 message 格式漂移）；M-2 数字订正。
+- **测试**：相对 main 净增 24 例（issue248 文件 19 + 路由信封 5，全部先红后绿）；变异 4/4 KILLED（删管线 verify/删零残留闸/删结构字符闸/删批量结构路径）；全量 2722 passed 零回归；ruff 清。
+- **门④ C1 取证（真实执行背调 80 页卷，standard 档全页解析）**：md 文本面 4,952 个 ≥4 字符格逐格对齐检测面（segs），未覆盖仅 75 格=73 页脚「第N页」（page_number 块，有意丢弃，零 PII）+ 2 格 LaTeX 转义秒数（`${20}$` 形态，strip_inline 有意剥离，非 PII）；**无 PII 承载的页眉页脚**，r1 C1 担心的未扫描泄漏面在真实产物上不存在——评审路径 (b) 取证满足，前向覆盖闸+零残留+结构对账+本取证构成 C1 处置闭环（诚实边界：本卷页眉=法院名+表题，属策略表「机构名保留」类；该结论限同族法院反馈表形态，异构卷须复跑本取证）。
+- **边界**：①表格质量取决于解析档位（flash 产物本就无表格结构——standard 档才有；档位是部署配置不在本 PR，执行背调场景部署时显式 `--mineru-tier standard`）；②映射原文自身含 `|` 或换行时替换会移除该字符 → 结构对账拒绝出厂，唯一出路=该映射项 exclude（fail-closed 且有出口）；③结构化产物含图片/链接语法，全文兜底 replace 理论上可命中 URL 区（实体文本与文件名巧合），未豁免、已记载；④页标记对账正则 `<!-- page N of M -->` 与真实 MinerU 4.x 产物格式一致（真实 80 页卷实测），门④将以真实 canary 复钉；⑤电子 PDF/Excel/Word 表格线、跨文件全局映射、台账产物=二期；NER 检测质量=效果线不变。
 
 ## 2026-11-04
 

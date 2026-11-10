@@ -32,7 +32,12 @@ from app.services.agent_md_adapter import (
     normalize_docvortex,
 )
 from app.services.agent_md_ner import build_mapping_draft, chunk_segments, run_ner
-from app.services.agent_md_replace import apply_decisions, render_outputs
+from app.services.agent_md_replace import (
+    apply_decisions,
+    render_outputs,
+    render_outputs_on_structure,
+    verify_structure_integrity,
+)
 from app.services.agent_md_types import AgentMdTask, Seg, TaskState
 
 # Issue#212：两版正文量相差超过 5%（= 比值低于 0.95）即视为某一版丢了东西。
@@ -100,7 +105,23 @@ class AgentMdPipelineService:
             task.message = "task not ready"
             return task
         apply_decisions(task.mapping, decisions)
-        md, mapping_json, retained_json = render_outputs(task.segs, task.entities, task.mapping)
+        # Issue#248：结构保全主路径——替换应用在 zip 官方结构化 md 上；
+        # md 缺失回落拍平重建（legacy render_outputs，显式 warning 不静默）。
+        # 渲染/对账任一闸失败 ⇒ 任务 FAILED（产物拒绝出厂），message 点名原因。
+        if task.structured_md and task.structured_md.strip():
+            try:
+                md, mapping_json, retained_json = render_outputs_on_structure(
+                    task.structured_md, task.segs, task.entities, task.mapping)
+                verify_structure_integrity(task.structured_md, md)
+            except ValueError as exc:
+                task.state = TaskState.FAILED
+                task.message = str(exc)
+                return task
+        else:
+            task.warnings.append(
+                "structured_md_missing: zip 官方 .md 缺失，回落拍平重建（产物无表格结构保全）")
+            md, mapping_json, retained_json = render_outputs(
+                task.segs, task.entities, task.mapping)
         output_file_id = str(uuid.uuid4())
         stem = _friendly_stem(task.filename)
         ts = datetime.now().strftime("%Y%m%d_%H%M")
@@ -189,6 +210,9 @@ class AgentMdPipelineService:
                 return task
             task.state = TaskState.NER_RUNNING
             task.stage = "ner"
+            # Issue#248：留存 zip 官方结构化 md（#248 确认渲染的替换载体）；
+            # 缺失置 None（confirm 回落拍平重建并显式 warning）
+            task.structured_md = (getattr(result, "md", "") or "").strip() or None
             # 终审 C1：sidecar v2 为外层按页嵌套形态（Task 0 §6c），先归一化成扁平 v1
             segs, warns, dropped, source = self._choose_representation(result)
             task.dropped_blocks = {

@@ -50,20 +50,17 @@ def build_text_segments(content: str, pages: list[str]) -> list[Seg]:
     return [Seg(text=t, page_idx=i, source="text") for i, t in enumerate(page_texts)]
 
 
-async def build_mineru_segments(
+async def parse_mineru_for_batch(
     file_info: dict[str, Any],
     *,
     ocr=None,
     on_progress: Callable[[int, int], None] | None = None,
-) -> list[Seg]:
-    """MinerU 解析 → 清洁段（与单文件供料 Stage1 同一套适配器）。
+) -> tuple[list[Seg], str | None]:
+    """MinerU 解析 → (清洁段, 官方结构化 md | None)（Issue#248）。
 
-    #220×#196 交叉：表示选择复用单文件线 ``_choose_representation``——
-    4.x docvortex.middle 归一（含 pages 去重与 md 比值守卫）+ 3.x 双表示守卫。
-    此前只读 content_list_v2（3.x 口径），4.x 形态下静默出空稿（本地 4.x 栈
-    验收实测；生产 3.4.5 有 content_list_v2，云冒烟测不出）。
-    解析不出正文时显式 fail-closed（RuntimeError，措辞与单文件 parse_no_text
-    三形态一致），由批量工人 except 链落 item FAILED，禁「0 映射静默就绪」。
+    结构化 md 是 #248 确认渲染的替换载体（表格/标题/页序保全）；缺 .md 置
+    None（commit 回落拍平重建并显式 warning）。其余语义与 build_mineru_segments
+    完全一致（该函数保留为薄包装，兼容既有调用面）。
     """
     from app.services.agent_md_adapter import enrich_image_blocks
     from app.services.agent_md_pipeline_service import AgentMdPipelineService
@@ -81,6 +78,7 @@ async def build_mineru_segments(
     result = await mineru.wait_result(job_id, on_progress=_cb)
     for _sw in getattr(result, "warnings", ()) or []:
         logger.warning("[agent-md-batch] sidecar warning: %s", _sw)
+    structured_md = (getattr(result, "md", "") or "").strip() or None
     segs, warns, _stats, source = AgentMdPipelineService._choose_representation(result)
     if segs is None:
         raise RuntimeError(_parse_no_text_message(result, source))
@@ -89,6 +87,22 @@ async def build_mineru_segments(
     segs, more = enrich_image_blocks(segs, result.images, ocr)
     for w in (*warns, *more):
         logger.warning("[agent-md-batch] adapter warning: %s", w)
+    return segs, structured_md
+
+
+async def build_mineru_segments(
+    file_info: dict[str, Any],
+    *,
+    ocr=None,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[Seg]:
+    """MinerU 解析 → 清洁段（兼容包装：`parse_mineru_for_batch` 丢弃 md）。
+
+    #220×#196 交叉：表示选择复用单文件线 `_choose_representation`；4.x 形态
+    空稿 fail-closed（RuntimeError）。Issue#248 起新调用方应使用
+    `parse_mineru_for_batch` 拿 (segs, structured_md) 双产物。
+    """
+    segs, _md = await parse_mineru_for_batch(file_info, ocr=ocr, on_progress=on_progress)
     return segs
 
 
@@ -138,9 +152,11 @@ async def run_agent_md_stage1(
 
         ner = HybridNERService()
 
+    structured_md: str | None = None  # Issue#248：text 载体（docx/txt）无官方 md，回落拍平
     if is_mineru_carrier(file_info):
         carrier = "mineru"
-        segs = await build_mineru_segments(file_info, on_progress=on_parse_progress)
+        segs, structured_md = await parse_mineru_for_batch(
+            file_info, on_progress=on_parse_progress)
     else:
         from app.models.schemas import FileType
         from app.services.file_parser import FileParser
@@ -165,7 +181,8 @@ async def run_agent_md_stage1(
         on_chunk=(lambda done, total: on_ner_progress(done, total)) if on_ner_progress else None,
     )
     mapping = build_mapping_draft(entities)
-    return serialize_draft(segs, entities, mapping, carrier=carrier)
+    return serialize_draft(
+        segs, entities, mapping, carrier=carrier, structured_md=structured_md)
 
 
 # ---------------------------------------------------------------------------
@@ -173,11 +190,14 @@ async def run_agent_md_stage1(
 # ---------------------------------------------------------------------------
 
 def serialize_draft(
-    segs: list[Seg], entities: list[Entity], mapping: list[MappingItem], *, carrier: str
+    segs: list[Seg], entities: list[Entity], mapping: list[MappingItem], *,
+    carrier: str, structured_md: str | None = None,
 ) -> dict[str, Any]:
     return {
         "carrier": carrier,
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        # Issue#248：zip 官方结构化 md（确认渲染的替换载体）；None=无（text 载体）
+        "structured_md": structured_md,
         "segs": [
             {"text": s.text, "page_idx": s.page_idx, "source": s.source, "img_path": s.img_path}
             for s in segs
@@ -241,7 +261,12 @@ def commit_agent_md_item(file_info: dict[str, Any], decisions: list[dict] | None
     AWAITING_REVIEW 并带错误信息；decisions 为空/None = 全部按默认占位符替换。
     """
     from app.services.agent_md_pipeline_service import _friendly_stem
-    from app.services.agent_md_replace import apply_decisions, render_outputs
+    from app.services.agent_md_replace import (
+        apply_decisions,
+        render_outputs,
+        render_outputs_on_structure,
+        verify_structure_integrity,
+    )
 
     draft = load_draft(file_info)
     if draft is None:
@@ -249,7 +274,17 @@ def commit_agent_md_item(file_info: dict[str, Any], decisions: list[dict] | None
 
     segs, entities, mapping = deserialize_draft(draft)
     apply_decisions(mapping, list(decisions or []))
-    md, mapping_json, retained_json = render_outputs(segs, entities, mapping)
+    # Issue#248：结构保全主路径（同单文件 confirm 口径）；闸失败 raise ValueError
+    # 由调用方把 item 打回 AWAITING_REVIEW 并带原因，与草稿缺失同一条错误通道。
+    structured_md = (draft.get("structured_md") or "").strip() or None
+    if structured_md:
+        md, mapping_json, retained_json = render_outputs_on_structure(
+            structured_md, segs, entities, mapping)
+        verify_structure_integrity(structured_md, md)
+    else:
+        logger.warning(
+            "[agent-md-batch] structured_md missing → legacy flatten render（产物无表格结构保全）")
+        md, mapping_json, retained_json = render_outputs(segs, entities, mapping)
 
     output_dir = Path(settings.OUTPUT_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
