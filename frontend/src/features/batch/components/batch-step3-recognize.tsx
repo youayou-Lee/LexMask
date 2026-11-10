@@ -341,7 +341,8 @@ function BatchStep3RecognizeInner({
             </div>
           ) : (
             filteredRows.map((r) => {
-              const detail = rowProgressLabel(r) ?? finalProgressLabel(r);
+              // 终局文案优先：重试结束后进度消息可能停在最后一页，结论比进度更该被看见。
+              const detail = finalProgressLabel(r) ?? rowProgressLabel(r);
               const paged = isPagedRow(r);
               const expanded = expandedFileId === r.file_id;
               return (
