@@ -1146,12 +1146,14 @@ const zhOverrides: Record<string, string> = {
     '这会删除所有上传文件、匿名化产物、处理历史和全部任务记录，包括草稿和运行中的任务。此操作不可恢复。',
   'history.unnamedContent': '未命名内容',
   'entityGroup.other': '其他',
-  'playground.upload.kicker': '单文件开始',
-  'playground.upload.title': '上传一个文件',
-  'playground.upload.desc':
-    '先选择配置清单，定义本次要识别哪些东西，再开始识别；复核结果后再导出。',
-  'playground.upload.standards': '文档 · PDF · 扫描件 · 图片',
-  'playground.upload.configDesc': '选择这个文件的配置清单；保存后的清单可以在下方复用。',
+  // Issue#262 Task 9b：紧凑页头 + 摘要卡（界面稿形态）；旧 kicker/title/desc/standards/configDesc
+  // 随上传页重皮移除（唯一消费点已删，键同步清理）。
+  'playground.upload.pageTitle': '单次处理',
+  'playground.upload.pageSub': '先跑一个文件，确认脱敏效果',
+  'playground.upload.summaryNote': '医疗、金融等 80+ 通用类型全部保留，点「高级 · 按类型微调」随时增减。',
+  'playground.upload.visualOfflineHint':
+    '视觉特征服务离线：已选的「印章、签名」{count} 类视觉要素暂不识别，服务恢复后自动生效。其余识别不受影响。',
+  'playground.upload.detailsToggle': '详情',
   'playground.upload.offlineHint':
     '当前后端未连接，这里展示的是界面预览数据，方便继续检查文本、图像配置和整体排版。',
   'playground.upload.checkingHint': '正在检测本地服务状态；检测完成前仍可先选择文件。',

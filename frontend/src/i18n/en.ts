@@ -1171,13 +1171,15 @@ const enOverrides: Record<string, string> = {
     'This removes all uploaded files, redacted outputs, processing history, and every job record, including drafts and running jobs. This cannot be undone.',
   'history.unnamedContent': 'Unnamed content',
   'entityGroup.other': 'Other',
-  'playground.upload.kicker': 'Single-file start',
-  'playground.upload.title': 'Upload one file',
-  'playground.upload.desc':
-    'Choose a recognition list that defines what to find, then start recognition. Review results before export.',
-  'playground.upload.standards': 'Documents · PDFs · scans · images',
-  'playground.upload.configDesc':
-    'Choose the recognition list for this file. Saved lists are available below.',
+  // Issue#262 Task 9b: compact page header + summary card (mockup alignment); old
+  // kicker/title/desc/standards/configDesc keys removed with the upload-page reskin.
+  'playground.upload.pageTitle': 'Single File',
+  'playground.upload.pageSub': 'Run one file first and confirm the anonymization result',
+  'playground.upload.summaryNote':
+    '80+ general types such as medical and financial entities stay on by default. Use "Advanced · fine-tune types" to adjust anytime.',
+  'playground.upload.visualOfflineHint':
+    'Visual feature service offline: {count} selected visual types (e.g. seals, signatures) are not recognized for now. They take effect automatically once the service is back; everything else is unaffected.',
+  'playground.upload.detailsToggle': 'Details',
   'playground.upload.offlineHint':
     'The backend is offline. Preview data is shown here so you can keep checking text items, image items, and the overall layout.',
   'playground.upload.checkingHint':
