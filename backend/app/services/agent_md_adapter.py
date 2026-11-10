@@ -229,7 +229,10 @@ def clean_segments(
             if body:
                 lines = [body]
                 for extra_key in ("table_caption", "table_footnote"):
-                    extra = (item.get(extra_key) or "").strip()
+                    # Issue#252：3.4.5 v1 content_list 该两字段是 list（空 list 此前
+                    # 被 `or ""` 碰巧兜住，非空 list 直达 .strip() 必崩）——走
+                    # _parts_text 归一（str 直通 / list[str] / 部件数组均可），空值不加行
+                    extra = _parts_text(item.get(extra_key))
                     if extra:
                         lines.append(extra)
                 segs.append(Seg(text="\n".join(lines), page_idx=page_idx, source="table"))
@@ -243,7 +246,8 @@ def clean_segments(
         elif btype == "image":
             path = item.get("img_path", "")
             # Issue#231：v4 图注（image_footnote）进段文本——enrich 哨兵降级时保留
-            footnote = (item.get("image_footnote") or "").strip()
+            # Issue#252：v1 image_footnote 实测同为 list——同走 _parts_text
+            footnote = _parts_text(item.get("image_footnote"))
             warns.append(f"image block pending ocr: {path}")
             segs.append(Seg(text=footnote, page_idx=page_idx, source="img_ocr", img_path=path))
         elif btype == "text":

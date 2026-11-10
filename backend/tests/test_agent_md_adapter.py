@@ -614,3 +614,52 @@ def test_enrich_success_keeps_footnote_before_ocr_lines():
     filled, _ = enrich_image_blocks(segs, {"images/a.jpg": b"jpg"}, _FakeOcr(texts=["勘验笔录一"]))
     assert filled[0].text == "图 3 现场照片\n勘验笔录一"
     assert filled[0].source == "img_ocr"
+
+
+# ---------------------------------------------------------------------------
+# Issue#252：MinerU 3.4.5 v1 content_list 的 table_caption / table_footnote /
+# image_footnote 是 **list**（云端实测）。空 list（falsy）被 `or ""` 碰巧兜住；
+# 非空 list 直达 .strip() 必崩。修法=clean_segments 改走既有 _parts_text。
+# ---------------------------------------------------------------------------
+
+
+def test_v1_nonempty_list_table_caption_footnote_does_not_crash():
+    # 3.4.5 实弹形状：非空 list 标题/脚注此前在此崩溃（AttributeError .strip）
+    html = "<table><tr><td>账号</td><td>62220202000</td></tr></table>"
+    cl = [_block(type="table", table_body=html,
+                 table_caption=["表1 财产查询反馈信息表"],
+                 table_footnote=["注：数据来源于银行", "续表"])]
+    segs, warns = clean_segments(cl)
+    assert segs, "表格块必须产段"
+    assert segs[0].source == "table"
+    assert "表1 财产查询反馈信息表" in segs[0].text
+    assert "注：数据来源于银行" in segs[0].text and "续表" in segs[0].text
+    assert "62220202000" in segs[0].text
+    assert not any("empty table" in w for w in warns)
+
+
+def test_v1_empty_list_caption_footnote_no_extra_lines():
+    # 空 list 行为与修复前逐字节一致（不加行）——云端抽样页即此形态
+    html = "<table><tr><td>账号</td></tr></table>"
+    cl = [_block(type="table", table_body=html, table_caption=[], table_footnote=[])]
+    segs, _ = clean_segments(cl)
+    cl_ref = [_block(type="table", table_body=html)]
+    segs_ref, _ = clean_segments(cl_ref)
+    assert segs[0].text == segs_ref[0].text
+
+
+def test_v1_nonempty_list_image_footnote_does_not_crash():
+    cl = [_block(type="image", img_path="images/a.jpg", text="",
+                 image_footnote=["图1 银行流水原件"])]
+    segs, _ = clean_segments(cl)
+    assert segs[0].source == "img_ocr"
+    assert "图1 银行流水原件" in segs[0].text
+
+
+def test_v1_caption_str_unchanged():
+    # 既有 str 形态回归钉：行为不变
+    html = "<table><tr><td>账号</td></tr></table>"
+    cl = [_block(type="table", table_body=html,
+                 table_caption="表2 存款明细", table_footnote="注：仅部分")]
+    segs, _ = clean_segments(cl)
+    assert "表2 存款明细" in segs[0].text and "注：仅部分" in segs[0].text

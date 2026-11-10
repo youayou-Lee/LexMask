@@ -1,6 +1,13 @@
 # CHANGELOG
 
 
+## 2026-11-09
+
+### 修正（Issue#252）供料模式 P0：MinerU 3.4.5 表格 caption/footnote 是 list，clean_segments 按 str 处理必崩
+
+- **为什么**：云端（MinerU 3.4.5，content_list 口径）供料模式识别大扫描卷 100% 失败——实弹取证（第四卷抽页直打 16581）证实 v1 `*_content_list.json` 的 `table_caption`/`table_footnote`/`image_footnote` 是 **list** 类型：空 list（falsy）被 `or ""` 碰巧兜住，非空 list（真实表格标题/脚注）直达 `.strip()` 抛 AttributeError。无表格小件侥幸通过，任何带标注表格的卷必崩（实测：第四卷 149 页、合并文档 89 页双双整单 failed）。
+- **改了什么**：`clean_segments` 表格分支 `table_caption`/`table_footnote` 与图像分支 `image_footnote` 三处改走既有 `_parts_text()`（#231 引入：str 直通 / list[str] / 部件数组归一，空值 → 不加行）——与 v2 归一层 `_v2_block_to_flat` 的既有处理同口径；v2 路经 normalize 后复用同一 `clean_segments`，一并覆盖。
+- **测试**：+4 例（非空 list 标题/脚注不崩且进段文本、空 list 与修复前逐字节一致、list 图注进段、str 形态回归钉）；变异验证回退修复 2 红/恢复 2 绿；adapter 54 例 + 同族 89 例全绿。
 ## 2026-11-05
 
 ### 修正（Issue#250）inline 平铺水印（并入主流/文本型 PDF）识别面过滤
