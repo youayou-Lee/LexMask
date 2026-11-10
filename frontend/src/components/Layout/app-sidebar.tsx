@@ -152,9 +152,10 @@ export function AppSidebar() {
 
   const visibleWorkflowNavItems = filterHiddenNavItems(workflowNavItems);
 
-  // Issue#262：法律默认档收敛——识别项/配置清单/词库收进 /settings 单入口（高级设置），
-  // 管理员保留控制台与系统设置。（/settings/redaction、/settings/word-pools 路由保留，
-  // 由 /settings 页内导航可达；页内 kicker 仍复用其 i18n sub 键。）
+  // Issue#262：法律默认档收敛——识别项/配置清单/词库收进 /settings 单入口
+  // （高级设置三页签：识别项 / 配置清单 / 词库）。旧 /settings/redaction、
+  // /settings/word-pools 路由只作深链兜底，经 router 的 SettingsTabRedirect
+  // 重定向到 /settings?tab=…；页签面板 kicker 复用 nav.redactionList.sub 等既有键。
   const configNavItems: NavItem[] = [
     {
       path: '/settings',

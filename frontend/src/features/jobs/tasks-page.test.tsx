@@ -134,9 +134,9 @@ describe('Issue#262：任务中心合并页', () => {
     expect(screen.getByTestId('tasks-tab-done').getAttribute('aria-selected')).toBe('true');
     // done 视图不预置 jobs 内层 tab（工单 hook 不因深链切表）
     expect(mockedJobs.changeTab).not.toHaveBeenCalled();
-    // done 页签不显示计数（history hook 惰性挂载，无来源）
-    expect(screen.getByTestId('tasks-tab-done').textContent).not.toContain('7');
-    expect(screen.getByTestId('tasks-tab-done').textContent).not.toContain('3');
+    // done 页签无计数 pill 元素（收紧：不再依赖文案 not.toContain 的巧合，
+    // 直接断言计数 span（tabular-nums）不存在——history hook 惰性挂载，无计数来源）
+    expect(screen.getByTestId('tasks-tab-done').querySelector('span.tabular-nums')).toBeNull();
   });
 
   it('view=review 预置 jobs 内层 tab awaiting_review（URL→tab 一次性预置）', () => {

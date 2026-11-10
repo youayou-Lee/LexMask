@@ -3,6 +3,7 @@
 
 ## 2026-11-11
 
+<<<<<<< HEAD
 ### 修正（Issue#256）本地栈扫描线整卷误记全页失败：队列路径 LA 不可用整段跳过视觉识别 + AppError str 可读
 
 - **为什么**：本地栈（无 LocateAnything）扫描件识别整卷误报「all N page(s) failed recognition」而 OCR 框/NER 实体实际全部产出（canary 10 页 22s 复现）。根因有二：①PR#235「LA 不可用不拦截识别」只在 playground 前端提交侧执行，API/队列载荷无此保护——队列两段式第二段（视觉特征识别）逐页进 `detect_vision`，每页撞 Issue#217 的 LA fail-closed 预检，`AppError(visual_service_unavailable)` 使全部页记入 `failed_pages`；②`AppError.__init__` 从未调 `super().__init__`，kwargs 构造（生产全部预检类抛点同款）时 `args=()` ⇒ `str(exc)==""`，页失败 reason 只剩「AppError: 」，错误码与指引全丢、排障全盲（「双账本分裂」表象 = deep-merge 账面残留第一段 completed 字段）。
@@ -34,6 +35,12 @@
   - F1（前置缺陷）：`update_item_performance` 增 `replace_paths`，路径命中整体替换——修复深合并「空 dict 不删键」导致失败页清单清不掉、页记录重写残留旧 `error`；默认参数保持旧行为。
   - 前端：step3 文件行展开逐页格（成功/失败 hover 原因/未跑），失败页在**选择层**就不可勾；部分导出对话框（默认全选成功页、失败页知情确认、202 后轮询到终态、导出记录列表可直接下载）；识别进行中也允许导出（导出侧另取快照并在说明页写明快照时间）。
 - **测试**：后端 +65 例（F1 真 `JobStore` 红性/页投影三态与计数/`failed_pages` 压过页记录的双账本分叉/切页与逐页图像流 sha256 对齐全量参照件/端点契约与错误码/框落不到本页时 fail-closed/真 `ExportTaskManager` 全链含重启后下载与跨 owner 同名目录不可见/说明页失败清理/无框页拒收）；全量 2866 passed，18 failed 与 preview 基线（同 revision 2802 passed）**同集合**（容器 `ProcessPoolExecutor` 信号量权限问题，非本 PR 引入）。前端 +13 例（页格三态与失败页不可选/ack 门控不发请求/记录下载链接与页数摘要/step3 接线与终局文案/200+ 页分块 50 格「显示更多」/图片行不给导出入口），全量 395 passed；i18n 双语 parity 2 例。
+
+### 增强（Issue#262）法律默认档前端信息架构改造
+
+- 法律默认档（Issue#262）：侧边栏 8→6、任务中心+处理结果合并单入口、/single 识别前法律预设 chip+高级抽屉、复核态右栏精简、配置三页页签化进高级设置、开始页移除（登录落单次处理）、产品名定稿墨隐。
+- 清扫（同 PR 收尾，Task 8）：i18n 死键 zh/en 双侧对称删除——`start.*` 全组（仅保留 OnboardingGuide 仍引用的 `start.entry.playground.cta`）、`page.start.*`、`nav.recognitionSettings(.sub)`、`page.history.sub`、`page.redactionList(.title/.sub)`（header /settings/redaction 死分支删除后零引用）；app-header `/settings/redaction` 死分支删除；router prefetch 删除冗余的 features/history 预取（jobs chunk 已静态引入 HistoryView）；AuthRoute `shouldUseHome` 更名 `isRegisterLanding`（开始页已删，行为等价）；补 `/history` 重定向渲染钉（router.test.tsx）+ tasks done 页签「无计数」断言收紧为无计数 span 元素；删 app-sidebar.test.ts 与渲染钉信息冗余的 fabricated-input 全列用例（保留 filterHiddenNavItems 三个机制钉）。
+- 测试：前端全量 55 文件 / 400 例全绿 + tsc + build 绿（本机）；e2e 路由冒烟 14 路由全过 + /history→/jobs?view=done 真机重定向验证（worktree dev server × 本地栈 backend）；门④云真机走查待用户。
 
 ## 2026-11-09
 

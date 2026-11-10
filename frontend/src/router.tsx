@@ -128,7 +128,8 @@ const prefetchRoutes = () => {
     () => import('./features/batch'),
     () => import('./features/structured'),
     () => import('./features/dicom'),
-    () => import('./features/history'),
+    // features/history 不单列：tasks-page（features/jobs）已静态 import HistoryView，
+    // 预取 jobs 时随 chunk 一并拉下（Issue#262 A1 合并页后冗余）。
     () => import('./features/jobs'),
   ];
 
@@ -185,8 +186,10 @@ function AuthRoute() {
   if (loading) return <FullPageSpinner />;
   if (!status) return <AuthStatusErrorPage />;
   if (!status.auth_enabled || status.authenticated) {
-    const shouldUseHome = status.authenticated && isRegisterRoute;
-    return <Navigate to={shouldUseHome ? '/single' : next} replace />;
+    // Issue#262 D6：注册深链登录后落单次处理（开始页已删，「home」语义过时，
+    // 改名 isRegisterLanding——行为等价：仅当已登录且来自注册链接时落 /single）。
+    const isRegisterLanding = status.authenticated && isRegisterRoute;
+    return <Navigate to={isRegisterLanding ? '/single' : next} replace />;
   }
 
   return (
@@ -422,7 +425,8 @@ function SettingsTabRedirect({ tab }: { tab: string }) {
 
 // Issue#262 A1：旧 /history 深链 → /jobs?view=done（replace，避免历史栈堆积中间态）；
 // source / jobId 等既有 query 原样透传，由 HistoryView 的 use-history-data URL 同步消费。
-function HistoryRedirect() {
+// 导出仅为渲染测试钉（router.test.tsx）；路由表内使用不受影响。
+export function HistoryRedirect() {
   const location = useLocation();
   const params = new URLSearchParams(location.search);
   params.set('view', 'done');

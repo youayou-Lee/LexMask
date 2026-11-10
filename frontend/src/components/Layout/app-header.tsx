@@ -138,8 +138,6 @@ function getPageHeader(
   if (pathname === '/structured/delivery')
     return { title: t('nav.structured.delivery'), sub: t('nav.structured.delivery.sub') };
   if (pathname === '/dicom') return { title: t('page.dicom.title'), sub: t('page.dicom.sub') };
-  if (pathname.startsWith('/settings/redaction'))
-    return { title: t('page.redactionList.title'), sub: t('page.redactionList.sub') };
   if (pathname === '/settings') return { title: t('page.config.title'), sub: t('page.config.sub') };
   if (pathname.startsWith('/jobs/'))
     return { title: t('page.jobDetail.title'), sub: t('page.jobDetail.sub') };
