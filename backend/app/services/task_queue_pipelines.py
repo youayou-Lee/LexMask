@@ -450,6 +450,19 @@ class RecognitionPipelineMixin:
         if str(current.get("status") or "") == JobItemStatus.CANCELLED.value:
             return
         try:
+            # 终局进度文案：不写的话行上会一直挂着最后一页的「page retry i/n」陈旧口径。
+            if total_pages > 0:
+                store.update_item_progress(
+                    task.item_id,
+                    stage="vision",
+                    current=total_pages,
+                    total=total_pages,
+                    message=(
+                        "vision_recognition_complete_with_failures"
+                        if failed_map
+                        else "vision_recognition_complete"
+                    ),
+                )
             store.update_item_status(task.item_id, JobItemStatus.AWAITING_REVIEW)
             # 摘要单独写：`update_item_status` 在同状态时跳过 UPDATE（no-op 语义），
             # 而重启补偿后 item 可能已经是 awaiting_review——那时摘要会被静默丢在原地。
