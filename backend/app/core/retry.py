@@ -86,10 +86,22 @@ def retry_sync(
 
 
 # Exception types safe to retry (connection / timeout only, NOT 4xx client errors)
+#
+# Issue#257：NEO001 事故里 HaS 侧是「连接被重置/半包」——httpx 抛的是
+# ``RemoteProtocolError``/``ReadError``/``WriteError``，都不在旧集合里，一次闪断
+# 就被当成确定性失败（进而整卷熔断）。这四类与超时同族、重试可收敛，补进集合。
+# 注意：**不**把 ``httpx.TransportError`` 父类整个拉进来——``ProxyError``/
+# ``UnsupportedProtocol`` 是本地配置写错，重试只会白烧退避并掩盖真因。
+_HX = __import__("httpx")
+
 RETRYABLE_HTTPX = (
-    __import__("httpx").ConnectError,
-    __import__("httpx").ReadTimeout,
-    __import__("httpx").ConnectTimeout,
+    _HX.ConnectError,
+    _HX.ReadError,
+    _HX.WriteError,
+    _HX.RemoteProtocolError,
+    _HX.PoolTimeout,
+    _HX.ReadTimeout,
+    _HX.ConnectTimeout,
     ConnectionError,
     OSError,
 )

@@ -48,7 +48,7 @@ class TaskItem:
     job_id: str
     item_id: str
     file_id: str
-    task_type: str = "recognition"  # "recognition" | "redaction"
+    task_type: str = "recognition"  # "recognition" | "redaction" | "page_retry"
     meta: dict[str, Any] = field(default_factory=dict)
 
 
@@ -545,6 +545,8 @@ class SimpleTaskQueue(RecognitionPipelineMixin, StructuredPipelineMixin, Redacti
                     await self._run_redaction(task)
                 elif task.task_type == "structured":
                     await self._run_structured(task)
+                elif task.task_type == "page_retry":
+                    await self._run_page_retry(task)
                 else:
                     logger.warning("unknown task_type: %s", task.task_type)
             except PdfEncryptedError as exc:

@@ -886,3 +886,26 @@ export async function listItemExports(
     : [];
   return { exports, unavailable: asStringArray(payload.unavailable) };
 }
+
+/** Issue#257 能力 2：单页重试的受理结果（后端 202）。 */
+export interface PageRetryResult {
+  queued_pages: number[];
+}
+
+/** 只重跑这些失败页（后端会先落 ``page_retry_pages`` 标记再投递任务）。 */
+export function retryItemPages(
+  jobId: string,
+  itemId: string,
+  pages: number[],
+): Promise<PageRetryResult> {
+  return post(`/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/retry-pages`, {
+    pages,
+  }).then((payload) => {
+    const record = asRecord(payload);
+    return {
+      queued_pages: Array.isArray(record.queued_pages)
+        ? record.queued_pages.map((value) => asNumber(value)).filter((value) => value > 0)
+        : [],
+    };
+  });
+}

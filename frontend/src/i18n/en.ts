@@ -801,6 +801,20 @@ const enBase: Record<string, string> = {
   'batchWizard.pages.failedHint':
     'Failed pages cannot be selected (they never enter a delivery package): page {pages}',
   'batchWizard.pages.loading': 'Loading per-page status…',
+  'batchWizard.pages.retryFailed': 'Retry failed pages ({count})',
+  'batchWizard.pages.retrying': 'Retrying…',
+  'batchWizard.pages.retryHint': 'Click a red page to retry just that page',
+  'batchWizard.pages.retryUnavailable':
+    'Recognition must finish (and no retry may be running) before failed pages can be retried',
+  'batchWizard.pages.retryFailedError': 'The retry was not accepted: {message}',
+  'batchWizard.pages.retryError.item_busy': 'This file is being recognized or retried; try again later',
+  'batchWizard.pages.retryError.retry_requires_awaiting_review':
+    'Only files that finished recognition but are not yet confirmed can retry single pages',
+  'batchWizard.pages.retryError.page_not_failed': 'The selected pages are not in the failed list',
+  'batchWizard.pages.retryError.pages_empty': 'No page selected',
+  'batchWizard.pages.retryError.pages_out_of_range': 'Page number is outside this file',
+  'batchWizard.pages.retryError.partial_retry_unsupported_type':
+    'This file type does not support single-page retry (PDF / scanned / image only)',
   'batchWizard.pages.unsupported': 'This file type has no per-page view (PDF / scanned only).',
   'batchWizard.pages.finalWithFailures': 'Done ({done}/{total}, page {pages} failed)',
   'batchWizard.partialExport.title': 'Partial export (selected pages only)',

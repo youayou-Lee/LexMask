@@ -53,8 +53,13 @@ async def vision_detect(
     signature_ocr_has_types: list[str] | None = None,
     signature_visual_feature_types: list[str] | None = None,
     owner_id: str | None = None,
+    force: bool = False,
 ) -> Any:
-    """Run dual-pipeline vision detection on a single page."""
+    """Run dual-pipeline vision detection on a single page.
+
+    ``force=True`` 绕开视觉结果缓存（Issue#257 单页重试：缓存命中的旧结果
+    会让「重试」变成空转，页永远翻不绿）。
+    """
     from app.services.redaction_orchestrator import detect_vision
     if owner_id is None:
         info = get_file_info(file_id) or {}
@@ -70,6 +75,7 @@ async def vision_detect(
         owner_id=owner_id,
         signature_selected_ocr_has_types=signature_ocr_has_types,
         signature_selected_visual_feature_types=signature_visual_feature_types,
+        force=force,
     )
 
 
