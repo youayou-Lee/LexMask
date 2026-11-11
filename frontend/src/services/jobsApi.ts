@@ -717,12 +717,37 @@ export function commitAllReviews(jobId: string): Promise<CommitAllReviewsResult>
 export type PageCellState = 'success' | 'failed' | 'pending';
 export type ItemRecognitionState = 'not_started' | 'running' | 'done' | 'failed' | 'cancelled';
 
+/** 该页走的识别路由（Issue#279）：docline=文本层链接管，page_pipeline=逐页识别。 */
+export type PageRouteVerdict = 'docline' | 'page_pipeline';
+
+/**
+ * 「这页发生了什么」（Issue#279 后端投影扩展）：路由 / 各阶段耗时 / 失败类型 /
+ * 尝试次数。字段缺省时后端省键（旧数据兼容），前端一律按可空处理。
+ */
+export type ItemPageDetail = {
+  route_verdict: PageRouteVerdict;
+  fallback_reason_code?: string | null;
+  coverage?: number | null;
+  stage_ms?: Record<string, number> | null;
+  error_type?: string | null;
+  attempts?: number | null;
+  duration_ms?: number | null;
+};
+
+/** 卷级路由摘要：docline 接管 / 逐页 + 首个 fallback 码；毫无路由证据时为 null。 */
+export type ItemPageRouteSummary = {
+  verdict: PageRouteVerdict;
+  fallback_reason_code?: string | null;
+};
+
 export type ItemPageCell = {
   page: number;
   state: PageCellState;
   reason?: string | null;
   duration_ms?: number | null;
   cache_hit?: boolean;
+  /** Issue#279：页详情（旧后端无此键 → null）。 */
+  detail?: ItemPageDetail | null;
 };
 
 export type ItemPageStatus = {
@@ -738,6 +763,8 @@ export type ItemPageStatus = {
   snapshot_at: string;
   pages: ItemPageCell[];
   failed_pages: number[];
+  /** Issue#279：卷头路由摘要（旧后端无此键 → null）。 */
+  route_summary?: ItemPageRouteSummary | null;
 };
 
 export type BatchExportVolume = {
@@ -768,6 +795,38 @@ export type PartialExportTask = {
 
 const PAGE_CELL_STATES: ReadonlySet<string> = new Set(['success', 'failed', 'pending']);
 
+const PAGE_ROUTE_VERDICTS: ReadonlySet<string> = new Set(['docline', 'page_pipeline']);
+
+function asRouteVerdict(value: unknown): PageRouteVerdict {
+  return PAGE_ROUTE_VERDICTS.has(asString(value)) ? (asString(value) as PageRouteVerdict) : 'page_pipeline';
+}
+
+/** Issue#279：页详情投影（后端缺键/形状异常一律回落 null，不给页格塞半截对象）。 */
+function normalizePageDetail(raw: unknown): ItemPageDetail | null {
+  if (raw == null || !isRecord(raw)) return null;
+  const detail = raw as Record<string, unknown>;
+  const stageMs = asNumberRecord(detail.stage_ms);
+  return {
+    route_verdict: asRouteVerdict(detail.route_verdict),
+    fallback_reason_code: asNullableString(detail.fallback_reason_code),
+    coverage: nullableNumber(detail.coverage),
+    stage_ms: Object.keys(stageMs).length > 0 ? stageMs : null,
+    error_type: asNullableString(detail.error_type),
+    attempts: detail.attempts == null ? null : asNumber(detail.attempts, 1),
+    duration_ms: nullableNumber(detail.duration_ms),
+  };
+}
+
+/** Issue#279：卷级路由摘要（旧后端无键 → null）。 */
+function normalizeRouteSummary(raw: unknown): ItemPageRouteSummary | null {
+  if (raw == null || !isRecord(raw)) return null;
+  const summary = raw as Record<string, unknown>;
+  return {
+    verdict: asRouteVerdict(summary.verdict),
+    fallback_reason_code: asNullableString(summary.fallback_reason_code),
+  };
+}
+
 function normalizePageCell(raw: unknown, fallbackPage: number): ItemPageCell {
   const cell = asRecord(raw);
   const state = asString(cell.state, 'pending');
@@ -777,6 +836,7 @@ function normalizePageCell(raw: unknown, fallbackPage: number): ItemPageCell {
     reason: cell.reason == null ? null : asString(cell.reason),
     duration_ms: cell.duration_ms == null ? null : asNumber(cell.duration_ms),
     cache_hit: cell.cache_hit === true,
+    detail: normalizePageDetail(cell.detail),
   };
 }
 
@@ -801,6 +861,7 @@ export function normalizeItemPageStatus(raw: unknown): ItemPageStatus {
     failed_pages: Array.isArray(payload.failed_pages)
       ? payload.failed_pages.map((value) => asNumber(value)).filter((value) => value > 0)
       : [],
+    route_summary: normalizeRouteSummary(payload.route_summary),
   };
 }
 
