@@ -74,20 +74,29 @@ def is_page_fatal_stage_error(result) -> bool:
     只扫了一部分」的交付面（云实测 2026-10-29：页 133 撞预算 179.7s ⇒
     status=completed、failed_pages={}、ocr_has 区域数 0）。
 
-    本函数只把「页级 NER 预算 strict 失败」这一种异常升级为页级失败：
-    `task_queue_pipelines` 的 `except Exception` 会把它写进
-    `recognition.failed_pages`，交付闸/导出 409 随之生效。其它阶段异常（OCR
-    服务抖动、视觉通道故障）维持既有「降级 + warning」语义不变。
+    本函数把两类异常升级为页级失败：
+
+    1. 「页级 NER 预算 strict 失败」（``HasTextNerPageBudgetExceeded``）——
+       `task_queue_pipelines` 的 `except Exception` 会把它写进
+       `recognition.failed_pages`，交付闸/导出 409 随之生效。
+    2. Issue#273 路由证据链死线（``TimeoutError``）——页路由 verify/both 动作下
+       文本层与证据 OCR 双双无产出时，页必须显式失败而非静默 0 区域完成（#199
+       语义，`run_ocr_has_job` raise 的接收端）。既有阶段链不外逸内建
+       TimeoutError（has_text_analysis 的预算墙内部自升自捕；httpx 超时包装为
+       ``httpx.TimeoutException``；MinerU 换源内部捕获），故本档不改变既有阶段
+       的行为。其它阶段异常（OCR 服务抖动、视觉通道故障）维持既有
+       「降级 + warning」语义不变。
     """
     from app.services.vision.has_text_analysis import HasTextNerPageBudgetExceeded
 
-    if not isinstance(result, HasTextNerPageBudgetExceeded):
-        return False
-    return bool(getattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True))
+    if isinstance(result, HasTextNerPageBudgetExceeded):
+        return bool(getattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True))
+    return isinstance(result, TimeoutError)
 
 from PIL import Image, ImageOps
 
 from app.core.config import settings
+from app.core.routing_thresholds import get_routing_thresholds
 from app.core.visual_feature_categories import (
     LOCATE_ANYTHING_VISUAL_SLUGS,
     OCR_FALLBACK_ONLY_VISUAL_SLUGS,
@@ -98,6 +107,8 @@ from app.models.schemas import BoundingBox, FileType
 from app.services import watermark_overlay
 from app.services.file_parser import FileParser
 from app.services.ocr_has_vision_service import get_ocr_has_vision_service
+from app.services.page_routing.arbiter import arbitrate
+from app.services.page_routing.types import ArbitrationVerdict, SideResult
 from app.services.vision.box_geometry import (
     _calculate_iou,
     _calculate_smaller_overlap,
@@ -320,16 +331,27 @@ class VisionService:
     ) -> tuple[list[BoundingBox], str | None]:
         """Issue#273：``page_routing`` 为页级路由决策（``PageDecision``）或 None。
 
-        Task 8 只加形参**原样忽略**——file 模式恒 None、page 模式暂按既有 OCR
-        主链执行，双模执行行为零改变；Task 9 在此消费决策（按 ``decision.action``
-        决定文本层执行面），并把仲裁结果挂到 ``self.last_page_routing_outcome``
-        供编排层 ``finalize`` 收割。
+        Task 9 按 ``decision.action`` 驱动文本层执行面（四动作：ocr / text_layer /
+        text_layer_verify / both）：
+
+        * ``ocr``：跳过文本层，直接 OCR+HaS；
+        * ``text_layer``：文本层成功直接用；失败 ⇒ OCR 兜底（switch 记账）；
+        * ``text_layer_verify`` / ``both``：文本层 + 整页证据 OCR（同一
+          recognition_path 图像源，``ROUTING_VERIFY_OCR_TIMEOUT_SEC`` 死线）→
+          ``arbiter.arbitrate`` 择一；``both`` 页改判 ⇒ ``escalate_volume``。
+
+        仲裁结果挂 ``self.last_page_routing_outcome`` 供编排层 ``finalize`` 收割
+        （形状见 ``_record_page_routing_outcome``）；file 模式（决策 None）走
+        今天原样路径且 outcome 恒 None。
         """
         total_start = time.perf_counter()
         duration_ms: dict[str, int | dict[str, int]] = {"ocr_has": 0, "visual_features": 0}
         self.last_visual_feature_stage_duration_ms = {}
         self.last_pdf_text_layer_duration_ms = 0
         self.last_pdf_text_layer_stats = {}
+        # Issue#273：page 模式由 run_ocr_has_job 落真实 outcome；file 模式（决策
+        # None）恒 None——编排层 finalize 对 None 走防御路径。
+        self.last_page_routing_outcome: dict | None = None
         file_type = _normalize_file_type(file_type)
         image_data: bytes | None = None
         image_data_task: asyncio.Task[bytes] | None = None
@@ -469,38 +491,223 @@ class VisionService:
                     file_type not in [FileType.PDF, FileType.PDF_SCANNED]
                     or not settings.PDF_TEXT_LAYER_VISION_ENABLED
                 ):
+                    result = await invoke_detector(self._detect_with_ocr_has, page, effective_ocr_has_types)
+                    if page_routing is not None:
+                        # Issue#273：page 模式每页必设 outcome——文本层执行面未参与
+                        # （非 PDF / 全局文本层开关关闭），纯 OCR 执行的诚实记账。
+                        self._record_page_routing_outcome(winner="ocr")
+                    return result
+
+                # Issue#273：page 模式由编排层传入页级路由决策（PageDecision）；
+                # file 模式恒 None ⇒ 走今天原样路径（attempt → probe_lock → OCR
+                # 回落），行为零改变。
+                action = str(getattr(page_routing, "action", "") or "") if page_routing is not None else None
+
+                if action is None:
+
+                    async def attempt_pdf_text_layer() -> tuple[list[BoundingBox], str | None] | None:
+                        if seal_requested_via_visual_features:
+                            return None
+                        if _should_skip_sparse_pdf_text_layer(recognition_path, file_type):
+                            duration_ms["pdf_text_layer_skipped_sparse_file"] = True
+                            return None
+                        try:
+                            return await self._detect_with_pdf_text_layer(
+                                recognition_path, page, effective_ocr_has_types
+                            )
+                        except ValueError as exc:
+                            _record_sparse_pdf_text_layer_probe(
+                                recognition_path,
+                                file_type,
+                                stats=self.last_pdf_text_layer_stats,
+                            )
+                            logger.info("PDF text layer not used for page %d: %s", page, exc)
+                        except Exception:
+                            logger.exception("PDF text layer detection failed; falling back to image OCR")
+                        return None
+
+                    probe_lock = _get_pdf_text_layer_probe_lock(recognition_path, file_type)
+                    if probe_lock is not None:
+                        async with probe_lock:
+                            pdf_text_layer_result = await attempt_pdf_text_layer()
+                    else:
+                        pdf_text_layer_result = await attempt_pdf_text_layer()
+                    if pdf_text_layer_result is not None:
+                        return pdf_text_layer_result
                     return await invoke_detector(self._detect_with_ocr_has, page, effective_ocr_has_types)
 
-                async def attempt_pdf_text_layer() -> tuple[list[BoundingBox], str | None] | None:
-                    if seal_requested_via_visual_features:
-                        return None
-                    if _should_skip_sparse_pdf_text_layer(recognition_path, file_type):
-                        duration_ms["pdf_text_layer_skipped_sparse_file"] = True
-                        return None
+                if action != "ocr" and action not in ("text_layer", "text_layer_verify", "both"):
+                    # judge 只产四种动作；未知值 fail-closed 走 OCR（页路由的
+                    # 决策面在 judge，执行面对未知动作不发明语义）。
+                    logger.warning(
+                        "issue273: unknown page routing action %r for page %d; falling back to OCR",
+                        action,
+                        page,
+                    )
+                    self._record_page_routing_outcome(winner="ocr")
+                    return await invoke_detector(self._detect_with_ocr_has, page, effective_ocr_has_types)
+
+                if action == "ocr":
+                    self._record_page_routing_outcome(winner="ocr")
+                    return await invoke_detector(self._detect_with_ocr_has, page, effective_ocr_has_types)
+
+                # ---- 以下 action ∈ {text_layer, text_layer_verify, both} ----
+                # 文本层执行面：决策已由 judge 做，page 模式绕过稀疏探针缓存门
+                # （决策面唯一——探针缓存不得二次否决路由决策）；seal_requested
+                # 跳过保留（视觉语义，与路由正交）。
+                tl_boxes: list[BoundingBox] | None = None
+                tl_seal_skipped = seal_requested_via_visual_features
+                if not tl_seal_skipped:
                     try:
-                        return await self._detect_with_pdf_text_layer(
+                        tl_result = await self._detect_with_pdf_text_layer(
                             recognition_path, page, effective_ocr_has_types
                         )
-                    except ValueError as exc:
-                        _record_sparse_pdf_text_layer_probe(
-                            recognition_path,
-                            file_type,
-                            stats=self.last_pdf_text_layer_stats,
-                        )
-                        logger.info("PDF text layer not used for page %d: %s", page, exc)
+                        tl_boxes = list(tl_result[0] or []) if tl_result else None
                     except Exception:
-                        logger.exception("PDF text layer detection failed; falling back to image OCR")
-                    return None
+                        # 真实方法异常时 stats 已落位（含 char_count），下方统一读取。
+                        logger.info("PDF text layer not used for page %d (routing)", page)
+                tl_chars = int((getattr(self, "last_pdf_text_layer_stats", None) or {}).get("char_count") or 0)
+                tl_entities = len(tl_boxes or [])
+                tl_metrics = {
+                    "chars": {"text_layer": tl_chars, "ocr": 0},
+                    "entities": {"text_layer": tl_entities, "ocr": 0},
+                }
+                tl_unavailable_reason = "seal_requested" if tl_seal_skipped else "text_layer_stage_error"
 
-                probe_lock = _get_pdf_text_layer_probe_lock(recognition_path, file_type)
-                if probe_lock is not None:
-                    async with probe_lock:
-                        pdf_text_layer_result = await attempt_pdf_text_layer()
-                else:
-                    pdf_text_layer_result = await attempt_pdf_text_layer()
-                if pdf_text_layer_result is not None:
-                    return pdf_text_layer_result
-                return await invoke_detector(self._detect_with_ocr_has, page, effective_ocr_has_types)
+                if action == "text_layer":
+                    if tl_boxes is not None:
+                        # 判定面已核验的健康文本层页：判定即证据，直接采用。
+                        self._record_page_routing_outcome(
+                            winner="text_layer",
+                            evidence_valid=True,
+                            metrics=tl_metrics,
+                            arbitration="pass",
+                        )
+                        return tl_boxes, None
+                    ocr_boxes, _ = await invoke_detector(self._detect_with_ocr_has, page, effective_ocr_has_types)
+                    self._record_page_routing_outcome(
+                        winner="ocr",
+                        switched_from="text_layer",
+                        switch_reason=tl_unavailable_reason,
+                        evidence_valid=False,
+                        verify_incomplete=True,
+                        metrics=tl_metrics,
+                        arbitration="switch",
+                    )
+                    return ocr_boxes, None
+
+                # ---- text_layer_verify / both：证据 = 整页 OCR+HaS（用户拍板#2），
+                # 与文本层同一 recognition_path 图像源；显式阶段死线。
+                if not settings.ROUTING_VERIFY_OCR_EVIDENCE_ENABLED:
+                    # 证据 OCR 逃生口关闭 ⇒ verify 降级直信文本层（不判仲裁、
+                    # verify_incomplete 如实记账、不构成整卷升级依据）。
+                    if tl_boxes is not None:
+                        self._record_page_routing_outcome(
+                            winner="text_layer",
+                            evidence_valid=False,
+                            verify_incomplete=True,
+                            metrics=tl_metrics,
+                            stage_ms={"ocr_evidence": 0},
+                            arbitration=None,
+                        )
+                        return tl_boxes, None
+                    ocr_boxes, _ = await invoke_detector(self._detect_with_ocr_has, page, effective_ocr_has_types)
+                    self._record_page_routing_outcome(
+                        winner="ocr",
+                        switched_from="text_layer",
+                        switch_reason=tl_unavailable_reason,
+                        evidence_valid=False,
+                        verify_incomplete=True,
+                        metrics=tl_metrics,
+                        stage_ms={"ocr_evidence": 0},
+                        arbitration="switch",
+                    )
+                    return ocr_boxes, None
+
+                evidence_start = time.perf_counter()
+                ocr_boxes: list[BoundingBox] | None = None
+                evidence_timed_out = False
+                evidence_error: BaseException | None = None
+                try:
+                    ocr_result = await asyncio.wait_for(
+                        invoke_detector(self._detect_with_ocr_has, page, effective_ocr_has_types),
+                        timeout=float(settings.ROUTING_VERIFY_OCR_TIMEOUT_SEC),
+                    )
+                    ocr_boxes = list(ocr_result[0] or []) if ocr_result else None
+                except TimeoutError:  # asyncio.TimeoutError 于 3.11+ 即内建 TimeoutError
+                    evidence_timed_out = True
+                except Exception as exc:  # 证据通道故障 ≠ 页失败：下方降级保留文本层
+                    evidence_error = exc
+                    logger.warning("issue273 routing evidence OCR failed for page %d: %s", page, exc)
+                stage_ms_ocr = _elapsed_ms(evidence_start)
+
+                chars_ocr = 0
+                if ocr_boxes is not None:
+                    chars_ocr = sum(
+                        len(str(getattr(b, "text", None) or ""))
+                        for b in (getattr(self, "_page_ocr_blocks", None) or [])
+                    )
+
+                if tl_boxes is None:
+                    # 文本层阶段失败：证据 OCR 已跑 ⇒ 直接采用（不失败页）。
+                    if ocr_boxes is not None:
+                        self._record_page_routing_outcome(
+                            winner="ocr",
+                            switched_from="text_layer",
+                            switch_reason=tl_unavailable_reason,
+                            evidence_valid=True,
+                            verify_incomplete=False,
+                            metrics={
+                                "chars": {"text_layer": tl_chars, "ocr": chars_ocr},
+                                "entities": {"text_layer": 0, "ocr": len(ocr_boxes)},
+                            },
+                            stage_ms={"ocr_evidence": stage_ms_ocr},
+                            arbitration="switch",
+                        )
+                        return ocr_boxes, None
+                    # 双侧无产出：先落诚实 outcome 再抛——页按 #199 语义显式失败
+                    # （is_page_fatal_stage_error 的 TimeoutError 档接收）。
+                    self._record_page_routing_outcome(
+                        winner="ocr",
+                        switched_from="text_layer",
+                        switch_reason=tl_unavailable_reason,
+                        evidence_valid=False,
+                        verify_incomplete=True,
+                        metrics=tl_metrics,
+                        stage_ms={"ocr_evidence": stage_ms_ocr},
+                        arbitration=None,
+                    )
+                    if evidence_error is not None:
+                        raise evidence_error
+                    raise TimeoutError("routing: text layer failed and evidence OCR timed out")
+
+                if evidence_timed_out or evidence_error is not None:
+                    # 证据阶段死线（或通道故障）⇒ 对账未实际发生：保留文本层 +
+                    # verify_incomplete（不判仲裁、不构成整卷升级依据）。
+                    self._record_page_routing_outcome(
+                        winner="text_layer",
+                        evidence_valid=False,
+                        verify_incomplete=True,
+                        metrics={"chars": {"text_layer": tl_chars, "ocr": 0},
+                                 "entities": {"text_layer": tl_entities, "ocr": 0}},
+                        stage_ms={"ocr_evidence": stage_ms_ocr},
+                        arbitration=None,
+                    )
+                    return tl_boxes, None
+
+                verdict = arbitrate(
+                    SideResult(chars=tl_chars, entities=tl_entities),
+                    SideResult(chars=chars_ocr, entities=len(ocr_boxes or [])),
+                    get_routing_thresholds(),
+                )
+                # 死线/空证据的 verify_incomplete 已在上方短路，进入仲裁的页
+                # 证据必然已实际产出（B9 空证据由 arbitrate 前置拦截）。
+                self._record_page_routing_outcome_from_verdict(
+                    verdict, stage_ms_ocr, escalate=(action == "both")
+                )
+                if verdict.winner == "ocr":
+                    return ocr_boxes, None
+                return tl_boxes, None
 
             jobs.append(
                 (
@@ -705,6 +912,81 @@ class VisionService:
         self.last_duration_ms = duration_ms
         logger.info("Dual pipeline total: %d regions, %.2fs", len(all_boxes), duration_ms["total"] / 1000)
         return all_boxes, result_image_base64
+
+    # ------------------------------------------------------------------
+    # Issue#273：页级路由仲裁结果记账（run_ocr_has_job → 编排层 finalize 消费）
+    # ------------------------------------------------------------------
+    def _record_page_routing_outcome(
+        self,
+        *,
+        winner: str,
+        switched_from: str | None = None,
+        switch_reason: str | None = None,
+        evidence_valid: bool = False,
+        verify_incomplete: bool = False,
+        metrics: dict | None = None,
+        stage_ms: dict | None = None,
+        arbitration: str | None = None,
+        escalate_volume: bool = False,
+    ) -> dict:
+        """落 ``self.last_page_routing_outcome``（Task 7 finalize 消费的契约形状）。
+
+        契约（T7 已钉）：``verify_incomplete`` 页不得携带 ``escalate_volume=True``
+        ——调用方保证；``arbitration="pass"`` 仅当「保留文本层且证据有效且非
+        verify_incomplete」，``"switch"`` 仅当 winner=ocr。
+        """
+        outcome = {
+            "winner": winner,
+            "switched_from": switched_from,
+            "switch_reason": switch_reason,
+            "evidence_valid": bool(evidence_valid),
+            "verify_incomplete": bool(verify_incomplete),
+            "metrics": metrics
+            or {
+                "chars": {"text_layer": 0, "ocr": 0},
+                "entities": {"text_layer": 0, "ocr": 0},
+            },
+            "stage_ms": {"ocr_evidence": None, **(stage_ms or {})},
+            "arbitration": arbitration,
+            "escalate_volume": bool(escalate_volume),
+        }
+        self.last_page_routing_outcome = outcome
+        return outcome
+
+    def _record_page_routing_outcome_from_verdict(
+        self,
+        verdict: ArbitrationVerdict,
+        stage_ms_ocr: int | None,
+        *,
+        escalate: bool,
+    ) -> dict:
+        """由 ``arbiter.arbitrate`` 判决落 outcome（verify/both 的仲裁出口）。
+
+        证据死线/证据关闭的 verify_incomplete 已在调用方短路（不进仲裁）；此处
+        ``verify_incomplete = not evidence_valid``（B9 空证据 ⇒ arbitrate 前置
+        拦截为保留文本层）。``escalate``（= action=="both"）只在改判页生效，且
+        契约禁止 verify_incomplete 页携带 escalate_volume。
+        """
+        kept_text_layer = verdict.winner != "ocr"
+        evidence_valid = bool(verdict.evidence_valid)
+        verify_incomplete = not evidence_valid
+        if kept_text_layer:
+            arbitration = "pass" if evidence_valid and not verify_incomplete else None
+            escalate_volume = False
+        else:
+            arbitration = "switch"
+            escalate_volume = bool(escalate) and not verify_incomplete
+        return self._record_page_routing_outcome(
+            winner=verdict.winner,
+            switched_from=verdict.switched_from,
+            switch_reason=verdict.switch_reason,
+            evidence_valid=evidence_valid,
+            verify_incomplete=verify_incomplete,
+            metrics=verdict.metrics,
+            stage_ms={"ocr_evidence": stage_ms_ocr},
+            arbitration=arbitration,
+            escalate_volume=escalate_volume,
+        )
 
     # ------------------------------------------------------------------
     # Issue#96: 公章通道换源（VISUAL_SEAL_SOURCE=mineru|la）
