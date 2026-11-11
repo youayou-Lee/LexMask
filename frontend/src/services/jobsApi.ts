@@ -858,18 +858,41 @@ export function getItemPageStatus(jobId: string, itemId: string): Promise<ItemPa
 /**
  * 部分导出：只导出选中页（原卷页号）+ 一张说明页。
  *
- * `acknowledgeFailedExcluded` = 用户已确认「区间内的失败页会被排除」——后端在
- * 区间含失败页且未确认时返回 409 failed_pages_ack_required。
+ * 2026-11-11 需求重对齐：不再有「我已了解失败页」勾选——区间内的失败页由后端
+ * **自动排除**并在产物说明页逐条列出，本函数不再传 `acknowledge_failed_excluded`
+ * （后端仍接受该字段以兼容历史客户端，但不影响判定）。
  */
+export interface ItemRef {
+  job_id: string;
+  item_id: string;
+  status: string;
+}
+
+/**
+ * 按文件反查所属 job/item（Issue#257 需求重对齐）。
+ *
+ * 单文件任务的 provider 账本条目在终态短留后会被清理、草稿也可能缺 `taskJobId`：
+ * 没有这条兜底，刷新后「逐页结果与选页导出」就解析不出 job/item，整块消失。
+ */
+export function getItemRefByFile(fileId: string): Promise<ItemRef> {
+  return get<unknown>(`/jobs/items/by-file/${encodeURIComponent(fileId)}`).then((raw) => {
+    const payload = asRecord(raw);
+    return {
+      job_id: asString(payload.job_id),
+      item_id: asString(payload.item_id),
+      status: asString(payload.status),
+    };
+  });
+}
+
 export function startPartialExport(
   jobId: string,
   itemId: string,
   pages: number[],
-  acknowledgeFailedExcluded = false,
 ): Promise<PartialExportTask> {
   return post(
     `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/partial-export`,
-    { pages, acknowledge_failed_excluded: acknowledgeFailedExcluded },
+    { pages },
   ).then(normalizePartialExportTask);
 }
 

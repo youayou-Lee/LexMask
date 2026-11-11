@@ -125,7 +125,9 @@ def validate_partial_export_pages(
     * ``pages_empty`` / ``pages_out_of_range``——空选、越界（含 0/负数/超页数）；
     * ``failed_pages_not_allowed``——**任何**参数路径都不得把失败页放进产物（#199 红线）；
     * ``pages_not_recognized``——选了还没识别完的页（不能导出空白页冒充成品）；
-    * ``failed_pages_ack_required``——所选区间内**存在**被排除的失败页，必须显式知情确认；
+    * （已废止）``failed_pages_ack_required``——2026-11-11 需求重对齐后**不再索要**任何知情确认：
+      区间内的失败页由后端直接自动排除，并把排除清单如实回报（写进说明页/ manifest）。
+      参数 ``acknowledge_failed_excluded`` 仅为旧客户端兼容而保留，已不影响判定；
     * ``pages_without_boxes``——选中页在 file_store 里**没有框账条目**（该页没跑过视觉识别）。
       这种页即使被记成 completed，打码阶段也无框可打，导出会得到一份「原样渲染、零遮蔽」的副本，
       属于 fail-open，必须拒收（评审 Important-2）。
@@ -197,14 +199,10 @@ def validate_partial_export_pages(
                 pages=blocked,
             )
 
+    # 失败页永不进包（#199 红线），因此区间内的失败页直接自动排除——不需要用户再点确认。
+    # 排除清单会写进说明页与 manifest，界面上的「将排除 N 页」就是唯一提示。
     lo, hi = normalized[0], normalized[-1]
     excluded = sorted(p for p in failed_pages if lo <= p <= hi)
-    if excluded and not acknowledge_failed_excluded:
-        raise PartialExportError(
-            "failed_pages_ack_required",
-            "所选页范围内含识别失败的页，需确认已知这些页不在本包内",
-            failed_pages=excluded,
-        )
 
     return {"pages": normalized, "excluded_failed_pages": excluded}
 
@@ -547,10 +545,12 @@ def build_export_title(*, filename: str | None, pages: Sequence[int]) -> str:
     contiguous = len(ordered) == ordered[-1] - ordered[0] + 1
     if contiguous:
         label = str(ordered[0]) if len(ordered) == 1 else f"{ordered[0]}-{ordered[-1]}"
-    else:
-        head = "、".join(str(p) for p in ordered[:_TITLE_PAGE_LIST_LIMIT])
-        label = f"{head} 等 {len(ordered)} 页" if len(ordered) > _TITLE_PAGE_LIST_LIMIT else head
-    return f"{stem}-部分导出(第{label}页)"
+        return f"{stem}-部分导出(第{label}页)"
+    head = "、".join(str(p) for p in ordered[:_TITLE_PAGE_LIST_LIMIT])
+    if len(ordered) > _TITLE_PAGE_LIST_LIMIT:
+        # 「…等 9 页」已经自带量词：再套「(第…页)」会变成「等 9 页页」。
+        return f"{stem}-部分导出(第{head} 等 {len(ordered)} 页)"
+    return f"{stem}-部分导出(第{head}页)"
 
 
 async def submit_partial_export(

@@ -8,13 +8,15 @@
 //  - pending = 还没有该页的终态记录（未跑到或正在跑）
 // 失败页**不可选**：#199 红线规定失败页不进交付，这里从选择层面就挡住。
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
 import type { ItemPageStatus, PageCellState } from '@/services/jobsApi';
+
+import { extendSelection, parsePageRangeInput, pruneSelection } from '../lib/page-range';
 
 interface BatchPageMatrixProps {
   status: ItemPageStatus;
@@ -27,6 +29,11 @@ interface BatchPageMatrixProps {
   /** 整批重试失败页；与 onRetryPage 同时给出时渲染工具栏按钮。 */
   onRetryFailed?: (pages: number[]) => void;
   retrying?: boolean;
+  /**
+   * 识别进行中（仅单文件入口会用）：状态每 3 秒刷新，某页可能从成功变失败，
+   * 选择集要跟着失效——组件内部按 ``pages`` 变化剪枝。
+   */
+  pruneOnChange?: boolean;
 }
 
 /** 首次渲染的页格数：200+ 页整卷一次性铺 DOM 会明显拖慢展开（评审 Important-3）。 */
@@ -46,9 +53,13 @@ export function BatchPageMatrix({
   onRetryPage,
   onRetryFailed,
   retrying = false,
+  pruneOnChange = true,
 }: BatchPageMatrixProps) {
   const t = useT();
   const [visibleCount, setVisibleCount] = useState(PAGE_CHUNK);
+  const [rangeText, setRangeText] = useState('');
+  // Shift 连选的锚点：点过的上一页（只在可选页上更新）。
+  const anchorRef = useRef<number | null>(null);
   useEffect(() => {
     setVisibleCount(PAGE_CHUNK);
   }, [status.item_id, status.page_count]);
@@ -69,6 +80,19 @@ export function BatchPageMatrix({
     () => new Set(status.pages.filter((cell) => cell.state === 'success').map((cell) => cell.page)),
     [status.pages],
   );
+  const selectablePages = useMemo(
+    () => new Set(status.pages.filter((cell) => cell.state === 'success').map((cell) => cell.page)),
+    [status.pages],
+  );
+  const isSelectable = (page: number) => !disabled && selectablePages.has(page);
+
+  // 运行中刷新：某页从成功变失败后立刻从选择集里摘掉（用户看到的「已选 N 页」就是真能导出的）。
+  useEffect(() => {
+    if (!pruneOnChange) return;
+    const pruned = pruneSelection(selected, (page) => selectablePages.has(page));
+    if (pruned !== selected) onChange(pruned);
+  }, [onChange, pruneOnChange, selectablePages, selected]);
+
   // 逐页判断而不是比 size：选择集可能残留已转 failed 的页（size 相等会误判「已全选」）。
   const allSelected =
     allSuccess.size > 0 && [...allSuccess].every((page) => selected.has(page));
@@ -83,20 +107,33 @@ export function BatchPageMatrix({
     [status.pages],
   );
 
-  const activate = (page: number, state: PageCellState) => {
+  const activate = (page: number, state: PageCellState, shiftKey = false) => {
     if (state === 'failed') {
       if (retryable && onRetryPage) onRetryPage(page);
       return;
     }
-    toggle(page, state);
+    toggle(page, state, shiftKey);
   };
 
-  const toggle = (page: number, state: PageCellState) => {
+  const toggle = (page: number, state: PageCellState, shiftKey = false) => {
     if (disabled || state !== 'success') return;
+    const anchor = anchorRef.current;
+    if (shiftKey && anchor !== null && anchor !== page) {
+      onChange(extendSelection(selected, anchor, page, isSelectable));
+      return;
+    }
     const next = new Set(selected);
     if (next.has(page)) next.delete(page);
     else next.add(page);
     onChange(next);
+    anchorRef.current = page;
+  };
+
+  // 范围输入 = 整段替换选择（失败页/未完成页自动落选，底栏会写明将排除几页）。
+  const applyRange = () => {
+    const picked = parsePageRangeInput(rangeText, status.page_count);
+    if (picked.length === 0) return;
+    onChange(new Set(picked.filter(isSelectable)));
   };
 
   const stateLabel = (state: PageCellState) => {
@@ -107,6 +144,42 @@ export function BatchPageMatrix({
 
   return (
     <div className="flex flex-col gap-2" data-testid="page-matrix">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <label className="text-xs text-muted-foreground" htmlFor="page-range-input">
+          {t('batchWizard.pages.rangeLabel')}
+        </label>
+        <input
+          id="page-range-input"
+          type="text"
+          inputMode="numeric"
+          className="h-7 w-44 rounded-md border border-border bg-background px-2 text-xs tabular-nums"
+          placeholder={t('batchWizard.pages.rangePlaceholder')}
+          value={rangeText}
+          disabled={disabled}
+          onChange={(event) => setRangeText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              applyRange();
+            }
+          }}
+          data-testid="page-matrix-range-input"
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 px-2 text-xs"
+          disabled={disabled || rangeText.trim() === ''}
+          onClick={applyRange}
+          data-testid="page-matrix-range-apply"
+        >
+          {t('batchWizard.pages.rangeApply')}
+        </Button>
+        <span className="text-xs text-muted-foreground" data-testid="page-matrix-shift-hint">
+          {t('batchWizard.pages.shiftHint')}
+        </span>
+      </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
         <span className="tabular-nums" data-testid="page-matrix-summary">
           {t('batchWizard.pages.summary')
@@ -143,6 +216,23 @@ export function BatchPageMatrix({
             data-testid="page-matrix-select-all"
           >
             {t('batchWizard.pages.selectAll')}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 px-2 text-xs"
+            disabled={disabled || allSuccess.size === 0}
+            onClick={() => {
+              const next = new Set<number>();
+              allSuccess.forEach((page) => {
+                if (!selected.has(page)) next.add(page);
+              });
+              onChange(next);
+            }}
+            data-testid="page-matrix-invert"
+          >
+            {t('batchWizard.pages.invert')}
           </Button>
           <Button
             type="button"
@@ -194,7 +284,7 @@ export function BatchPageMatrix({
                 data-state={cell.state}
                 data-selected={isSelected ? 'true' : 'false'}
                 data-retryable={cell.state === 'failed' && retryable ? 'true' : 'false'}
-                onClick={() => activate(cell.page, cell.state)}
+                onClick={(event) => activate(cell.page, cell.state, event.shiftKey)}
               >
                 {cell.page}
               </button>

@@ -7,7 +7,7 @@
 //
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ItemPageStatus } from '@/services/jobsApi';
@@ -39,12 +39,17 @@ function makeStatus(state: ItemPageStatus['recognition_state']): ItemPageStatus 
   };
 }
 
-let refreshRef: (() => Promise<void>) | null = null;
-
+/** 用一个按钮触发 refresh：测试点按钮即可，不在组件里改模块级变量。 */
 function Probe() {
   const { status, refresh } = useBatchPageStatus({ jobId: 'job-1', itemId: 'item-1' });
-  refreshRef = refresh;
-  return <span data-testid="state">{status?.recognition_state ?? 'none'}</span>;
+  return (
+    <>
+      <span data-testid="state">{status?.recognition_state ?? 'none'}</span>
+      <button type="button" data-testid="refresh" onClick={() => void refresh()}>
+        refresh
+      </button>
+    </>
+  );
 }
 
 async function flush() {
@@ -56,7 +61,6 @@ async function flush() {
 beforeEach(() => {
   vi.useFakeTimers();
   mockedGet.mockReset();
-  refreshRef = null;
 });
 
 afterEach(() => {
@@ -83,7 +87,7 @@ describe('useBatchPageStatus（Issue#257）', () => {
     // 点「重试」后 refresh 拿到 running
     mockedGet.mockResolvedValue(makeStatus('running'));
     await act(async () => {
-      await refreshRef?.();
+      fireEvent.click(screen.getByTestId('refresh'));
     });
     await flush();
     expect(screen.getByTestId('state').textContent).toBe('running');

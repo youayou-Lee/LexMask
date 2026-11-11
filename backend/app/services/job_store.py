@@ -839,6 +839,35 @@ class JobStore(RepairMixin):
             ).fetchone()
             return row["status"] if row else None
 
+    def find_item_ref_by_file_id(
+        self, file_id: str, *, owner_id: str | None = None
+    ) -> dict[str, str] | None:
+        """按文件反查最近一条 job item（Issue#257：单文件页格要 jobId/itemId）。
+
+        provider 账本在终态短留后会清条目、草稿也可能缺 ``taskJobId``——刷新后
+        单文件页格就再也解析不出 job/item。这里用已有的 ``job_items.file_id``
+        索引兜底；``owner_id`` 非空时只认该用户的 job（越权一律 None）。
+        """
+        with self._connect() as conn:
+            sql = (
+                "SELECT ji.id AS item_id, ji.job_id AS job_id, ji.status AS status "
+                "FROM job_items ji JOIN jobs j ON j.id = ji.job_id "
+                "WHERE ji.file_id = ?"
+            )
+            params: list[Any] = [file_id]
+            if owner_id is not None:
+                sql += " AND j.owner_id = ?"
+                params.append(owner_id)
+            sql += " ORDER BY ji.updated_at DESC LIMIT 1"
+            row = conn.execute(sql, params).fetchone()
+        if row is None:
+            return None
+        return {
+            "item_id": str(row["item_id"]),
+            "job_id": str(row["job_id"]),
+            "status": str(row["status"]),
+        }
+
     def batch_find_item_statuses(self, file_ids: list[str]) -> dict[str, dict[str, str]]:
         """Batch lookup latest job item status and item id by file id."""
         if not file_ids:

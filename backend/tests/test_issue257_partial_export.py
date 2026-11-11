@@ -223,21 +223,23 @@ def test_validation_rejects_explicit_failed_page():
     assert exc.value.code == "failed_pages_not_allowed"
 
 
-def test_validation_requires_ack_when_failed_pages_within_span():
-    with pytest.raises(pes.PartialExportError) as exc:
-        pes.validate_partial_export_pages(
-            [1, 2, 3, 5, 6], page_count=6, failed_pages={4}, recognized_pages={1, 2, 3, 5, 6},
-            acknowledge_failed_excluded=False,
-        )
-    assert exc.value.code == "failed_pages_ack_required"
-    assert exc.value.detail["failed_pages"] == [4]
+def test_validation_auto_excludes_failed_pages_within_span():
+    """Issue#257 需求重对齐（2026-11-11）：失败页不再要求任何「知情确认」勾选，
+    区间内的失败页直接自动排除，并如实回报给调用方（写进说明页与 manifest）。"""
+    result = pes.validate_partial_export_pages(
+        [1, 2, 3, 5, 6], page_count=6, failed_pages={4}, recognized_pages={1, 2, 3, 5, 6},
+        acknowledge_failed_excluded=False,
+    )
+    assert result["excluded_failed_pages"] == [4]
+    assert result["pages"] == [1, 2, 3, 5, 6]
+    assert 4 not in result["pages"]
 
-    ok = pes.validate_partial_export_pages(
+    # 幂等：旧客户端继续带 acknowledge=True 也照旧工作（参数保留只为兼容）。
+    legacy = pes.validate_partial_export_pages(
         [1, 2, 3, 5, 6], page_count=6, failed_pages={4}, recognized_pages={1, 2, 3, 5, 6},
         acknowledge_failed_excluded=True,
     )
-    assert ok["excluded_failed_pages"] == [4]
-    assert 4 not in ok["pages"]
+    assert legacy == result
 
 
 def test_validation_rejects_unrecognized_page():
@@ -368,3 +370,25 @@ def test_validation_accepts_pages_with_empty_boxes_entries():
         boxes_pages={1, 2},
     )
     assert selection["pages"] == [1, 2]
+
+
+def test_export_title_lists_pages_without_double_quantifier() -> None:
+    """跳页标题：逐页列举，量词只出现一次（真实事故：界面出现过「等 9 页页」）。"""
+    long_pages = [1, 2, 3, 5, 6, 7, 8, 9, 10]
+    title = pes.build_export_title(filename="卷.pdf", pages=long_pages)
+    assert title == "卷-部分导出(第1、2、3、5、6、7 等 9 页)"
+    assert "页页" not in title
+
+    short = pes.build_export_title(filename="卷.pdf", pages=[1, 3, 5])
+    assert short == "卷-部分导出(第1、3、5页)"
+
+
+def test_export_title_contiguous_stays_range() -> None:
+    assert (
+        pes.build_export_title(filename="卷.pdf", pages=range(1, 101))
+        == "卷-部分导出(第1-100页)"
+    )
+    assert (
+        pes.build_export_title(filename="卷.pdf", pages=[7])
+        == "卷-部分导出(第7页)"
+    )

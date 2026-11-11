@@ -21,6 +21,7 @@ import type { BoundingBox, Entity, FileInfo, VisionTypeConfig } from '../types';
 import { PlaygroundResultActionBar, RedactionReportSection } from './playground-result-action-bar';
 import { TextResultView, ImageResultView, OutputResultView } from './playground-result-views';
 import { PlaygroundProcessingDetails } from './processing-details-card';
+import { PlaygroundPageExport } from './playground-page-export';
 import { useOutputPagePreview } from '../hooks/use-output-page-preview';
 
 export interface PlaygroundResultProps {
@@ -315,6 +316,9 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
         fileId={fileInfo?.file_id ?? null}
         filePageCount={fileInfo?.page_count ?? fileInfo?.pages?.length ?? null}
       />
+
+      {/* Issue#257 需求重对齐：单文件任务也要能看逐页结果、选页导出（运行中/结果页同一块）。 */}
+      <PlaygroundPageExport fileId={fileInfo?.file_id ?? null} />
 
       {outputPreviewAvailable && (
         <div

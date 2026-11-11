@@ -159,27 +159,28 @@ def test_page_status_endpoint_404_when_file_info_missing(store, tmp_path, monkey
 # AC1.4 / AC1.5 部分导出端点
 # ---------------------------------------------------------------------------
 
-def test_partial_export_requires_ack_when_failed_page_in_span(wired, store, tmp_path, monkeypatch):
+def test_partial_export_auto_excludes_failed_page_in_span(wired, store, tmp_path, monkeypatch):
+    """需求重对齐：区间内含失败页不再 409 索要确认，自动排除并照常受理。"""
     job_id, item_id, _ = wired
     manager = _FakeManager(str(tmp_path / "exp"))
     monkeypatch.setattr(partial_export_service, "export_task_manager", manager)
 
-    with pytest.raises(AppError) as excinfo:
-        asyncio.run(
-            export_item_pages(
-                job_id,
-                item_id,
-                pages=[1, 2, 3, 5],
-                acknowledge_failed_excluded=False,
-                store=store,
-                owner_id="admin",
-            )
+    payload = asyncio.run(
+        export_item_pages(
+            job_id,
+            item_id,
+            pages=[1, 2, 3, 5],
+            acknowledge_failed_excluded=False,
+            store=store,
+            owner_id="admin",
         )
-    assert excinfo.value.status_code == 409
-    detail = excinfo.value.detail
-    assert excinfo.value.error_code == "failed_pages_ack_required"
-    assert detail["failed_pages"] == [4]
-    assert manager.calls == []
+    )
+
+    assert payload["status"] == "queued"
+    assert payload["excluded_failed_pages"] == [4]
+    assert payload["pages"] == [1, 2, 3, 5]
+    assert len(manager.calls) == 1
+    assert manager.calls[0]["meta"]["excluded_failed_pages"] == [4]
 
 
 def test_partial_export_accepted_records_meta(wired, store, tmp_path, monkeypatch):

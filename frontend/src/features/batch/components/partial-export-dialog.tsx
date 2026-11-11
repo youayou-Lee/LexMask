@@ -7,10 +7,7 @@
 //  - 202 受理后是异步任务；状态与下载复用 /files/batch/export/{export_id}(/volumes/{name})。
 //  - 记录跨重启仍在（后端扫 export-status.json），所以每次打开都重新拉一遍列表。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-
 import { useT } from '@/i18n';
-import { ApiError } from '@/services/api-client';
 import { batchExportApi } from '@/services/api';
 import { Button } from '@/components/ui/button';
 import {
@@ -21,14 +18,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
-import {
-  getPartialExport,
-  listItemExports,
-  startPartialExport,
-  type ItemPageStatus,
-  type PartialExportTask,
-} from '@/services/jobsApi';
-import { useBatchPageStatus } from '../hooks/use-batch-page-status';
+import type { ItemPageStatus } from '@/services/jobsApi';
+import { usePartialExportSelection } from '../hooks/use-partial-export-selection';
 import { BatchPageMatrix } from './batch-page-matrix';
 
 interface PartialExportDialogProps {
@@ -40,9 +31,6 @@ interface PartialExportDialogProps {
   initialSelected?: number[] | null;
   onClose: () => void;
 }
-
-const TASK_POLL_MS = 1500;
-const RUNNING_STATUSES: ReadonlySet<string> = new Set(['queued', 'running']);
 
 // 动态拼 key 会在缺键时把 key 原样吐到界面（i18n 的兜底就是返回 key），
 // 所以状态文案走显式映射；未知状态直出原始字符串。
@@ -70,144 +58,21 @@ export function PartialExportDialog({
   onClose,
 }: PartialExportDialogProps) {
   const t = useT();
-  const { status, error, refresh } = useBatchPageStatus({ jobId, itemId, enabled: open });
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [ack, setAck] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [activeTask, setActiveTask] = useState<PartialExportTask | null>(null);
-  const [records, setRecords] = useState<PartialExportTask[]>([]);
-  const [recordsError, setRecordsError] = useState<string | null>(null);
-  // 每次打开/换文件都重新初始化选择，但轮询回来不覆盖用户的选择。
-  const initializedForRef = useRef<string | null>(null);
-
-  const key = jobId && itemId ? `${jobId}:${itemId}` : null;
-
-  useEffect(() => {
-    if (!open) {
-      initializedForRef.current = null;
-      setSelected(new Set());
-      setAck(false);
-      setActionError(null);
-      setActiveTask(null);
-      return;
-    }
-    if (!status || initializedForRef.current === key) return;
-    initializedForRef.current = key;
-    const successPages = status.pages.filter((cell) => cell.state === 'success').map((c) => c.page);
-    const successSet = new Set(successPages);
-    const prefill = (initialSelected ?? []).filter((page) => successSet.has(page));
-    setSelected(new Set(prefill.length > 0 ? prefill : successPages));
-  }, [key, open, status]);
-
-  const loadRecords = useCallback(async () => {
-    if (!jobId || !itemId) return;
-    try {
-      const payload = await listItemExports(jobId, itemId);
-      setRecords(payload.exports);
-      setRecordsError(
-        payload.unavailable.length > 0
-          ? t('batchWizard.partialExport.recordsUnavailable').replace(
-              '{count}',
-              String(payload.unavailable.length),
-            )
-          : null,
-      );
-    } catch (err) {
-      setRecordsError(err instanceof Error ? err.message : String(err));
-    }
-  }, [itemId, jobId, t]);
-
-  useEffect(() => {
-    if (!open) return;
-    void loadRecords();
-  }, [loadRecords, open]);
-
-  // 异步导出任务：轮询到终态再刷新记录（下载链接只在 completed 后出现）。
-  useEffect(() => {
-    if (!activeTask || !RUNNING_STATUSES.has(activeTask.status)) return;
-    const timer = setTimeout(() => {
-      void getPartialExport(activeTask.export_id)
-        .then((next) => {
-          setActiveTask(next);
-          if (!RUNNING_STATUSES.has(next.status)) void loadRecords();
-        })
-        .catch(() => {
-          /* 单次轮询失败不打断：状态仍是 running 会继续下一拍 */
-        });
-    }, TASK_POLL_MS);
-    return () => clearTimeout(timer);
-  }, [activeTask, loadRecords]);
-
-  const pages = status?.pages ?? [];
-  const failedPages = useMemo(
-    () => pages.filter((cell) => cell.state === 'failed').map((cell) => cell.page),
-    [pages],
-  );
-  const orderedSelected = useMemo(() => [...selected].sort((a, b) => a - b), [selected]);
-  const excludedInSpan = useMemo(() => {
-    if (orderedSelected.length === 0) return [];
-    const min = orderedSelected[0];
-    const max = orderedSelected[orderedSelected.length - 1];
-    return failedPages.filter((page) => page >= min && page <= max);
-  }, [failedPages, orderedSelected]);
-
-  // 页状态会随轮询变化：已选的页转成 failed／未跑时必须从选择集里摘掉，
-  // 否则用户点不掉它、提交会被后端拒。
-  const successKey = useMemo(
-    () =>
-      pages
-        .filter((cell) => cell.state === 'success')
-        .map((cell) => cell.page)
-        .join(','),
-    [pages],
-  );
-  useEffect(() => {
-    const allowed = new Set(
-      successKey ? successKey.split(',').map((value) => Number(value)) : [],
-    );
-    if (allowed.size === 0) return;
-    setSelected((prev) => {
-      const next = new Set([...prev].filter((page) => allowed.has(page)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, [successKey]);
-
-  // 确认只对「当次选择」有效：选择一变就必须重新勾选（评审 Minor）。
-  const ackKey = `${orderedSelected.join(',')}|${excludedInSpan.join(',')}`;
-  useEffect(() => {
-    setAck(false);
-  }, [ackKey]);
-
-  const handleExport = async () => {
-    if (!jobId || !itemId || orderedSelected.length === 0 || submitting) return;
-    setSubmitting(true);
-    setActionError(null);
-    try {
-      const task = await startPartialExport(jobId, itemId, orderedSelected, ack);
-      setActiveTask(task);
-      void loadRecords();
-    } catch (err) {
-      if (err instanceof ApiError) {
-        const code = err.errorCode ?? '';
-        if (code === 'failed_pages_ack_required') {
-          setActionError(t('batchWizard.partialExport.errorAckRequired'));
-        } else if (code) {
-          setActionError(
-            t('batchWizard.partialExport.errorWithCode')
-              .replace('{code}', code)
-              .replace('{message}', err.message),
-          );
-        } else {
-          setActionError(err.message);
-        }
-      } else {
-        setActionError(err instanceof Error ? err.message : String(err));
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const {
+    status,
+    statusError,
+    refreshStatus,
+    selected,
+    setSelected,
+    orderedSelected,
+    excludedInSpan,
+    records,
+    recordsError,
+    activeTask,
+    submitting,
+    actionError,
+    submit,
+  } = usePartialExportSelection({ jobId, itemId, enabled: open, initialSelected });
 
   const paged = status?.paged ?? false;
   const recognitionState = status?.recognition_state ?? 'not_started';
@@ -230,13 +95,13 @@ export function PartialExportDialog({
           </DialogHeader>
 
           <div className="flex min-h-0 flex-col gap-3 overflow-y-auto px-5 py-4">
-            {error && (
+            {statusError && (
               <p className="text-xs text-destructive" data-testid="partial-export-status-error">
-                {error}
+                {statusError}
               </p>
             )}
 
-            {!status && !error && (
+            {!status && !statusError && (
               <p className="text-xs text-muted-foreground">{t('batchWizard.partialExport.loading')}</p>
             )}
 
@@ -261,20 +126,14 @@ export function PartialExportDialog({
                 />
 
                 {excludedInSpan.length > 0 && (
-                  <label className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs">
-                    <input
-                      type="checkbox"
-                      className="mt-0.5"
-                      checked={ack}
-                      onChange={(event) => setAck(event.target.checked)}
-                      data-testid="partial-export-ack"
-                    />
-                    <span className="text-destructive">
-                      {t('batchWizard.partialExport.ackFailed')
-                        .replace('{pages}', excludedInSpan.join('、'))
-                        .replace('{count}', String(excludedInSpan.length))}
-                    </span>
-                  </label>
+                  <p
+                    className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+                    data-testid="partial-export-excluded-hint"
+                  >
+                    {t('batchWizard.partialExport.excludedHint')
+                      .replace('{pages}', excludedInSpan.join('、'))
+                      .replace('{count}', String(excludedInSpan.length))}
+                  </p>
                 )}
 
                 <p className="text-xs text-muted-foreground">
@@ -327,8 +186,7 @@ export function PartialExportDialog({
                     variant="outline"
                     className="h-9"
                     onClick={() => {
-                      void refresh();
-                      void loadRecords();
+                      refreshStatus();
                     }}
                     disabled={submitting}
                     data-testid="partial-export-refresh"
@@ -338,12 +196,10 @@ export function PartialExportDialog({
                   <Button
                     type="button"
                     className="h-9"
-                    onClick={() => void handleExport()}
+                    onClick={() => void submit()}
                     disabled={
                       submitting ||
-                      !canPick ||
-                      orderedSelected.length === 0 ||
-                      (excludedInSpan.length > 0 && !ack)
+                      !canPick || orderedSelected.length === 0
                     }
                     data-testid="partial-export-submit"
                   >
