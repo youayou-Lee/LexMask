@@ -722,6 +722,22 @@ class Settings(BaseSettings):
     # 原因：置 False 会把「覆盖页 0 框」当成「这页已由文档级链处理」⇒ 整页丢检，
     # 一行配置就能把上一轮修掉的 C-1 重新打开。现在 0 框页**无条件**回落旧路径。）
 
+    # --- Issue#273 P0 页级路由（阈值语义见设计底稿 §2.2/§2.3；复用 TEXT_LAYER_* 族不另立口径）---
+    RECOGNITION_ROUTING_MODE: str = "page"          # page|file；file = 今天的行为（回滚开关）
+    ROUTING_VERSION: int = 1                        # 判定/仲裁行为版本，进缓存签名与账本
+    ROUTING_CHARS_MULTIPLE: float = 1.3             # K1：chars_ocr > chars_tl×K1 ⇒ 改判 OCR
+    ROUTING_ENTITIES_MULTIPLE: float = 1.5          # K2：entities_ocr > entities_tl×K2 ⇒ 改判 OCR
+    ROUTING_VERIFY_UPGRADE_PASS: int = 3            # 连续对账通过升档（用户拍板 3）
+    ROUTING_SAMPLE_PAGES: int = 2                   # 每卷抽样双跑页数；0=关
+    ROUTING_MAX_PAGE_REPEAT_RATIO: float = 0.30     # 页内高频重复串率上限（水印串支配页）
+    ROUTING_MIN_READING_ORDER_AGREEMENT: float = 0.80  # 阅读顺序相邻对一致率下限
+    ROUTING_BOUNDARY_CHARS_BAND: float = 1.5        # chars 贴近下限的灰区带倍数
+    ROUTING_MAX_TYPE3_RATIO: float = 0.5            # 灰区：Type3 字体占比上限
+    ROUTING_MIN_EMBEDDED_RATIO: float = 0.5         # 灰区：嵌入字体占比下限
+    ROUTING_L2_RENDER_DPI: int = 100                # L2 渲染 DPI
+    ROUTING_VERIFY_OCR_TIMEOUT_SEC: int = 90        # 证据 OCR 阶段死线（超时⇒verify_incomplete）
+    ROUTING_VERIFY_OCR_EVIDENCE_ENABLED: bool = True  # 证据 OCR 逃生口（False⇒verify 降级直信）
+
     # 兼容旧环境变量 HAS_BASE_URL
     HAS_BASE_URL: str | None = None
 
@@ -928,6 +944,13 @@ class Settings(BaseSettings):
     def _validate_text_layer_max_repeated_fragment_coverage(cls, v: float) -> float:
         # 0 = 关闸（不推荐：#203 事故形态回到无防护）；上限 1.0 等于永不该越。
         return max(0.0, min(1.0, v))
+
+    @field_validator("RECOGNITION_ROUTING_MODE")
+    @classmethod
+    def _validate_routing_mode(cls, v: str) -> str:
+        if v not in ("page", "file"):
+            raise ValueError("RECOGNITION_ROUTING_MODE must be 'page' or 'file'")
+        return v
 
     @field_validator("TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS")
     @classmethod
