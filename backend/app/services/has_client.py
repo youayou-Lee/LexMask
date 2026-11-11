@@ -1636,7 +1636,10 @@ If nothing matches, return {{}}.
             # 并入补查」同款先例）；补查不可用（同键重发/禁补查）或仍标量
             # ⇒ 保持 False 走既有「块失败 ⇒ 整卷弃权」语义（宁可失败可见）。
             result, scalar_missing = self._sanitize_ner_buckets(result)
-            if scalar_missing:
+            # 门⑥ I-1：只有**请求类型**被剥才算「结论没拿到」——垃圾键标量
+            # （请求类型之外）剥除即净，不影响 confirmed（I-4 契约检查已用
+            # 原始结果判定过「一个请求类型都没答」的情形）。
+            if any(t in types for t in scalar_missing):
                 confirmed = False
             missing: list[str] = []
             cut_bucket_dropped = False

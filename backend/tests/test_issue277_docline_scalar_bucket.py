@@ -91,6 +91,9 @@ def test_scalar_bucket_in_cap_split_recovers_via_requery(monkeypatch):
     client, calls = _make_client(monkeypatch, respond)
     result, ok = client.ner_checked(_TEXT_1990, _TYPES_20, context_tokens=4096)
 
+    # 门⑥ Minor-4①：切批形状显式钉死（[19,1] 末批=文书编号，与生产实录逐字节同形）
+    assert calls[0] == _TYPES_19, "第一发必须 19 类型子批"
+    assert calls[1] == [_SCALAR_TYPE], "第二发必须单类型子批（文书编号）"
     assert ok is True, "标量桶经补查恢复后必须 confirmed=True"
     assert result[_SCALAR_TYPE] == ["X号"], "补查恢复的值必须并入结果"
     for t in _TYPES_19:
@@ -171,6 +174,32 @@ def test_sanitize_non_requested_scalar_not_requeried(monkeypatch):
     assert ok is False
     assert result == {}
     assert client.get_cached_ner(_TEXT_1990, ["类型a", "类型b"]) is None
+    # 门⑥ Minor-4②：垃圾键不路由补查——只有 1 次模型调用
+    assert len(calls) == 1
+
+
+def test_mixed_answer_with_garbage_scalar_key_stays_confirmed(monkeypatch):
+    """门⑥ I-1 行为钉：请求类型全部正常回答 + 一个垃圾键标量桶 ⇒ confirmed=True。
+
+    垃圾键剥除即净、不影响 confirmed——否则请求类型全对的块也会被判失败，
+    docline 上等价于本 Issue 要消灭的「整卷弃权」残余路径。缓存条目必须干净
+    （垃圾键不存在、请求类型的列表桶完整）。
+    """
+
+    def respond(types, scalar_index, temperature):
+        return json.dumps(
+            {"类型a": ["值a"], "垃圾键": 5}, ensure_ascii=False
+        )
+
+    client, calls = _make_client(monkeypatch, respond)
+    result, ok = client.ner_checked(
+        "张三提交文书。" * 3, ["类型a"], context_tokens=4096
+    )
+    assert ok is True, "请求类型已正确回答，垃圾键标量不得毒化 confirmed"
+    assert result == {"类型a": ["值a"]}, "垃圾键必须被剥除"
+    assert len(calls) == 1, "垃圾键不触发补查"
+    cached = client.get_cached_ner("张三提交文书。" * 3, ["类型a"])
+    assert cached == {"类型a": ["值a"]}, "缓存条目必须干净（无垃圾键、无 fail-open）"
 
 
 def test_scalar_bucket_with_retry_disabled_returns_unconfirmed(monkeypatch):

@@ -10,7 +10,7 @@
 - **修了什么**：
   - **解析出口单点形状治理**：`has_client._sanitize_ner_buckets`——列表桶逐字节保留（合法形状零漂移）；假值标量（0/None/""）≈ 模型答「无」，按 `{}` 口径剥除；真值标量/字典桶 = 该类型结论「没拿到」（#108 口径）：confirmed=False、绝不落缓存键（防 #263 同族「部分并集洗白成完整结论」fail-open），并路由进**既有 missing-type 补查**换温度轨迹二机会（#209 C2「切断桶并入补查」同款先例）；补查不可用（短文本同键重发/禁补查）或仍标量 ⇒ 保持 False 走既有「块失败 ⇒ 整卷弃权」语义（Issue 验收明文要求不变）。补查块从 json_repair 分支提升为函数级，截断缺失与标量缺失共用同一条补查路径。
   - **可观测**：docline 块级 catch 补 `exc_info=True`——下次任何逃逸异常日志自带完整栈与行号。
-- **测试**：后端 +14 例（`test_issue277_docline_scalar_bucket.py`）——红绿钉两条（修复前 TypeError 逐字消息在 `has_client.py:1418` 复现、切批形状 [19,1] 末批 `['文书编号']` 与生产实录逐字节同形；修复后补查恢复⇒confirmed=True+全类型键落缓存 / 补查仍标量⇒False+缓存键绝不落盘）、形状矩阵 8 形（int/str/dict/假值标量/空列表/列表保真/混合）、垃圾键标量走 #108 I-4 口径、禁补查层、短文本不自连补查（防 #108 的 3×120s 自连接挂起形态）、块级 catch traceback 钉。全量 3003 passed / 48 skipped / 0 failed，与 preview 基线 comm -3 恰差 14 个新用例、零既有差异。
+- **测试**：后端 +15 例（`test_issue277_docline_scalar_bucket.py`）——红绿钉两条（修复前 TypeError 逐字消息在 `has_client.py:1418` 复现、切批形状 [19,1] 末批 `['文书编号']` 与生产实录逐字节同形；修复后补查恢复⇒confirmed=True+全类型键落缓存 / 补查仍标量⇒False+缓存键绝不落盘）、形状矩阵 8 形（int/str/dict/假值标量/空列表/列表保真/混合）、垃圾键标量走 #108 I-4 口径且不影响 confirmed（门⑥ I-1：请求类型全对的块不得被垃圾键毒化判失败）、禁补查层、短文本不自连补查（防 #108 的 3×120s 自连接挂起形态）、块级 catch traceback 钉。全量 2955 passed / 48 skipped（collected 3003）/ 0 failed，与 preview 基线 comm -3 恰差新增用例、零既有差异。
 - **真卷实弹**（分支镜像一次性容器，生产同源 20 标签）：86 页卷并发 4 连跑 5 次——0 次 TypeError、0 failed_chunks、0 http_errors（docline 建链 76.3–188.7s/跑），同卷期间截断补查路径正常触发 22 次全健康。修复前后对照：修复前 = 97s docline 白烧 + 全卷逐页 OCR+NER 重算；修复后 = docline 一次建链即终局。
 
 ### 增强（Issue#257 一期之三·需求重对齐）单文件任务也能选页导出：页格嵌在文件处理页 + 范围输入 + 去掉失败页勾选
