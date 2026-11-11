@@ -120,6 +120,12 @@ export const RecognitionScopeDialog: FC<{
   // ── 分页（每区独立；页号超出时渲染侧收敛） ──
   const [zonePages, setZonePages] = useState<Record<ZoneId, number>>({ ner: 1, ocr: 1, la: 1 });
 
+  // ── 全局搜索（Issue#262 二期反馈）：三区同时过滤（显示名 OR id，大小写不敏感）。
+  // 搜索态该区不分页（全部命中一次渲染）、翻页控件禁用并显示匹配计数；zonePages 不动，
+  // 清空搜索即恢复搜索前页码。只作用于可用区——离线区/na 区不参与搜索展示。
+  const [scopeSearch, setScopeSearch] = useState('');
+  const scopeQuery = scopeSearch.trim().toLowerCase();
+
   // ── 服务状态（侧边栏同口径：busy/checking 可用；无健康快照时 fallbackService 语义） ──
   const zoneStatus = (zone: ZoneDef): ServiceStatus => {
     const service = health?.services[zone.serviceKey];
@@ -384,6 +390,14 @@ export const RecognitionScopeDialog: FC<{
               {t('playground.scope.schemeSave')}
             </Button>
           </div>
+          <Input
+            value={scopeSearch}
+            onChange={(event) => setScopeSearch(event.target.value)}
+            placeholder={t('playground.scope.searchPlaceholder')}
+            aria-label={t('playground.scope.searchLabel')}
+            data-testid="playground-scope-search"
+            className="h-8 w-full rounded-xl text-xs"
+          />
           {saveFormOpen && (
             <form
               className="flex flex-wrap items-center gap-2"
@@ -437,10 +451,21 @@ export const RecognitionScopeDialog: FC<{
             const active = isZoneActive(zone);
             const types = zoneTypes[zone.id];
             const ids = types.map((type) => type.id);
+            const searching = scopeQuery.length > 0;
+            const matchedTypes = searching
+              ? types.filter(
+                  (type) =>
+                    resolveTypeName(zone, type).toLowerCase().includes(scopeQuery) ||
+                    type.id.toLowerCase().includes(scopeQuery),
+                )
+              : types;
+            const zoneNoMatch = searching && matchedTypes.length === 0;
             const totalPages = Math.max(1, Math.ceil(types.length / SCOPE_PAGE_SIZE));
             const rawPage = zonePages[zone.id] ?? 1;
             const page = Math.min(Math.max(1, rawPage), totalPages);
-            const visibleTypes = types.slice((page - 1) * SCOPE_PAGE_SIZE, page * SCOPE_PAGE_SIZE);
+            const visibleTypes = searching
+              ? matchedTypes
+              : types.slice((page - 1) * SCOPE_PAGE_SIZE, page * SCOPE_PAGE_SIZE);
             const selectedSet =
               zone.id === 'ner'
                 ? rec.selectedTypes
@@ -509,6 +534,14 @@ export const RecognitionScopeDialog: FC<{
                   >
                     {t('playground.scope.zoneOffline')}
                   </div>
+                ) : zoneNoMatch ? (
+                  // 搜索态 0 命中：区框结构不变，chip 墙换成空态文案
+                  <div
+                    className="mt-2.5 flex flex-1 items-center justify-center rounded-xl border border-dashed border-border/70 bg-muted/20 px-3 py-6 text-center text-xs leading-4 text-muted-foreground"
+                    data-testid={`playground-scope-zone-${zone.id}-nomatch`}
+                  >
+                    {t('playground.scope.noMatch')}
+                  </div>
                 ) : (
                   <div className="mt-2.5 grid min-h-0 grid-cols-2 gap-1.5">
                     {visibleTypes.map((type) => {
@@ -575,7 +608,7 @@ export const RecognitionScopeDialog: FC<{
                         type="button"
                         aria-label={t('playground.scope.prevPage')}
                         data-testid={`playground-scope-zone-${zone.id}-page-prev`}
-                        disabled={page <= 1}
+                        disabled={searching || page <= 1}
                         onClick={() =>
                           setZonePages((current) => ({ ...current, [zone.id]: page - 1 }))
                         }
@@ -584,16 +617,21 @@ export const RecognitionScopeDialog: FC<{
                         ‹
                       </button>
                       <span className="whitespace-nowrap px-0.5">
-                        {t('playground.scope.pageLabel')
-                          .replace('{page}', String(page))
-                          .replace('{total}', String(totalPages))
-                          .replace('{count}', String(types.length))}
+                        {searching
+                          ? t('playground.scope.matchCount').replace(
+                              '{count}',
+                              String(matchedTypes.length),
+                            )
+                          : t('playground.scope.pageLabel')
+                              .replace('{page}', String(page))
+                              .replace('{total}', String(totalPages))
+                              .replace('{count}', String(types.length))}
                       </span>
                       <button
                         type="button"
                         aria-label={t('playground.scope.nextPage')}
                         data-testid={`playground-scope-zone-${zone.id}-page-next`}
-                        disabled={page >= totalPages}
+                        disabled={searching || page >= totalPages}
                         onClick={() =>
                           setZonePages((current) => ({ ...current, [zone.id]: page + 1 }))
                         }

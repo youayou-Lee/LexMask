@@ -5,6 +5,7 @@ import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { PaginationRail } from '@/components/PaginationRail';
 import { useTruncated } from '@/components/hooks/useTruncated';
 import { Switch } from '@/components/ui/switch';
@@ -19,6 +20,14 @@ import { getEntityTypeName } from '@/config/entityTypes';
 import type { EntityTypeConfig } from '../hooks/use-entity-types';
 
 const RECOGNITION_PAGE_SIZE = 9;
+
+/**
+ * 卡片显示名：内置类型走 i18n 别名表（getEntityTypeName），自定义类型用 name。
+ * 与卡片标题渲染同源，搜索匹配必须用同一口径（显示名 OR type id）。
+ */
+function entityTypeDisplayName(type: EntityTypeConfig): string {
+  return type.id.startsWith('custom_') ? type.name : getEntityTypeName(type.id);
+}
 
 interface EntityTypeListProps {
   types: EntityTypeConfig[];
@@ -52,6 +61,12 @@ export function EntityTypeList({
   const panelTitle = isRegex ? t('settings.customFallbackRules') : t('settings.hasTextRules');
   const addLabel = t('settings.addNew');
   const [page, setPage] = useState(1);
+  // Issue#262 二期反馈：识别项搜索（显示名 OR type id，大小写不敏感 substring）。
+  // 搜索态忽略分页——全部命中一次性渲染、翻页控件换成匹配计数；page 不动，
+  // 清空搜索即恢复搜索前页码（totalPages 只随 types 变化，搜索不会误触 clamp）。
+  const [search, setSearch] = useState('');
+  const query = search.trim().toLowerCase();
+  const searching = query.length > 0;
   const totalPages = Math.max(1, Math.ceil(types.length / RECOGNITION_PAGE_SIZE));
 
   useEffect(() => {
@@ -64,10 +79,20 @@ export function EntityTypeList({
     setPage((current) => Math.min(current, totalPages));
   }, [totalPages]);
 
+  const matchedTypes = useMemo(() => {
+    if (!query) return types;
+    return types.filter(
+      (type) =>
+        entityTypeDisplayName(type).toLowerCase().includes(query) ||
+        type.id.toLowerCase().includes(query),
+    );
+  }, [query, types]);
+
   const visibleTypes = useMemo(() => {
+    if (query) return matchedTypes;
     const start = (page - 1) * RECOGNITION_PAGE_SIZE;
     return types.slice(start, start + RECOGNITION_PAGE_SIZE);
-  }, [page, types]);
+  }, [page, types, query, matchedTypes]);
 
   return (
     <div
@@ -91,6 +116,14 @@ export function EntityTypeList({
             >
               {types.length}
             </Badge>
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder={t('settings.entityList.searchPlaceholder')}
+              aria-label={t('settings.entityList.searchLabel')}
+              data-testid="settings-entity-search"
+              className="ml-auto h-7 w-[124px] shrink rounded-xl px-2.5 text-xs sm:w-[200px]"
+            />
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <Button
@@ -114,7 +147,7 @@ export function EntityTypeList({
         </div>
 
         <div className={cn('page-surface-body flex', compact ? 'p-2.5' : 'p-3')}>
-          {types.length === 0 ? (
+          {visibleTypes.length === 0 ? (
             <div
               className={cn(
                 'flex flex-1 items-center justify-center rounded-[20px] border border-dashed border-border/70 bg-muted/15 px-6 text-center',
@@ -122,7 +155,11 @@ export function EntityTypeList({
               )}
             >
               <p className="text-sm leading-6 text-muted-foreground">
-                {isRegex ? t('settings.redaction.regexEmptyInline') : t('settings.noTypeConfig')}
+                {searching
+                  ? t('settings.entityList.noMatch')
+                  : isRegex
+                    ? t('settings.redaction.regexEmptyInline')
+                    : t('settings.noTypeConfig')}
               </p>
             </div>
           ) : (
@@ -150,10 +187,7 @@ export function EntityTypeList({
                   <div className="flex min-w-0 flex-1 flex-col gap-2.5">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <ClampTooltipText
-                          kind="title"
-                          text={systemManaged ? getEntityTypeName(type.id) : type.name}
-                        />
+                        <ClampTooltipText kind="title" text={entityTypeDisplayName(type)} />
                         {systemManaged && (
                           <span className="mt-1 inline-flex rounded-md border border-border/70 bg-muted/40 px-1.5 py-0.5 text-xs text-muted-foreground">
                             {t('settings.entityList.systemManaged')}
@@ -276,14 +310,23 @@ export function EntityTypeList({
 
         {types.length > 0 && (
           <div className="page-surface-footer">
-            <PaginationRail
-              page={page}
-              pageSize={RECOGNITION_PAGE_SIZE}
-              totalItems={types.length}
-              totalPages={totalPages}
-              onPageChange={setPage}
-              compact
-            />
+            {searching ? (
+              <span
+                className="text-xs tabular-nums text-muted-foreground"
+                data-testid="entity-type-search-count"
+              >
+                {t('settings.entityList.matchCount').replace('{count}', String(matchedTypes.length))}
+              </span>
+            ) : (
+              <PaginationRail
+                page={page}
+                pageSize={RECOGNITION_PAGE_SIZE}
+                totalItems={types.length}
+                totalPages={totalPages}
+                onPageChange={setPage}
+                compact
+              />
+            )}
           </div>
         )}
       </div>

@@ -2680,6 +2680,11 @@ Object.assign(enOverrides, {
 
   // entity-type-list.tsx
   'settings.entityList.systemManaged': 'System managed',
+  // Issue#262 wave 2 feedback: entity type list search (display name OR type code)
+  'settings.entityList.searchPlaceholder': 'Search recognition types (name or code)',
+  'settings.entityList.searchLabel': 'Search recognition types',
+  'settings.entityList.matchCount': '{count} matches',
+  'settings.entityList.noMatch': 'No matches',
   'settings.override.enabled': 'Enabled',
   'settings.override.includeDefault': 'Include in default scope',
   'settings.override.disabledBadge': 'Disabled',
@@ -2770,6 +2775,11 @@ Object.assign(enOverrides, {
   'playground.scope.title': 'Recognition scope',
   'playground.scope.subtitle':
     'Three zones cover text, character-presence and visual cues. Ticks apply immediately and are used as-is for recognition.',
+  // Issue#262 wave 2 feedback: dialog-wide search (filters all three zones)
+  'playground.scope.searchPlaceholder': 'Search types (name or code)',
+  'playground.scope.searchLabel': 'Search types',
+  'playground.scope.matchCount': '{count} matches',
+  'playground.scope.noMatch': 'No matches',
   'playground.scope.schemeLabel': 'Scheme',
   'playground.scope.schemeMyGroup': 'My schemes',
   'playground.scope.schemeCustom': 'Custom (manual selection)',

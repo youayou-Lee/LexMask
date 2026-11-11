@@ -596,6 +596,136 @@ describe('Task 10b：方案三态与自定义态', () => {
   });
 });
 
+describe('Task 12b：全局搜索（三区过滤 + 不分页 + 即点即存不变）', () => {
+  const searchBox = () => screen.getByTestId('playground-scope-search') as HTMLInputElement;
+
+  it('搜索框存在（testid + aria-label）；非搜索态不影响既有分页渲染', () => {
+    const rec = makeRec({
+      entityTypes: WIDE_CATALOG,
+      pipelines: [],
+      selectedTypes: [],
+      selectedOcrHasTypes: [],
+      selectedVisualFeatureTypes: [],
+    });
+    renderDialog(rec);
+    expect(searchBox()).not.toBeNull();
+    expect(searchBox().getAttribute('aria-label')).toBe('搜索类型');
+    // 搜索为空：翻页控件照常可点（20 类 3 页，第1页 → next 可用、prev 不可用）
+    expect(screen.getByTestId('playground-scope-zone-ner-page-next').hasAttribute('disabled')).toBe(
+      false,
+    );
+    expect(screen.getByTestId('playground-scope-zone-ner-page-prev').hasAttribute('disabled')).toBe(
+      true,
+    );
+  });
+
+  it('搜索态：三区同时过滤（显示名 or id）+ 匹配计数 + 翻页按钮禁用', () => {
+    const rec = makeRec({
+      entityTypes: WIDE_CATALOG,
+      pipelines: [],
+      selectedTypes: [],
+      selectedOcrHasTypes: [],
+      selectedVisualFeatureTypes: [],
+    });
+    renderDialog(rec);
+
+    fireEvent.change(searchBox(), { target: { value: 'Type1' } });
+    // NER 区命中 Type1/Type10..Type19 共 11 类，全部一次性渲染（不分页）
+    for (const id of ['T01', 'T10', 'T19']) {
+      expect(chip(id)).not.toBeNull();
+    }
+    expect(screen.queryByTestId('playground-scope-chip-T20')).toBeNull();
+    expect(zone('ner').textContent).toContain('匹配 11 项');
+    // 空管线的 ocr/la 两区 0 命中 → 无匹配空态，区框仍在
+    expect(zone('ocr').textContent).toContain('无匹配');
+    expect(zone('la').textContent).toContain('无匹配');
+    // 翻页控件禁用
+    expect(screen.getByTestId('playground-scope-zone-ner-page-next').hasAttribute('disabled')).toBe(
+      true,
+    );
+    expect(screen.getByTestId('playground-scope-zone-ner-page-prev').hasAttribute('disabled')).toBe(
+      true,
+    );
+  });
+
+  it('搜索态按 id 小写匹配 + 有命中的第二区照常过滤（ocr 区命中 chip）', () => {
+    const rec = makeRec();
+    renderDialog(rec);
+    fireEvent.change(searchBox(), { target: { value: 'ocr_addr' } });
+    expect(chip('OCR_ADDR')).not.toBeNull();
+    expect(screen.queryByTestId('playground-scope-chip-OCR_ID')).toBeNull();
+    expect(zone('ocr').textContent).toContain('匹配 1 项');
+    expect(zone('ner').textContent).toContain('无匹配');
+    expect(zone('la').textContent).toContain('无匹配');
+  });
+
+  it('搜索态点 chip → 照样写 rec（即点即存不断：NER setter + vision toggle）', () => {
+    const rec = makeRec({ selectedTypes: ['PERSON'] });
+    renderDialog(rec);
+    fireEvent.change(searchBox(), { target: { value: 'bank' } });
+    expect(chip('BANK_CARD')).not.toBeNull();
+    fireEvent.click(chip('BANK_CARD'));
+    expect(rec.clearPlaygroundTextPresetTracking).toHaveBeenCalled();
+    expect(rec.setSelectedTypes).toHaveBeenCalledTimes(1);
+    const adder = vi.mocked(rec.setSelectedTypes).mock.calls[0][0] as (
+      previous: string[],
+    ) => string[];
+    expect(adder(['PERSON'])).toEqual(['PERSON', 'BANK_CARD']);
+  });
+
+  it('翻到第2页后搜索再清空 → 分页恢复且页码保持搜索前状态（第2/3页）', () => {
+    const rec = makeRec({
+      entityTypes: WIDE_CATALOG,
+      pipelines: [],
+      selectedTypes: [],
+      selectedOcrHasTypes: [],
+      selectedVisualFeatureTypes: [],
+    });
+    renderDialog(rec);
+    fireEvent.click(screen.getByTestId('playground-scope-zone-ner-page-next'));
+    expect(zone('ner').textContent).toContain('第2/3页');
+
+    fireEvent.change(searchBox(), { target: { value: 'T01' } });
+    expect(zone('ner').textContent).toContain('匹配 1 项');
+
+    fireEvent.change(searchBox(), { target: { value: '' } });
+    expect(zone('ner').textContent).toContain('第2/3页');
+    expect(chip('T09')).not.toBeNull();
+    expect(screen.queryByTestId('playground-scope-chip-T01')).toBeNull();
+    expect(screen.getByTestId('playground-scope-zone-ner-page-next').hasAttribute('disabled')).toBe(
+      false,
+    );
+  });
+
+  it('离线区不参与搜索展示（保持暗区+红条）；na 区保持 na', () => {
+    mockHealthState.health = makeHealth({ visual_features: 'offline' });
+    const rec = makeRec({ selectedVisualFeatureTypes: ['OFFICIAL_SEAL'] });
+    renderDialog(rec);
+    fireEvent.change(searchBox(), { target: { value: '印章' } });
+    // LA 离线：仍显示离线红条与暗区，不出 chip（搜索不作用于离线区）
+    expect(zone('la').className).toContain('grayscale');
+    expect(zone('la').textContent).toContain('本区暂不参与识别，恢复后自动回来');
+    expect(screen.queryByTestId('playground-scope-chip-OFFICIAL_SEAL')).toBeNull();
+    // NER 区照常过滤（印章在 NER 无命中）
+    expect(zone('ner').textContent).toContain('无匹配');
+    // OCR 区在线且有命中 → 正常过滤展示
+    expect(zone('ocr').textContent).toContain('无匹配');
+  });
+
+  it('na 区在搜索态保持 na（na 优先于搜索：纯文本文件 OCR/LA 区不参与）', () => {
+    const rec = makeRec({ selectedVisualFeatureTypes: ['OFFICIAL_SEAL'] });
+    renderDialog(rec, { visionApplicable: false });
+    fireEvent.change(searchBox(), { target: { value: '印章' } });
+    // OCR/LA 区保持不适用文案、不暗化；不出 chip
+    expect(zone('ocr').textContent).toContain('本文件是纯文本，不走此区');
+    expect(zone('la').textContent).toContain('本文件是纯文本，不走此区');
+    expect(zone('la').className).not.toContain('grayscale');
+    expect(screen.queryByTestId('playground-scope-chip-OFFICIAL_SEAL')).toBeNull();
+    // NER 区照常过滤（印章在 NER 无命中）
+    expect(zone('ner').textContent).toContain('无匹配');
+  });
+});
+
 describe('Task 10b：保存为方案（createPreset + 列表失效 + 自动套用）', () => {
   it('点保存为方案 → 内联表单出现；空名 → 错误 toast、不调 createPreset', () => {
     const rec = makeRec();

@@ -2628,6 +2628,11 @@ Object.assign(zhOverrides, {
 
   // entity-type-list.tsx
   'settings.entityList.systemManaged': '系统配置',
+  // Issue#262 二期反馈：识别项列表搜索（显示名 OR 类型代码）
+  'settings.entityList.searchPlaceholder': '搜索识别项（名称或代码）',
+  'settings.entityList.searchLabel': '搜索识别项',
+  'settings.entityList.matchCount': '匹配 {count} 项',
+  'settings.entityList.noMatch': '无匹配',
   'settings.override.enabled': '启用',
   'settings.override.includeDefault': '纳入默认识别范围',
   'settings.override.disabledBadge': '已停用',
@@ -2717,6 +2722,11 @@ Object.assign(zhOverrides, {
 Object.assign(zhOverrides, {
   'playground.scope.title': '识别范围',
   'playground.scope.subtitle': '三个识别区各管一类线索，勾选即刻生效，识别时按这里的选择执行。',
+  // Issue#262 二期反馈：弹窗全局搜索（三区过滤）
+  'playground.scope.searchPlaceholder': '搜索类型（名称或代码）',
+  'playground.scope.searchLabel': '搜索类型',
+  'playground.scope.matchCount': '匹配 {count} 项',
+  'playground.scope.noMatch': '无匹配',
   'playground.scope.schemeLabel': '方案',
   'playground.scope.schemeMyGroup': '我的方案',
   'playground.scope.schemeCustom': '自定义（手动勾选）',
