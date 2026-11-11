@@ -1078,6 +1078,12 @@ async def delete_job(store: JobStore, job_id: str) -> dict[str, Any]:
         store.delete_job(job_id)
     except KeyError:
         raise NotFoundError("job not found")
+    # Issue#279 A5.1：事件日志随任务删除（fail-open，删除失败不阻断任务删除）。
+    try:
+        from app.services.page_event_log import delete_job_logs
+        delete_job_logs(job_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("page event logs cleanup failed for job %s", job_id, exc_info=True)
     detached_file_count = await detach_job_from_files(job_id, items)
     return {
         "id": job_id,
