@@ -31,7 +31,12 @@ from app.services.agent_md_adapter import (
     normalize_content_list,
     normalize_docvortex,
 )
-from app.services.agent_md_ner import build_mapping_draft, chunk_segments, run_ner
+from app.services.agent_md_ner import (
+    build_mapping_draft,
+    chunk_segments,
+    merge_regex_entities,
+    run_ner,
+)
 from app.services.agent_md_replace import (
     apply_decisions,
     render_outputs,
@@ -246,6 +251,8 @@ class AgentMdPipelineService:
             entity_types = self.entity_types or self._resolve_entity_types(task.owner_id)
             task.entity_types_used = [str(t) for t in entity_types]
             entities, _ = await run_ner(chunks, entity_types, self.ner)
+            # Issue#281 续：数字类 PII/微信 ID 正则补层（模型召回兜底）
+            entities = merge_regex_entities(entities, segs)
             task.entities = entities
             task.mapping = build_mapping_draft(entities)
             if task.state == TaskState.FAILED:  # NER await 窗口内被判死同样不复活

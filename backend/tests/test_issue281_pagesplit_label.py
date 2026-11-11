@@ -93,3 +93,217 @@ def test_excluded_item_not_touched_by_page_split_matcher():
     assert "（2023）桂0000民初00" in md
     assert "案号1" not in md
     assert mapping_json["items"][0]["excluded"] is True
+
+
+# ---- 追加：产物面 Markdown 转义 / 全角形态差（表示失配自愈）---------------
+#
+# 真卷形态：检测面 segs 拿到的是 `wxid_fixture0000001`，而 zip 官方 md 把
+# 下划线转义成 `wxid\_fixture0000001`；另有全角冒号/括号的半角化差。字面
+# 比对必然失配，representation_mismatch 会把整卷拦死（真卷实测 2/5 卷）。
+
+ESCAPE_MD = (
+    "<!-- page 1 of 1 -->\n\n"
+    "（30）其微信号:wxid\\_fixture0000001 的聊天记录与转账截图。\n"
+)
+
+FULLWIDTH_MD = (
+    "<!-- page 1 of 1 -->\n\n"
+    "（31）其微信号：wxid_fixture0000002）于 2021 年 1 月 1 日。\n"
+)
+
+
+def _wechat_item(mid="m3", original="微信号:wxid_fixture0000001"):
+    return MappingItem(id=mid, original_text=original,
+                       entity_type="WECHAT_ID", replacement="微信1")
+
+
+def test_markdown_escaped_entity_replaced():
+    """md 里 `wxid\\_...`（md 转义）与原文 `wxid_...` 必须被视为同一实体。"""
+    md, _, _ = render_outputs_on_structure(ESCAPE_MD, [], [], [_wechat_item()])
+    verify_structure_integrity(ESCAPE_MD, md)
+    assert "wxid" not in md
+    assert "微信1" in md
+
+
+def test_markdown_escaped_bare_id_replaced():
+    """不带「微信号:」前缀的裸 ID 项同样要能命中转义形态。"""
+    md, _, _ = render_outputs_on_structure(
+        ESCAPE_MD, [], [], [_wechat_item(original="wxid_fixture0000001")])
+    assert "wxid" not in md
+    assert "微信1" in md
+
+
+def test_fullwidth_punctuation_variant_replaced():
+    """md 全角冒号 / 全角括号与检测面半角形态视为同一实体。"""
+    md, _, _ = render_outputs_on_structure(
+        FULLWIDTH_MD, [], [], [_wechat_item(original="微信号:wxid_fixture0000002")])
+    verify_structure_integrity(FULLWIDTH_MD, md)
+    assert "wxid" not in md
+    assert "微信1" in md
+
+
+def test_escape_and_whitespace_variant_replaced():
+    """转义 + 空白差叠加：折叠视图定位后按原文区间替换。"""
+    src = "<!-- page 1 of 1 -->\n\n其微信 wxid\\_fixture0000003 ) 于 2021 年转账。\n"
+    md, _, _ = render_outputs_on_structure(
+        src, [], [], [_wechat_item(original="wxid_fixture0000003 ) 于 2021 年")])
+    assert "wxid" not in md
+    assert "微信1" in md
+
+
+def test_absent_entity_still_fails_closed():
+    """自愈只放宽「形态差」，真失配（md 里根本没有该文本）仍须拦死。"""
+    import pytest
+
+    with pytest.raises(ValueError, match="representation_mismatch"):
+        render_outputs_on_structure(
+            ESCAPE_MD, [], [], [_wechat_item(original="wxid_notpresent000")])
+
+
+# ---- 追加：短数字实体吃掉页标记（真卷扫描线 86→84 实测）--------------------
+#
+# NER 在扫描卷里产出 CASE_NUMBER='10'/'11'（纯数字误报），整文 replace 直接把
+# `<!-- page 10 of 86 -->` 里的页号改掉，页标记序列对账判结构破坏、整卷 fail。
+
+MARKER_MD = (
+    "<!-- page 10 of 86 -->\n\n"
+    "被害人陈述：案发时间为 10 月，损失合计 8600 元。\n\n"
+    "<!-- page 11 of 86 -->\n\n"
+    "附卷页码说明见 of 86 页清单。\n"
+)
+
+
+def test_short_numeric_entity_excluded_in_draft():
+    """纯数字短原文（'10'/'008'）默认保留：整文替换会命中页号/年份。"""
+    from app.services.agent_md_ner import build_mapping_draft
+
+    items = build_mapping_draft([
+        Entity(id="e1", text="10", type="CASE_NUMBER", start=0, end=2),
+        Entity(id="e2", text="008", type="CASE_NUMBER", start=3, end=6),
+        Entity(id="e3", text="（2023）桂0000民初00号", type="CASE_NUMBER", start=7, end=27),
+    ])
+    assert [i.excluded for i in items] == [True, True, False]
+
+
+def test_short_numeric_item_still_rejected_by_renderer():
+    """律师把短数字项显式改成 keep→replace 时，渲染层硬闸兜底。"""
+    import pytest
+
+    with pytest.raises(ValueError, match="degenerate_original"):
+        render_outputs_on_structure(
+            MARKER_MD, [], [],
+            [MappingItem(id="m9", original_text="10", entity_type="CASE_NUMBER",
+                         replacement="案号67")])
+
+
+def test_page_markers_masked_roundtrip():
+    """页标记在替换期间换成哨兵，还原后逐字节一致。"""
+    from app.services.agent_md_replace import (
+        _mask_page_markers,
+        _unmask_page_markers,
+    )
+
+    masked, markers = _mask_page_markers(MARKER_MD)
+    assert "<!-- page" not in masked
+    assert len(markers) == 2
+    assert _unmask_page_markers(masked, markers) == MARKER_MD
+
+
+def test_marker_content_never_replaced():
+    """映射原文与页标记同形（'of 86'）时，页标记必须原样保留。"""
+    md, _, _ = render_outputs_on_structure(
+        MARKER_MD, [], [],
+        [MappingItem(id="m10", original_text="of 86", entity_type="CASE_NUMBER",
+                     replacement="页码1")])
+    verify_structure_integrity(MARKER_MD, md)
+    assert "<!-- page 10 of 86 -->" in md and "<!-- page 11 of 86 -->" in md
+    assert "见 页码1 页清单" in md
+
+
+def test_marker_digit_neighbour_replacement_keeps_marker():
+    """正文里的短数字邻近页标记时，替换只落在正文，页标记不动。"""
+    md, _, _ = render_outputs_on_structure(
+        MARKER_MD, [], [],
+        [MappingItem(id="m11", original_text="10 月", entity_type="TIME",
+                     replacement="月份1")])
+    verify_structure_integrity(MARKER_MD, md)
+    assert "<!-- page 10 of 86 -->" in md
+    assert "案发时间为 月份1" in md
+
+
+# ---- 追加：正则补层（数字类 PII / 微信 ID 召回兜底）------------------------
+#
+# 真卷 86 页扫描件验收时 NER 漏了 21 个身份证号、22 个手机号——供料产物要给
+# 下游 AI 用，漏一个就是一次泄露。补一层与 vl_md 同口径的正则。
+
+def _segs(*texts_pages):
+    return [Seg(text=t, page_idx=p, source="text") for t, p in texts_pages]
+
+
+def test_regex_pii_entities_offsets_and_pages():
+    from app.services.agent_md_ner import regex_pii_entities
+
+    segs = _segs(
+        ("身份证号110101199001010001", 0),
+        ("联系电话13800138000，微信:wxid_fixture0000001", 1),
+    )
+    ents = {e.type: e for e in regex_pii_entities(segs)}
+    assert ents["ID_CARD"].text == "110101199001010001"
+    assert (ents["ID_CARD"].start, ents["ID_CARD"].end) == (4, 22)
+    assert ents["ID_CARD"].page == 1
+    assert ents["PHONE"].text == "13800138000" and ents["PHONE"].page == 2
+    assert ents["SOCIAL_ACCOUNT"].text == "wxid_fixture0000001"
+    # 全局偏移口径：第二段起点 = 第一段长 + "\n\n"
+    assert ents["PHONE"].start == len("身份证号110101199001010001") + 2 + 4
+
+
+def test_regex_pii_skips_overlap_with_ner():
+    from app.services.agent_md_ner import merge_regex_entities
+
+    text = "电话13800138000"
+    ner = [Entity(id="e1", text="13800138000", type="PHONE",
+                  start=2, end=13, page=1)]
+    merged = merge_regex_entities(ner, _segs((text, 0)))
+    assert merged == ner  # 模型已召回，正则不再重复出项
+
+
+def test_regex_pii_wxid_masked_by_draft():
+    from app.services.agent_md_ner import build_mapping_draft, regex_pii_entities
+
+    ents = regex_pii_entities(_segs(("微信号:wxid_fixture0000001", 0)))
+    items = build_mapping_draft(ents)
+    assert len(items) == 1
+    assert items[0].entity_type == "SOCIAL_ACCOUNT"
+    assert items[0].replacement == "社交账号1"
+    assert items[0].excluded is False
+
+
+def test_regex_pii_kept_when_ner_entity_is_junk_overlap():
+    """NER 的 1 字符垃圾实体（真卷 CASE_NUMBER:'4'）不能吞掉整个身份证号。"""
+    from app.services.agent_md_ner import merge_regex_entities
+
+    text = "张三 110101199001010000 副校长"
+    ner = [Entity(id="e1", text="4", type="CASE_NUMBER", start=4, end=5, page=1)]
+    merged = merge_regex_entities(ner, _segs((text, 0)))
+    assert any(e.type == "ID_CARD" and e.text == "110101199001010000" for e in merged)
+
+
+def test_regex_pii_dropped_when_ner_covers_whole_span():
+    """NER 已完整覆盖（且会打码）时不重复出项。"""
+    from app.services.agent_md_ner import merge_regex_entities
+
+    text = "身份证号110101199001010000"
+    ner = [Entity(id="e1", text="110101199001010000", type="ID_CARD",
+                  start=4, end=22, page=1)]
+    assert merge_regex_entities(ner, _segs((text, 0))) == ner
+
+
+def test_regex_pii_type_wins_over_wrong_ner_type():
+    """同一 18 位号码被 NER 标成 CASE_NUMBER 时，产物应按 ID_CARD 出占位符。"""
+    from app.services.agent_md_ner import merge_regex_entities
+
+    text = "身份证号码:110101199001010000"
+    ner = [Entity(id="e1", text="110101199001010000", type="CASE_NUMBER",
+                  start=6, end=24, page=1)]
+    merged = merge_regex_entities(ner, _segs((text, 0)))
+    assert [(e.type, e.text) for e in merged] == [("ID_CARD", "110101199001010000")]
