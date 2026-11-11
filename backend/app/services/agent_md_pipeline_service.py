@@ -244,12 +244,16 @@ class AgentMdPipelineService:
     def _persist_output_pending(self, task: AgentMdTask) -> None:
         if self.task_store is None:
             return
+        # 两阶段提交第一步失败必须中止：否则产物/登记已写而 id 未落库，
+        # 重启后重试会换新 id，同一任务出现两条产物行（评审 M2）。
         try:
             self.task_store.mark_output_pending(task)
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "agent_md output id persist failed: %s", task.task_id, exc_info=True
+        except Exception:
+            logger.error(
+                "agent_md output id persist failed, abort confirm: %s", task.task_id,
+                exc_info=True,
             )
+            raise
 
     def _persist_completed(self, task: AgentMdTask) -> None:
         if self.task_store is None:

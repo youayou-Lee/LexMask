@@ -217,7 +217,7 @@ describe('Issue#262：任务中心合并页', () => {
 
 describe('Issue#282：供料任务并入任务中心', () => {
   it('进行中/待审阅供料任务按视图分流，计数并入 active/review 徽标', () => {
-    mockedAgentTasks.counts = { active: 2, awaiting_review: 1 };
+    mockedAgentTasks.counts = { active: 1, awaiting_review: 1 };
     const base = {
       stage: 'ner',
       message: '',
@@ -239,8 +239,9 @@ describe('Issue#282：供料任务并入任务中心', () => {
       '/agent-md?taskId=t-active',
     );
     expect(screen.queryByTestId('agent-md-task-t-review')).toBeNull();
-    // 工单 7 + 供料 2；工单 3 + 供料 1
-    expect(screen.getByTestId('tasks-tab-active').textContent).toContain('9');
+    // 工单 7 + 供料 1；工单 3 + 供料 1；徽标必须等于面板可见行数
+    expect(screen.getByTestId('tasks-tab-active').textContent).toContain('8');
+    expect(screen.getAllByTestId(/^agent-md-task-t-/)).toHaveLength(1);
     expect(screen.getByTestId('tasks-tab-review').textContent).toContain('4');
 
     activateTab('tasks-tab-review');

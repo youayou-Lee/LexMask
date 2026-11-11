@@ -211,6 +211,48 @@ def test_concurrent_confirm_returns_same_result(tmp_path, sample_pdf):
         fms.file_store.pop(results[0].output_file_id, None)
 
 
+def test_confirm_retry_reuses_pending_output_id(tmp_path, sample_pdf):
+    """崩溃在 mark_output_pending 之后：重试必须复用同一 output_file_id，
+    且 file_store 只登记一条产物（评审 I3 证据）。"""
+    from app.services import file_management_service as fms
+
+    store = AgentMdTaskStore(_db_path(tmp_path))
+    svc = _service(tmp_path, store)
+    task = svc.create_task_nowait(sample_pdf, "a.pdf")
+    task.output_file_id = "fixed-output-0001"
+    store.mark_output_pending(task)
+    try:
+        done = svc.confirm_nowait(task.task_id, [])
+        assert done.state == TaskState.COMPLETED
+        assert done.output_file_id == "fixed-output-0001"
+        rows = [
+            rec for rec in fms.file_store.values()
+            if isinstance(rec, dict) and rec.get("agent_md_task_id") == task.task_id
+        ]
+        assert len(rows) == 1
+        assert store.load(task.task_id)["payload_json"] is None
+    finally:
+        for fid in [k for k, rec in fms.file_store.items()
+                    if isinstance(rec, dict) and rec.get("agent_md_task_id") == task.task_id]:
+            fms.file_store.pop(fid, None)
+
+
+def test_confirm_aborts_when_pending_id_persist_fails(tmp_path, sample_pdf, monkeypatch):
+    """mark_output_pending 失败必须在写产物前中止，避免换新 id 造成重复产物。"""
+    store = AgentMdTaskStore(_db_path(tmp_path))
+    svc = _service(tmp_path, store)
+    task = svc.create_task_nowait(sample_pdf, "a.pdf")
+
+    def boom(_task):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(store, "mark_output_pending", boom)
+    with pytest.raises(RuntimeError, match="disk full"):
+        svc.confirm_nowait(task.task_id, [])
+    assert not list(tmp_path.glob("a_脱敏MD_*.md"))
+    assert store.load(task.task_id)["state"] == "mapping_ready"
+
+
 async def _gather_confirm(svc, task_id):
     return await asyncio.gather(svc.confirm(task_id, []), svc.confirm(task_id, []))
 
