@@ -249,10 +249,11 @@ class AgentMdPipelineService:
             chunks = chunk_segments(segs)
             # run_ner 就地平移 Entity 偏移——每任务只调一次
             entity_types = self.entity_types or self._resolve_entity_types(task.owner_id)
-            task.entity_types_used = [str(t) for t in entity_types]
+            task.entity_types_used = sorted(_entity_type_ids(entity_types))
             entities, _ = await run_ner(chunks, entity_types, self.ner)
             # Issue#281 续：数字类 PII/微信 ID 正则补层（模型召回兜底）
-            entities = merge_regex_entities(entities, segs)
+            entities = merge_regex_entities(
+                entities, segs, _entity_type_ids(entity_types))
             task.entities = entities
             task.mapping = build_mapping_draft(entities)
             if task.state == TaskState.FAILED:  # NER await 窗口内被判死同样不复活
@@ -369,7 +370,33 @@ class AgentMdPipelineService:
         from app.services.entity_type_service import resolve_requested_entity_types
         from app.services.vl_md_pipeline_service import VL_MD_DEFAULT_TYPE_IDS
 
-        return resolve_requested_entity_types(list(VL_MD_DEFAULT_TYPE_IDS), owner_id or None)
+        defaults = list(VL_MD_DEFAULT_TYPE_IDS)
+        # 供料产物面向下游 AI：微信/支付宝账号是身份类标识，默认纳入兜底范围；
+        # owner 在识别范围里显式停用则仍按配置过滤（resolve 负责三态）。
+        if "WECHAT_ALIPAY" not in defaults:
+            defaults.append("WECHAT_ALIPAY")
+        return resolve_requested_entity_types(defaults, owner_id or None)
+
+
+def _entity_type_ids(types) -> set[str]:
+    """把类型配置对象/字符串/dict 统一成类型 id 集合。
+
+    ``resolve_requested_entity_types`` 返回 ``EntityTypeConfig`` 对象，直接
+    ``str(t)`` 出来的是 repr（不是 id）——2026-11-12 真卷回归：正则补层拿到
+    这串 repr 后把所有项当「未启用」全部过滤，86 页卷 24 个身份证号静默漏打码。
+    """
+    ids: set[str] = set()
+    for t in types or []:
+        if isinstance(t, str):
+            ids.add(t)
+            continue
+        if isinstance(t, dict):
+            value = t.get("id") or t.get("type_id")
+        else:
+            value = getattr(t, "id", None) or getattr(t, "type_id", None)
+        if value:
+            ids.add(str(value))
+    return ids
 
 
 _ILLEGAL_FILENAME_CHARS = re.compile(r'[/\\:*?"<>|]')

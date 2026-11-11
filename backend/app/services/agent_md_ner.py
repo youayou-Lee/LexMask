@@ -24,7 +24,7 @@ _TYPE_ZH = {
     "PERSON": "人名", "BIRTH_DATE": "出生日期", "ID_NUMBER": "证件号",
     "BANK_CARD": "银行卡", "PHONE": "电话", "PLATE": "车牌", "ADDRESS": "地址",
     "ORG": "机构", "CASE_NUMBER": "案号", "ID_CARD": "证件号",
-    "LICENSE_PLATE": "车牌", "SOCIAL_ACCOUNT": "社交账号",
+    "LICENSE_PLATE": "车牌", "WECHAT_ALIPAY": "支付账号",
 }
 
 # Issue#281 续：模型召回兜底（正则优先占 span）。真卷 86 页扫描件验收时
@@ -36,7 +36,7 @@ _PII_REGEXES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("ID_CARD", re.compile(r"(?<!\d)\d{17}[\dXx](?!\d)")),
     ("PHONE", re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")),
     ("BANK_CARD", re.compile(r"(?<!\d)6222\d{12,15}(?!\d)")),
-    ("SOCIAL_ACCOUNT", re.compile(r"wxid_[0-9A-Za-z_-]{4,}")),
+    ("WECHAT_ALIPAY", re.compile(r"wxid_[0-9A-Za-z_-]{4,}")),
 )
 
 
@@ -102,7 +102,7 @@ async def run_ner(
     return entities, chunks
 
 
-def regex_pii_entities(segs: list[Seg]) -> list[Entity]:
+def regex_pii_entities(segs: list[Seg], type_ids: set[str] | None = None) -> list[Entity]:
     """正则补层：数字类 PII + 微信 ID（Issue#281 续）。
 
     偏移口径与 run_ner 一致——全局拼接文本（段间 ``\\n\\n``）上的绝对偏移，
@@ -117,6 +117,9 @@ def regex_pii_entities(segs: list[Seg]) -> list[Entity]:
     out: list[Entity] = []
     taken: list[tuple[int, int]] = []
     for type_id, pattern in _PII_REGEXES:
+        # 识别范围契约：owner 关掉某类型时补层也不得越权打码（与 vl_md 同口径）。
+        if type_ids is not None and type_id not in type_ids:
+            continue
         for mo in pattern.finditer(text):
             start, end = mo.span()
             if any(start < t_end and t_start < end for t_start, t_end in taken):
@@ -139,17 +142,18 @@ def _would_be_masked(ent: Entity) -> bool:
     """与 build_mapping_draft 的默认 excluded 规则同口径（ORG/单字符/短数字不算已覆盖）。"""
     if len(ent.text) <= 1 or ent.type == "ORG":
         return False
-    return not (ent.text.isdigit() and len(ent.text) <= 3)
+    return not (ent.text.isdigit() and len(ent.text) <= 4)
 
 
-def merge_regex_entities(entities: list[Entity], segs: list[Seg]) -> list[Entity]:
+def merge_regex_entities(entities: list[Entity], segs: list[Seg],
+                         type_ids: set[str] | None = None) -> list[Entity]:
     """NER 实体 + 正则补层。
 
     仅当 NER 已有一个「会真正打码」的实体**完整包住**补层命中时才丢弃补层项；
     部分重叠不丢——真卷 86 页扫描件里 NER 会产出 1 字符的 CASE_NUMBER:'4' 压在
     身份证号首位，旧「区间重叠即丢」规则会让 21 个身份证号全部漏网。
     """
-    extra = regex_pii_entities(segs)
+    extra = regex_pii_entities(segs, type_ids)
     if not extra:
         return entities
     out = list(entities)
@@ -254,7 +258,7 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
         # `<!-- page 10 of 86 -->` 的页号改掉（真卷实测页标记 86→84 判结构
         # 破坏、整卷 fail）。长度 ≤3 的纯数字一律默认保留。
         excluded = len(ent.text) == 1 or (
-            ent.text.isdigit() and len(ent.text) <= 3
+            ent.text.isdigit() and len(ent.text) <= 4
         )
         # 策略表（用户定稿）：机构名保留原文——ORG 默认 excluded=True（泛词
         # 「证券/保险/支行」整文替换还会毁掉列头）；律师可逐条改 keep。

@@ -44,8 +44,10 @@ def test_page_split_entity_replaced_even_when_ws_variant_eats_contiguous_form():
         SPLIT_MD, [], [], [_plain_item(), _ws_variant_item()])
     verify_structure_integrity(SPLIT_MD, md)
     assert "（2023）桂0000" not in md  # 切开形态不得残留真实案号
-    assert "案号1" in md  # 切开形态落占位符
-    assert "案号2" in md  # 连续形态仍按空白变体项替换
+    # 切开替换与主循环同口径按 len 降序：空白变体项（更长）先吃掉切开处，
+    # 与连续形态落同一个占位符（案号2）——同一事实不应产出两个占位符。
+    assert "案号1" not in md
+    assert md.count("案号2") == 2
     assert "<!-- page 1 of 2 -->" in md and "<!-- page 2 of 2 -->" in md
     assert mapping_json["items"][0]["replacement"] == "案号1"
 
@@ -252,7 +254,7 @@ def test_regex_pii_entities_offsets_and_pages():
     assert (ents["ID_CARD"].start, ents["ID_CARD"].end) == (4, 22)
     assert ents["ID_CARD"].page == 1
     assert ents["PHONE"].text == "13800138000" and ents["PHONE"].page == 2
-    assert ents["SOCIAL_ACCOUNT"].text == "wxid_fixture0000001"
+    assert ents["WECHAT_ALIPAY"].text == "wxid_fixture0000001"
     # 全局偏移口径：第二段起点 = 第一段长 + "\n\n"
     assert ents["PHONE"].start == len("身份证号110101199001010001") + 2 + 4
 
@@ -273,8 +275,8 @@ def test_regex_pii_wxid_masked_by_draft():
     ents = regex_pii_entities(_segs(("微信号:wxid_fixture0000001", 0)))
     items = build_mapping_draft(ents)
     assert len(items) == 1
-    assert items[0].entity_type == "SOCIAL_ACCOUNT"
-    assert items[0].replacement == "社交账号1"
+    assert items[0].entity_type == "WECHAT_ALIPAY"
+    assert items[0].replacement == "支付账号1"
     assert items[0].excluded is False
 
 
@@ -346,3 +348,136 @@ def test_confusable_variant_only_split_covered_not_rejected():
     verify_structure_integrity(md_src, md)
     assert "民初0O" not in md
     assert "案号1" in md
+
+
+# ---- 门⑥ 冷评审追加：同文本多切点 / 异形噪声 / 嵌套前缀 / 4 位数字 ----
+
+def _two_split_md(noise: str) -> str:
+    return (
+        "<!-- page 1 of 3 -->\n\n"
+        "第一处[案号（2023）桂0000民初00\n\n1\n\n<!-- page 2 of 3 -->\n\n号]。\n\n"
+        "另处（2023）桂0000民初00\n\n" + noise + "\n\n"
+        "<!-- page 3 of 3 -->\n\n号]。\n"
+    )
+
+
+def test_two_split_occurrences_with_odd_noise_do_not_leak():
+    """同文本被切开两处、噪声形态不同（4 位页脚/大写 Page/中文页脚）都必须替换。"""
+    for noise in ("1000", "<!-- Page 2 of 3 -->", "第 2 页 共 3 页"):
+        src = _two_split_md(noise)
+        md, _, _ = render_outputs_on_structure(src, [], [], [_plain_item()])
+        assert "（2023）桂0000" not in md, noise
+        assert md.count("案号1") == 2, noise
+
+
+def test_split_ordering_long_entity_not_cut_by_prefix():
+    """短实体是长实体的前缀时，切开替换必须按 len 降序，不得把长实体切断。"""
+    src = ("<!-- page 1 of 2 -->\n\n张\n\n1\n\n<!-- page 2 of 2 -->\n\n"
+           "三丰律师事务所，张三丰本人。\n")
+    items = [
+        MappingItem(id="m1", original_text="张三", entity_type="PERSON", replacement="人1"),
+        MappingItem(id="m2", original_text="张三丰", entity_type="PERSON", replacement="人2"),
+    ]
+    md, _, _ = render_outputs_on_structure(src, [], [], items)
+    assert "人2丰律师事务所" not in md
+    assert "人1三丰律师事务所" in md or "人2" in md
+    assert "人2本人" in md
+
+
+def test_split_entity_four_page_footer_still_fails_closed_when_unmatched():
+    """噪声超出容错集（如正文夹在中间）时仍 fail-closed，不能静默出厂。"""
+    src = ("<!-- page 1 of 2 -->\n\n[案号（2023）桂0000民初00\n\n"
+           "正文无关一句话\n\n<!-- page 2 of 2 -->\n\n号]。\n")
+    import pytest
+
+    with pytest.raises(ValueError, match="representation_mismatch|zero_residual_violation"):
+        render_outputs_on_structure(src, [], [], [_plain_item()])
+
+
+def test_regex_layer_respects_disabled_types():
+    """识别范围契约：owner 关掉 PHONE/ID_CARD 时补层不得越权打码。"""
+    from app.services.agent_md_ner import regex_pii_entities
+
+    segs = _segs(("电话13800138000，身份证110101199001010000", 0))
+    only_phone = regex_pii_entities(segs, {"PHONE"})
+    assert [e.type for e in only_phone] == ["PHONE"]
+    assert regex_pii_entities(segs, set()) == []
+
+
+def test_four_digit_numeric_draft_default_excluded():
+    """4 位纯数字（年份/4 位页码）同样默认保留——2023 被替换会毁年份与案号本体。"""
+    from app.services.agent_md_ner import build_mapping_draft
+
+    entities = [
+        Entity(id="e1", text="2023", type="CASE_NUMBER", start=0, end=4),
+        Entity(id="e2", text="（2023）桂0000民初00号", type="CASE_NUMBER", start=5, end=24),
+    ]
+    items = build_mapping_draft(entities)
+    by_orig = {i.original_text: i for i in items}
+    assert by_orig["2023"].excluded is True
+    assert by_orig["（2023）桂0000民初00号"].excluded is False
+
+
+def test_four_digit_numeric_rejected_by_render_gate():
+    """审阅里把 4 位纯数字改 keep→replace 时，渲染层硬闸 fail-closed。"""
+    import pytest
+
+    item = MappingItem(id="m1", original_text="2023", entity_type="CASE_NUMBER",
+                       replacement="案号1")
+    with pytest.raises(ValueError, match="degenerate_original"):
+        render_outputs_on_structure("<!-- page 1 of 1 -->\n\n2023 年。\n", [], [], [item])
+
+
+def test_label_collapse_does_not_rewrite_unrelated_body_text():
+    """收口只作用于本次替换造出的叠字；正文里本来就有「案号案号7」不得被改。"""
+    src = "<!-- page 1 of 1 -->\n\n原告张三；说明：案号案号7 与 案号7。\n"
+    item = MappingItem(id="m1", original_text="张三", entity_type="PERSON",
+                       replacement="案号7")
+    md, _, _ = render_outputs_on_structure(src, [], [], [item])
+    assert "原告案号7" in md
+    assert "说明：案号案号7 与 案号7。" in md
+
+
+def test_entity_type_ids_accept_config_objects_strings_and_dicts():
+    """类型配置对象经 str() 是 repr 而非 id；补层过滤必须按 id 取。"""
+    from types import SimpleNamespace
+
+    from app.services.agent_md_pipeline_service import _entity_type_ids
+
+    ids = _entity_type_ids([
+        SimpleNamespace(id="PHONE"),
+        "ID_CARD",
+        {"id": "WECHAT_ALIPAY"},
+        SimpleNamespace(type_id="BANK_CARD"),
+        SimpleNamespace(),
+    ])
+    assert ids == {"PHONE", "ID_CARD", "WECHAT_ALIPAY", "BANK_CARD"}
+
+
+def test_regex_layer_works_with_config_objects():
+    """回归钉：用配置对象当识别范围时，身份证/手机仍必须被打码。"""
+    from types import SimpleNamespace
+
+    from app.services.agent_md_ner import merge_regex_entities
+    from app.services.agent_md_pipeline_service import _entity_type_ids
+
+    text = "身份证110101199001010000，电话13800138000。"
+    merged = merge_regex_entities(
+        [], _segs((text, 0)),
+        _entity_type_ids([SimpleNamespace(id="ID_CARD"), SimpleNamespace(id="PHONE")]),
+    )
+    kinds = sorted({e.type for e in merged})
+    assert kinds == ["ID_CARD", "PHONE"]
+
+
+def test_label_dup_created_by_page_split_is_collapsed():
+    """跨页切开处原文自带「案号」标签：替换后「[案号案号1」必须收成「[案号1」。"""
+    md = (
+        "<!-- page 1 of 2 -->\n\n异议人提出[案号（2023）桂0000民初00\n\n"
+        "1\n\n<!-- page 2 of 2 -->\n\n号]。\n"
+    )
+    item = MappingItem(id="m1", original_text="（2023）桂0000民初00号",
+                       entity_type="CASE_NUMBER", replacement="案号1")
+    out, _, _ = render_outputs_on_structure(md, [], [], [item])
+    assert "案号案号" not in out
+    assert "[案号1" in out

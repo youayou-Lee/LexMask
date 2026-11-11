@@ -35,8 +35,12 @@ _UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
 # 字符间允许 `\s*`（与 flex 同口径，容忍 OCR 空白差）。替换时**把页边界噪声
 # 原样回插**——页脚数字与页注释必须保留，否则 verify_structure_integrity 的
 # 页标记序列对账会判结构破坏。
+# 噪声形态不止「页脚数字 + 小写页注释」一种：实测还有 4 位页脚（\d{1,3}
+# 吃不下）、大写 `<!-- Page 2 of 3 -->`、中文页脚「第 2 页 共 3 页」。噪声
+# 只可能由空白/数字/页注释/中文页脚字构成，故此处按**字符集**放宽容纳，但
+# 要求至少含一个页注释——保证只在跨页处生效，不会误伤正文。
 _PAGE_BREAK_NOISE = (
-    r"(?P<pbnoise>\s*(?:\d{1,3}\s*)?<!--\s*page\s+\d+\s+of\s+\d+\s*-->\s*)"
+    r"(?P<pbnoise>(?:[\s0-9第页共]*<!--[^>]*-->[\s0-9第页共]*)+)"
 )
 # 占位符形如「类型短名+序号」（案号1/地址2/银行卡1）；OCR 原文本身可能已带
 # 同款类型短名，替换后成「案号案号1」叠字。
@@ -123,9 +127,17 @@ def _fold_spans(md: str, pattern: re.Pattern[str]) -> list[tuple[int, int]]:
     return spans
 
 
-def _fold_matches(md: str, original: str) -> bool:
+def _fold_matches(md: str, original: str, folded: str | None = None) -> bool:
+    """折叠视图上是否还能找到原文形态。
+
+    ``folded`` 可传入**本次闸门统一计算**的折叠文本：同一 md 上逐项判定时
+    不重复折叠（门⑥ 冷评审实测 1200 项 × 2 次闸门 = 2400 次折叠，43.8KB
+    卷上累计 23.6s；统一计算后只折叠 2 次）。
+    """
     pat = _fold_flex_pattern(original)
-    return bool(pat and pat.search(_fold_md(md)[0]))
+    if pat is None:
+        return False
+    return bool(pat.search(folded if folded is not None else _fold_md(md)[0]))
 
 
 def _replace_fold(md: str, original: str, replacement: str) -> str:
@@ -177,7 +189,44 @@ def _unmask_page_markers(md: str, markers: list[str]) -> str:
     return md
 
 
-def _page_split_patterns(original: str) -> list[re.Pattern[str]]:
+def _page_boundary_char_pairs(md: str) -> set[tuple[str, str]]:
+    """每个页边界两侧可能的 (左页末字, 右页首字)。
+
+    切开实体一定在某个边界上，切分点两侧字符必与其中一对相同——用它把
+    「每项枚举全部切分点」收窄到「只枚举真有边界的切分点」（1200 项 × 46KB
+    卷上 re.compile 从 1.8 万次降到数十次）。
+
+    边界噪声（页脚数字/中文页脚/空白）夹在两侧，故每侧各取若干候选：
+    左页从右往左跳过噪声字符，收录最近 3 个正文字符；右页同理从左往右。
+    """
+    noise = set(" \t\r\n")
+    left_cands: set[str] = set()
+    right_cands: set[str] = set()
+    for mo in _PAGE_MARKER_RE.finditer(md):
+        left = md[: mo.start()]
+        taken = 0
+        for ch in reversed(left):
+            if ch in noise:
+                continue
+            left_cands.add(ch)
+            taken += 1
+            if taken >= 10:
+                break
+        right = md[mo.end():]
+        taken = 0
+        for ch in right:
+            if ch in noise:
+                continue
+            right_cands.add(ch)
+            taken += 1
+            if taken >= 10:
+                break
+    return {(a, b) for a in left_cands for b in right_cands}
+
+
+def _page_split_patterns(
+    original: str, boundary_pairs: set[tuple[str, str]] | None = None
+) -> list[re.Pattern[str]]:
     """枚举原文被页边界切开的全部形态（每个切分点一个正则）。
 
     切分点在**去空白后**的字符序列上枚举：原文自身带空白时（OCR 变体），
@@ -188,6 +237,8 @@ def _page_split_patterns(original: str) -> list[re.Pattern[str]]:
         return []
     pats: list[re.Pattern[str]] = []
     for i in range(1, len(chars)):
+        if boundary_pairs is not None and (chars[i - 1], chars[i]) not in boundary_pairs:
+            continue
         head = r"\s*".join(_ocr_char_pattern(c) for c in chars[:i])
         tail = r"\s*".join(_ocr_char_pattern(c) for c in chars[i:])
         pats.append(re.compile(head + _PAGE_BREAK_NOISE + tail))
@@ -205,8 +256,11 @@ def _apply_page_split(
     applied: dict[str, list[re.Pattern[str]]] = {}
     if "<!--" not in md or "page" not in md:
         return md, applied
-    for m in items:
-        pats = _page_split_patterns(m.original_text)
+    boundary_pairs = _page_boundary_char_pairs(md)
+    # 门⑥重要项：与主替换循环同口径按 len 降序——短实体是长实体的天然前缀，
+    # 先跑短项会把长实体从中间切断（切开处落成短项占位符、尾字孤立）且三闸全绿。
+    for m in sorted(items, key=lambda m: len(m.original_text), reverse=True):
+        pats = _page_split_patterns(m.original_text, boundary_pairs)
         if not pats:
             continue
         before = md
@@ -218,11 +272,19 @@ def _apply_page_split(
     return md, applied
 
 
-def _collapse_label_duplication(md: str, items: list[MappingItem]) -> str:
+def _collapse_label_duplication(
+    md: str, items: list[MappingItem], source_md: str | None = None
+) -> str:
     """收口「标签+占位符」叠字：OCR 原文自带类型短名时只保留一个标签。
 
     只在 replacement 形如「短名+序号」且叠字真实存在时动手；映射表
     replacement 不变（审阅面口径不漂移）。
+
+    门⑥ 冷评审：全局 ``replace`` 会改到**不是本次替换插入**的同形正文
+    （正文里本就有的 OCR 叠字也会被吃掉一个标签）。传 ``source_md``（替换
+    前文本）时只收口「替换前就存在 label+original」的处数——即本次替换真正
+    造出来的叠字；legacy 路径不传时退回旧全局口径（该路径没有结构化页边界，
+    无法精确归因）。
     """
     for m in items:
         rep = m.replacement or ""
@@ -233,7 +295,17 @@ def _collapse_label_duplication(md: str, items: list[MappingItem]) -> str:
         if not label.strip():
             continue
         dup = label + rep
+        budget = None
+        if source_md is not None:
+            # 原文可能被页边界切开（标签+原文只在产物面拼合），故用「标签+原文头
+            # 两个字符」计预算；切开的处数同样计入，否则 split 造出的叠字收不掉。
+            head = m.original_text[:2] if len(m.original_text) > 2 else m.original_text
+            budget = source_md.count(label + head)
         for _ in range(3):  # 防御多重叠字，收敛即停
+            if budget is not None:
+                if budget <= 0:
+                    break
+                budget -= 1
             if dup not in md:
                 break
             md = md.replace(dup, rep)
@@ -312,9 +384,11 @@ def render_outputs(
 
     md = _SEP.join(pieces)
 
+    _source_before_fallback = md
     # 全文兜底：NER 只标注了部分出现处，同值其余出现处也要替换（E4 零残留）。
     # 长文本优先（len 降序）避免子串嵌套损坏；excluded 项跳过（保留原文）；
-    # 占位符含 [] 而原文不含，不会误伤已插入的占位符；空原文跳过防误插。
+    # 占位符形如「案号1」已不含方括号（#248 起），与原文可能同形；已插入的
+    # 占位符是否被二次命中由下游折叠/残留闸兜底，空原文跳过防误插。
     for m in sorted(
         (m for m in mapping if not m.excluded and m.original_text),
         key=lambda m: len(m.original_text),
@@ -425,7 +499,7 @@ def render_outputs_on_structure(
     degenerate = [
         m for m in items
         if len(m.original_text) == 1
-        or (m.original_text.isdigit() and len(m.original_text) <= 3)
+        or (m.original_text.isdigit() and len(m.original_text) <= 4)
     ]
     if degenerate:
         first = degenerate[0]
@@ -483,17 +557,18 @@ def render_outputs_on_structure(
         seg = _seg_of_offset(segs, ent.start)
         if seg is not None and seg.source in ("img_ocr", "sentinel"):
             exempt.add(ent.text)
+    _folded_md = _fold_md(md)[0]
     uncovered = [
         m for m in _plain
         if m.original_text not in md and m.original_text not in exempt
         and m.id not in _split_applied
-        and not _fold_matches(md, m.original_text)
+        and not _fold_matches(md, m.original_text, _folded_md)
     ]
     uncovered += [
         m for m in _flex
         if not _flex_res[m.id].search(md) and m.original_text not in exempt
         and m.id not in _split_applied
-        and not _fold_matches(md, m.original_text)
+        and not _fold_matches(md, m.original_text, _folded_md)
     ]
     if uncovered:
         names = "、".join(repr(m.original_text) for m in uncovered[:3])
@@ -518,7 +593,7 @@ def render_outputs_on_structure(
             md = _replace_fold(md, m.original_text, m.replacement)
 
     # Issue#281：标签叠字收口（「案号案号1」→「案号1」），映射表不变。
-    md = _collapse_label_duplication(md, items)
+    md = _collapse_label_duplication(md, items, structured_md)
 
     residual: list[MappingItem] = []
     seen_residual: set[str] = set()
@@ -529,8 +604,10 @@ def render_outputs_on_structure(
                 seen_residual.add(c.id)
                 residual.append(c)
 
+    _residual_folded = _fold_md(md)[0]
     _add_residual([m for m in items
-                   if m.original_text in md or _fold_matches(md, m.original_text)])
+                   if m.original_text in md
+                   or _fold_matches(md, m.original_text, _residual_folded)])
     _add_residual([m for m in items
                    if m.id in _flex_res and _flex_res[m.id].search(md)])
     # 跨页切开项：替换后原文不再成立；若正则仍命中（替换值回插原文等），
