@@ -688,6 +688,52 @@ class HaSClient:
         }
 
     @staticmethod
+    def _sanitize_ner_buckets(result: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        """模型返回桶的**形状治理**（Issue#277）——解析出口单点，坏桶活不过这条边界。
+
+        提示词契约是 `{类型: [值列表]}`，但 0.6B 模型偶发把单值回成**标量桶**
+        （生产实录：`{"文书编号": 2022}`，2026-11-12 本地容器）。旧代码三处主动
+        分批合并循环对桶值直接迭代，真值标量桶在帽驱动分批合并处（`ner_checked`
+        大 try **之外**）炸出 `TypeError: 'int' object is not iterable`，逃逸到
+        docline 块级 catch ⇒ failed_chunks ⇒ 整卷弃权，97s 白烧。
+
+        口径（与补查合并循环既有 `if not isinstance(values, list): continue` 同源）：
+
+        - **列表桶逐字节保留**——合法形状零漂移，值级净化归各消费层（one_chunk/
+          map_values 本就各自 str() 化）；
+        - **假值标量**（0/None/""/False）≈ 模型答「无」：按 `{}` 口径剥除，
+          不算缺失、不补查（补查同轨迹也只会回同样的假值）；
+        - **真值标量/字典桶** = 该类型结论「没拿到」：剥除并上报，调用方据此
+          confirmed=False（不落缓存键）并路由进既有补查换温度轨迹二机会——
+          宁可失败可见，不可静默少扫（#108/#148/#209 C2/#263 同族教训）。
+
+        Returns `(干净结果, 被剥掉的键清单)`；是否属于请求类型由调用方过滤
+        （本函数不知道请求类型）。
+        """
+        clean: dict[str, Any] = {}
+        missing: list[str] = []
+        for key, values in (result or {}).items():
+            if isinstance(values, list):
+                clean[key] = values
+                continue
+            if values:
+                missing.append(key)
+                logger.warning(
+                    "HaS NER bucket %r returned %s instead of a list; "
+                    "treating it as a missing type (Issue#277)",
+                    key,
+                    type(values).__name__,
+                )
+                continue
+            logger.warning(
+                "HaS NER bucket %r returned falsy %s; dropping it like an empty "
+                "bucket (Issue#277)",
+                key,
+                type(values).__name__,
+            )
+        return clean, missing
+
+    @staticmethod
     def _try_parse_json_object(input_text: str) -> tuple[str, dict[str, Any] | None]:
         raw = str(input_text or "").strip()
         if not raw:
@@ -1583,6 +1629,36 @@ If nothing matches, return {{}}.
             # 合法空答案（`{}`，提示词明确「无匹配就回 {}」）不在此列。
             if result and not any(t in result for t in types):
                 confirmed = False
+            # Issue#277：标量/字典桶在解析出口单点剥除——任何形状的坏桶都活不过
+            # 这条边界，下游三处主动分批合并循环与 docline 读侧循环同源免疫。
+            # 被剥掉的**请求类型** = 结论「没拿到」（#108 口径）：confirmed=False、
+            # 绝不落缓存键，并路由进既有补查换温度轨迹二机会（#209 C2「切断桶
+            # 并入补查」同款先例）；补查不可用（同键重发/禁补查）或仍标量
+            # ⇒ 保持 False 走既有「块失败 ⇒ 整卷弃权」语义（宁可失败可见）。
+            result, scalar_missing = self._sanitize_ner_buckets(result)
+            # 门⑥ I-1：只有**请求类型**被剥才算「结论没拿到」——垃圾键标量
+            # （请求类型之外）剥除即净，不影响 confirmed（I-4 契约检查已用
+            # 原始结果判定过「一个请求类型都没答」的情形）。
+            if any(t in types for t in scalar_missing):
+                confirmed = False
+            missing: list[str] = []
+            cut_bucket_dropped = False
+            # 补查的文本轴先算出来：repair 截断缺失与 Issue#277 标量缺失两条路径
+            # 共用——既要用于「是否会同 key 重发」的判定，也直接作为后续
+            # retry_chunks（一处计算、两处使用）。
+            requery_single_pass_chars = int(
+                getattr(settings, "HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS", 0) or 0
+            )
+            if requery_single_pass_chars > 0 and len(text) <= requery_single_pass_chars:
+                requery_chunks_preview = [text]
+            else:
+                requery_chunks_preview = self._split_requery_chunks(text)
+            # 「补查会把文本切块」⇒ 每个块 != 原文 ⇒ inflight key 与本次不同
+            # ⇒ 不存在自连接死锁。此时可以放心把被切断的桶也并进补查集合。
+            resend_same_text = (
+                len(requery_chunks_preview) == 1
+                and requery_chunks_preview[0] == text
+            )
             if parse_mode.startswith("json_repair"):
                 # 输出被截断/损坏（如日期桶复读循环耗尽 max_tokens）：
                 # ①末桶的截断残值丢弃；②整桶丢失的请求类型补查一次并合并。
@@ -1594,21 +1670,6 @@ If nothing matches, return {{}}.
                     # ①「整桶丢失」的补查集合：与改前逐字一致，死锁规避判据也只用它
                     parse_missing = [t for t in types if t not in result]
                     missing = list(parse_missing)
-                    # 补查的文本轴先算出来：既要用于下面「是否会同 key 重发」的
-                    # 判定，也直接作为后续 retry_chunks（一处计算、两处使用）。
-                    requery_single_pass_chars = int(
-                        getattr(settings, "HAS_NER_REQUERY_SINGLE_PASS_MAX_CHARS", 0) or 0
-                    )
-                    if requery_single_pass_chars > 0 and len(text) <= requery_single_pass_chars:
-                        requery_chunks_preview = [text]
-                    else:
-                        requery_chunks_preview = self._split_requery_chunks(text)
-                    # 「补查会把文本切块」⇒ 每个块 != 原文 ⇒ inflight key 与本次不同
-                    # ⇒ 不存在自连接死锁。此时可以放心把被切断的桶也并进补查集合。
-                    resend_same_text = (
-                        len(requery_chunks_preview) == 1
-                        and requery_chunks_preview[0] == text
-                    )
                     # Issue#209 C2：被切断的那个桶"存在"（只是尾值被砍），所以
                     # 不算 missing、永远补不上——密集页（真实页 133：编号 83 个值
                     # 只落 4 个）就此静默少打码，且 confirmed 还能是 True。实测把
@@ -1660,169 +1721,185 @@ If nothing matches, return {{}}.
                             parse_mode,
                         )
                         return result, False
-                    if missing:
-                        _record_ner_metrics(truncation_retries=1)
-                        logger.warning(
-                            "HaS NER output recovered via %s; re-querying %d missing types: %s",
-                            parse_mode,
-                            len(missing),
-                            missing,
-                        )
-                        missing_set = set(missing)
-                        retry_guidance = [
-                            item for item in (type_guidance or [])
-                            if str(item.get("type") or "") in missing_set
+            # Issue#277：标量缺失并入补查集合（在 repair 的 missing/去重之后追加，
+            # repair 行为的字节序不变）。同键重发（短文本 ≤600 → 补查块=原文）
+            # 不自连：直接保持 confirmed=False 走块失败，不挂自身 inflight 白等超时
+            # （#108 e2e 复现的 3×120s 挂起形态）。
+            if scalar_missing and _allow_truncation_retry and not resend_same_text:
+                scalar_route = [
+                    t for t in scalar_missing if t in types and t not in missing
+                ]
+                if scalar_route:
+                    missing = [*missing, *scalar_route]
+                    logger.warning(
+                        "HaS NER %d scalar bucket(s) dropped at the parse boundary; "
+                        "routing them into the existing re-query (Issue#277): %s",
+                        len(scalar_route),
+                        scalar_route,
+                    )
+            if missing:
+                _record_ner_metrics(truncation_retries=1)
+                logger.warning(
+                    "HaS NER output recovered via %s; re-querying %d missing types: %s",
+                    parse_mode,
+                    len(missing),
+                    missing,
+                )
+                missing_set = set(missing)
+                retry_guidance = [
+                    item for item in (type_guidance or [])
+                    if str(item.get("type") or "") in missing_set
+                ] or None
+                # Issue#198：补查温度只升不降（max 语义）。temp=0 种子趟
+                # 复读截断后，同温度补查=同贪心轨迹必然复发（真实案卷
+                # 134 页卷第 34 页实测 84s+76s 双循环烧满两次 max_tokens）。
+                # 调用方已传 >=重查温度的自洽趟不被拉低。
+                retry_temperature = max(
+                    _MODEL_TEMPERATURE if temperature is None else float(temperature),
+                    settings.HAS_NER_TRUNCATION_RETRY_TEMPERATURE,
+                )
+                # Issue#198：门④实测温度逃逸不充分——temp=0.7 补查对同一
+                # 段长程重复表格文本仍复读（2026-10-27 第 34 页绿跑抓到
+                # finish_reason=length confirmed=False recovered=1/7）。复读
+                # 诱饵是**长文本本身**：按行边界把补查文本切块，单次生成
+                # 变短，循环既难触发也烧不满预算（#60「改循环粒度」的既定
+                # 策略）。短文本维持单次补查，行为不变。
+                #
+                # Issue#209（成本结构修复③）：光切文本还不够——门④实测
+                # 同一段 3928 字符上「4 类型 / ≈860 帽」的补查块反复
+                # finish_reason=length、confirmed=False（补查自己又被截断），
+                # 而隔离态「2 类型 / 640 帽」一次收敛。⇒ 补查再沿**类型轴**
+                # 切小（默认每请求 ≤2 类型），且类型数已受限时不再切文本
+                # （输出规模由类型数决定，长文本本身不是瓶颈）。
+                require_requery_type_batch = max(
+                    1,
+                    int(
+                        getattr(settings, "HAS_NER_REQUERY_MAX_TYPES_PER_CALL", 2)
+                        or 2
+                    ),
+                )
+                # 类型批**只在真装不下时才切**：整批预算已能装进完成帽 ⇒
+                # 单批（同 #103/#104 的容量算术同源原则）。门④二轮实测
+                # （2026-10-29，15:27）暴露反例：整段 3924 字符 × 2 类型
+                # 单请求生成 72.6s（模型要重读整页再枚举该类型全部值），
+                # 比切成 450 字符块慢一个数量级 ⇒ 默认**始终切文本**，
+                # 类型轴只作为超预算保护。
+                requery_cap = int(
+                    getattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048) or 2048
+                )
+                if (
+                    self._ner_completion_budget(len(missing), text, _NER_TOKENS_PER_TYPE)
+                    <= requery_cap
+                ):
+                    type_batches = [list(missing)]
+                else:
+                    type_batches = [
+                        missing[i : i + require_requery_type_batch]
+                        for i in range(0, len(missing), require_requery_type_batch)
+                    ]
+                retry_chunks = requery_chunks_preview
+                # 嵌套观测面：只收本次补查自身的 finish_reason/计数。
+                # 门④判据口径：finish_reason=stop 且 confirmed=True 且
+                # recovered 闭合才算「补查逃逸复读」；补查再次截断时
+                # finish_reason=length（drain 折叠口径）+ confirmed=False。
+                logger.warning(
+                    "HaS NER re-query plan: %d type batch(es) x %d text chunk(s) "
+                    "(missing=%d types, max_types_per_call=%d, text_chars=%d)",
+                    len(type_batches),
+                    len(retry_chunks),
+                    len(missing),
+                    require_requery_type_batch,
+                    len(text),
+                )
+                # 先把补查任务展平成 (chunk, type_batch, guidance) 列表：
+                # 窗口=1 时按列表顺序串行（与旧双重 for 逐字节等价）；
+                # 窗口>1 时线程池并发派发、按**提交序**合并与收首异常——
+                # 合并与异常语义都不依赖完成顺序（Issue#216 补查并行化）。
+                requery_jobs = []
+                for chunk in retry_chunks:
+                    for type_batch in type_batches:
+                        batch_set = set(type_batch)
+                        batch_guidance = [
+                            item
+                            for item in (retry_guidance or [])
+                            if str(item.get("type") or "") in batch_set
                         ] or None
-                        # Issue#198：补查温度只升不降（max 语义）。temp=0 种子趟
-                        # 复读截断后，同温度补查=同贪心轨迹必然复发（真实案卷
-                        # 134 页卷第 34 页实测 84s+76s 双循环烧满两次 max_tokens）。
-                        # 调用方已传 >=重查温度的自洽趟不被拉低。
-                        retry_temperature = max(
-                            _MODEL_TEMPERATURE if temperature is None else float(temperature),
-                            settings.HAS_NER_TRUNCATION_RETRY_TEMPERATURE,
+                        requery_jobs.append((chunk, type_batch, batch_guidance))
+                with ner_metrics_scope() as retry_scope:
+                    merged_retry: dict[str, list[str]] = {}
+                    retry_confirmed = True
+
+                    def _run_requery_job(job):
+                        job_chunk, job_types, job_guidance = job
+                        return self.ner_checked(
+                            job_chunk,
+                            job_types,
+                            job_guidance,
+                            temperature=retry_temperature,
+                            sample_index=sample_index,
+                            _allow_truncation_retry=False,
+                            raise_on_error=raise_on_error,
+                            context_tokens=context_tokens,
+                            deadline=deadline,
                         )
-                        # Issue#198：门④实测温度逃逸不充分——temp=0.7 补查对同一
-                        # 段长程重复表格文本仍复读（2026-10-27 第 34 页绿跑抓到
-                        # finish_reason=length confirmed=False recovered=1/7）。复读
-                        # 诱饵是**长文本本身**：按行边界把补查文本切块，单次生成
-                        # 变短，循环既难触发也烧不满预算（#60「改循环粒度」的既定
-                        # 策略）。短文本维持单次补查，行为不变。
-                        #
-                        # Issue#209（成本结构修复③）：光切文本还不够——门④实测
-                        # 同一段 3928 字符上「4 类型 / ≈860 帽」的补查块反复
-                        # finish_reason=length、confirmed=False（补查自己又被截断），
-                        # 而隔离态「2 类型 / 640 帽」一次收敛。⇒ 补查再沿**类型轴**
-                        # 切小（默认每请求 ≤2 类型），且类型数已受限时不再切文本
-                        # （输出规模由类型数决定，长文本本身不是瓶颈）。
-                        require_requery_type_batch = max(
-                            1,
-                            int(
-                                getattr(settings, "HAS_NER_REQUERY_MAX_TYPES_PER_CALL", 2)
-                                or 2
-                            ),
-                        )
-                        # 类型批**只在真装不下时才切**：整批预算已能装进完成帽 ⇒
-                        # 单批（同 #103/#104 的容量算术同源原则）。门④二轮实测
-                        # （2026-10-29，15:27）暴露反例：整段 3924 字符 × 2 类型
-                        # 单请求生成 72.6s（模型要重读整页再枚举该类型全部值），
-                        # 比切成 450 字符块慢一个数量级 ⇒ 默认**始终切文本**，
-                        # 类型轴只作为超预算保护。
-                        requery_cap = int(
-                            getattr(settings, "HAS_NER_COMPLETION_HARD_CAP", 2048) or 2048
-                        )
-                        if (
-                            self._ner_completion_budget(len(missing), text, _NER_TOKENS_PER_TYPE)
-                            <= requery_cap
-                        ):
-                            type_batches = [list(missing)]
-                        else:
-                            type_batches = [
-                                missing[i : i + require_requery_type_batch]
-                                for i in range(0, len(missing), require_requery_type_batch)
+
+                    supplement_window = self._supplement_concurrency_window()
+                    if supplement_window > 1 and len(requery_jobs) > 1:
+                        _record_ner_metrics(supplement_jobs=len(requery_jobs))
+                        # 补查链跑在同步线程里，复用不了异步 GPU 闸——窗口
+                        # 运行时钳到闸宽以内，并发请求总量不越过闸的记账口径。
+                        # 每个任务跑在调用方上下文的**独立拷贝**里：contextvar
+                        # （_METRIC_SCOPES/LAST_FINISH_REASON）透传进线程，
+                        # 任务间互不串写；scope 对象本身线程安全（锁）。
+                        caller_ctx = contextvars.copy_context()
+                        with ThreadPoolExecutor(
+                            max_workers=min(supplement_window, len(requery_jobs))
+                        ) as pool:
+                            futures = [
+                                pool.submit(caller_ctx.copy().run, _run_requery_job, job)
+                                for job in requery_jobs
                             ]
-                        retry_chunks = requery_chunks_preview
-                        # 嵌套观测面：只收本次补查自身的 finish_reason/计数。
-                        # 门④判据口径：finish_reason=stop 且 confirmed=True 且
-                        # recovered 闭合才算「补查逃逸复读」；补查再次截断时
-                        # finish_reason=length（drain 折叠口径）+ confirmed=False。
-                        logger.warning(
-                            "HaS NER re-query plan: %d type batch(es) x %d text chunk(s) "
-                            "(missing=%d types, max_types_per_call=%d, text_chars=%d)",
-                            len(type_batches),
-                            len(retry_chunks),
-                            len(missing),
-                            require_requery_type_batch,
-                            len(text),
-                        )
-                        # 先把补查任务展平成 (chunk, type_batch, guidance) 列表：
-                        # 窗口=1 时按列表顺序串行（与旧双重 for 逐字节等价）；
-                        # 窗口>1 时线程池并发派发、按**提交序**合并与收首异常——
-                        # 合并与异常语义都不依赖完成顺序（Issue#216 补查并行化）。
-                        requery_jobs = []
-                        for chunk in retry_chunks:
-                            for type_batch in type_batches:
-                                batch_set = set(type_batch)
-                                batch_guidance = [
-                                    item
-                                    for item in (retry_guidance or [])
-                                    if str(item.get("type") or "") in batch_set
-                                ] or None
-                                requery_jobs.append((chunk, type_batch, batch_guidance))
-                        with ner_metrics_scope() as retry_scope:
-                            merged_retry: dict[str, list[str]] = {}
-                            retry_confirmed = True
-
-                            def _run_requery_job(job):
-                                job_chunk, job_types, job_guidance = job
-                                return self.ner_checked(
-                                    job_chunk,
-                                    job_types,
-                                    job_guidance,
-                                    temperature=retry_temperature,
-                                    sample_index=sample_index,
-                                    _allow_truncation_retry=False,
-                                    raise_on_error=raise_on_error,
-                                    context_tokens=context_tokens,
-                                    deadline=deadline,
-                                )
-
-                            supplement_window = self._supplement_concurrency_window()
-                            if supplement_window > 1 and len(requery_jobs) > 1:
-                                _record_ner_metrics(supplement_jobs=len(requery_jobs))
-                                # 补查链跑在同步线程里，复用不了异步 GPU 闸——窗口
-                                # 运行时钳到闸宽以内，并发请求总量不越过闸的记账口径。
-                                # 每个任务跑在调用方上下文的**独立拷贝**里：contextvar
-                                # （_METRIC_SCOPES/LAST_FINISH_REASON）透传进线程，
-                                # 任务间互不串写；scope 对象本身线程安全（锁）。
-                                caller_ctx = contextvars.copy_context()
-                                with ThreadPoolExecutor(
-                                    max_workers=min(supplement_window, len(requery_jobs))
-                                ) as pool:
-                                    futures = [
-                                        pool.submit(caller_ctx.copy().run, _run_requery_job, job)
-                                        for job in requery_jobs
-                                    ]
-                                for future in futures:
-                                    part, part_confirmed = future.result()
-                                    for key, values in (part or {}).items():
-                                        if not isinstance(values, list):
-                                            continue
-                                        bucket = merged_retry.setdefault(key, [])
-                                        for value in values:
-                                            if value and value not in bucket:
-                                                bucket.append(value)
-                                    retry_confirmed = retry_confirmed and part_confirmed
-                            else:
-                                for job in requery_jobs:
-                                    part, part_confirmed = _run_requery_job(job)
-                                    for key, values in (part or {}).items():
-                                        if not isinstance(values, list):
-                                            continue
-                                        bucket = merged_retry.setdefault(key, [])
-                                        for value in values:
-                                            if value and value not in bucket:
-                                                bucket.append(value)
-                                    retry_confirmed = retry_confirmed and part_confirmed
-                            retry_result = merged_retry
-                        retry_metrics = drain_ner_metrics(retry_scope)
-                        logger.warning(
-                            "HaS NER re-query finished: finish_reason=%s confirmed=%s "
-                            "recovered=%d/%d types jobs=%d window=%d",
-                            retry_metrics.get("has_text_ner_finish_reason") or "unknown",
-                            retry_confirmed,
-                            len([t for t in missing if retry_result.get(t)]),
-                            len(missing),
-                            retry_metrics.get("has_text_ner_supplement_jobs") or len(requery_jobs),
-                            supplement_window,
-                        )
-                        for key, values in (retry_result or {}).items():
-                            if not isinstance(values, list):
-                                continue
-                            bucket = result.setdefault(key, [])
-                            for value in values:
-                                if value and value not in bucket:
-                                    bucket.append(value)
-                        confirmed = retry_confirmed and not cut_bucket_dropped
+                        for future in futures:
+                            part, part_confirmed = future.result()
+                            for key, values in (part or {}).items():
+                                if not isinstance(values, list):
+                                    continue
+                                bucket = merged_retry.setdefault(key, [])
+                                for value in values:
+                                    if value and value not in bucket:
+                                        bucket.append(value)
+                            retry_confirmed = retry_confirmed and part_confirmed
+                    else:
+                        for job in requery_jobs:
+                            part, part_confirmed = _run_requery_job(job)
+                            for key, values in (part or {}).items():
+                                if not isinstance(values, list):
+                                    continue
+                                bucket = merged_retry.setdefault(key, [])
+                                for value in values:
+                                    if value and value not in bucket:
+                                        bucket.append(value)
+                            retry_confirmed = retry_confirmed and part_confirmed
+                    retry_result = merged_retry
+                retry_metrics = drain_ner_metrics(retry_scope)
+                logger.warning(
+                    "HaS NER re-query finished: finish_reason=%s confirmed=%s "
+                    "recovered=%d/%d types jobs=%d window=%d",
+                    retry_metrics.get("has_text_ner_finish_reason") or "unknown",
+                    retry_confirmed,
+                    len([t for t in missing if retry_result.get(t)]),
+                    len(missing),
+                    retry_metrics.get("has_text_ner_supplement_jobs") or len(requery_jobs),
+                    supplement_window,
+                )
+                for key, values in (retry_result or {}).items():
+                    if not isinstance(values, list):
+                        continue
+                    bucket = result.setdefault(key, [])
+                    for value in values:
+                        if value and value not in bucket:
+                            bucket.append(value)
+                confirmed = retry_confirmed and not cut_bucket_dropped
             # Issue#108 ⑥ 评审 C1/C2：只有确认过解析成功的结果才进缓存；残缺结果
             # 仍原样返回给调用方（尽力而为的容忍语义不变），但不落键。
             if confirmed:
