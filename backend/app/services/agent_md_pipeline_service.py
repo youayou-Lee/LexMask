@@ -156,7 +156,11 @@ class AgentMdPipelineService:
                     "structured_md_missing: zip 官方 .md 缺失，回落拍平重建（产物无表格结构保全）")
                 md, mapping_json, retained_json = render_outputs(
                     task.segs, task.entities, task.mapping)
-            output_file_id = str(uuid.uuid4())
+            # Issue#282 两阶段提交：先落 output_file_id，再写产物/登记；
+            # 崩溃后重试复用同一 id，不会给同一任务留下重复产物行。
+            output_file_id = task.output_file_id or str(uuid.uuid4())
+            task.output_file_id = output_file_id
+            self._persist_output_pending(task)
             stem = _friendly_stem(task.filename)
             ts = datetime.now().strftime("%Y%m%d_%H%M")
             short4 = output_file_id[:4]
@@ -171,6 +175,7 @@ class AgentMdPipelineService:
                 json.dumps(retained_json, ensure_ascii=False, indent=2), encoding="utf-8")
             task.output_file_id = output_file_id
             task.state = TaskState.COMPLETED
+            task.stage = ""
             # file_store 登记（orphan 清理尊重 file_store 引用，main.py cleanup_orphan_files；
             # 键名必须是 vl_md_meta——main.py _known_file_store_paths 只认 output_path+vl_md_meta，
             # 终审 C3：旧键 agent_md_meta 不被识别，mapping/retained 会被孤儿清理删除）
@@ -235,6 +240,16 @@ class AgentMdPipelineService:
             # 至少保住元数据，重启后会按「有元数据、无 payload」显式判 corrupt
             self._persist_meta(task)
 
+    def _persist_output_pending(self, task: AgentMdTask) -> None:
+        if self.task_store is None:
+            return
+        try:
+            self.task_store.mark_output_pending(task)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "agent_md output id persist failed: %s", task.task_id, exc_info=True
+            )
+
     def _persist_completed(self, task: AgentMdTask) -> None:
         if self.task_store is None:
             return
@@ -295,8 +310,39 @@ class AgentMdPipelineService:
                 task.dropped_blocks = payload["dropped_blocks"]
                 task.chars = payload["chars"]
                 task.entity_types_used = payload["entity_types_used"]
+        if state == TaskState.MAPPING_READY:
+            self._heal_pending_output(task)
         self._tasks[task.task_id] = task
         return task
+
+    def _heal_pending_output(self, task: AgentMdTask) -> bool:
+        """Recover a crash between artifact registration and completed UPDATE.
+
+        Only heals when the registered record and all three files are present;
+        otherwise the task stays mapping_ready and the retry reuses the id.
+        """
+        if not task.output_file_id:
+            return False
+        try:
+            record = fms.file_store.get(task.output_file_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("agent_md heal: file_store lookup failed", exc_info=True)
+            return False
+        if not isinstance(record, dict):
+            return False
+        meta = record.get("vl_md_meta") if isinstance(record.get("vl_md_meta"), dict) else {}
+        paths = (record.get("output_path"), meta.get("mapping_path"), meta.get("retained_path"))
+        if not all(isinstance(p, str) and p and Path(p).exists() for p in paths):
+            return False
+        task.state = TaskState.COMPLETED
+        task.message = ""
+        if self.task_store is not None:
+            try:
+                self.task_store.mark_completed(task)
+            except Exception:  # noqa: BLE001
+                logger.warning("agent_md heal: mark_completed failed", exc_info=True)
+        logger.info("agent_md task healed to completed: %s", task.task_id)
+        return True
 
     def _load_payload(self, row: dict) -> dict | None:
         raw = row.get("payload_json")

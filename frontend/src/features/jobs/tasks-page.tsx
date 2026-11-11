@@ -48,9 +48,11 @@ type AgentMdTasksState = ReturnType<typeof useAgentMdTasks>;
 function JobsLedgerView({
   jobs,
   agentTasks,
+  view,
 }: {
   jobs: JobsState;
   agentTasks: AgentMdTasksState;
+  view: 'active' | 'review';
 }) {
   const t = useT();
   const s = jobs;
@@ -84,6 +86,7 @@ function JobsLedgerView({
       {/* Issue#282：供料任务与工单并列，同样按状态进任务中心。 */}
       <AgentMdTaskPanel
         items={agentTasks.items}
+        view={view}
         loading={agentTasks.loading}
         err={agentTasks.err}
         onRetry={agentTasks.refresh}
@@ -214,7 +217,11 @@ export function TasksPage() {
         {view === 'done' ? (
           <HistoryView />
         ) : (
-          <JobsLedgerView jobs={jobs} agentTasks={agentTasks} />
+          <JobsLedgerView
+            jobs={jobs}
+            agentTasks={agentTasks}
+            view={view === 'review' ? 'review' : 'active'}
+          />
         )}
       </div>
     </div>

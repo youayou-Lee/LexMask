@@ -14,7 +14,7 @@ import logging
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from app.core.audit import audit_log
@@ -112,7 +112,10 @@ async def upload(
 
 
 @router.get("/agent-md/tasks")
-async def list_tasks(limit: int = 50, owner_id: str = Depends(require_auth)):
+async def list_tasks(
+    limit: int = Query(50, ge=1, le=200),
+    owner_id: str = Depends(require_auth),
+):
     """Issue#282：当前 owner 的未完成供料任务（active / awaiting_review / failed）。
 
     completed 不出现在这里——已完成回看走 /files 历史页，避免两个列表重复。

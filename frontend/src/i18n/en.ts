@@ -2789,8 +2789,11 @@ Object.assign(enOverrides, {
   'tasks.agentMd.pages': '{done}/{total} pages',
   'tasks.agentMd.state.active': 'In progress',
   'tasks.agentMd.state.review': 'Awaiting review',
-  'tasks.agentMd.state.failed': 'Interrupted',
+  'tasks.agentMd.state.failed': 'Failed',
+  'tasks.agentMd.state.interrupted': 'Interrupted',
   'tasks.agentMd.loadFailed': 'Failed to load feed tasks',
+  'agentMd.taskInterrupted': 'Task was interrupted by a service restart. Please start again.',
+  'agentMd.taskCorrupt': 'Task data is unrecoverable. Please start again.',
   'agentMd.listFailed': 'Failed to load feed tasks',
 });
 

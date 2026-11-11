@@ -19,6 +19,18 @@ vi.mock('./api', async (importOriginal) => {
   };
 });
 
+vi.mock('@/services/api-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/api-client')>();
+  return {
+    ...actual,
+    authFetch: vi.fn(async () => ({
+      ok: true,
+      text: async () => '# 脱敏稿',
+      json: async () => ({ retained_fields: [] }),
+    })),
+  };
+});
+
 import { agentMdApi } from './api';
 import { AgentMd, ACTIVE_TASK_KEY } from './agent-md-page';
 
@@ -70,6 +82,29 @@ describe('agent-md taskId restore', () => {
     expect(mappingMock).toHaveBeenCalledWith('t-42');
     expect(localStorage.getItem(ACTIVE_TASK_KEY)).toBe('t-42');
     expect(screen.getByTestId('agent-md-row-0')).toBeTruthy();
+  });
+
+  it('completed 先验产物可读，直接进结果步', async () => {
+    statusMock.mockResolvedValue(statusBody('completed'));
+    render(
+      <MemoryRouter initialEntries={['/agent-md?taskId=t-42']}>
+        <AgentMd />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByTestId('agent-md-step-result')).toBeTruthy());
+    expect(statusMock).toHaveBeenCalledWith('t-42');
+  });
+
+  it('failed 任务进处理步展示失败与重新上传', async () => {
+    statusMock.mockResolvedValue(statusBody('failed'));
+    render(
+      <MemoryRouter initialEntries={['/agent-md?taskId=t-42']}>
+        <AgentMd />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByTestId('agent-md-step-processing')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('agent-md-failed')).toBeTruthy());
+    expect(screen.getByTestId('agent-md-reupload')).toBeTruthy();
   });
 
   it('未知任务 404 时回上传步并提示过期', async () => {

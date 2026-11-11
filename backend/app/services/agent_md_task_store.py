@@ -167,6 +167,23 @@ class AgentMdTaskStore:
                 ),
             )
 
+    def mark_output_pending(self, task: AgentMdTask) -> None:
+        """Persist the final output_file_id before artifacts are registered.
+
+        Two-phase commit (Issue#282 review): a crash between artifact
+        registration and mark_completed then leaves a recoverable pointer,
+        so the retry reuses the same id instead of minting duplicate rows.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE agent_md_tasks
+                   SET output_file_id = ?, updated_at = ?
+                 WHERE task_id = ?
+                """,
+                (task.output_file_id, _utc_now(), task.task_id),
+            )
+
     def mark_completed(self, task: AgentMdTask) -> None:
         """Set completed and clear payload in one atomic UPDATE."""
         with self._connect() as conn:
@@ -174,7 +191,7 @@ class AgentMdTaskStore:
                 """
                 UPDATE agent_md_tasks
                    SET state = ?, output_file_id = ?, payload_json = NULL,
-                       message = ?, updated_at = ?
+                       message = ?, stage = NULL, updated_at = ?
                  WHERE task_id = ?
                 """,
                 (
@@ -245,7 +262,7 @@ class AgentMdTaskStore:
             row = conn.execute(
                 """
                 SELECT
-                    SUM(CASE WHEN state IN (?, ?, ?) THEN 1 ELSE 0 END) AS active,
+                    SUM(CASE WHEN state IN (?, ?, ?, ?) THEN 1 ELSE 0 END) AS active,
                     SUM(CASE WHEN state = ? THEN 1 ELSE 0 END) AS awaiting_review
                   FROM agent_md_tasks
                  WHERE owner_id = ?
@@ -254,6 +271,7 @@ class AgentMdTaskStore:
                     TaskState.UPLOADED.value,
                     TaskState.PARSING.value,
                     TaskState.NER_RUNNING.value,
+                    TaskState.FAILED.value,
                     TaskState.MAPPING_READY.value,
                     owner_id,
                 ),

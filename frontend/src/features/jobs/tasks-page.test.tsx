@@ -216,30 +216,67 @@ describe('Issue#262：任务中心合并页', () => {
 });
 
 describe('Issue#282：供料任务并入任务中心', () => {
-  it('进行中/待审阅供料任务出现在面板，计数并入 active/review 徽标', () => {
+  it('进行中/待审阅供料任务按视图分流，计数并入 active/review 徽标', () => {
     mockedAgentTasks.counts = { active: 2, awaiting_review: 1 };
+    const base = {
+      stage: 'ner',
+      message: '',
+      pages_done: 2,
+      pages_total: 2,
+      output_file_id: null,
+      created_at: '2026-11-12T04:00:00Z',
+      updated_at: '2026-11-12T04:00:00Z',
+    };
     mockedAgentTasks.items = [
-      {
-        task_id: 't-1',
-        filename: '借条.pdf',
-        state: 'mapping_ready',
-        stage: 'ner',
-        message: '',
-        pages_done: 2,
-        pages_total: 2,
-        output_file_id: null,
-        created_at: '2026-11-12T04:00:00Z',
-        updated_at: '2026-11-12T04:00:00Z',
-      },
+      { ...base, task_id: 't-review', filename: '借条.pdf', state: 'mapping_ready' },
+      { ...base, task_id: 't-active', filename: '卷宗.pdf', state: 'parsing' },
     ];
 
     renderTasks('/jobs');
     expect(screen.getByTestId('agent-md-task-panel')).toBeTruthy();
-    const row = screen.getByTestId('agent-md-task-t-1');
-    expect(row.getAttribute('href')).toBe('/agent-md?taskId=t-1');
+    // active 视图只列运行态，待复核行不混入（review #282-1）
+    expect(screen.getByTestId('agent-md-task-t-active').getAttribute('href')).toBe(
+      '/agent-md?taskId=t-active',
+    );
+    expect(screen.queryByTestId('agent-md-task-t-review')).toBeNull();
     // 工单 7 + 供料 2；工单 3 + 供料 1
     expect(screen.getByTestId('tasks-tab-active').textContent).toContain('9');
     expect(screen.getByTestId('tasks-tab-review').textContent).toContain('4');
+
+    activateTab('tasks-tab-review');
+    expect(screen.getByTestId('agent-md-task-t-review')).toBeTruthy();
+    expect(screen.queryByTestId('agent-md-task-t-active')).toBeNull();
+  });
+
+  it('failed 任务区分「已中断」与普通失败', () => {
+    mockedAgentTasks.counts = { active: 2, awaiting_review: 0 };
+    const base = {
+      stage: 'ner',
+      pages_done: 0,
+      pages_total: 3,
+      output_file_id: null,
+      created_at: '2026-11-12T04:00:00Z',
+      updated_at: '2026-11-12T04:00:00Z',
+    };
+    mockedAgentTasks.items = [
+      {
+        ...base,
+        task_id: 't-int',
+        filename: '中断.pdf',
+        state: 'failed',
+        message: 'interrupted: 服务重启，任务已中断，请重新发起',
+      },
+      {
+        ...base,
+        task_id: 't-err',
+        filename: '失败.pdf',
+        state: 'failed',
+        message: 'parse_no_text: 空文档',
+      },
+    ];
+    renderTasks('/jobs');
+    expect(screen.getByTestId('agent-md-task-t-int').textContent).toContain('已中断');
+    expect(screen.getByTestId('agent-md-task-t-err').textContent).toContain('失败');
   });
 
   it('无进行中供料任务时不渲染面板', () => {

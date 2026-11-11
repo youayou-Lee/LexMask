@@ -28,7 +28,7 @@ def get_backup_status() -> dict[str, dict[str, str | None]]:
 def backup_inventory() -> list[tuple[str, str, str]]:
     """声明式备份清单：(名称, 路径, 类型 sqlite|small_file)。
 
-    覆盖全部持久化状态：4 个 SQLite 库 + 配置/凭据小文件。
+    覆盖全部持久化状态：5 个 SQLite 库 + 配置/凭据小文件。
     jwt_secret.json 与 structured_credentials.key 必须入册——缺了它们，
     恢复出的令牌与数据库凭据都解不开。文件不存在则跳过。
     """
@@ -37,6 +37,7 @@ def backup_inventory() -> list[tuple[str, str, str]]:
     targets: list[tuple[str, str, str]] = [
         ("jobs", settings.JOB_DB_PATH, "sqlite"),
         ("structured_store", os.path.join(settings.DATA_DIR, "structured_store.sqlite3"), "sqlite"),
+        ("agent_md_tasks", settings.AGENT_MD_TASK_DB_PATH, "sqlite"),
     ]
     try:
         from app.services.file_management_service import get_file_store

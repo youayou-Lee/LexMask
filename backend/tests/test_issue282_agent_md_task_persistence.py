@@ -268,3 +268,130 @@ def test_effective_upload_source_agent_md_and_legacy():
     assert effective_upload_source({**legacy, "upload_source": "agent_md"}) == "agent_md"
     # 客户端不能伪造 agent_md 来源
     assert sanitize_upload_source("agent_md") is None
+
+
+# --- review fixes: counts / schema version / two-phase commit / heal --------
+
+def test_counts_include_failed_as_active(tmp_path):
+    store = AgentMdTaskStore(_db_path(tmp_path))
+    for tid, state in (
+        ("run", TaskState.NER_RUNNING),
+        ("bad", TaskState.FAILED),
+        ("rev", TaskState.MAPPING_READY),
+        ("done", TaskState.COMPLETED),
+    ):
+        store.upsert_meta(AgentMdTask(task_id=tid, state=state, filename=f"{tid}.pdf", owner_id="u1"))
+    assert store.counts_for_owner("u1") == {"active": 2, "awaiting_review": 1}
+
+
+def test_unknown_payload_schema_version_fails_closed(tmp_path):
+    svc = _service(tmp_path, AgentMdTaskStore(_db_path(tmp_path)))
+    row = {"task_id": "t", "payload_json": json.dumps({"schema_version": 999})}
+    assert svc._load_payload(row) is None
+
+
+def test_mark_output_pending_keeps_payload(tmp_path):
+    store = AgentMdTaskStore(_db_path(tmp_path))
+    task = AgentMdTask(
+        task_id="t-1", state=TaskState.MAPPING_READY, filename="a.pdf", owner_id="u1",
+        output_file_id="out-1",
+    )
+    store.save_payload(task, {"schema_version": 1, "segs": [], "chars": 0})
+    store.mark_output_pending(task)
+    row = store.load("t-1")
+    assert row["output_file_id"] == "out-1"
+    assert row["payload_json"] is not None  # 崩溃后重试仍需 payload
+
+
+def test_restore_heals_crash_between_register_and_complete(tmp_path, monkeypatch):
+    """AC7：产物已登记但 completed UPDATE 前崩溃 → 重启用同一 output id 自愈。"""
+    from app.services import file_management_service as fms
+
+    store = AgentMdTaskStore(_db_path(tmp_path))
+    task = AgentMdTask(
+        task_id="t-crash", state=TaskState.MAPPING_READY, filename="a.pdf", owner_id="u1",
+        output_file_id="out-9", structured_md="# 张三",
+        mapping=[MappingItem(id="e1", original_text="张三", entity_type="PERSON",
+                             replacement="[人名_1]")],
+    )
+    store.save_payload(task, _service(tmp_path, store)._serialize_payload(task))
+    md = tmp_path / "a_脱敏MD_20260101_0000_0009.md"
+    mapping = tmp_path / "a_映射表_20260101_0000_0009.json"
+    retained = tmp_path / "a_保留清单_20260101_0000_0009.json"
+    for p in (md, mapping, retained):
+        p.write_text("{}", encoding="utf-8")
+
+    class _FakeFileStore:
+        def get(self, file_id):
+            if file_id != "out-9":
+                return None
+            return {
+                "output_path": str(md),
+                "vl_md_meta": {"mapping_path": str(mapping), "retained_path": str(retained)},
+            }
+
+    monkeypatch.setattr(fms, "file_store", _FakeFileStore())
+    svc = _service(tmp_path, store)
+    restored = svc.get_task("t-crash")
+    assert restored is not None
+    assert restored.state == TaskState.COMPLETED
+    assert store.load("t-crash")["payload_json"] is None
+
+
+def test_status_of_other_owner_is_404(tmp_path, monkeypatch):
+    from app.core.auth import require_auth
+
+    class _P:
+        def get_task(self, task_id):
+            return AgentMdTask(task_id="tk", state=TaskState.MAPPING_READY, filename="a.pdf",
+                               owner_id="u1")
+
+    monkeypatch.setattr(pipeline_mod, "get_agent_md_pipeline", lambda: _P())
+    app.dependency_overrides[require_auth] = lambda: "u2"
+    try:
+        assert client.get("/api/v1/agent-md/tk/status").status_code == 404
+    finally:
+        app.dependency_overrides.pop(require_auth, None)
+
+
+def test_files_source_filter_and_legacy_compat(tmp_path, monkeypatch):
+    """AC3：/files 四来源隔离 + 旧供料/ VL-MD / 批量不串台。"""
+    from app.api.jobs import get_job_store
+    from app.services import file_management_service as fms
+
+    def rec(fid, name, **extra):
+        return (fid, {"file_id": fid, "owner_id": "anonymous", "original_filename": name,
+                      "file_size": 10, "created_at": "2026-11-12T00:00:00", **extra})
+
+    entries = [
+        rec("new", "新_脱敏MD_20261112_0000_aaaa.md", output_path=str(tmp_path / "new.md"),
+            file_type="txt", upload_source="agent_md", agent_md_task_id="t-new"),
+        rec("legacy", "旧_脱敏MD_20260101_0000_bbbb.md",
+            vl_md_meta={"mapping_path": "m.json", "retained_path": "r.json"}),
+        rec("vlmd", "合同.pdf", vl_md_meta={"mapping_path": "m.json", "retained_path": "r.json"}),
+        rec("batch", "批量.pdf", upload_source="batch", job_id="j1", batch_group_id="j1"),
+    ]
+
+    class _FS:
+        def items_for_owner(self, owner_id):
+            return entries if owner_id == "anonymous" else []
+
+    class _JS:
+        def batch_find_item_statuses(self, ids):
+            return {}
+
+    monkeypatch.setattr(settings, "AUTH_ENABLED", False)
+    monkeypatch.setattr(fms, "get_file_store", lambda: _FS())
+    app.dependency_overrides[get_job_store] = lambda: _JS()
+    try:
+        def ids(source):
+            r = client.get(f"/api/v1/files?source={source}&page_size=100")
+            assert r.status_code == 200, r.text
+            return {x["file_id"]: x["upload_source"] for x in r.json()["files"]}
+
+        assert ids("agent_md") == {"new": "agent_md", "legacy": "agent_md"}
+        assert ids("playground") == {"vlmd": "playground"}
+        assert ids("batch") == {"batch": "batch"}
+        assert client.get("/api/v1/files?source=bogus").status_code == 400
+    finally:
+        app.dependency_overrides.pop(get_job_store, None)

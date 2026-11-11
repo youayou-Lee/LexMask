@@ -2737,8 +2737,11 @@ Object.assign(zhOverrides, {
   'tasks.agentMd.pages': '{done}/{total} 页',
   'tasks.agentMd.state.active': '进行中',
   'tasks.agentMd.state.review': '待复核',
-  'tasks.agentMd.state.failed': '已中断',
+  'tasks.agentMd.state.failed': '失败',
+  'tasks.agentMd.state.interrupted': '已中断',
   'tasks.agentMd.loadFailed': '供料任务加载失败',
+  'agentMd.taskInterrupted': '服务重启导致任务中断，请重新发起',
+  'agentMd.taskCorrupt': '任务数据不可恢复，请重新发起',
   'agentMd.listFailed': '供料任务列表加载失败',
 });
 

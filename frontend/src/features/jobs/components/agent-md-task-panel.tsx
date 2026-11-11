@@ -12,22 +12,31 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import type { AgentMdTaskSummary } from '@/features/agent-md/api';
 
-function taskStateKey(state: string): string {
-  if (state === 'mapping_ready') return 'tasks.agentMd.state.review';
-  if (state === 'failed') return 'tasks.agentMd.state.failed';
+function taskStateKey(task: AgentMdTaskSummary): string {
+  if (task.state === 'mapping_ready') return 'tasks.agentMd.state.review';
+  if (task.state === 'failed') {
+    return task.message?.startsWith('interrupted:')
+      ? 'tasks.agentMd.state.interrupted'
+      : 'tasks.agentMd.state.failed';
+  }
   return 'tasks.agentMd.state.active';
 }
 
 type AgentMdTaskPanelProps = {
   items: AgentMdTaskSummary[];
+  view: 'active' | 'review';
   loading: boolean;
   err: string | null;
   onRetry: () => void;
 };
 
-export function AgentMdTaskPanel({ items, loading, err, onRetry }: AgentMdTaskPanelProps) {
+export function AgentMdTaskPanel({ items, view, loading, err, onRetry }: AgentMdTaskPanelProps) {
   const t = useT();
-  if (!loading && !err && items.length === 0) return null;
+  // Issue#282 review：面板必须遵守 active/review 状态契约，否则徽标计数与行数不一致。
+  const visible = items.filter((task) =>
+    view === 'review' ? task.state === 'mapping_ready' : task.state !== 'mapping_ready',
+  );
+  if (!loading && !err && visible.length === 0) return null;
 
   return (
     <section
@@ -52,9 +61,9 @@ export function AgentMdTaskPanel({ items, loading, err, onRetry }: AgentMdTaskPa
         </Alert>
       ) : null}
 
-      {items.length > 0 ? (
+      {visible.length > 0 ? (
         <ul className="divide-y divide-border/60">
-          {items.map((task) => (
+          {visible.map((task) => (
             <li key={task.task_id}>
               <Link
                 to={`/agent-md?taskId=${encodeURIComponent(task.task_id)}`}
@@ -81,7 +90,7 @@ export function AgentMdTaskPanel({ items, loading, err, onRetry }: AgentMdTaskPa
                   variant={task.state === 'failed' ? 'destructive' : 'secondary'}
                   className="shrink-0 rounded-full px-2 py-0.5 text-2xs"
                 >
-                  {t(taskStateKey(task.state))}
+                  {t(taskStateKey(task))}
                 </Badge>
                 <ArrowRight className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
               </Link>
