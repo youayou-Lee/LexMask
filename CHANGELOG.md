@@ -15,6 +15,19 @@
 - **测试**：后端 +9 例（自动排除失败页两处、按文件反查五项契约、标题跳页/连续/单页三形态）；前端 +19 例（`page-range` 8 例含全角与反向 Shift、页格范围/Shift/prune 3 例、单文件面板 5 例含「无勾选框直接提交」与「底栏汇总不留占位符」、既有测试改口径）。全量后端 2916 passed / 18 failed（与 preview 基线同集合，容器信号量权限问题）；前端 498 passed。
 - **本地实机验证**（`/single`，acc257 登录）：识别中浮层显示「成功 0 · 失败 0 · 未跑 10」并逐页转绿；复核弹窗范围输入 `3-6` → 选中 3、4、5、6，导出产物 5 页（说明页 + 4 页，说明页逐字列出「原卷第 3、4、5、6 页 / 共 4 页 / 原卷总页数：10」）；注入失败页后页格第 4 页红叉不可选、「已选 9 页（1-10）· 将排除 1 页失败页」、无勾选框可直接导出 9 页。
 
+
+### 增强（Issue#282）任务中心接入供料模式：供料任务持久化可续审 + 按状态可见 + 结果可回看
+
+- **为什么**：单文件供料任务只活在进程内存和 localStorage 里——刷新/重启就丢，任务中心也只列工单，供料任务进行中和待复核时完全不可见；完成后的产物虽在文件库，却因没有来源标被归进「单文件」，且离开结果页就再也回不去，用户只能重新跑一遍。
+- **改了什么**：
+  - **持久化索引**：新增 `agent_md_tasks` SQLite 表（`backend/app/services/agent_md_task_store.py`，路径 `AGENT_MD_TASK_DB_PATH`，默认 `DATA_DIR/agent_md_tasks.sqlite3`）。元数据随状态推进落盘；`mapping_ready→completed` 期间额外保存 payload（segs/entities/mapping/structured_md），`completed` 时单条 UPDATE 清空 payload。启动 sweep 把遗留 `uploaded/parsing/ner_running` 标为 `failed`（message 以 `interrupted:` 开头），坏 payload 置 `payload_corrupt:`。
+  - **管线恢复**：`get_task` 内存未命中回落 DB，`mapping_ready` 可跨进程/容器重启继续确认；`confirm` 加锁串行、`COMPLETED` 重复确认幂等返回既有三件套；产物登记补 `upload_source="agent_md"`、`agent_md_task_id`、`file_type=txt`。
+  - **列表契约**：新增 `GET /api/v1/agent-md/tasks?limit=50`（仅本人、按 updated_at 降序、排除 completed、带 active/awaiting_review counts）。
+  - **来源枚举**：`/files` 来源新增 `agent_md`；历史单文件供料按「有 vl_md_meta + 文件名 .md 且含 `_脱敏MD_`」兼容识别（避免把 VL-MD 产物误收）；客户端上传侧仍只允许 playground/batch，不能伪造 agent_md。
+  - **前端**：任务中心进行中/待复核页签上方新增「供料任务」面板（5s 轮询、页面隐藏 30s），徽标计数并入工单；历史页新增「供料」来源页签，行徽标区分供料、有 task_id 时给「打开结果」，供料行隐藏「查看对比」；`/agent-md?taskId=` 支持 completed/mapping_ready/进行中/中断四态深链恢复，completed 先验 md 可读再恢复。
+- **测试**：后端 +10 例（store payload 往返/counts、completed 排除与排序、sweep 只动运行态、DDL 幂等、mapping_ready 跨实例恢复并 confirm、completed 重载幂等、坏 payload fail-closed、并发 confirm 同 output_file_id、列表 owner 隔离 + 401、来源分类与伪造拦截）；前端 +4 例（mapping_ready 深链进复核并写续跑键、未知任务清键回上传、面板行 href、徽标并入计数、空态不渲染）。后端全量 2833 passed（21 failed 均为容器环境既有项：无 git/eval 脚手架/watermark 路径）；前端 502 passed，`tsc` 双配置、`vite build`、改动文件 eslint 全绿。
+- **本地实机验证**（隔离 compose 栈 + 真实 MinerU/NER）：3 页 canary 解析→待复核→**容器重建**→mapping sha256 一致→确认出稿三件套可下载；另一任务解析中重启→`failed / interrupted:`；历史 10 条旧供料记录按来源列出、md 可下载且无「打开结果」、合成 VL-MD 行落入单文件不入供料；非法 source 400；任务中心面板显示「待复核/已中断」并入徽标；`?taskId=` 完成态直接回结果页、待复核态直接进映射表。
+
 ## 2026-11-11
 
 ### 修正（Issue#256）本地栈扫描线整卷误记全页失败：队列路径 LA 不可用整段跳过视觉识别 + AppError str 可读
