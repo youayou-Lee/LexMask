@@ -4,8 +4,9 @@ Issue#75 喂Agent模式 API 路由
 Thin routing layer — business logic lives in
 app.services.agent_md_pipeline_service.
 
-五端点：上传（含加密 PDF 处理，复用 Issue#30 file_parser 既有链路与结构化
-错误码）/ 状态轮询 / 映射表 / 确认出稿 / 三件套产物下载。所有结构化错误走
+六端点：上传（含加密 PDF 处理，复用 Issue#30 file_parser 既有链路与结构化
+错误码）/ 状态轮询 / 映射表 / 确认出稿 / 三件套产物下载 / 本人未完成任务列表
+（Issue#282）。所有结构化错误走
 AppError envelope（前端 localizeError 按 error_code 映射）。
 """
 import asyncio
