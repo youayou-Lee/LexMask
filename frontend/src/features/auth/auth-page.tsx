@@ -81,7 +81,7 @@ export function AuthPage() {
       } else {
         await login(username, password);
       }
-      navigate(isRegister ? '/' : next, { replace: true });
+      navigate(isRegister ? '/single' : next, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : t('auth.error.generic'));
     } finally {

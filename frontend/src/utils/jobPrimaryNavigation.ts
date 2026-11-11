@@ -303,7 +303,8 @@ export function resolveJobPrimaryNavigation(input: {
       action = {
         kind: 'link',
         label: labels.downloadRedactedResult,
-        to: `/history?source=batch&jobId=${encodeURIComponent(jobId)}`,
+        // Issue#262 A1：结果视图并入任务中心合并页，深链直达 /jobs?view=done
+        to: `/jobs?view=done&source=batch&jobId=${encodeURIComponent(jobId)}`,
       };
       break;
     case 'failed':

@@ -35,6 +35,17 @@
   - 前端：step3 文件行展开逐页格（成功/失败 hover 原因/未跑），失败页在**选择层**就不可勾；部分导出对话框（默认全选成功页、失败页知情确认、202 后轮询到终态、导出记录列表可直接下载）；识别进行中也允许导出（导出侧另取快照并在说明页写明快照时间）。
 - **测试**：后端 +65 例（F1 真 `JobStore` 红性/页投影三态与计数/`failed_pages` 压过页记录的双账本分叉/切页与逐页图像流 sha256 对齐全量参照件/端点契约与错误码/框落不到本页时 fail-closed/真 `ExportTaskManager` 全链含重启后下载与跨 owner 同名目录不可见/说明页失败清理/无框页拒收）；全量 2866 passed，18 failed 与 preview 基线（同 revision 2802 passed）**同集合**（容器 `ProcessPoolExecutor` 信号量权限问题，非本 PR 引入）。前端 +13 例（页格三态与失败页不可选/ack 门控不发请求/记录下载链接与页数摘要/step3 接线与终局文案/200+ 页分块 50 格「显示更多」/图片行不给导出入口），全量 395 passed；i18n 双语 parity 2 例。
 
+### 增强（Issue#262）法律默认档前端信息架构改造
+
+- 法律默认档（Issue#262）：侧边栏 8→6、任务中心+处理结果合并单入口、/single 识别前法律预设 chip+高级抽屉、复核态右栏精简、配置三页页签化进高级设置、开始页移除（登录落单次处理）、产品名定稿墨隐。
+- 清扫（同 PR 收尾，Task 8）：i18n 死键 zh/en 双侧对称删除——`start.*` 全组（仅保留 OnboardingGuide 仍引用的 `start.entry.playground.cta`）、`page.start.*`、`nav.recognitionSettings(.sub)`、`page.history.sub`、`page.redactionList(.title/.sub)`（header /settings/redaction 死分支删除后零引用）；app-header `/settings/redaction` 死分支删除；router prefetch 删除冗余的 features/history 预取（jobs chunk 已静态引入 HistoryView）；AuthRoute `shouldUseHome` 更名 `isRegisterLanding`（开始页已删，行为等价）；补 `/history` 重定向渲染钉（router.test.tsx）+ tasks done 页签「无计数」断言收紧为无计数 span 元素；删 app-sidebar.test.ts 与渲染钉信息冗余的 fabricated-input 全列用例（保留 filterHiddenNavItems 三个机制钉）。
+- 测试：前端全量 55 文件 / 400 例全绿 + tsc + build 绿（本机）；e2e 路由冒烟 14 路由全过 + /history→/jobs?view=done 真机重定向验证（worktree dev server × 本地栈 backend）；门④云真机走查待用户。
+- 二期 Task 9b（1926d73）：上传页重皮对齐界面稿——页头紧凑化（kicker/title/desc/configDesc 长文案键删除）、上传大卡+摘要卡标签墙（选中类型实时镜像 playground-selected-tags）、告警人话化（视觉特征离线走专属文案且仅当选中含视觉要素时显示，黑话细节默认折叠 playground-offline-hint-details）。
+- 二期 Task 10b（4423584）：T6「高级 · 按类型微调」内联抽屉删除，上传页改开识别范围三区弹窗（RecognitionScopeDialog）——ner/ocr/la 三区并排（<1100px 纵叠）、每区 8 类/页翻页+区内全选/全不选、即点即存直写 rec 状态、服务 offline 整区暗化+区内红条、纯文本文件 OCR/LA 两区「不适用」（na≠离线）；方案三态 select 派生（法律卷宗/全部/我的方案/手动改勾落 custom），「保存为方案」复用 createPreset(kind:'full')+invalidatePresets+自动套用；上传页旧 PresetSelectors/PresetSaveDialog 摘除（playground-upload-presets.tsx 删除，法律预设 chip 与识别范围入口保留，请求层 submitRecognitionTask 透传契约不动）。
+- 二期评审 fix（05c0797）：方案下拉一致性——tracking 判定收紧为「文本/视觉两维 tracking 指向同一 full 方案且当前三清单与该方案按目录过滤后期望形态一致」（单维 tracking 在跨区手改后不再假绿显示方案名）+「不适用」优先于「离线」（纯文本文件无论服务状态都显示不适用，服务徽标仍如实显示离线）+ i18n 死键清扫（preset.saveText.prompt / preset.saveVision.prompt）。
+- 二期测试：recognition-scope-dialog.test.tsx 694 行、playground-upload.reskin.test.tsx 325 行（两期提交累计）；前端全量 62 文件 / 469 例全绿 + tsc + build 绿（本机；换基并入 preview #257/#259/#261 后复跑口径）。e2e：golden_single 选择器路径逐点核对全存续、无需改动（其点击的 playground-advanced-toggle 是复核态实体面板高级抽屉 testid，并非二期删除的上传页 playground-advanced-types-toggle，泄漏断言原样）；smoke_routes 16 路由全过 + /single 识别范围三区弹窗真机探针 PASS（vite preview 新 dist × 本地栈 backend :8000，compose :3000 为旧 preview 构建不承载二期验证）；e2e 公共件 common.py 补登录后关闭引导浮卡（OnboardingGuide fixed z-40 每个新浏览器 profile 必现，实测拦截页尾右侧控件点击，locale 无关 aside 选择器+超时直通）；golden_single 全链需 has_ner 识别服务，本地栈无该容器，全链留待门④云真机。
+- 二期 Task 12b：类型搜索（用户点名「高级设置里需要一个搜索，不然那么多字段难道要一个个翻页找」）——/settings 识别项设置列表卡片头部加搜索框（settings-entity-search，显示名 OR 类型代码、大小写不敏感 substring；搜索态忽略分页全部命中一次渲染、翻页控件换成「匹配 n 项」、0 命中显「无匹配」、清空恢复原页码；compact 变体同口径）；/single 识别范围弹窗方案行下加全局搜索框（playground-scope-search，三区同时过滤、命中区不分页+翻页按钮禁用+区脚「匹配 n 项」、0 命中区显示空态不破坏区框、离线区/na 区不参与搜索、搜中点 chip 照常即点即存触发自定义态、清空恢复搜索前页码）；i18n 双侧对称 +8 键（searchPlaceholder/searchLabel/matchCount/noMatch × settings.entityList 与 playground.scope）；纯前端过滤零新依赖，请求链零改动。
+
 ## 2026-11-09
 
 ### 修正（Issue#252）供料模式 P0：MinerU 3.4.5 表格 caption/footnote 是 list，clean_segments 按 str 处理必崩

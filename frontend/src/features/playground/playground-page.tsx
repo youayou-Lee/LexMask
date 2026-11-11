@@ -355,16 +355,18 @@ const PlaygroundInner: FC = () => {
       data-testid="playground"
     >
       {stage === 'upload' && (
-        <div className="page-shell !max-w-[min(100%,2048px)] !px-3 !py-3 sm:!px-5 sm:!py-4 2xl:!px-8">
-          <div className="page-stack gap-3 overflow-hidden">
+        <div className="page-shell !max-w-[min(100%,1200px)] !px-3 !py-3 sm:!px-5 sm:!py-4 2xl:!px-6">
+          {/* Issue#262 Task 9b：紧凑页头（界面稿形态）。旧 kicker/大标题/长说明移除；
+              dropzone 内的「文档 · PDF · 扫描件 · 图片」行经核实为装饰性文案
+              （无状态无回调，非功能选择器），已随上传卡重排删除。 */}
+          <div className="page-stack gap-3.5 overflow-y-auto">
             <section className="flex flex-none flex-wrap items-end justify-between gap-3">
-              <div className="min-w-0 space-y-1">
-                <span className="saas-kicker">{t('playground.upload.kicker')}</span>
-                <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-                  {t('playground.title')}
+              <div className="min-w-0 space-y-0.5">
+                <h1 className="text-lg font-semibold tracking-tight text-foreground">
+                  {t('playground.upload.pageTitle')}
                 </h1>
-                <p className="max-w-3xl text-sm leading-6 text-muted-foreground">
-                  {t('page.playground.sub')}
+                <p className="text-sm leading-5 text-muted-foreground">
+                  {t('playground.upload.pageSub')}
                 </p>
               </div>
             </section>

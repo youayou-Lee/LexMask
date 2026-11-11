@@ -1,8 +1,6 @@
 // Copyright 2026 LexMask Contributors
 
 const enBase: Record<string, string> = {
-  'nav.start': 'Start Processing',
-  'nav.start.sub': 'Choose the next step',
   'nav.playground': 'Process One File',
   'nav.playground.sub': 'Confirm results first',
   'nav.batch': 'Process Many Files',
@@ -17,13 +15,10 @@ const enBase: Record<string, string> = {
   'nav.structured.datasets.sub': 'Policies and preview',
   'nav.structured.delivery': 'Delivery',
   'nav.structured.delivery.sub': 'Jobs and exports',
-  'nav.history': 'Results',
   'nav.jobs': 'Task Progress',
-  'nav.jobs.sub': 'Review and export',
+  'nav.jobs.sub': 'Progress · Review · Download',
   'nav.redactionList': 'Recognition List Settings',
   'nav.redactionList.sub': 'Item combinations',
-  'nav.recognitionSettings': 'Recognition Item Settings',
-  'nav.recognitionSettings.sub': 'Atomic items',
   'nav.systemSettings': 'System Settings',
   'nav.systemSettings.sub': 'Runtime and access',
   'nav.console': 'Console',
@@ -320,7 +315,7 @@ const enBase: Record<string, string> = {
 
   'onboarding.skip': 'Skip',
   'onboarding.start': 'Get Started',
-  'onboarding.step1.title': 'Welcome to Redaction Assistant',
+  'onboarding.step1.title': 'Welcome to 墨隐',
   'onboarding.step2.title': 'Start With One File',
   'onboarding.step2.desc':
     'Upload a Word, PDF, scan, or image file first. This gives you a clear baseline before creating a batch job.',
@@ -331,75 +326,23 @@ const enBase: Record<string, string> = {
   'page.batch.sub': 'Create or resume a mixed-file batch by default',
   'page.structured.title': 'Structured Data',
   'page.structured.sub': 'De-identify tables, spreadsheets, and database exports',
-  'page.start.title': 'Start Processing',
-  'page.start.sub': 'Handle one file first, then move to batch processing',
-  'page.redactionList.title': 'Recognition List Settings',
-  'page.redactionList.sub':
-    'Compose recognition items into reusable lists for single-file and batch workflows',
   'page.jobDetail.title': 'Job Details',
   'page.jobDetail.sub': 'Queue progress, file review, and export readiness',
   'page.jobs.title': 'Jobs',
-  'page.jobs.sub': 'Track mixed-file queues and review status',
+  'page.jobs.sub': 'Progress · Review · Download',
   'page.history.title': 'Processing Results',
-  'page.history.sub': 'Review results and export delivery packages',
   'page.textModel.title': 'Text Model',
   'page.textModel.sub': 'Text recognition service connection',
   'page.visionModel.title': 'Vision Service',
   'page.visionModel.sub': 'OCR and image recognition service connection',
 
-  'preset.saveText.prompt': 'Save this text recognition list: enter a name',
   'preset.saveText.success': 'Text recognition list saved.',
-  'preset.saveVision.prompt': 'Save this image recognition list: enter a name',
   'preset.saveVision.success': 'Image recognition list saved.',
   'preset.save.failed': 'Save failed',
 
-  'start.kicker': 'Start here',
-  'start.title': 'Start with one file, then scale',
-  'start.desc':
-    'Use one file to tune the recognition list and review flow. When the result looks right, move the same list into a mixed-file batch.',
-  'start.refreshServices': 'Refresh services',
-  'start.state.checking': 'Checking',
-  'start.state.liveReady': 'Live ready',
-  'start.state.backendDown': 'Backend offline',
-  'start.state.modelLimited': 'Model services need attention',
-  'start.pathDesc.checking':
-    'Service status is still loading. You can open demo data while checks finish.',
-  'start.batchLive.title': 'Mixed-file batch',
-  'start.batchLive.desc':
-    'Create a queue-backed run for documents, scans, PDFs, and images after validating the recognition list on one file.',
-  'start.batchLive.cta': 'Create batch job',
-  'start.batchLive.blocked': 'Batch unavailable',
-  'start.batchDemo.title': 'Preview workflow',
-  'start.batchDemo.cta': 'Open preview',
-  'start.services.title': 'Local services',
-  'start.services.allOnline': 'Backend and recognition services are ready.',
-  'start.services.needsAction':
-    'At least one recognition service needs attention before creating a batch job.',
-  'start.services.checking': 'Checking local service readiness.',
-  'start.services.backendDown': 'Backend health is unavailable.',
-  'start.workflow.kicker': 'How to operate',
-  'start.workflow.title': 'Upload one file, check the marks, then export',
-  'start.workflow.desc':
-    'Follow the animated flow in the middle: start with a single document or image, let recognition make the first pass, review the marks yourself, and only use batch after the result is stable.',
-  'start.workflow.badge.singleFirst': 'Single file first',
-  'start.workflow.badge.noMedia': 'Built-in animation',
-  'start.workflow.step.upload.title': 'Upload',
-  'start.workflow.step.upload.desc': 'Choose one Word, PDF, scan, or image.',
-  'start.workflow.step.recognize.title': 'Recognize',
-  'start.workflow.step.recognize.desc': 'Let the system find sensitive content.',
-  'start.workflow.step.review.title': 'Review',
-  'start.workflow.step.review.desc': 'Keep, edit, or remove each mark.',
-  'start.workflow.step.export.title': 'Export',
-  'start.workflow.step.export.desc': 'Download after the single-file result is right.',
-  'start.entry.playground.title': 'Process one file',
-  'start.entry.playground.desc':
-    'Upload one Word, PDF, scan, or image file to tune the recognition list before expanding to a batch.',
+  // start-page removed (Issue#262 D6): the whole start.* group is dead keys;
+  // only the CTA key still referenced by the OnboardingGuide batch entry stays.
   'start.entry.playground.cta': 'Open single file',
-  'start.entry.jobs.cta': 'Open Jobs',
-  'start.entry.history.title': 'Delivery outputs',
-  'start.entry.history.desc':
-    'Review processed files, compare before and after, and download original or redacted ZIP packages.',
-  'start.entry.history.cta': 'Open History',
 
   'jobDetail.batchTask': 'Batch Task',
   'jobDetail.loadFailed': 'Failed to load',
@@ -618,7 +561,7 @@ const enBase: Record<string, string> = {
   'system.error.apiKeyCreate': 'Failed to create the API key.',
   'system.error.apiKeyRevoke': 'Failed to revoke the API key.',
 
-  'sidebar.subtitle': 'Anonymization Data Infrastructure',
+  'sidebar.subtitle': 'Legal document anonymization',
 
   'jobDetail.progressTotal': '{n} items total',
   'jobDetail.progressRedacted': '{n} redacted',
@@ -1015,7 +958,6 @@ const enBase: Record<string, string> = {
 
   'emptyState.noFiles': 'No files yet',
   'emptyState.noFilesDesc': 'Processed files will appear here after upload and review.',
-  'playground.loading': 'Loading...',
 
   'safety.cleanup.success': 'Cleared {files} files and {jobs} job records',
   'safety.cleanup.failed': 'Cleanup failed',
@@ -1072,30 +1014,23 @@ const enBase: Record<string, string> = {
 
 const enOverrides: Record<string, string> = {
   'common.download': 'Download',
-  'sidebar.productName': 'Redaction Assistant',
+  'sidebar.productName': '墨隐',
   'nav.playground': 'Process One File',
   'nav.playground.sub': 'Confirm results first',
   'nav.batch': 'Process Many Files',
   'nav.batch.sub': 'Mixed files by default',
-  'nav.history': 'Results',
   'nav.jobs': 'Task Progress',
-  'nav.jobs.sub': 'Review and export',
+  'nav.jobs.sub': 'Progress · Review · Download',
   'nav.redactionList': 'Recognition List Settings',
   'nav.redactionList.sub': 'Item combinations',
-  'nav.recognitionSettings': 'Recognition Item Settings',
-  'nav.recognitionSettings.sub': 'Atomic items',
   'nav.textModel': 'Text Service',
   'nav.visionModel': 'Image Service',
   'page.batch.title': 'Process Many Files',
   'page.batch.sub': 'Create or resume a mixed-file batch by default',
   'page.playground.sub': 'Process one file, confirm the recognition list, then move to batch',
   'page.history.title': 'Processing Results',
-  'page.history.sub': 'Review outputs and export bundles',
   'page.jobs.title': 'Jobs',
-  'page.jobs.sub': 'Track mixed-file queues and review status',
-  'page.redactionList.title': 'Recognition List Settings',
-  'page.redactionList.sub':
-    'Compose recognition items into reusable lists for single-file and batch workflows',
+  'page.jobs.sub': 'Progress · Review · Download',
   'page.textModel.title': 'Text Model',
   'page.textModel.sub': 'Text recognition service connection',
   'page.visionModel.title': 'Vision Service',
@@ -1233,13 +1168,15 @@ const enOverrides: Record<string, string> = {
     'This removes all uploaded files, redacted outputs, processing history, and every job record, including drafts and running jobs. This cannot be undone.',
   'history.unnamedContent': 'Unnamed content',
   'entityGroup.other': 'Other',
-  'playground.upload.kicker': 'Single-file start',
-  'playground.upload.title': 'Upload one file',
-  'playground.upload.desc':
-    'Choose a recognition list that defines what to find, then start recognition. Review results before export.',
-  'playground.upload.standards': 'Documents · PDFs · scans · images',
-  'playground.upload.configDesc':
-    'Choose the recognition list for this file. Saved lists are available below.',
+  // Issue#262 Task 9b: compact page header + summary card (mockup alignment); old
+  // kicker/title/desc/standards/configDesc keys removed with the upload-page reskin.
+  'playground.upload.pageTitle': 'Single File',
+  'playground.upload.pageSub': 'Run one file first and confirm the anonymization result',
+  'playground.upload.summaryNote':
+    '80+ general types such as medical and financial entities stay on by default. Use "Advanced · fine-tune types" to adjust anytime.',
+  'playground.upload.visualOfflineHint':
+    'Visual feature service offline: {count} selected visual types (e.g. seals, signatures) are not recognized for now. They take effect automatically once the service is back; everything else is unaffected.',
+  'playground.upload.detailsToggle': 'Details',
   'playground.upload.offlineHint':
     'The backend is offline. Preview data is shown here so you can keep checking text items, image items, and the overall layout.',
   'playground.upload.checkingHint':
@@ -1263,35 +1200,14 @@ const enOverrides: Record<string, string> = {
   'playground.upload.rejectTooMany': 'Upload one file at a time.',
   'playground.upload.rejectGeneric': 'This file cannot be uploaded. Check the format and size.',
   'playground.recognitionTypes': 'Recognition types',
-  'playground.text': 'Text',
-  'playground.vision': 'Vision',
-  'playground.ocrShort': 'OCR+HaS',
-  'playground.imageTextRange': 'Text vision',
-  'playground.visualRegionRange': 'Image vision',
   'playground.visualServiceDown': 'Service not running',
-  'playground.selected': 'selected',
-  'playground.textPresetLabel': 'Text recognition list',
-  'playground.saveAsTextPreset': 'Save text list',
-  'playground.visionPresetLabel': 'Image recognition list',
-  'playground.saveAsVisionPreset': 'Save image list',
-  'playground.defaultPreset': 'Default list',
-  'playground.fullPreset': 'Full',
-  'playground.clear': 'Clear',
-  'playground.selectRecommended': 'Select Recommended',
+  'playground.presetChipGroup': 'Recognition scope',
+  'playground.presetLegal': 'Legal case file (default)',
+  'playground.presetAll': 'All types',
+  'playground.advancedTypes': 'Advanced · fine-tune types',
+  'playground.advancedReview': 'Advanced · per-type / per-box selection',
   'playground.group.regex': 'Fixed format',
   'playground.group.semantic': 'Semantic recognition',
-  'playground.textConfigUnavailableTitle': 'Text recognition items are unavailable right now',
-  'playground.textConfigUnavailableDesc':
-    'The real text recognition items will appear here after the backend reconnects.',
-  'playground.textConfigEmptyTitle': 'No text recognition items are available yet',
-  'playground.textConfigEmptyDesc':
-    'Configure text recognition items in Recognition Item Settings, then come back here to pick them.',
-  'playground.visionConfigUnavailableTitle': 'Image recognition items are unavailable right now',
-  'playground.visionConfigUnavailableDesc':
-    'The real image recognition items will appear here after the backend reconnects.',
-  'playground.visionConfigEmptyTitle': 'No image recognition items are available yet',
-  'playground.visionConfigEmptyDesc':
-    'Configure image recognition items in Recognition Item Settings, then come back here to pick them.',
   'playground.popout': 'Pop out',
   'playground.reRecognize': 'Run recognition again',
   'playground.reconfigTypes': 'Adjust recognition items',
@@ -1863,25 +1779,22 @@ Object.assign(enOverrides, {
   'dicom.processing.reportReady': 'Output validation report is ready',
   'dicom.processing.reportSummary':
     '{source} source instances and {output} output instances; ready for delivery.',
-  'nav.start': 'Start',
-  'nav.start.sub': 'Choose a path',
   'nav.playground': 'Single File',
   'nav.playground.sub': 'Run one file first',
   'nav.batch': 'Batch',
   'nav.batch.sub': 'Mixed-file queue',
   'nav.jobs': 'Task Center',
-  'nav.jobs.sub': 'Progress and review',
-  'nav.history': 'Results',
-  'nav.history.sub': 'Compare and download',
+  'nav.jobs.sub': 'Progress · Review · Download',
   'nav.redactionList': 'Recognition List Settings',
   'nav.redactionList.sub': 'Item combinations',
-  'nav.recognitionSettings': 'Recognition Item Settings',
-  'nav.recognitionSettings.sub': 'Atomic items',
+  // Issue#262: legal default profile — recognition items / redaction list / word pools
+  // collapse into a single "Advanced Settings" entry.
+  'nav.advanced': 'Advanced Settings',
+  'nav.advanced.sub': 'Entity types · Presets · Word pools',
   'nav.group.workflow': 'Workflow',
-  'nav.group.config': 'Configuration',
+  'nav.group.config': 'Advanced',
   'nav.textModel': 'Text Model',
   'nav.visionModel': 'Vision Service',
-  'page.start.title': 'Start',
   'page.playground.sub': 'Run one file first and confirm the recognition list',
   'page.config.title': 'Configuration',
   'page.config.sub': 'Manage recognition items, recognition lists, and model services',
@@ -1917,7 +1830,6 @@ Object.assign(enOverrides, {
   'settings.visualFeatureSampleLabelPlaceholder': 'Sample note',
   'settings.visualFeatureSampleRemove': 'Remove sample',
   'settings.visualFeatureSampleAlt': 'Sample image',
-  'playground.visualFeatureShort': 'Visual elements',
   'batchWizard.step1.visualFeatureTypes': 'Visual element checklist',
 });
 
@@ -1937,9 +1849,7 @@ Object.assign(enOverrides, {
 });
 
 Object.assign(enOverrides, {
-  'playground.visualRegionRange': 'Image vision',
   'playground.visualServiceDown': 'Service not running',
-  'playground.visualFeatureShort': 'Visual features',
   'health.service.visual_features': 'Visual feature service',
   'history.previewImageRegion': 'Visual feature',
   'settings.pipelineDisplayName.image': 'Visual features',
@@ -1975,10 +1885,6 @@ Object.assign(enOverrides, {
   'settings.pipelineDescription.image': 'GLM-4.6V detects fixed visual elements.',
   'playground.group.regex': 'Custom fallback',
   'playground.group.semantic': 'HaS text recognition',
-  'playground.customFallbackEmpty':
-    'No default setup is needed. Custom fallback items will appear here as soon as you add them.',
-  'playground.visionPipelineEmpty':
-    'This pipeline has no selectable items yet. New configuration items will appear here.',
   'settings.redaction.regexEmptyInline':
     'No default setup is needed. Custom fallback items will appear here as soon as you add them.',
   'settings.redaction.pipelineEmptyInline':
@@ -2774,6 +2680,11 @@ Object.assign(enOverrides, {
 
   // entity-type-list.tsx
   'settings.entityList.systemManaged': 'System managed',
+  // Issue#262 wave 2 feedback: entity type list search (display name OR type code)
+  'settings.entityList.searchPlaceholder': 'Search recognition types (name or code)',
+  'settings.entityList.searchLabel': 'Search recognition types',
+  'settings.entityList.matchCount': '{count} matches',
+  'settings.entityList.noMatch': 'No matches',
   'settings.override.enabled': 'Enabled',
   'settings.override.includeDefault': 'Include in default scope',
   'settings.override.disabledBadge': 'Disabled',
@@ -2843,6 +2754,55 @@ Object.assign(enOverrides, {
   'agentMd.taskExpired': 'Previous task artifacts have expired — please upload again',
   'agentMd.copyFailed': 'Copy failed — select and copy manually',
   'agentMd.retainedEmpty': 'No fields were kept as original text in this run',
+});
+
+// Issue#262 D3 advanced settings single-entry tabs (/settings?tab=types|redaction|words)
+Object.assign(enOverrides, {
+  'settings.tab.types': 'Entity types',
+  'settings.tab.redaction': 'Presets',
+  'settings.tab.words': 'Word pools',
+});
+
+// Issue#262 A1 tasks hub outer tabs (/jobs?view=active|review|done)
+Object.assign(enOverrides, {
+  'tasks.tab.active': 'In progress',
+  'tasks.tab.review': 'Awaiting review',
+  'tasks.tab.done': 'Completed',
+});
+
+// Issue#262 wave 2 Task 10b: recognition scope dialog (NER / character-presence / visual + schemes)
+Object.assign(enOverrides, {
+  'playground.scope.title': 'Recognition scope',
+  'playground.scope.subtitle':
+    'Three zones cover text, character-presence and visual cues. Ticks apply immediately and are used as-is for recognition.',
+  // Issue#262 wave 2 feedback: dialog-wide search (filters all three zones)
+  'playground.scope.searchPlaceholder': 'Search types (name or code)',
+  'playground.scope.searchLabel': 'Search types',
+  'playground.scope.matchCount': '{count} matches',
+  'playground.scope.noMatch': 'No matches',
+  'playground.scope.schemeLabel': 'Scheme',
+  'playground.scope.schemeMyGroup': 'My schemes',
+  'playground.scope.schemeCustom': 'Custom (manual selection)',
+  'playground.scope.schemeSave': 'Save as scheme',
+  'playground.scope.schemeNamePlaceholder': 'Scheme name, e.g. "Case intake"',
+  'playground.scope.schemeSaveConfirm': 'Save',
+  'playground.scope.schemeSaved': 'Scheme "{name}" saved',
+  'playground.scope.zoneNer': 'Semantic recognition',
+  'playground.scope.zoneNerDesc': 'Finds names, IDs, case numbers and other text entities.',
+  'playground.scope.zoneOcr': 'Character presence check',
+  'playground.scope.zoneOcrDesc': 'Checks which sensitive phrases appear on each scanned page.',
+  'playground.scope.zoneLa': 'Visual feature locator',
+  'playground.scope.zoneLaDesc': 'Locates seals, signatures and handwritten marks on the page.',
+  'playground.scope.zoneOffline': 'This zone is not taking part in recognition; it returns automatically once the service recovers.',
+  'playground.scope.zoneNa': 'This file is plain text; this zone does not apply.',
+  'playground.scope.pageLabel': 'Page {page}/{total} - {count} types',
+  'playground.scope.prevPage': 'Previous page',
+  'playground.scope.nextPage': 'Next page',
+  'playground.scope.zoneAll': 'Select all',
+  'playground.scope.zoneNone': 'Clear all',
+  'playground.scope.selectedCount': '{count} types selected',
+  'playground.scope.footerNote':
+    'Ticks apply immediately - no save needed. Save frequent combinations as a scheme for next time.',
 });
 
 export const en: Record<string, string> = {

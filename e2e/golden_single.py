@@ -33,7 +33,16 @@ def golden_single(page) -> None:
     )
 
     # Recognition runs after upload; the entity panel appears when done.
+    # Issue#262 T7: per-entity rows moved into the bottom "advanced" drawer,
+    # which is collapsed by default and conditionally rendered — expand it and
+    # wait for the rows before asserting on the text. The panel root itself
+    # shares the playground-entity- testid prefix, so exclude it explicitly.
     page.wait_for_selector('[data-testid="playground-entity-panel"]', timeout=180_000)
+    page.click('[data-testid="playground-advanced-toggle"]')
+    page.wait_for_selector(
+        '[data-testid^="playground-entity-"]:not([data-testid="playground-entity-panel"])',
+        timeout=30_000,
+    )
     panel_text = page.locator('[data-testid="playground-entity-panel"]').inner_text()
     assert "13812345678" in panel_text or "张伟" in panel_text, (
         "entity panel does not show the expected PII hits:\n" + panel_text[:500]

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:8000").rstrip("/")
 USERNAME = os.environ.get("E2E_USERNAME", "e2e_user")
@@ -44,6 +44,16 @@ def login(page: Page) -> None:
     page.locator('input[type="password"]').first.fill(PASSWORD)
     page.locator('button[type="submit"]').first.click()
     page.wait_for_url(lambda url: "/auth" not in url, timeout=20_000)
+    # Issue#262 二期收口：登录落 /single（sanitizeNextPath 默认），首次进入会弹右下角
+    # 引导浮卡（OnboardingGuide，fixed z-40，localStorage 未记录完成时每个新浏览器
+    # profile 必现，覆盖 /single 与 /batch）——实测会拦截页尾右侧控件的点击（识别
+    # 范围入口等）。这里统一点掉「跳过引导」X（aside aria-labelledby 定位，locale
+    # 无关）：同 profile 内 localStorage 置位后不再弹。浮卡未弹（旧部署/已完成引导）
+    # 时 1.5s 超时直通，不影响既有脚本节奏。
+    try:
+        page.locator('aside[aria-labelledby="onboarding-title"] button').first.click(timeout=1_500)
+    except PlaywrightTimeoutError:
+        pass
 
 
 def run(scenario) -> None:

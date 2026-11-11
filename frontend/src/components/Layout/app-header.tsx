@@ -125,7 +125,6 @@ function getPageHeader(
   pathname: string,
   t: (key: string) => string,
 ): { title: string; sub?: string } {
-  if (pathname === '/') return { title: t('page.start.title'), sub: t('page.start.sub') };
   if (pathname === '/batch' || pathname.startsWith('/batch/'))
     return { title: t('page.batch.title'), sub: t('page.batch.sub') };
   if (pathname === '/structured')
@@ -139,8 +138,6 @@ function getPageHeader(
   if (pathname === '/structured/delivery')
     return { title: t('nav.structured.delivery'), sub: t('nav.structured.delivery.sub') };
   if (pathname === '/dicom') return { title: t('page.dicom.title'), sub: t('page.dicom.sub') };
-  if (pathname.startsWith('/settings/redaction'))
-    return { title: t('page.redactionList.title'), sub: t('page.redactionList.sub') };
   if (pathname === '/settings') return { title: t('page.config.title'), sub: t('page.config.sub') };
   if (pathname.startsWith('/jobs/'))
     return { title: t('page.jobDetail.title'), sub: t('page.jobDetail.sub') };
@@ -149,7 +146,6 @@ function getPageHeader(
   const map: Record<string, { title: string; sub?: string }> = {
     '/single': { title: t('playground.title'), sub: t('page.playground.sub') },
     '/playground': { title: t('playground.title'), sub: t('page.playground.sub') },
-    '/history': { title: t('page.history.title'), sub: t('page.history.sub') },
     '/model-settings/text': { title: t('page.textModel.title'), sub: t('page.textModel.sub') },
     '/model-settings/vision': {
       title: t('page.visionModel.title'),

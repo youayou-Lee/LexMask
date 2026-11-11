@@ -132,7 +132,7 @@ export function BatchHub() {
                 className="h-9 rounded-xl whitespace-nowrap"
                 asChild
               >
-                <Link to="/history">
+                <Link to="/jobs?view=done">
                   <History className="mr-2 size-4" />
                   {t('batchHub.history')}
                 </Link>

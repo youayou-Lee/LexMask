@@ -25,14 +25,13 @@ import {
   type ServicesHealth,
 } from '@/hooks/use-service-health';
 import {
-  HomeIcon,
   PlayIcon,
   BatchIcon,
-  HistoryIcon,
   JobsCenterIcon,
   ModelIcon,
   RulesIcon,
 } from '@/components/shared/nav-icons';
+import { isTerminalPhase } from '@/features/single-task/phase';
 import {
   Sidebar,
   SidebarContent,
@@ -61,7 +60,7 @@ interface NavItem {
   icon: React.FC<{ className?: string }>;
   end?: boolean;
   children?: NavItem[];
-  /** 可选计数角标（Issue#194 T12：/jobs 挂单文件任务数）；0/缺省不渲染。 */
+  /** 可选计数角标（Issue#262：/jobs 挂非终态单文件任务数）；0/缺省不渲染。 */
   badgeCount?: number;
 }
 
@@ -72,9 +71,10 @@ export function AppSidebar() {
   const { health, checking, roundTripMs, refresh } = useServiceHealth();
   const { tasks } = useSingleTask();
   const isAdmin = Boolean(status?.is_super_admin);
+  // Issue#262：角标只计进行中/待复核的任务——done/failed 是终态，不应把用户拽回任务中心。
+  const nonTerminalCount = tasks.filter((task) => !isTerminalPhase(task.phase)).length;
 
   const workflowNavItems: NavItem[] = [
-    { path: '/', label: t('nav.start'), sublabel: t('nav.start.sub'), icon: HomeIcon, end: true },
     {
       path: '/single',
       label: t('nav.playground'),
@@ -145,38 +145,24 @@ export function AppSidebar() {
       label: t('nav.jobs'),
       sublabel: t('nav.jobs.sub'),
       icon: JobsCenterIcon,
-      // Issue#194 T12：全局单文件任务账本计数（AC2 全局入口 + 进度可达）。
-      badgeCount: tasks.length,
-    },
-    {
-      path: '/history',
-      label: t('nav.history'),
-      sublabel: t('nav.history.sub'),
-      icon: HistoryIcon,
+      // Issue#262：非终态计数（进行中 + 待复核），零新请求——复用账本 tasks。
+      badgeCount: nonTerminalCount,
     },
   ];
 
   const visibleWorkflowNavItems = filterHiddenNavItems(workflowNavItems);
 
+  // Issue#262：法律默认档收敛——识别项/配置清单/词库收进 /settings 单入口
+  // （高级设置三页签：识别项 / 配置清单 / 词库）。旧 /settings/redaction、
+  // /settings/word-pools 路由只作深链兜底，经 router 的 SettingsTabRedirect
+  // 重定向到 /settings?tab=…；页签面板 kicker 复用 nav.redactionList.sub 等既有键。
   const configNavItems: NavItem[] = [
     {
       path: '/settings',
-      label: t('nav.recognitionSettings'),
-      sublabel: t('nav.recognitionSettings.sub'),
+      label: t('nav.advanced'),
+      sublabel: t('nav.advanced.sub'),
       icon: RulesIcon,
       end: true,
-    },
-    {
-      path: '/settings/redaction',
-      label: t('nav.redactionList'),
-      sublabel: t('nav.redactionList.sub'),
-      icon: RulesIcon,
-    },
-    {
-      path: '/settings/word-pools',
-      label: t('nav.wordPools'),
-      sublabel: t('nav.wordPools.sub'),
-      icon: RulesIcon,
     },
     ...(isAdmin
       ? [

@@ -16,17 +16,13 @@ const AuthPage = React.lazy(() =>
 const Playground = React.lazy(() =>
   import('./features/playground').then((m) => ({ default: m.Playground })),
 );
-const StartPage = React.lazy(() =>
-  import('./features/home').then((m) => ({ default: m.StartPage })),
-);
 const Batch = React.lazy(() => import('./features/batch').then((m) => ({ default: m.Batch })));
 const BatchHub = React.lazy(() =>
   import('./features/batch').then((m) => ({ default: m.BatchHub })),
 );
-const History = React.lazy(() =>
-  import('./features/history').then((m) => ({ default: m.History })),
+const TasksPage = React.lazy(() =>
+  import('./features/jobs').then((m) => ({ default: m.TasksPage })),
 );
-const Jobs = React.lazy(() => import('./features/jobs').then((m) => ({ default: m.Jobs })));
 const JobDetailPage = React.lazy(() =>
   import('./features/jobs').then((m) => ({ default: m.JobDetailPage })),
 );
@@ -50,12 +46,6 @@ const DicomWorkspace = React.lazy(() =>
 );
 const Settings = React.lazy(() =>
   import('./features/settings').then((m) => ({ default: m.Settings })),
-);
-const RedactionListSettings = React.lazy(() =>
-  import('./features/settings').then((m) => ({ default: m.RedactionListSettings })),
-);
-const WordPoolsSettings = React.lazy(() =>
-  import('./features/settings').then((m) => ({ default: m.WordPoolsSettings })),
 );
 const SystemSettings = React.lazy(() =>
   import('./features/settings').then((m) => ({ default: m.SystemSettings })),
@@ -135,11 +125,11 @@ function AuthStatusErrorPage() {
 const prefetchRoutes = () => {
   const routes = [
     () => import('./features/playground'),
-    () => import('./features/home'),
     () => import('./features/batch'),
     () => import('./features/structured'),
     () => import('./features/dicom'),
-    () => import('./features/history'),
+    // features/history 不单列：tasks-page（features/jobs）已静态 import HistoryView，
+    // 预取 jobs 时随 chunk 一并拉下（Issue#262 A1 合并页后冗余）。
     () => import('./features/jobs'),
   ];
 
@@ -196,8 +186,10 @@ function AuthRoute() {
   if (loading) return <FullPageSpinner />;
   if (!status) return <AuthStatusErrorPage />;
   if (!status.auth_enabled || status.authenticated) {
-    const shouldUseHome = status.authenticated && isRegisterRoute;
-    return <Navigate to={shouldUseHome ? '/' : next} replace />;
+    // Issue#262 D6：注册深链登录后落单次处理（开始页已删，「home」语义过时，
+    // 改名 isRegisterLanding——行为等价：仅当已登录且来自注册链接时落 /single）。
+    const isRegisterLanding = status.authenticated && isRegisterRoute;
+    return <Navigate to={isRegisterLanding ? '/single' : next} replace />;
   }
 
   return (
@@ -255,11 +247,7 @@ export const router = createBrowserRouter([
     children: [
       {
         index: true,
-        element: (
-          <LazyPage>
-            <StartPage />
-          </LazyPage>
-        ),
+        element: <Navigate to="/single" replace />,
       },
       {
         path: 'single',
@@ -362,19 +350,13 @@ export const router = createBrowserRouter([
           </LazyPage>
         ),
       },
-      {
-        path: 'history',
-        element: (
-          <LazyPage>
-            <History />
-          </LazyPage>
-        ),
-      },
+      // Issue#262 A1：/history 并入任务中心合并页——旧深链经重定向透传 source/jobId
+      { path: 'history', element: <HistoryRedirect /> },
       {
         path: 'jobs',
         element: (
           <LazyPage>
-            <Jobs />
+            <TasksPage />
           </LazyPage>
         ),
       },
@@ -402,22 +384,10 @@ export const router = createBrowserRouter([
           </LazyPage>
         ),
       },
-      {
-        path: 'settings/redaction',
-        element: (
-          <LazyPage>
-            <RedactionListSettings />
-          </LazyPage>
-        ),
-      },
-      {
-        path: 'settings/word-pools',
-        element: (
-          <LazyPage>
-            <WordPoolsSettings />
-          </LazyPage>
-        ),
-      },
+      // Issue#262 D3：旧设置路由重定向进高级设置单入口对应页签（深链不断；
+      // 旧 URL 自身的其他 query 参数允许丢弃，只透传 tab）。
+      { path: 'settings/redaction', element: <SettingsTabRedirect tab="redaction" /> },
+      { path: 'settings/word-pools', element: <SettingsTabRedirect tab="words" /> },
       {
         path: 'settings',
         element: (
@@ -447,6 +417,21 @@ export const router = createBrowserRouter([
     ],
   },
 ]);
+
+// Issue#262 D3：旧设置路由 → /settings?tab=<tab> 重定向（replace，避免历史栈堆积中间态）
+function SettingsTabRedirect({ tab }: { tab: string }) {
+  return <Navigate to={`/settings?tab=${tab}`} replace />;
+}
+
+// Issue#262 A1：旧 /history 深链 → /jobs?view=done（replace，避免历史栈堆积中间态）；
+// source / jobId 等既有 query 原样透传，由 HistoryView 的 use-history-data URL 同步消费。
+// 导出仅为渲染测试钉（router.test.tsx）；路由表内使用不受影响。
+export function HistoryRedirect() {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  params.set('view', 'done');
+  return <Navigate to={`/jobs?${params.toString()}`} replace />;
+}
 
 function NotFound() {
   const t = useT();
