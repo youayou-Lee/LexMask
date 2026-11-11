@@ -293,6 +293,14 @@ class RecognitionPipelineMixin:
                 task.item_id[:8],
                 total_ms / 1000,
             )
+            # Issue#279：识别收尾复算任务级 summary（可观测面聚合，不读 DB）并清事件上下文。
+            from app.services.page_event_log import clear_event_context
+            from app.services.page_event_summary import write_summary
+            try:
+                write_summary(task.job_id)
+            except Exception:  # noqa: BLE001 - fail-open（write_summary 内部已兜，此处双保险）
+                logger.debug("page event summary write failed", exc_info=True)
+            clear_event_context()
             store.touch_job_updated(task.job_id)
             self._refresh_job_status(store, task.job_id)
 
@@ -527,6 +535,13 @@ class RecognitionPipelineMixin:
             store.set_item_error_message(
                 task.item_id, _failed_pages_error_summary(failed_map, total_pages)
             )
+            # Issue#279：页重试收尾复算 summary——重试翻绿页按最后一条 page_done 归 retry 桶、
+            # failed_pages 除名清零；write_summary 内部 fail-open，此处仅双保险。
+            from app.services.page_event_summary import write_summary
+            try:
+                write_summary(task.job_id)
+            except Exception:  # noqa: BLE001 - fail-open（write_summary 内部已兜，此处双保险）
+                logger.debug("page event summary write failed", exc_info=True)
             store.touch_job_updated(task.job_id)
             self._refresh_job_status(store, task.job_id)
         except Exception:
