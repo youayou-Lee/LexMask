@@ -233,6 +233,16 @@ def test_artifacts_missing_file_store_record_404(fake_pipeline, monkeypatch):
     assert r.json()["error_code"] == "ARTIFACT_NOT_FOUND"
 
 
+def test_confirm_completed_returns_same_result(fake_pipeline):
+    """Issue#282：已完成任务重复 confirm 幂等返回既有三件套，不再 409。"""
+    first = client.post("/api/v1/agent-md/tk-1/confirm", json={"decisions": []})
+    second = client.post("/api/v1/agent-md/tk-1/confirm", json={"decisions": []})
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["output_file_id"] == first.json()["output_file_id"]
+    assert second.json()["downloads"]["md"].endswith("/artifacts/md")
+
+
 def test_confirm_unknown_task_404(fake_pipeline):
     assert client.post("/api/v1/agent-md/nope/confirm", json={"decisions": []}).status_code == 404
 
