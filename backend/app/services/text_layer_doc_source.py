@@ -21,6 +21,7 @@ import time
 
 from app.core.config import settings
 from app.models.entity_schemas import BoundingBox
+from app.services import page_event_log as page_events
 from app.services import text_layer_docline_service as docline
 from app.services import text_layer_quality as quality
 from app.services import watermark_overlay
@@ -149,6 +150,16 @@ async def _build(
     ocr_has_types,
     regex_types: list[tuple[str, str]] | None = None,
 ) -> dict | None:
+    # —— Issue#279：闸判定即决策，每闸一条 route_decided（卷级 page=None）——
+    # 纯旁路：writer fail-open（无上下文/被禁用时丢弃计数），绝不影响闸行为。
+    def _route(gate: str, verdict: str, signals: dict, keys: tuple[str, ...] = ()) -> None:
+        page_events.log_event(
+            "route_decided", page=None, source="docline_gate", gate=gate,
+            verdict=verdict, signals=signals,
+            thresholds_snapshot=page_events.route_thresholds_snapshot(keys) if keys else {},
+            config_hash=page_events.route_config_hash(),
+        )
+
     path = str(snapshot.get("file_path") or "")
     if not path or not os.path.exists(path):
         return None
@@ -170,6 +181,8 @@ async def _build(
             logger.info(
                 "text_layer_docline skipped: watermark overlay hit file=%s", file_id[:8]
             )
+            _route("watermark_overlay_hit", "fallback:watermark_overlay_hit",
+                   {"probe_code": "hit"})
             raise _TransientIneligible(
                 "watermark_overlay_hit",
                 code="watermark_overlay_hit",
@@ -186,8 +199,15 @@ async def _build(
 
     started = time.perf_counter()
     pages = await asyncio.to_thread(docline.extract_text_layer_pages, path)
+    page_events.log_event(
+        "text_layer_extracted", page=None,
+        chars=sum(len(w.text) for p_ in pages for w in p_.words),
+        blocks=len(pages), pages=len(pages),
+        ms=int((time.perf_counter() - started) * 1000),
+    )
     if not pages:
         logger.info("text_layer_docline skipped: no text layer file=%s", file_id[:8])
+        _route("no_text_layer", "fallback:no_text_layer", {"pages": 0})
         raise _TransientIneligible("no_text_layer", code="no_text_layer", permanent=True)
 
     # **建流预算闸**（Issue#129 评审 I1）：整卷建流在**首个请求里同步跑完**，页数过多
@@ -208,6 +228,12 @@ async def _build(
                 len(pages),
                 file_id[:8],
             )
+            _route(
+                "build_budget", "fallback:build_budget",
+                {"pages": len(pages), "estimated_sec": round(estimated, 1),
+                 "budget_sec": budget},
+                ("TEXT_LAYER_DOCLINE_MAX_BUILD_SEC", "TEXT_LAYER_DOCLINE_BUILD_SEC_PER_PAGE"),
+            )
             raise _TransientIneligible(
                 f"build_budget:{estimated:.0f}s/{budget:.0f}s",
                 code="build_budget",
@@ -227,6 +253,12 @@ async def _build(
             verdict.severity,
             file_id[:8],
             "; ".join(verdict.reasons),
+        )
+        _route(
+            "verdict_unusable", "fallback:verdict_unusable", metrics.as_dict(),
+            ("TEXT_LAYER_MIN_CHARS_PER_PAGE", "TEXT_LAYER_MAX_SHORT_WORD_RATIO",
+             "TEXT_LAYER_MAX_GARBAGE_RATIO", "TEXT_LAYER_MIN_AVG_WORD_LEN",
+             "TEXT_LAYER_MAX_WORD_CHARS", "TEXT_LAYER_MIN_INK_ALIGNMENT"),
         )
         raise _TransientIneligible(
             f"verdict_unusable:{verdict.severity}",
@@ -256,6 +288,10 @@ async def _build(
         # PII 最小化（#203 AC4）：水印串含真实姓名+编号，reason/detail 只带计数
         # 与占比，不带命中片段字面量。permanent：层内容是文件快照的函数，重试
         # 不会变好——落永久负缓存，重试不重建、不再撞墙（回落逐页线照常工作）。
+        _route(
+            "repeated_fragment_coverage", "fallback:repeated_fragment_coverage",
+            dict(repeat), ("TEXT_LAYER_MAX_REPEATED_FRAGMENT_COVERAGE",),
+        )
         raise _TransientIneligible(
             f"repeated_fragment_coverage:{float(repeat['coverage']):.3f}",
             code="repeated_fragment_coverage",
@@ -278,6 +314,8 @@ async def _build(
             "text_layer_docline skipped: %d/%d chunks failed file=%s",
             result.failed_chunks, result.chunks, file_id[:8],
         )
+        _route("failed_chunks", "fallback:failed_chunks",
+               {"failed_chunks": int(result.failed_chunks), "chunks": int(result.chunks)})
         raise _TransientIneligible(
             f"failed_chunks:{result.failed_chunks}/{result.chunks}",
             code="failed_chunks",
@@ -288,6 +326,8 @@ async def _build(
         logger.warning(
             "text_layer_docline skipped: map failure ratio %.3f file=%s", map_ratio, file_id[:8]
         )
+        _route("map_failure_ratio", "fallback:map_failure_ratio",
+               {"ratio": round(map_ratio, 4)}, ("TEXT_LAYER_MAX_MAP_FAILURE_RATIO",))
         raise _TransientIneligible(
             f"map_failure_ratio:{map_ratio:.3f}",
             code="map_failure_ratio",
@@ -302,6 +342,9 @@ async def _build(
             max_errors,
             file_id[:8],
         )
+        _route("block_errors", "fallback:block_errors",
+               {"http_errors": int(result.http_errors), "chunks": int(result.chunks)},
+               ("TEXT_LAYER_MAX_BLOCK_ERRORS",))
         raise _TransientIneligible(
             f"block_errors:{result.http_errors}/{result.chunks}",
             code="block_errors",
@@ -319,6 +362,10 @@ async def _build(
             "text_layer_docline skipped: %d/%d chunks truncated (limit %.2f) file=%s",
             result.truncated_chunks, result.chunks, max_truncated, file_id[:8],
         )
+        _route("truncated_chunks", "fallback:truncated_chunks",
+               {"truncated": int(result.truncated_chunks), "chunks": int(result.chunks),
+                "ratio": round(truncated_ratio, 4)},
+               ("TEXT_LAYER_MAX_TRUNCATED_RATIO",))
         raise _TransientIneligible(
             f"truncated_ratio:{truncated_ratio:.3f}:{result.truncated_chunks}/{result.chunks}",
             code="truncated_chunks",
@@ -331,12 +378,21 @@ async def _build(
             "text_layer_docline skipped: coverage %.3f < %.2f file=%s",
             coverage, float(settings.TEXT_LAYER_MIN_COVERAGE), file_id[:8],
         )
+        _route("coverage", "fallback:coverage", {"coverage": coverage},
+               ("TEXT_LAYER_MIN_COVERAGE",))
         raise _TransientIneligible(
             f"coverage:{coverage:.3f}",
             code="coverage",
             detail={"coverage": round(coverage, 4),
                     "min": round(float(settings.TEXT_LAYER_MIN_COVERAGE), 4)},
         )
+    # coverage 闸通过 = 文本层接管（accepted）；gate 仍记 "coverage"，阈值快照同闸。
+    _route(
+        "coverage", "accepted",
+        {"coverage": coverage, "chunks": int(result.chunks),
+         "entities": len(result.entities)},
+        ("TEXT_LAYER_MIN_COVERAGE",),
+    )
     label_to_id = build_label_to_type_id(ocr_has_types)
     # **只有真正带词的页才算被覆盖**：`extract_text_layer_pages` 会把无文本层的页
     # 也返回（`words=[]`）。若按「页存在」算覆盖，混合卷里那些无层页会被判成
