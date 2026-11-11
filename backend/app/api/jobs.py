@@ -400,6 +400,23 @@ def _load_file_info(file_id: Any) -> dict[str, Any] | None:
     return info if isinstance(info, dict) else None
 
 
+@router.get("/items/by-file/{file_id}")
+async def get_item_ref_by_file(
+    file_id: str,
+    store: JobStore = Depends(get_job_store),
+    owner_id: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """按文件反查所属 job/item（Issue#257 单文件页格的解析链兜底）。
+
+    单文件任务在识别完成后，前端 provider 账本条目会被清理、草稿也可能缺
+    ``taskJobId``；没有这条兜底，刷新后页格就永久解析不出 job/item。
+    """
+    ref = store.find_item_ref_by_file_id(file_id, owner_id=owner_id)
+    if ref is None:
+        raise HTTPException(status_code=404, detail="item not found")
+    return ref
+
+
 @router.get("/{job_id}/items/{item_id}/page-status")
 async def get_item_page_status(
     job_id: str,

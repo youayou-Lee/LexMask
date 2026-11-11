@@ -1,6 +1,6 @@
 // Copyright 2026 LexMask Contributors
 
-import { type FC, memo, useEffect, useRef, useState } from 'react';
+import { type FC, type ReactNode, memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -57,6 +57,11 @@ export interface PlaygroundLoadingProps {
   textMode?: boolean;
   /** Issue#238 redaction = 打码段被动小卡（右下角，无清单/提示/取消，可离开本页语义）。 */
   variant?: 'recognition' | 'redaction';
+  /**
+   * Issue#257 需求重对齐：识别中就要能看逐页结果、选页导出——投在收尾的
+   * 槽位里（页格自带宽高限制，遮罩面板不会被撑爆）。
+   */
+  children?: ReactNode;
 }
 
 /** ✓ 清单固定顺序（用户验收④ mockup）；排队/打码/失败回落等行不上等待页。 */
@@ -104,6 +109,7 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
     startedAt = null,
     textMode = false,
     variant = 'recognition',
+    children,
   }) => {
     const t = useT();
     const panelRef = useRef<HTMLDivElement>(null);
@@ -261,7 +267,7 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
           className={
             overlay === 'passive'
               ? 'pointer-events-auto w-full max-w-xs animate-scale-in cursor-default rounded-[20px] border border-border/70 bg-[var(--surface-overlay)] px-4 py-3.5 text-left shadow-[var(--shadow-floating)] outline-none'
-              : 'w-full max-w-md animate-scale-in cursor-default rounded-[20px] border border-border/70 bg-[var(--surface-overlay)] px-4 py-3.5 text-left shadow-[var(--shadow-floating)] outline-none'
+              : `w-full ${children ? 'max-w-xl' : 'max-w-md'} animate-scale-in cursor-default rounded-[20px] border border-border/70 bg-[var(--surface-overlay)] px-4 py-3.5 text-left shadow-[var(--shadow-floating)] outline-none`
           }
         >
           <div className="mb-3 flex items-start gap-3">
@@ -371,6 +377,8 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
               {t('common.cancel')}
             </Button>
           )}
+
+          {children && <div className="mt-3">{children}</div>}
         </div>
       </div>,
       document.body,

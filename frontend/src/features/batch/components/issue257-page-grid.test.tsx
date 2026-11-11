@@ -4,7 +4,7 @@
 //
 // 钉住三件产品行为：
 //  - 页格三态可见，失败页不可选（#199 红线在「选择层」就挡住，不靠后端兜底）；
-//  - 所选页范围里含失败页时必须显式确认（ack），未确认提交按钮禁用、点击不发请求；
+//  - 所选页范围里含失败页时**不再要求确认**（2026-11-11 需求重对齐）：自动排除并可提交；
 //  - 导出记录从后端列表渲染并给出可下载链接（跨重启仍在，见后端扫盘口径）。
 //
 // @vitest-environment jsdom
@@ -146,7 +146,7 @@ describe('页格矩阵（Issue#257）', () => {
 });
 
 describe('部分导出对话框（Issue#257）', () => {
-  it('默认全选成功页；区间含失败页时未勾选确认按钮禁用且不发请求', async () => {
+  it('默认全选成功页；区间含失败页时直接可提交（无勾选框）', async () => {
     await renderDialog({
       open: true,
       jobId: 'job-1',
@@ -155,15 +155,14 @@ describe('部分导出对话框（Issue#257）', () => {
       onClose: () => {},
     });
 
-    expect(screen.getByTestId('partial-export-ack')).toBeTruthy();
+    // 需求重对齐后不再有「我已了解失败页」勾选框，只留一行自动排除提示。
+    expect(screen.queryByTestId('partial-export-ack')).toBeNull();
+    expect(screen.getByTestId('partial-export-excluded-hint').textContent).toContain('4');
     const submit = screen.getByTestId('partial-export-submit') as HTMLButtonElement;
-    expect(submit.disabled).toBe(true);
-
-    fireEvent.click(submit);
-    expect(mockedStart).not.toHaveBeenCalled();
+    expect(submit.disabled).toBe(false);
   });
 
-  it('勾选确认后可提交，请求带升序页号与 ack=true', async () => {
+  it('提交请求带升序页号，且不再传 ack 参数', async () => {
     await renderDialog({
       open: true,
       jobId: 'job-1',
@@ -173,34 +172,12 @@ describe('部分导出对话框（Issue#257）', () => {
       onClose: () => {},
     });
 
-    fireEvent.click(screen.getByTestId('partial-export-ack'));
     const submit = screen.getByTestId('partial-export-submit') as HTMLButtonElement;
     expect(submit.disabled).toBe(false);
 
     fireEvent.click(submit);
     await waitFor(() => expect(mockedStart).toHaveBeenCalledTimes(1));
-    expect(mockedStart).toHaveBeenCalledWith('job-1', 'item-1', [1, 2, 3, 5], true);
-  });
-
-  it('改了选择之后确认必须重新勾选（确认只对当次选择有效）', async () => {
-    await renderDialog({
-      open: true,
-      jobId: 'job-1',
-      itemId: 'item-1',
-      filename: '测试卷.pdf',
-      initialSelected: [2, 5],
-      onClose: () => {},
-    });
-
-    fireEvent.click(screen.getByTestId('partial-export-ack'));
-    expect((screen.getByTestId('partial-export-ack') as HTMLInputElement).checked).toBe(true);
-
-    // 再点一个成功页（区间仍跨失败页）→ 选择变了 → ack 复位，提交重新被禁用。
-    fireEvent.click(screen.getByTestId('page-cell-1'));
-    await waitFor(() =>
-      expect((screen.getByTestId('partial-export-ack') as HTMLInputElement).checked).toBe(false),
-    );
-    expect((screen.getByTestId('partial-export-submit') as HTMLButtonElement).disabled).toBe(true);
+    expect(mockedStart).toHaveBeenCalledWith('job-1', 'item-1', [1, 2, 3, 5]);
   });
 
   it('导出记录渲染下载链接（跨重启记录来自后端列表）', async () => {
@@ -415,5 +392,62 @@ describe('step3 接线（Issue#257）', () => {
       fireEvent.click(screen.getByTestId('page-matrix-toggle-file-1'));
     });
     expect(screen.queryByTestId('page-matrix-block')).toBeNull();
+  });
+});
+
+describe('页格范围选择与 Shift 连选（2026-11-11 需求重对齐）', () => {
+  it('范围输入 100-150 这类写法一次选中整段（失败页自动剔除）', () => {
+    const onChange = vi.fn();
+    render(<BatchPageMatrix status={makeStatus()} selected={new Set()} onChange={onChange} />);
+
+    const input = screen.getByTestId('page-matrix-range-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '2-5' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const next = onChange.mock.calls[0][0] as Set<number>;
+    expect([...next].sort((a, b) => a - b)).toEqual([2, 3, 5]);
+  });
+
+  it('点一页后按住 Shift 点另一页 = 选中中间整段', () => {
+    const onChange = vi.fn();
+    render(<BatchPageMatrix status={makeStatus()} selected={new Set()} onChange={onChange} />);
+
+    fireEvent.click(screen.getByTestId('page-cell-1'));
+    const first = onChange.mock.calls[0][0] as Set<number>;
+    expect([...first].sort((a, b) => a - b)).toEqual([1]);
+
+    fireEvent.click(screen.getByTestId('page-cell-5'), { shiftKey: true });
+    const second = onChange.mock.calls[1][0] as Set<number>;
+    expect([...second].sort((a, b) => a - b)).toEqual([1, 2, 3, 5]);
+  });
+
+  it('页状态转失败后，父层选择集被 prune 掉该页（失败页不能带着蒙混过导出）', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <BatchPageMatrix status={makeStatus()} selected={new Set([1, 2, 3, 5])} onChange={onChange} />,
+    );
+    expect(onChange).not.toHaveBeenCalled();
+
+    rerender(
+      <BatchPageMatrix
+        status={makeStatus({
+          pages: [
+            { page: 1, state: 'success' },
+            { page: 2, state: 'failed', reason: 'page_timeout' },
+            { page: 3, state: 'success' },
+            { page: 4, state: 'failed', reason: 'page_timeout' },
+            { page: 5, state: 'success' },
+            { page: 6, state: 'pending' },
+          ],
+        })}
+        selected={new Set([1, 2, 3, 5])}
+        onChange={onChange}
+      />,
+    );
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const pruned = onChange.mock.calls[0][0] as Set<number>;
+    expect([...pruned].sort((a, b) => a - b)).toEqual([1, 3, 5]);
   });
 });
