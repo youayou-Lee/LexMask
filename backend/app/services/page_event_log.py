@@ -165,8 +165,13 @@ def set_event_context(job_id: str, item_id: str, file_id: str = "") -> None:
 def clear_event_context() -> None:
     _ctx.set(None)
 
+def _is_valid_page(value: Any) -> bool:
+    """合法页号：int 且非 bool（bool 是 int 子类，须显式排除）。"""
+    return isinstance(value, int) and not isinstance(value, bool)
+
 def set_current_page(page: int | None) -> None:
-    _page_var.set(int(page) if page is not None else None)
+    """fail-open（评审 r1 Finding 1）：非法 page（非 int/bool）一律置 None，绝不向调用链上抛。"""
+    _page_var.set(page if _is_valid_page(page) else None)
 
 # ---------------------------------------------------------------------------
 # 配置哈希与阈值快照
@@ -234,8 +239,14 @@ def job_log_dir(job_id: str) -> Path:
     return _log_root() / _safe_component(job_id)
 
 def _safe_component(value: str) -> str:
-    """路径成分消毒：只留字母数字 _ - .；其余转 _（A1.8，非法 job_id 不逃逸目录）。"""
+    """路径成分消毒：只留字母数字 _ - .；其余转 _（A1.8，非法 job_id 不逃逸目录）。
+
+    '.'/'..' 虽全是合法字符，但作为目录成分会相对逃逸日志根（delete_job_logs('..')
+    会 rmtree 到根之外）——显式钉成 '_'（评审 r1 Finding 2）。
+    """
     cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", str(value or ""))
+    if cleaned in {".", ".."}:
+        return "_"
     return cleaned or "_"
 
 def _open_fd(job_id: str, item_id: str) -> int:
@@ -281,6 +292,13 @@ def log_event(
         _bump("dropped_no_context")
         return False
     page_val = _page_var.get() if isinstance(page, _Unset) else page
+    # fail-open（评审 r1 Finding 1）：page 非法（非 int；bool 是 int 子类须排除）时
+    # 拒写整事件+计数（dropped_unserializable），与 schema 白名单「拒写整事件」同哲学；
+    # 绝不因坏 page 向识别链上抛。不选「写 page=None 半截行」——页号是本日志主维度。
+    if page_val is not None and not _is_valid_page(page_val):
+        _bump("dropped_unserializable")
+        _warn_once("unserializable", f"page_event_log: event {event} has invalid page value, dropped")
+        return False
     reason = _validate_fields(event, fields)
     if reason == "unknown_event":
         _bump("dropped_unknown_event")

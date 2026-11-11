@@ -171,3 +171,29 @@ def test_writer_contract_all_twelve_events(log_env):
         for name, fields in events_fields.items():
             assert pel.log_event(name, page=1, **fields) is True, name
     assert len(_read_lines(log_env, "jobschema", "itemschema")) == len(events_fields)
+
+
+def test_bad_page_value_never_raises(log_env):
+    """评审 r1 Finding 1：page 非法值绝不向识别链上抛——拒写整事件+计数（与白名单同哲学）。"""
+    with pel.event_context("jobbad", "itembad"):
+        assert pel.log_event("page_done", page="abc", ms=1) is False
+        assert pel.log_event("page_done", page=True, ms=1) is False  # bool 显式排除
+    assert pel.stats()["dropped_unserializable"] == 2
+    assert _read_lines(log_env, "jobbad", "itembad") == []
+    pel.set_current_page("x")  # 不得上抛；非法置 None
+    with pel.event_context("jobbad", "itembad"):
+        assert pel.log_event("page_done", ms=1) is True  # 上下文 page 已置 None → 正常落盘
+    lines = _read_lines(log_env, "jobbad", "itembad")
+    assert len(lines) == 1 and lines[0]["page"] is None
+
+
+def test_safe_component_blocks_dot_traversal(log_env):
+    """评审 r1 Finding 2：'.'/'..' 不逃逸日志根；delete_job_logs('..') 不删根外任何内容。"""
+    assert pel._safe_component("..") == "_"
+    assert pel._safe_component(".") == "_"
+    assert pel.job_log_dir("..") == log_env / "_"
+    log_env.mkdir(parents=True)  # fixture 的日志根是惰性创建的，哨兵文件须自备目录
+    sentinel = log_env / "keep.txt"
+    sentinel.write_text("x", encoding="utf-8")
+    pel.delete_job_logs("..")  # 修前会 rmtree 逃逸到日志根之外；修后不动任何根外内容
+    assert log_env.exists() and sentinel.exists()
