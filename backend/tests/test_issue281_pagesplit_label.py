@@ -307,3 +307,42 @@ def test_regex_pii_type_wins_over_wrong_ner_type():
                   start=6, end=24, page=1)]
     merged = merge_regex_entities(ner, _segs((text, 0)))
     assert [(e.type, e.text) for e in merged] == [("ID_CARD", "110101199001010000")]
+
+
+CONFUSABLE_SPLIT_MD = (
+    "<!-- page 1 of 2 -->\n\n"
+    "异议人提起执行异议之诉[案号（2023）桂0000民初0O\n\n"
+    "1\n\n"
+    "<!-- page 2 of 2 -->\n\n"
+    "号]，法院作出（2023）桂0000民初00号判决。\n"
+)
+
+
+def test_page_split_heals_ocr_confusable_variant():
+    """跨页切开处 OCR 把 0 认成 O（同族易混字符）：仍须按同一实体替换。
+
+    真实扫描件里被切开的一半经常带 OCR 字符级噪声（0/O、1/l、5/S、8/B），
+    若切分正则只认逐字相等，这一形态会静默漏网。
+    """
+    md, _, _ = render_outputs_on_structure(
+        CONFUSABLE_SPLIT_MD, [], [], [_plain_item()])
+    verify_structure_integrity(CONFUSABLE_SPLIT_MD, md)
+    assert "民初0O" not in md
+    assert "（2023）桂0000民初0O" not in md
+    assert "案号1" in md
+
+
+def test_confusable_variant_only_split_covered_not_rejected():
+    """只有 OCR 易混变体的切开形态（无连续形态）也不得被覆盖闸拒出厂。"""
+    md_src = (
+        "<!-- page 1 of 2 -->\n\n"
+        "异议人提起执行异议之诉[案号（2023）桂0000民初0O\n\n"
+        "1\n\n"
+        "<!-- page 2 of 2 -->\n\n"
+        "号]。\n"
+    )
+    md, _, _ = render_outputs_on_structure(
+        md_src, [], [], [_plain_item()])
+    verify_structure_integrity(md_src, md)
+    assert "民初0O" not in md
+    assert "案号1" in md

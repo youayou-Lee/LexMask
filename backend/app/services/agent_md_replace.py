@@ -40,6 +40,27 @@ _PAGE_BREAK_NOISE = (
 )
 # 占位符形如「类型短名+序号」（案号1/地址2/银行卡1）；OCR 原文本身可能已带
 # 同款类型短名，替换后成「案号案号1」叠字。
+# OCR 字符级易混（0/O/o、1/l/I、2/Z、5/S、6/G、8/B、9/g）：扫描件被切开的一半
+# 常带这类噪声，切分正则若只认逐字相等会静默漏网（真卷扫描线常见）。
+_OCR_CONFUSABLES = {
+    "0": "0Oo", "O": "0Oo", "o": "0Oo",
+    "1": "1lI", "l": "1lI", "I": "1lI",
+    "2": "2Z", "Z": "2Z",
+    "5": "5S", "S": "5S",
+    "6": "6G", "G": "6G",
+    "8": "8B", "B": "8B",
+    "9": "9g", "g": "9g",
+}
+
+
+def _ocr_char_pattern(ch: str) -> str:
+    """单字符 → 正则片段：易混字符展开为字符类，其余逐字转义。"""
+    group = _OCR_CONFUSABLES.get(ch)
+    if group:
+        return "[" + re.escape(group) + "]"
+    return re.escape(ch)
+
+
 _LABEL_SUFFIX_RE = re.compile(r"^(.*?)(\d+)$")
 
 # ---- Issue#281 追加：产物面 Markdown 转义 / 全半角形态差（表示失配自愈）----
@@ -167,8 +188,8 @@ def _page_split_patterns(original: str) -> list[re.Pattern[str]]:
         return []
     pats: list[re.Pattern[str]] = []
     for i in range(1, len(chars)):
-        head = r"\s*".join(re.escape(c) for c in chars[:i])
-        tail = r"\s*".join(re.escape(c) for c in chars[i:])
+        head = r"\s*".join(_ocr_char_pattern(c) for c in chars[:i])
+        tail = r"\s*".join(_ocr_char_pattern(c) for c in chars[i:])
         pats.append(re.compile(head + _PAGE_BREAK_NOISE + tail))
     return pats
 
@@ -514,9 +535,12 @@ def render_outputs_on_structure(
                    if m.id in _flex_res and _flex_res[m.id].search(md)])
     # 跨页切开项：替换后原文不再成立；若正则仍命中（替换值回插原文等），
     # 与零残留闸同口径 fail-closed。
+    # 护甲里页注释被哨兵替换，split 正则含 `<!-- page ... -->` 必然失配——
+    # 该判定必须跑在还原页标记后的文本上，否则是死判据（门⑥ 自审）。
+    _residual_view = _unmask_page_markers(md, _markers)
     _add_residual([m for m in items
                    if m.id in _split_applied
-                   and any(p.search(md) for p in _split_applied[m.id])])
+                   and any(p.search(_residual_view) for p in _split_applied[m.id])])
     if residual:
         names = "、".join(repr(m.original_text) for m in residual[:3])
         raise ValueError(
