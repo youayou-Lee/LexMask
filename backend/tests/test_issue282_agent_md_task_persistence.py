@@ -221,8 +221,11 @@ def test_confirm_retry_reuses_pending_output_id(tmp_path, sample_pdf):
     task = svc.create_task_nowait(sample_pdf, "a.pdf")
     task.output_file_id = "fixed-output-0001"
     store.mark_output_pending(task)
+    svc2 = _service(tmp_path, store)  # 模拟崩溃后重启：id 必须从 DB 恢复
+    restored = svc2.get_task(task.task_id)
+    assert restored is not None and restored.output_file_id == "fixed-output-0001"
     try:
-        done = svc.confirm_nowait(task.task_id, [])
+        done = svc2.confirm_nowait(task.task_id, [])
         assert done.state == TaskState.COMPLETED
         assert done.output_file_id == "fixed-output-0001"
         rows = [

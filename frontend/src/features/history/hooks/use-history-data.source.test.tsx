@@ -31,7 +31,9 @@ afterEach(() => listMock.mockReset());
 describe('useHistoryData agent_md source', () => {
   it('parseSourceTab 只认四个来源值', () => {
     expect(parseSourceTab('agent_md')).toBe('agent_md');
+    expect(parseSourceTab('playground')).toBe('playground');
     expect(parseSourceTab('batch')).toBe('batch');
+    expect(parseSourceTab('all')).toBe('all');
     expect(parseSourceTab('bogus')).toBe('all');
     expect(parseSourceTab(null)).toBe('all');
   });

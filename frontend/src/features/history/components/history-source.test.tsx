@@ -75,8 +75,10 @@ describe('history agent_md source', () => {
       />,
     );
     fireEvent.click(screen.getByText('筛选'));
+    for (const name of ['all', 'playground', 'batch', 'agent_md']) {
+      expect(screen.getByTestId(`source-tab-${name}`)).toBeTruthy();
+    }
     const tab = screen.getByTestId('source-tab-agent_md');
-    expect(tab).toBeTruthy();
     fireEvent.mouseDown(tab);
     fireEvent.click(tab);
     expect(onSourceTabChange).toHaveBeenCalledWith('agent_md');
