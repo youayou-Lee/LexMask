@@ -35,11 +35,11 @@ def test_summary_full_fields_from_injected_events(tmp_path):
         {"event": "page_done", "page": 1, "ms": 600, "regions": 2, "source": "retry"},
     ])
     s = compute_summary(job)
-    assert s["page_count"] == 3
+    assert s["page_count"] == 4
     assert s["pages_by_source"] == {"docline": 2, "page_pipeline": 0, "retry": 1}
     assert s["failed_pages"] == {"3": "BudgetExceeded"}
     assert s["slowest_page"] == {"page": 3, "ms": 2000}
-    assert s["avg_page_ms"] == round((500 + 1500 + 2000) / 3)
+    assert s["avg_page_ms"] == round((500 + 1500 + 2000 + 700) / 4)
     assert s["ner_calls_total"] == 6 and s["ner_ms_total"] == 100 and s["ocr_ms_total"] == 300
     assert s["retry_count"] == 1
     assert s["saved_by_accelerator"] == 0 and s["upgraded_pages"] == 0 and s["arbitrated_pages"] == 0
@@ -57,4 +57,22 @@ def test_summary_pages_by_source_counts_latest_page_done(tmp_path):
     ])
     s = compute_summary(job)
     assert s["pages_by_source"] == {"docline": 0, "page_pipeline": 0, "retry": 1}
+    assert s["retry_count"] == 1
+
+
+def test_summary_failed_page_cleared_when_turned_green(tmp_path):
+    """翻绿除名：page_failed 后同页 page_done（重试翻绿）→ failed_pages 除名、该页进 source 桶。"""
+    job = tmp_path / "j3"
+    _write_events(job, "item1", [
+        {"event": "page_done", "page": 1, "ms": 100, "regions": 1, "source": "page_pipeline"},
+        {"event": "page_failed", "page": 1, "stage": "ner", "error_type": "BudgetExceeded",
+         "message_sanitized": "m", "traceback_frames": [], "attempts": 1, "ms": 200},
+        {"event": "retry_started", "page": 1, "attempt": 2, "trigger": "manual"},
+        {"event": "retry_done", "page": 1, "attempt": 2, "outcome": "success", "ms": 50},
+        {"event": "page_done", "page": 1, "ms": 50, "regions": 1, "source": "retry"},
+    ])
+    s = compute_summary(job)
+    assert s["failed_pages"] == {}
+    assert s["pages_by_source"] == {"docline": 0, "page_pipeline": 0, "retry": 1}
+    assert s["page_count"] == 1
     assert s["retry_count"] == 1

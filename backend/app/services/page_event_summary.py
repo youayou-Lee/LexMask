@@ -8,8 +8,9 @@
   最后一条计 source（重试翻绿归 retry 桶）；终态为 page_failed 的页计入
   failed_pages 且不进任何 source 桶，翻绿（其后 page_done）即除名——
   「重试翻绿后 summary 失败页清零」由重算天然成立；
-* 计时面（page_count / avg_page_ms / slowest_page）：按页号首见终态事件的 ms
-  计——同页号的跨卷重跑与重试不重复计入耗时。
+* 计时面（page_count / avg_page_ms / slowest_page）：与归宿面同键 (item_id, page)，
+  取该页首见终态事件的 ms——重试翻绿页计首次处理耗时，重试不重复计入；
+  page_count 即去重 (item, page) 数，与 DB 账本总页数一致（多卷 149+80 页 → 229）。
 """
 from __future__ import annotations
 
@@ -27,7 +28,8 @@ def compute_summary(job_dir: Path) -> dict[str, Any]:
     pages_by_source = {"docline": 0, "page_pipeline": 0, "retry": 0}
     latest_page: dict[tuple[str, int], tuple[str, int, str]] = {}
     # (item_id, page) -> (source, ms, error_type)：同一 (item, page) 按最后一条终态计
-    first_page_ms: dict[int, int] = {}   # page -> 首见终态 ms（计时面，重试/跨卷重跑不重复计）
+    first_page_ms: dict[tuple[str, int], int] = {}
+    # (item_id, page) -> 首见终态 ms（计时面与归宿面同键；重试不重复计入耗时）
     ner_calls = ner_ms = ocr_ms = retry_count = 0
     for path in sorted(job_dir.glob("*.jsonl")):
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -56,8 +58,8 @@ def compute_summary(job_dir: Path) -> dict[str, Any]:
                     latest_page[item_key] = ("failed", ms, str(rec.get("error_type") or "unknown"))
                 else:
                     latest_page[item_key] = (str(rec.get("source") or "page_pipeline"), ms, "")
-                if page_no not in first_page_ms:
-                    first_page_ms[page_no] = ms
+                if item_key not in first_page_ms:
+                    first_page_ms[item_key] = ms
     failed_pages: dict[str, str] = {}
     for (_item, page), (source, _ms, error) in sorted(latest_page.items()):
         if source == "failed":
@@ -65,10 +67,10 @@ def compute_summary(job_dir: Path) -> dict[str, Any]:
         else:
             bucket = source if source in pages_by_source else "page_pipeline"
             pages_by_source[bucket] += 1
-    page_ms_list = [first_page_ms[page] for page in sorted(first_page_ms)]
+    page_ms_list = [first_page_ms[key] for key in sorted(first_page_ms)]
     avg = round(sum(page_ms_list) / len(page_ms_list)) if page_ms_list else 0
     slowest = {"page": None, "ms": 0}
-    for page, ms in sorted(first_page_ms.items()):
+    for (_item, page), ms in sorted(first_page_ms.items()):
         if ms > slowest["ms"]:
             slowest = {"page": page, "ms": ms}
     return {
@@ -88,7 +90,11 @@ def compute_summary(job_dir: Path) -> dict[str, Any]:
     }
 
 def write_summary(job_id: str) -> dict[str, Any] | None:
-    """任务终态调一次：复算并落 summary.json（fail-open，失败仅告警）。"""
+    """任务终态调一次：复算并落 summary.json（fail-open，失败仅告警）。
+
+    summary 含 generated_at（每次复算重新生成）：跨秒的字节比对必须排除该字段，
+    或与落盘同秒运行（AC6 比对口径）。
+    """
     from app.services.page_event_log import _warn_once, job_log_dir
     try:
         job_dir = job_log_dir(job_id)
