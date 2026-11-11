@@ -16,8 +16,7 @@ import json
 
 import pytest
 
-from app.services import job_metadata
-from app.services import page_status_service
+from app.services import job_metadata, page_status_service
 from app.services.job_metadata import item_to_out
 from app.services.page_status_service import build_page_status
 
@@ -161,13 +160,99 @@ def test_snapshot_at_is_iso_utc():
     assert parsed.tzinfo is not None
 
 
+def _realistic_pages() -> dict[int, dict]:
+    """体积门夹具的真实构成（评审 r1 裁定重订 AC1.1 预算，Issue#279 Task 8 fix）。
+
+    构成依据：完成页 = ``#165`` text_layer_doc（ran/coverage/fallback_reason_code 等
+    卷级路由证据）+ ``ocr_has`` / ``visual_features`` 两管线状态（vision_service.py
+    真实块形：ran/skipped/failed/region_count/error/duration_ms/stage_duration_ms）+
+    ``duration_breakdown_ms``（数值按页循环抖动）——Issue#279 A4.1 的 detail 投影会把
+    stage_ms / fallback_reason_code / coverage 透传进响应，旧 32KB 夹具（裸
+    status+duration_ms）测的不是真实轮询体；timeout/failed 页按 task_queue_pipelines
+    的真实终态记录形状（timeout 无 pipeline_status、failed 带 error_type 与阶段块）。
+    回退方案：若门⑤轮询体感超预期 → detail.stage_ms 按需加载，另立 Issue。
+    """
+    pages: dict[int, dict] = {}
+    for p in range(1, 148):
+        if p == 133:
+            pages[p] = {
+                "status": "timeout",
+                "error_type": "PageTimeout",
+                "active_pages_at_end": 0,
+            }
+            continue
+        if p == 134:
+            pages[p] = {
+                "page": p,
+                "status": "failed",
+                "error": "ValueError: ner boom",
+                "error_type": "ValueError",
+                "stage_duration_ms": {"ner": 12},
+                "pipeline_status": {"ocr_has": {"failed": True, "error": "ValueError: ner boom"}},
+            }
+            continue
+        pages[p] = {
+            "page": p,
+            "finished_at": "2026-11-12T00:00:00+00:00",
+            "duration_ms": 100 + p,
+            "status": "completed",
+            "active_pages_at_end": 0,
+            "duration_breakdown_ms": {
+                "ocr_has": 800 + (p % 5) * 25,
+                "visual_features": 350 + (p % 7) * 20,
+            },
+            "cache_status": {},
+            "pipeline_status": {
+                "text_layer_doc": {
+                    "ran": False,
+                    "failed": True,
+                    "coverage": None,
+                    "verdict": None,
+                    "http_errors": 0,
+                    "truncated_chunks": 0,
+                    "fallback_reason": "no embedded text layer",
+                    "fallback_reason_code": "no_text_layer",
+                    "fallback_page": p,
+                },
+                "ocr_has": {
+                    "ran": True,
+                    "skipped": False,
+                    "failed": False,
+                    "region_count": 4 + p % 6,
+                    "error": None,
+                    "duration_ms": 800 + (p % 5) * 25,
+                    "stage_duration_ms": {"parse": 120 + p % 30, "ner": 90 + p % 40},
+                },
+                "visual_features": {
+                    "ran": True,
+                    "skipped": False,
+                    "failed": False,
+                    "region_count": 1 + p % 3,
+                    "error": None,
+                    "duration_ms": 350 + (p % 7) * 20,
+                    "stage_duration_ms": {"detect": 90 + p % 20},
+                },
+            },
+            "warnings": [],
+        }
+    return pages
+
+
 def test_response_size_stays_small_for_150_pages():
-    """AC1.1 体积：150 页投影序列化后必须 < 32KB（不是空响应的恒真体积断言）。"""
-    perf = _perf(_mixed_pages(), failed={"133": "page_timeout", "134": "ner boom"})
+    """AC1.1 体积：150 页投影序列化后必须 < 64KB（评审 r1 裁定重订，不是恒真体积断言）。
+
+    预算重订依据：夹具改为真实构成后（每页 duration_breakdown_ms + text_layer_doc /
+    ocr_has / visual_features 完整 pipeline_status，见 ``_realistic_pages``），Issue#279
+    A4.1 的页详情投影（detail.stage_ms / fallback_reason_code / coverage）使真实轮询体
+    突破旧 32KB 预算（实测 41.7KB）；裁定接受该增长（页格详情可见性收益 > 轮询体翻倍，
+    前端仅在页格可见时轮询）。回退方案：若门⑤轮询体感超预期 → detail.stage_ms 按需
+    加载另立 Issue。
+    """
+    perf = _perf(_realistic_pages(), failed={"133": "page_timeout", "134": "ValueError: ner boom"})
     result = build_page_status(_item_row("processing", perf), _pdf_file())
     assert len(result["pages"]) == 150
     payload = json.dumps(result, ensure_ascii=False).encode("utf-8")
-    assert len(payload) < 32 * 1024
+    assert len(payload) < 64 * 1024
 
 
 # ---------------------------------------------------------------------------
