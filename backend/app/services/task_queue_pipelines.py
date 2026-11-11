@@ -22,6 +22,7 @@ from app.services.task_queue_metrics import (
     _gpu_memory_metadata,
     _page_vision_quality_from_file_info,
     _page_vision_quality_from_result,
+    _safe_int,
     _utc_iso,
     _vision_page_concurrency_reason,
 )
@@ -73,6 +74,23 @@ def _failed_pages_error_summary(failed_pages: dict[str, str], total_pages: int =
     listed = ", ".join(ordered[:20]) + (" …" if len(ordered) > 20 else "")
     scope = f"all {total_pages} page(s)" if total_pages and len(ordered) >= total_pages else f"{len(ordered)} page(s)"
     return f"{scope} failed recognition (pages {listed}); not scanned for sensitive data"
+
+
+def retry_count_of(store: Any, item_id: str, page: int) -> int:
+    """读条目 ``recognition.page_retry_counts`` 里某页已重试的次数（Issue#279）。
+
+    attempts 口径：``retry_count_of(store, item_id, page) + 1``（首跑无账=1）。
+    本函数只服务事件埋点与提交期提示，**任何读取/形状异常一律按 0**——
+    绝不能向识别链上抛（fail-open；替身 store 无此方法同样按 0 处理）。
+    """
+    try:
+        recognition = (store.get_item_performance(item_id) or {}).get("recognition") or {}
+        counts = recognition.get("page_retry_counts") or {}
+        if not isinstance(counts, dict):
+            return 0
+        return int(counts.get(str(page), 0))
+    except Exception:  # noqa: BLE001 - 埋点读账绝不影响识别主链（AttributeError/KeyError/TypeError/ValueError 均兜住）
+        return 0
 
 
 def _entity_page(entity: Any) -> int:
@@ -167,6 +185,13 @@ class RecognitionPipelineMixin:
         if job.get("status") == JobStatus.CANCELLED.value:
             logger.info("job %s cancelled, skip item %s", task.job_id[:8], task.item_id[:8])
             return
+
+        # Issue#279：识别入口挂页事件上下文（job/item/file）——docline 闸、chunk 级
+        # 与页级 run_page 的 log_event 都从这里解析身份，链深处无需层层透传；
+        # 退出由 finally 的 clear_event_context 收口（收尾 summary 复算同处）。
+        from app.services import page_event_log as page_events
+
+        page_events.set_event_context(task.job_id, task.item_id, str(task.file_id))
 
         cfg = json.loads(job.get("config_json") or "{}")
 
@@ -359,6 +384,7 @@ class RecognitionPipelineMixin:
           ``error``/``stage_duration_ms`` 留在「成功」页上（F1），交付闸会继续读失败账。
         """
         from app.services import file_operations, page_status_service
+        from app.services import page_event_log as page_events
         from app.services.job_store import JobItemStatus, JobStatus
         from app.services.vision_config import resolve_optional_type_list
 
@@ -368,6 +394,10 @@ class RecognitionPipelineMixin:
         if not item or not job:
             logger.warning("page retry: item/job missing, skip (item=%s)", task.item_id[:8])
             return
+
+        # Issue#279：重试入口同样挂页事件上下文（识别入口同款；本函数短生命周期，
+        # 下一个队列任务入场即覆写自己的上下文）。
+        page_events.set_event_context(task.job_id, task.item_id, str(task.file_id))
 
         pages = [int(p) for p in (task.meta or {}).get("pages") or []]
         if not pages:
@@ -435,6 +465,8 @@ class RecognitionPipelineMixin:
                 "[queue] item=%s page retry %d/%d page=%d START",
                 task.item_id[:8], index, len(pages), page,
             )
+            # Issue#279：本页事件（retry_done/page_done/page_failed）挂页号。
+            page_events.set_current_page(page)
             try:
                 await asyncio.wait_for(
                     file_operations.vision_detect(
@@ -458,6 +490,20 @@ class RecognitionPipelineMixin:
                 }
                 failed_map[str(page)] = f"page retry timeout after {page_timeout:.0f}s"
                 logger.warning("[queue] item=%s page %d retry TIMEOUT", task.item_id[:8], page)
+                # Issue#279：重试终态事件（纯旁路）。attempt=本轮序号（首重试=1）。
+                page_events.log_event(
+                    "retry_done", page=page, attempt=index, outcome="failed", ms=elapsed
+                )
+                page_events.log_event(
+                    "page_failed",
+                    page=page,
+                    stage="retry",
+                    error_type="PageTimeout",
+                    message_sanitized=f"retry timeout after {page_timeout:.0f}s",
+                    traceback_frames=[],
+                    attempts=index,
+                    ms=elapsed,
+                )
             except Exception as exc:  # 页级隔离：单页再失败不得作废其它页
                 elapsed = _elapsed_ms(started)
                 reason = f"{type(exc).__name__}: {exc}"[:_ERROR_MSG_MAX_LEN]
@@ -472,6 +518,20 @@ class RecognitionPipelineMixin:
                 failed_map[str(page)] = reason[:200]
                 logger.warning(
                     "[queue] item=%s page %d retry FAILED: %s", task.item_id[:8], page, reason
+                )
+                # Issue#279：同上——异常路带代码帧与机读 error_type。
+                page_events.log_event(
+                    "retry_done", page=page, attempt=index, outcome="failed", ms=elapsed
+                )
+                page_events.log_event(
+                    "page_failed",
+                    page=page,
+                    stage="retry",
+                    error_type=type(exc).__name__,
+                    message_sanitized=reason[:200],
+                    traceback_frames=page_events.traceback_frames(exc),
+                    attempts=index,
+                    ms=elapsed,
                 )
             else:
                 elapsed = _elapsed_ms(started)
@@ -488,11 +548,35 @@ class RecognitionPipelineMixin:
                     "[queue] item=%s page %d retry COMPLETED in %dms",
                     task.item_id[:8], page, elapsed,
                 )
+                # Issue#279：重试翻绿页——retry_done + page_done(source=retry)，
+                # 供 summary 把该页按「重试」口径归桶。
+                page_events.log_event(
+                    "retry_done", page=page, attempt=index, outcome="success", ms=elapsed
+                )
+                page_events.log_event(
+                    "page_done",
+                    page=page,
+                    ms=elapsed,
+                    stage_ms={},
+                    regions=None,
+                    source="retry",
+                )
 
         replace_paths: tuple[tuple[str, ...], ...] = (
             ("recognition", "failed_pages"),
             ("recognition", "page_retry_pages"),
+            ("recognition", "page_retry_counts"),
         ) + tuple(("recognition", "pages", str(page)) for page in pages)
+        # Issue#279：重试次数账（前端 A4.1 读）——从**入口时**读到的 recognition
+        # 增量构建；与 failed_pages 同走 replace_paths 整体替换，不深合并旧值。
+        prev_counts = recognition.get("page_retry_counts")
+        counts: dict[str, int] = dict(prev_counts) if isinstance(prev_counts, dict) else {}
+        for page in pages:
+            try:
+                base = int(counts.get(str(page), 0))
+            except (TypeError, ValueError):
+                base = 0
+            counts[str(page)] = base + 1
         try:
             store.update_item_performance(
                 task.item_id,
@@ -501,6 +585,7 @@ class RecognitionPipelineMixin:
                         "failed_pages": failed_map,
                         "page_retry_pages": [],
                         "pages": records,
+                        "page_retry_counts": counts,
                     }
                 },
                 replace_paths=replace_paths,
@@ -656,6 +741,7 @@ class RecognitionPipelineMixin:
     async def _run_vision(self, task: TaskItem, cfg: dict) -> None:
         """Run OCR and visual feature recognition for images or scanned pages."""
         from app.core.config import settings
+        from app.services import page_event_log as page_events
         from app.services.file_operations import get_file_info, vision_detect
         from app.services.vision_config import resolve_optional_type_list
 
@@ -850,6 +936,10 @@ class RecognitionPipelineMixin:
             # Issue#238：本段实际要跑的页数（合并段会跳过一阶段失败页，total 缩水才不卡条）。
             stage_pages = pages if stage_total is None else stage_total
             async with page_sem:
+                # Issue#279：页号挂进事件上下文——本页三条终态事件（page_done/
+                # page_failed/ocr_done）不再逐处传 page；run_page_stage 的每个页
+                # 任务是独立 create_task，上下文按任务隔离互不串页。
+                page_events.set_current_page(p)
                 page_started = time.perf_counter()
                 page_started_at = _utc_iso()
                 active_pages += 1
@@ -903,12 +993,24 @@ class RecognitionPipelineMixin:
                                         "finished_at": _utc_iso(),
                                         "duration_ms": page_ms,
                                         "status": "timeout",
+                                        "error_type": "PageTimeout",
                                         "active_pages_at_end": active_pages,
                                     }
                                 }
                             }
                         },
                     replace_paths=(("recognition", "pages", str(p)),),
+                    )
+                    # Issue#279：页超时终态事件（page 由上下文解析；纯旁路，
+                    # 写入失败只计数，不影响页级隔离语义）。
+                    page_events.log_event(
+                        "page_failed",
+                        stage=stage_label,
+                        error_type="PageTimeout",
+                        message_sanitized=f"timeout after {page_timeout:.0f}s",
+                        traceback_frames=[],
+                        attempts=retry_count_of(store, task.item_id, p) + 1,
+                        ms=page_ms,
                     )
                     # Issue#199 页级隔离：单页超时**不上抛**——记录后由本阶段收尾
                     # 汇入 failed_pages，其余页照常完成（极端页不得作废整卷）。
@@ -965,6 +1067,7 @@ class RecognitionPipelineMixin:
                                         "page": p,
                                         "status": "failed",
                                         "error": f"{type(exc).__name__}: {exc}"[:500],
+                                        "error_type": type(exc).__name__,
                                         "stage_duration_ms": {stage_label: page_ms},
                                         "pipeline_status": {
                                             stage_label: {
@@ -977,6 +1080,17 @@ class RecognitionPipelineMixin:
                             }
                         },
                     replace_paths=(("recognition", "pages", str(p)),),
+                    )
+                    # Issue#279：页异常终态事件——异常类名做机读 error_type、
+                    # 消息截断 200 过 writer 脱敏、traceback 只带代码帧。
+                    page_events.log_event(
+                        "page_failed",
+                        stage=stage_label,
+                        error_type=type(exc).__name__,
+                        message_sanitized=str(exc)[:200],
+                        traceback_frames=page_events.traceback_frames(exc),
+                        attempts=retry_count_of(store, task.item_id, p) + 1,
+                        ms=page_ms,
                     )
                     # Issue#238：失败页同样计入已完成（失败清单另走 failed_pages 账面）。
                     bump_stage_progress(stage_label, stage_pages)
@@ -1008,6 +1122,39 @@ class RecognitionPipelineMixin:
                             }
                         },
                     replace_paths=(("recognition", "pages", str(p)),),
+                    )
+                    # Issue#279：页成功终态事件——ocr/ner 分段事件只在 ocr_has 实跑时发；
+                    # page_done 汇总页耗时、分段耗时与两段区域数，source 区分 docline
+                    # 整卷链与逐页管线。result 形状异常一律按空表/0 处理（fail-open：
+                    # 埋点不改完成页的控制流与 DB 账）。
+                    _ps = quality.get("pipeline_status")
+                    _ps = _ps if isinstance(_ps, dict) else {}
+                    _ocr = _ps.get("ocr_has")
+                    _ocr = _ocr if isinstance(_ocr, dict) else {}
+                    _vis = _ps.get("visual_features")
+                    _vis = _vis if isinstance(_vis, dict) else {}
+                    _doc = _ps.get("text_layer_doc")
+                    _doc = _doc if isinstance(_doc, dict) else {}
+                    _quality_ms = quality.get("duration_ms")
+                    _ocr_regions = _safe_int(_ocr.get("region_count"))
+                    if _ocr.get("ran"):
+                        page_events.log_event(
+                            "ocr_done",
+                            ms=_safe_int(_ocr.get("duration_ms")),
+                            regions=_ocr_regions,
+                            source="ocr",
+                        )
+                        page_events.log_event(
+                            "ner_done",
+                            ms=_safe_int(_ocr.get("duration_ms")),
+                            regions=_ocr_regions,
+                        )
+                    page_events.log_event(
+                        "page_done",
+                        ms=page_ms,
+                        stage_ms=dict(_quality_ms) if isinstance(_quality_ms, dict) else {},
+                        regions=_ocr_regions + _safe_int(_vis.get("region_count")),
+                        source="docline" if _doc.get("ran") else "page_pipeline",
                     )
                     logger.info(
                         "[queue] item=%s %s page %d/%d DONE elapsed=%.2fs active_pages=%d",

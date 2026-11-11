@@ -175,6 +175,38 @@ async def submit_page_retry(
     )
     store.touch_job_updated(str(job["id"]))
 
+    # Issue#279：retry_started 逐页一条，attempt = 既有重试计数 + 1（submit 期口径；
+    # 真实终局序号由 _run_page_retry 的 retry_done 钉）。submit 跑在 API 请求协程里、
+    # 无页事件上下文 ⇒ job/item 显式传参，不依赖 ContextVar。读账/写事件全程
+    # fail-open：读账失败按无账（attempt=1）继续逐页发，绝不影响「标记 → 投递」链。
+    try:
+        from app.services import page_event_log as page_events
+
+        try:
+            recognition = (store.get_item_performance(item_id) or {}).get("recognition") or {}
+            prev_counts = recognition.get("page_retry_counts") or {}
+            if not isinstance(prev_counts, dict):
+                prev_counts = {}
+        except Exception:  # noqa: BLE001 - 读账失败按无账处理（提交链不受影响）
+            logger.debug("retry_started: unable to read page_retry_counts", exc_info=True)
+            prev_counts = {}
+        for page in pages:
+            attempt = 1
+            try:
+                attempt = int(prev_counts.get(str(page), 0)) + 1
+            except (TypeError, ValueError):
+                attempt = 1
+            page_events.log_event(
+                "retry_started",
+                page=int(page),
+                attempt=attempt,
+                trigger="manual",
+                job_id=str(job["id"]),
+                item_id=item_id,
+            )
+    except Exception:  # noqa: BLE001 - 事件是旁路，提交链（状态/标记/投递）不受影响
+        logger.debug("retry_started event emission failed", exc_info=True)
+
     task = TaskItem(
         job_id=str(job["id"]),
         item_id=item_id,
