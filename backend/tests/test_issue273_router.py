@@ -63,8 +63,9 @@ _LINES_GRAY = _LINES_CLEAR[:8]
 def routing_env(monkeypatch):
     """file_store 打桩 + 路由全局态复位 + 抽样关闭（默认页走 default_verify）。"""
     store = _StubStore()
+    lock = asyncio.Lock()  # 共享锁实例：与生产「单一 _file_store_lock」同构
     monkeypatch.setattr(orch, "_get_file_store", lambda: store)
-    monkeypatch.setattr(orch, "_get_file_store_lock", lambda: asyncio.Lock())
+    monkeypatch.setattr(orch, "_get_file_store_lock", lambda: lock)
     monkeypatch.setattr(settings, "ROUTING_SAMPLE_PAGES", 0)
     rt_state.reset_registry()
     router_mod.reset_caches()
@@ -283,12 +284,20 @@ async def test_finalize_none_outcome_keeps_prelim(routing_env, tmp_path):
 
 @pytest.mark.asyncio
 async def test_finalize_without_state_still_returns_and_writes(routing_env, tmp_path):
-    """file 记录缺失（无 file_path 可重建 key）时：防御返回，不抛。"""
+    """file 记录缺失（无 file_path 可重建 key）时：防御返回，不抛，且账本终值已写。"""
     store = routing_env
     store["f-1"] = {"file_type": "pdf"}  # 无 file_path
-    decision = await router_mod.decide("f-1", store["f-1"], 1)  # 非 PDF 内容门 ⇒ ocr/not_pdf
+    decision = await router_mod.decide("f-1", store["f-1"], 1)  # 快照缺路径 ⇒ ocr/signal_probe_error
     result = await router_mod.finalize("f-1", 1, decision, _pass_outcome())
     assert result["text_source"] == "ocr"
+    # 账本写入断言（与测试名主张对齐）
+    entry = store["f-1"]["page_routing"]["1"]
+    assert entry["text_source"] == "ocr"
+    assert entry["decision"]["reason"] == "signal_probe_error"
+    assert entry["switched_from"] is None
+    assert entry["switch_reason"] is None
+    assert entry["verify_incomplete"] is False
+    assert entry["decided_at"]
 
 
 # --------------------------------------------------------- 状态键 / 内容指纹
@@ -320,6 +329,76 @@ async def test_state_key_changes_when_file_replaced_under_same_file_id(routing_e
     assert new_state is not old_state
     assert new_state.consecutive_passes == 0
     assert getattr(new_state, "_content_sha", "") != getattr(old_state, "_content_sha", "")
+
+
+def _pad_to_size(path: str, target: int) -> None:
+    """EOF 后补尾随字节到目标大小（fitz 容忍 %%EOF 后的尾随注释，实测可解析）。
+
+    PDF 字节数取决于所用字形子集，靠内容凑等长不可靠 ⇒ 显式补齐，保证
+    「同尺寸」对抗条件真实成立。
+    """
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    assert len(raw) <= target, "target too small"
+    with open(path, "wb") as fh:
+        fh.write(raw + b"\n%" + b"P" * (target - len(raw) - 2))
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_memo_recomputes_on_same_mtime_replacement(routing_env, tmp_path):
+    """评审 Important 1：同尺寸同 mtime_ns 替换（os.replace 新 inode + utime 还原，
+    等价 cp -p / rsync -a）不得让 memo 命中旧 sha——inode 进 memo key，sha 必重算、
+    状态 key 必变化，旧卷信任态不得迁移到新内容。"""
+    store = routing_env
+    path = _make_pdf(tmp_path, [_LINES_CLEAR])
+    _pad_to_size(path, 8192)
+    store["f-1"] = {"file_type": "pdf", "file_path": path}
+    await router_mod.decide("f-1", store["f-1"], 1)
+    old_fp = router_mod._content_fingerprint(path)
+    old_state = router_mod._state_for("f-1", path)
+    await router_mod.finalize("f-1", 1, await router_mod.decide("f-1", store["f-1"], 1), _pass_outcome())
+    assert old_state.consecutive_passes == 1
+
+    # 同 mtime_ns 同字节数换内容：os.replace 换入不同内容的 PDF，再还原 mtime_ns。
+    old_stat = os.stat(path)
+    new_doc = fitz.open()
+    new_page = new_doc.new_page()
+    new_page.insert_text((72, 72), "换入卷宗的正文与原卷完全不同", fontsize=12, fontname="china-s")
+    tmp_new = str(tmp_path / "synthetic.pdf.new")
+    new_doc.save(tmp_new)
+    new_doc.close()
+    _pad_to_size(tmp_new, 8192)  # 与原文件字节数相同（对抗条件）
+    os.replace(tmp_new, path)
+    os.utime(path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+    st = os.stat(path)
+    assert (st.st_dev, st.st_ino) != (old_stat.st_dev, old_stat.st_ino)  # 新 inode
+    assert st.st_mtime_ns == old_stat.st_mtime_ns  # mtime_ns 被还原（对抗条件成立）
+    assert st.st_size == old_stat.st_size  # 字节数相同（对抗条件成立）
+
+    new_fp = router_mod._content_fingerprint(path)
+    assert new_fp is not None
+    assert new_fp[0] != old_fp[0]  # sha 重算，未命中旧 memo
+    new_state = router_mod._state_for("f-1", path)
+    assert new_state is not old_state  # 状态 key 变化，旧信任态不迁移
+    assert new_state.consecutive_passes == 0
+    assert getattr(new_state, "_content_sha", "") == new_fp[0]
+
+
+@pytest.mark.asyncio
+async def test_finalize_verify_incomplete_does_not_count_pass(routing_env, tmp_path):
+    """spec §2.3 硬约束：verify_incomplete 页（对账未实际发生）不得计入升档连击。"""
+    store = routing_env
+    path = _make_pdf(tmp_path, [_LINES_CLEAR])
+    store["f-1"] = {"file_type": "pdf", "file_path": path}
+    decision = await router_mod.decide("f-1", store["f-1"], 1)
+    outcome = _pass_outcome(winner="text_layer", verify_incomplete=True)
+    outcome.pop("arbitration")  # 甚至缺 arbitration 键（评审指定形态）
+    result = await router_mod.finalize("f-1", 1, decision, outcome)
+    assert result["verify_incomplete"] is True
+    assert result["text_source"] == "text_layer"
+    state = router_mod._state_for("f-1", path)
+    assert state.consecutive_passes == 0
+    assert state.upgraded is False
 
 
 def test_prelim_text_source_mapping():

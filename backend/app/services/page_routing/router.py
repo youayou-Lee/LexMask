@@ -19,8 +19,10 @@
 内容指纹 = ``size:mtime_ns`` 指纹（复用 ``text_layer_doc_source._file_fingerprint``
 的 size:mtime 口径，精度升到纳秒）+ sha256 全文件字节前 16 位，双保险：同秒同
 尺寸替换也会因 sha 不同而换新态。content_sha 同文件只算一次（memo key =
-``(realpath, mtime_ns, size)``，与 signals memo 同口径），并随态挂在
-``VolumeRoutingState._content_sha`` 供 key 重建/排查复用。
+``(realpath, st_dev, st_ino, mtime_ns, size)``——**inode 进 key**：os.replace /
+rsync -a / cp -p 换入的新文件即使字节数相同、mtime_ns 被还原，inode 也必变 ⇒
+memo 必失效重算），并随态挂在 ``VolumeRoutingState._content_sha`` 供 key 重建/
+排查复用。
 
 页数来源：``collect_l1`` 不返回 page_count，本模块在内容指纹计算时顺带
 ``fitz.open`` 取一次总页数（同一 memo 条目），供 ``get_state`` 做确定性抽样。
@@ -54,20 +56,24 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------------------- 内容指纹 memo
 
 _FP_MEMO_MAX = 64
-_FP_MEMO: OrderedDict[tuple[str, int, int], tuple[str, int, int, int]] = OrderedDict()
+_FP_MEMO: OrderedDict[tuple[str, int, int, int, int], tuple[str, int, int, int]] = OrderedDict()
 _FP_LOCK = threading.Lock()
 
 
 def _content_fingerprint(path: str) -> tuple[str, int, int, int] | None:
     """``(sha256_hex, page_count, size, mtime_ns)``；任何失败 ⇒ ``None``。
 
-    memo key = ``(realpath, mtime_ns, size)``（与 signals 的文件级 memo 同口径），
-    同一文件版本只读盘一次；文件被替换时 mtime_ns/size 必变 ⇒ 自动换新 key。
+    memo key = ``(realpath, st_dev, st_ino, mtime_ns, size)``。**inode 必须进
+    key**（评审实证）：两份内容不同、字节数相同的 PDF 经 ``os.replace`` 换入并
+    ``os.utime`` 还原 mtime_ns（等价 cp -p / rsync -a）后，仅靠 mtime_ns+size
+    会让 memo 命中返回旧 sha ⇒ 状态 key 不变 ⇒ 旧卷信任态（upgraded）迁移到
+    新内容；换入文件必是新 inode（dev+ino 变化）⇒ memo 必失效重算。signals
+    侧 memo 存在同病但后果仅陈旧信号，本任务只堵 router 侧（signals 挂账）。
     ``page_count`` 在同一次 ``fitz.open`` 里顺带取（signals memo 不暴露页数）。
     """
     try:
         st = os.stat(path)
-        key = (os.path.realpath(path), st.st_mtime_ns, st.st_size)
+        key = (os.path.realpath(path), st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
         with _FP_LOCK:
             hit = _FP_MEMO.get(key)
         if hit is not None:
@@ -257,7 +263,13 @@ async def _judge_and_record(
 
 
 async def finalize(file_id: str, page: int, decision: PageDecision, outcome: dict | None) -> dict:
-    """消费仲裁结果：合成 ``pipeline_status["page_routing"]`` 内容并改写账本终值。"""
+    """消费仲裁结果：合成 ``pipeline_status["page_routing"]`` 内容并改写账本终值。
+
+    调用方（Task 9）契约——``verify_incomplete`` 页不得携带
+    ``escalate_volume=True``：对账未实际发生的页不构成整卷升级的依据。router
+    不做自卫校验（两字段行为正交：verify_incomplete 本就不计数，见 spec §2.3），
+    靠此契约 + 账本审计兜底。
+    """
     prelim = prelim_text_source(decision.action)
     decision_dict = decision.as_dict()
 
