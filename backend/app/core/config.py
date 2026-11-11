@@ -299,6 +299,8 @@ class Settings(BaseSettings):
     # 本地持久化（空串 = 跟随 DATA_DIR 自动派生，见 model_validator）
     FILE_STORE_PATH: str = ""
     JOB_DB_PATH: str = ""
+    # 单文件供料任务持久索引（Issue #282）；空 = DATA_DIR/agent_md_tasks.sqlite3
+    AGENT_MD_TASK_DB_PATH: str = ""
     PIPELINE_STORE_PATH: str = ""
     PRESET_STORE_PATH: str = ""
     ENTITY_TYPES_STORE_PATH: str = ""
@@ -1264,6 +1266,10 @@ class Settings(BaseSettings):
             self.JOB_DB_PATH = os.path.join(d, "jobs.sqlite3")
         else:
             self.JOB_DB_PATH = _resolve_local_path(self.JOB_DB_PATH)
+        if not self.AGENT_MD_TASK_DB_PATH:
+            self.AGENT_MD_TASK_DB_PATH = os.path.join(d, "agent_md_tasks.sqlite3")
+        else:
+            self.AGENT_MD_TASK_DB_PATH = _resolve_local_path(self.AGENT_MD_TASK_DB_PATH)
         if not self.PIPELINE_STORE_PATH:
             self.PIPELINE_STORE_PATH = os.path.join(d, "pipelines.json")
         else:

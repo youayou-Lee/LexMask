@@ -42,9 +42,13 @@ class FileListItem(BaseModel):
     created_at: str | None = None
     has_output: bool = False
     entity_count: int = 0
-    upload_source: Literal["playground", "batch"] = Field(
+    upload_source: Literal["playground", "batch", "agent_md"] = Field(
         default="playground",
-        description="playground=single-file workflow legacy API value; batch=batch wizard or job upload",
+        description="playground=single-file workflow legacy API value; batch=batch wizard or job upload; agent_md=单文件供料产物",
+    )
+    agent_md_task_id: str | None = Field(
+        default=None,
+        description="供料产物对应的单文件供料任务 ID（历史数据可能缺失）",
     )
     job_id: str | None = Field(
         default=None,

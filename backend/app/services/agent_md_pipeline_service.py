@@ -18,10 +18,12 @@ import json
 import logging
 import re
 import uuid
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
 from app.core.config import settings
+from app.models.schemas import Entity, FileType
 from app.services import file_management_service as fms
 from app.services.agent_md_adapter import (
     CleanStats,
@@ -38,7 +40,15 @@ from app.services.agent_md_replace import (
     render_outputs_on_structure,
     verify_structure_integrity,
 )
-from app.services.agent_md_types import AgentMdTask, Seg, TaskState
+from app.services.agent_md_task_store import (
+    PAYLOAD_CORRUPT_MESSAGE,
+    AgentMdTaskStore,
+    get_agent_md_task_store,
+)
+from app.services.agent_md_types import AgentMdTask, MappingItem, Seg, TaskState
+
+# payload 结构版本：未知版本按不可恢复处理（fail-closed），不猜测字段语义。
+PAYLOAD_SCHEMA_VERSION = 1
 
 # Issue#212：两版正文量相差超过 5%（= 比值低于 0.95）即视为某一版丢了东西。
 # 阈值来源：修复前真实案卷 v2/v1 = 138/187,119 = 0.0007、合成夹具 33/258 = 0.128，
@@ -69,6 +79,7 @@ class AgentMdPipelineService:
         ner=None,
         entity_types: list | None = None,
         output_dir: str | None = None,
+        task_store: AgentMdTaskStore | None = None,
     ):
         self.mineru = mineru_client if mineru_client is not None else _default_mineru()
         self.ocr = ocr if ocr is not None else _default_ocr()
@@ -77,6 +88,11 @@ class AgentMdPipelineService:
         self.output_dir = Path(output_dir or settings.OUTPUT_DIR)
         self._tasks: dict[str, AgentMdTask] = {}
         self._lock = asyncio.Lock()  # 全局串行解析（spec §1）
+        # Issue#282：任务索引持久层。None = 不落盘（单测裸构造）；生产 singleton
+        # 由 get_agent_md_pipeline() 注入全局 store。
+        self.task_store = task_store
+        # 并发 confirm 串行化：后到者看到 COMPLETED 直接返回，不得把已完成任务判死
+        self._confirm_lock = asyncio.Lock()
         self._sync_loop: asyncio.AbstractEventLoop | None = None  # 仅 *_nowait 测试驱动用
 
     # ---- 对外（router）----
@@ -89,70 +105,100 @@ class AgentMdPipelineService:
         return task
 
     def get_task(self, task_id: str) -> AgentMdTask | None:
-        return self._tasks.get(task_id)
+        # Issue#282：内存未命中回落 DB——重启后待审阅任务仍可 status/mapping/confirm/下载
+        task = self._tasks.get(task_id)
+        if task is not None:
+            return task
+        if self.task_store is None:
+            return None
+        row = self.task_store.load(task_id)
+        if row is None:
+            return None
+        return self._restore_task(row)
 
     async def confirm(self, task_id: str, decisions: list[dict]) -> AgentMdTask:
         """Stage2：应用决策→占位替换出稿→三件套落盘→file_store 登记→COMPLETED。
 
         未知 task_id 抛 ValueError（router 先 get_task 拦截）；非 MAPPING_READY
-        时任务置 FAILED（message="task not ready"）并原样返回。
+        时任务置 FAILED（message="task not ready"）并原样返回。并发重复 confirm
+        由 ``_confirm_lock`` 串行化：后到者看到 COMPLETED 直接返回既有任务。
+
+        写盘顺序（Issue#282 两阶段提交）：先落 output_file_id → 写三产物 →
+        登记 file_store → 单条 UPDATE 置 completed 且清 payload。任一步崩溃
+        都停在 mapping_ready 且可重试；id 复用，重启时记录齐全则自愈。
         """
-        task = self._tasks.get(task_id)
-        if task is None:
-            raise ValueError(f"unknown task: {task_id}")
-        if task.state != TaskState.MAPPING_READY:
-            task.state = TaskState.FAILED
-            task.message = "task not ready"
-            return task
-        apply_decisions(task.mapping, decisions)
-        # Issue#248：结构保全主路径——替换应用在 zip 官方结构化 md 上；
-        # md 缺失回落拍平重建（legacy render_outputs，显式 warning 不静默）。
-        # 渲染/对账任一闸失败 ⇒ 任务 FAILED（产物拒绝出厂），message 点名原因。
-        if task.structured_md and task.structured_md.strip():
-            try:
-                md, mapping_json, retained_json = render_outputs_on_structure(
-                    task.structured_md, task.segs, task.entities, task.mapping)
-                verify_structure_integrity(task.structured_md, md)
-            except ValueError as exc:
+        async with self._confirm_lock:
+            task = self.get_task(task_id)
+            if task is None:
+                raise ValueError(f"unknown task: {task_id}")
+            if task.state == TaskState.COMPLETED:
+                return task  # 幂等：并发/重复确认直接返回既有结果
+            if task.state != TaskState.MAPPING_READY:
                 task.state = TaskState.FAILED
-                task.message = str(exc)
+                task.message = "task not ready"
+                self._persist_meta(task)
                 return task
-        else:
-            task.warnings.append(
-                "structured_md_missing: zip 官方 .md 缺失，回落拍平重建（产物无表格结构保全）")
-            md, mapping_json, retained_json = render_outputs(
-                task.segs, task.entities, task.mapping)
-        output_file_id = str(uuid.uuid4())
-        stem = _friendly_stem(task.filename)
-        ts = datetime.now().strftime("%Y%m%d_%H%M")
-        short4 = output_file_id[:4]
-        md_path = self.output_dir / f"{stem}_脱敏MD_{ts}_{short4}.md"
-        mapping_path = self.output_dir / f"{stem}_映射表_{ts}_{short4}.json"
-        retained_path = self.output_dir / f"{stem}_保留清单_{ts}_{short4}.json"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        md_path.write_text(md, encoding="utf-8")
-        mapping_path.write_text(
-            json.dumps(mapping_json, ensure_ascii=False, indent=2), encoding="utf-8")
-        retained_path.write_text(
-            json.dumps(retained_json, ensure_ascii=False, indent=2), encoding="utf-8")
-        task.output_file_id = output_file_id
-        task.state = TaskState.COMPLETED
-        # file_store 登记（orphan 清理尊重 file_store 引用，main.py cleanup_orphan_files；
-        # 键名必须是 vl_md_meta——main.py _known_file_store_paths 只认 output_path+vl_md_meta，
-        # 终审 C3：旧键 agent_md_meta 不被识别，mapping/retained 会被孤儿清理删除）
-        fms.file_store[output_file_id] = {
-            "file_id": output_file_id,
-            "filename": md_path.name,
-            # original_filename 镜像：处理历史列表（GET /files）与行下载文件名都读这个键
-            "original_filename": md_path.name,
-            "output_path": str(md_path),
-            "owner_id": task.owner_id,
-            "vl_md_meta": {
-                "mapping_path": str(mapping_path),
-                "retained_path": str(retained_path),
-            },
-        }
-        return task
+            apply_decisions(task.mapping, decisions)
+            # Issue#248：结构保全主路径——替换应用在 zip 官方结构化 md 上；
+            # md 缺失回落拍平重建（legacy render_outputs，显式 warning 不静默）。
+            # 渲染/对账任一闸失败 ⇒ 任务 FAILED（产物拒绝出厂），message 点名原因。
+            if task.structured_md and task.structured_md.strip():
+                try:
+                    md, mapping_json, retained_json = render_outputs_on_structure(
+                        task.structured_md, task.segs, task.entities, task.mapping)
+                    verify_structure_integrity(task.structured_md, md)
+                except ValueError as exc:
+                    task.state = TaskState.FAILED
+                    task.message = str(exc)
+                    self._persist_meta(task)
+                    return task
+            else:
+                task.warnings.append(
+                    "structured_md_missing: zip 官方 .md 缺失，回落拍平重建（产物无表格结构保全）")
+                md, mapping_json, retained_json = render_outputs(
+                    task.segs, task.entities, task.mapping)
+            # Issue#282 两阶段提交：先落 output_file_id，再写产物/登记；
+            # 崩溃后重试复用同一 id，不会给同一任务留下重复产物行。
+            output_file_id = task.output_file_id or str(uuid.uuid4())
+            task.output_file_id = output_file_id
+            self._persist_output_pending(task)
+            stem = _friendly_stem(task.filename)
+            ts = datetime.now().strftime("%Y%m%d_%H%M")
+            short4 = output_file_id[:4]
+            md_path = self.output_dir / f"{stem}_脱敏MD_{ts}_{short4}.md"
+            mapping_path = self.output_dir / f"{stem}_映射表_{ts}_{short4}.json"
+            retained_path = self.output_dir / f"{stem}_保留清单_{ts}_{short4}.json"
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            md_path.write_text(md, encoding="utf-8")
+            mapping_path.write_text(
+                json.dumps(mapping_json, ensure_ascii=False, indent=2), encoding="utf-8")
+            retained_path.write_text(
+                json.dumps(retained_json, ensure_ascii=False, indent=2), encoding="utf-8")
+            task.output_file_id = output_file_id
+            task.state = TaskState.COMPLETED
+            task.stage = ""
+            # file_store 登记（orphan 清理尊重 file_store 引用，main.py cleanup_orphan_files；
+            # 键名必须是 vl_md_meta——main.py _known_file_store_paths 只认 output_path+vl_md_meta，
+            # 终审 C3：旧键 agent_md_meta 不被识别，mapping/retained 会被孤儿清理删除）
+            # Issue#282：来源显式标 agent_md + task_id，历史列表据此单独成页签并可「打开结果」。
+            fms.file_store[output_file_id] = {
+                "file_id": output_file_id,
+                "filename": md_path.name,
+                # original_filename 镜像：处理历史列表（GET /files）与行下载文件名都读这个键
+                "original_filename": md_path.name,
+                "output_path": str(md_path),
+                "owner_id": task.owner_id,
+                "file_type": FileType.TXT.value,
+                "upload_source": "agent_md",
+                "agent_md_task_id": task.task_id,
+                "created_at": datetime.now().isoformat(),
+                "vl_md_meta": {
+                    "mapping_path": str(mapping_path),
+                    "retained_path": str(retained_path),
+                },
+            }
+            self._persist_completed(task)
+            return task
 
     # ---- 测试驱动（同步骨架）----
     def create_task_nowait(
@@ -173,7 +219,162 @@ class AgentMdPipelineService:
             stage="mineru", file_path=file_path, filename=filename, owner_id=owner_id,
         )
         self._tasks[task.task_id] = task
+        self._persist_meta(task)
         return task
+
+    # ---- Issue#282 持久化（best-effort，写盘失败不打断任务）----
+    def _persist_meta(self, task: AgentMdTask) -> None:
+        if self.task_store is None:
+            return
+        try:
+            self.task_store.upsert_meta(task)
+        except Exception:  # noqa: BLE001 —— 磁盘满/库损坏只降级列表，不影响任务
+            logger.warning("agent_md task meta persist failed: %s", task.task_id, exc_info=True)
+
+    def _persist_payload(self, task: AgentMdTask) -> None:
+        if self.task_store is None:
+            return
+        try:
+            self.task_store.save_payload(task, self._serialize_payload(task))
+        except Exception:  # noqa: BLE001
+            logger.warning("agent_md task payload persist failed: %s", task.task_id, exc_info=True)
+            # 至少保住元数据，重启后会按「有元数据、无 payload」显式判 corrupt
+            self._persist_meta(task)
+
+    def _persist_output_pending(self, task: AgentMdTask) -> None:
+        if self.task_store is None:
+            return
+        # 两阶段提交第一步失败必须中止：否则产物/登记已写而 id 未落库，
+        # 重启后重试会换新 id，同一任务出现两条产物行（评审 M2）。
+        try:
+            self.task_store.mark_output_pending(task)
+        except Exception:
+            logger.error(
+                "agent_md output id persist failed, abort confirm: %s", task.task_id,
+                exc_info=True,
+            )
+            raise
+
+    def _persist_completed(self, task: AgentMdTask) -> None:
+        if self.task_store is None:
+            return
+        try:
+            self.task_store.mark_completed(task)
+        except Exception:  # noqa: BLE001
+            logger.warning("agent_md task completed persist failed: %s", task.task_id, exc_info=True)
+
+    @staticmethod
+    def _serialize_payload(task: AgentMdTask) -> dict:
+        return {
+            "schema_version": PAYLOAD_SCHEMA_VERSION,
+            "segs": [asdict(s) for s in task.segs],
+            "entities": [e.model_dump(mode="json") for e in task.entities],
+            "mapping": [asdict(m) for m in task.mapping],
+            "structured_md": task.structured_md,
+            "warnings": list(task.warnings),
+            "dropped_blocks": dict(task.dropped_blocks or {}),
+            "chars": int(task.chars or 0),
+            "entity_types_used": list(task.entity_types_used or []),
+        }
+
+    def _restore_task(self, row: dict) -> AgentMdTask | None:
+        """DB 行 → 内存任务；payload 坏/未知版本 fail-closed 为 failed。"""
+        try:
+            state = TaskState(str(row.get("state")))
+        except ValueError:
+            logger.error("agent_md task %s has unknown state %r", row.get("task_id"), row.get("state"))
+            return None
+        task = AgentMdTask(
+            task_id=str(row["task_id"]),
+            state=state,
+            stage=str(row.get("stage") or ""),
+            pages_done=int(row.get("pages_done") or 0),
+            pages_total=int(row.get("pages_total") or 0),
+            message=str(row.get("message") or ""),
+            file_path=str(row.get("file_path") or ""),
+            filename=str(row.get("filename") or ""),
+            output_file_id=row.get("output_file_id"),
+            owner_id=str(row.get("owner_id") or "local_user"),
+        )
+        if state == TaskState.MAPPING_READY:
+            payload = self._load_payload(row)
+            if payload is None:
+                if self.task_store is not None:
+                    try:
+                        self.task_store.mark_payload_corrupt(task.task_id)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("agent_md payload corrupt mark failed: %s", task.task_id, exc_info=True)
+                task.state = TaskState.FAILED
+                task.message = PAYLOAD_CORRUPT_MESSAGE
+            else:
+                task.segs = payload["segs"]
+                task.entities = payload["entities"]
+                task.mapping = payload["mapping"]
+                task.structured_md = payload["structured_md"]
+                task.warnings = payload["warnings"]
+                task.dropped_blocks = payload["dropped_blocks"]
+                task.chars = payload["chars"]
+                task.entity_types_used = payload["entity_types_used"]
+        if state == TaskState.MAPPING_READY:
+            self._heal_pending_output(task)
+        self._tasks[task.task_id] = task
+        return task
+
+    def _heal_pending_output(self, task: AgentMdTask) -> bool:
+        """Recover a crash between artifact registration and completed UPDATE.
+
+        Only heals when the registered record and all three files are present;
+        otherwise the task stays mapping_ready and the retry reuses the id.
+        """
+        if not task.output_file_id:
+            return False
+        try:
+            record = fms.file_store.get(task.output_file_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("agent_md heal: file_store lookup failed", exc_info=True)
+            return False
+        if not isinstance(record, dict):
+            return False
+        meta = record.get("vl_md_meta") if isinstance(record.get("vl_md_meta"), dict) else {}
+        paths = (record.get("output_path"), meta.get("mapping_path"), meta.get("retained_path"))
+        if not all(isinstance(p, str) and p and Path(p).exists() for p in paths):
+            return False
+        task.state = TaskState.COMPLETED
+        task.message = ""
+        if self.task_store is not None:
+            try:
+                self.task_store.mark_completed(task)
+            except Exception:  # noqa: BLE001
+                logger.warning("agent_md heal: mark_completed failed", exc_info=True)
+        logger.info("agent_md task healed to completed: %s", task.task_id)
+        return True
+
+    def _load_payload(self, row: dict) -> dict | None:
+        raw = row.get("payload_json")
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.error("agent_md task %s payload is not valid json", row.get("task_id"))
+            return None
+        if not isinstance(data, dict) or data.get("schema_version") != PAYLOAD_SCHEMA_VERSION:
+            logger.error("agent_md task %s payload schema unsupported", row.get("task_id"))
+            return None
+        try:
+            return {
+                "segs": [Seg(**x) for x in data.get("segs") or []],
+                "entities": [Entity.model_validate(x) for x in data.get("entities") or []],
+                "mapping": [MappingItem(**x) for x in data.get("mapping") or []],
+                "structured_md": data.get("structured_md"),
+                "warnings": [str(w) for w in data.get("warnings") or []],
+                "dropped_blocks": dict(data.get("dropped_blocks") or {}),
+                "chars": int(data.get("chars") or 0),
+                "entity_types_used": [str(t) for t in data.get("entity_types_used") or []],
+            }
+        except (TypeError, ValueError, KeyError):
+            logger.error("agent_md task %s payload shape invalid", row.get("task_id"), exc_info=True)
+            return None
 
     def _run_sync(self, coro):
         """在服务私有事件循环上跑协程（复用同一循环，保持 Lock 绑定一致）。"""
@@ -210,6 +411,7 @@ class AgentMdPipelineService:
                 return task
             task.state = TaskState.NER_RUNNING
             task.stage = "ner"
+            self._persist_meta(task)
             # Issue#248：留存 zip 官方结构化 md（#248 确认渲染的替换载体）；
             # 缺失置 None（confirm 回落拍平重建并显式 warning）
             task.structured_md = (getattr(result, "md", "") or "").strip() or None
@@ -235,6 +437,7 @@ class AgentMdPipelineService:
                 else:
                     task.message = "parse_no_text: MinerU 未解析出任何正文（v1/v2 两路均 0 字符）"
                 task.warnings.extend(warns)
+                self._persist_meta(task)
                 return task
             task.chars = _body_chars(segs)
             segs, more = enrich_image_blocks(segs, result.images, self.ocr)
@@ -249,11 +452,14 @@ class AgentMdPipelineService:
             task.entities = entities
             task.mapping = build_mapping_draft(entities)
             if task.state == TaskState.FAILED:  # NER await 窗口内被判死同样不复活
+                self._persist_meta(task)
                 return task
             task.state = TaskState.MAPPING_READY
+            self._persist_payload(task)
         except Exception as exc:  # noqa: BLE001 —— 单任务失败不拖垮服务
             task.state = TaskState.FAILED
             task.message = f"{type(exc).__name__}: {exc}"
+            self._persist_meta(task)
         return task
 
     @staticmethod
@@ -410,5 +616,6 @@ def get_agent_md_pipeline() -> AgentMdPipelineService:
     """惰性单例工厂：首次调用才构建真实依赖（router 每请求调用；测试 monkeypatch 接缝）。"""
     global _pipeline
     if _pipeline is None:
-        _pipeline = AgentMdPipelineService()
+        # 生产 singleton 注入全局任务索引；单测裸构造（task_store=None）不落盘
+        _pipeline = AgentMdPipelineService(task_store=get_agent_md_task_store())
     return _pipeline

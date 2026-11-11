@@ -78,18 +78,35 @@ def sanitize_upload_source(raw: str | None) -> str | None:
     if not raw or not str(raw).strip():
         return None
     s = str(raw).strip().lower()
+    # agent_md 只允许由供料管线内部写产物时使用，不接受客户端上传伪造
     if s in ("playground", "batch"):
         return s
     return None
 
 
+# Issue#282：历史单文件供料产物没有 upload_source，只能靠产物形态识别。
+# 不能只看 vl_md_meta——VL-MD 产物也写这个键（vl_md_pipeline_service.py:385），
+# 必须同时满足「.md 结尾」且文件名带供料导出标记，否则会把 VL-MD 记录误收。
+_LEGACY_AGENT_MD_MARKER = "_脱敏MD_"
+
+
+def _looks_like_legacy_agent_md(info: dict) -> bool:
+    if not isinstance(info.get("vl_md_meta"), dict):
+        return False
+    name = str(info.get("original_filename") or info.get("filename") or "").strip()
+    lowered = name.lower()
+    return bool(name) and lowered.endswith(".md") and _LEGACY_AGENT_MD_MARKER in name
+
+
 def effective_upload_source(info: dict) -> str:
-    """兼容旧数据：无字段时按 batch_group_id / job_id 推断。"""
+    """兼容旧数据：无字段时按 batch_group_id / job_id / 产物形态推断。"""
     u = info.get("upload_source")
-    if u in ("playground", "batch"):
+    if u in ("playground", "batch", "agent_md"):
         return u
     if info.get("job_id") or info.get("batch_group_id"):
         return "batch"
+    if _looks_like_legacy_agent_md(info):
+        return "agent_md"
     return "playground"
 
 

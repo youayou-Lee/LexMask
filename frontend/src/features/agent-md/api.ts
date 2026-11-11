@@ -31,6 +31,30 @@ export interface AgentMdStatus {
   chars?: number;
 }
 
+/** GET /agent-md/tasks 的任务索引行（Issue#282）。 */
+export interface AgentMdTaskSummary {
+  task_id: string;
+  filename: string;
+  state: string;
+  stage: string;
+  message: string;
+  pages_done: number;
+  pages_total: number;
+  output_file_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentMdTaskCounts {
+  active: number;
+  awaiting_review: number;
+}
+
+export interface AgentMdTaskListResponse {
+  items: AgentMdTaskSummary[];
+  counts: AgentMdTaskCounts;
+}
+
 /** confirm 的可选参数：0 实体出稿需显式知情确认（Issue#212 安全闸）。 */
 export interface ConfirmOptions {
   /** 映射表为空（一个敏感实体都没识别到）时，后端要求显式确认才出稿。 */
@@ -168,6 +192,13 @@ export const agentMdApi = {
     if (filename) fd.append('filename', filename);
     const res = await authFetch('/api/v1/agent-md/upload', { method: 'POST', body: fd });
     if (!res.ok) await readError(res, 'agentMd.uploadFailed');
+    return res.json();
+  },
+
+  /** 当前用户的供料任务索引（进行中 / 待审阅，Issue#282）。 */
+  async list(limit = 50): Promise<AgentMdTaskListResponse> {
+    const res = await authFetch(`/api/v1/agent-md/tasks?limit=${limit}`);
+    if (!res.ok) await readError(res, 'agentMd.listFailed');
     return res.json();
   },
 

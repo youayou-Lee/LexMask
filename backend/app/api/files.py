@@ -223,7 +223,7 @@ async def list_files(
     page_size: int = Query(20, ge=1, le=100, description="每页条数"),
     source: str | None = Query(
         None,
-        description="按来源筛选：playground（单文件流程，兼容旧 API 值）| batch（批量/任务）；不传为全部",
+        description="按来源筛选：playground（单文件流程，兼容旧 API 值）| batch（批量/任务）| agent_md（单文件供料）；不传为全部",
     ),
     embed_job: bool = Query(
         False,
@@ -237,8 +237,8 @@ async def list_files(
     src_filter: str | None = None
     if source is not None and str(source).strip():
         s = str(source).strip().lower()
-        if s not in ("playground", "batch"):
-            raise HTTPException(status_code=400, detail="source 须为 playground 或 batch")
+        if s not in ("playground", "batch", "agent_md"):
+            raise HTTPException(status_code=400, detail="source 须为 playground、batch 或 agent_md")
         src_filter = s
 
     # 如果指定了 job_id，先取该任务的所有 file_id 做白名单

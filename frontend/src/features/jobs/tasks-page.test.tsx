@@ -66,6 +66,31 @@ const { mockedJobs } = vi.hoisted(() => ({
   },
 }));
 
+const { mockedAgentTasks } = vi.hoisted(() => ({
+  mockedAgentTasks: {
+    items: [] as Array<{
+      task_id: string;
+      filename: string;
+      state: string;
+      stage: string;
+      message: string;
+      pages_done: number;
+      pages_total: number;
+      output_file_id?: string | null;
+      created_at: string;
+      updated_at: string;
+    }>,
+    counts: { active: 0, awaiting_review: 0 },
+    loading: false,
+    err: null as string | null,
+    refresh: vi.fn(),
+  },
+}));
+
+vi.mock('./hooks/use-agent-md-tasks', () => ({
+  useAgentMdTasks: () => mockedAgentTasks,
+}));
+
 vi.mock('./hooks/use-jobs', async (importOriginal) => {
   // 只换 useJobs；PAGE_SIZE_OPTIONS / canDeleteJob 等运行时导出保留原实现
   // （jobs-pagination / jobs-table 仍从本模块消费）。
@@ -107,6 +132,9 @@ function activateTab(testId: string) {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  mockedAgentTasks.items = [];
+  mockedAgentTasks.counts = { active: 0, awaiting_review: 0 };
+  mockedAgentTasks.err = null;
 });
 
 describe('Issue#262：任务中心合并页', () => {
@@ -184,5 +212,76 @@ describe('Issue#262：任务中心合并页', () => {
     expect(screen.getByTestId('location-probe').getAttribute('data-search')).toBe(
       '?source=batch&jobId=j-1&view=done',
     );
+  });
+});
+
+describe('Issue#282：供料任务并入任务中心', () => {
+  it('进行中/待审阅供料任务按视图分流，计数并入 active/review 徽标', () => {
+    mockedAgentTasks.counts = { active: 2, awaiting_review: 1 };
+    const base = {
+      stage: 'ner',
+      message: '',
+      pages_done: 2,
+      pages_total: 2,
+      output_file_id: null,
+      created_at: '2026-11-12T04:00:00Z',
+      updated_at: '2026-11-12T04:00:00Z',
+    };
+    mockedAgentTasks.items = [
+      { ...base, task_id: 't-review', filename: '借条.pdf', state: 'mapping_ready' },
+      { ...base, task_id: 't-active', filename: '卷宗.pdf', state: 'parsing' },
+    ];
+
+    renderTasks('/jobs');
+    expect(screen.getByTestId('agent-md-task-panel')).toBeTruthy();
+    // active 视图只列运行态，待复核行不混入（review #282-1）
+    expect(screen.getByTestId('agent-md-task-t-active').getAttribute('href')).toBe(
+      '/agent-md?taskId=t-active',
+    );
+    expect(screen.queryByTestId('agent-md-task-t-review')).toBeNull();
+    // 工单 7 + counts.active 2 = 9；面板只列当前视图可见行（1 条，另一个 active 不在 items 内）
+    expect(screen.getByTestId('tasks-tab-active').textContent).toContain('9');
+    expect(screen.getAllByTestId(/^agent-md-task-t-/)).toHaveLength(1);
+    expect(screen.getByTestId('tasks-tab-review').textContent).toContain('4');
+
+    activateTab('tasks-tab-review');
+    expect(screen.getByTestId('agent-md-task-t-review')).toBeTruthy();
+    expect(screen.queryByTestId('agent-md-task-t-active')).toBeNull();
+  });
+
+  it('failed 任务区分「已中断」与普通失败', () => {
+    mockedAgentTasks.counts = { active: 2, awaiting_review: 0 };
+    const base = {
+      stage: 'ner',
+      pages_done: 0,
+      pages_total: 3,
+      output_file_id: null,
+      created_at: '2026-11-12T04:00:00Z',
+      updated_at: '2026-11-12T04:00:00Z',
+    };
+    mockedAgentTasks.items = [
+      {
+        ...base,
+        task_id: 't-int',
+        filename: '中断.pdf',
+        state: 'failed',
+        message: 'interrupted: 服务重启，任务已中断，请重新发起',
+      },
+      {
+        ...base,
+        task_id: 't-err',
+        filename: '失败.pdf',
+        state: 'failed',
+        message: 'parse_no_text: 空文档',
+      },
+    ];
+    renderTasks('/jobs');
+    expect(screen.getByTestId('agent-md-task-t-int').textContent).toContain('已中断');
+    expect(screen.getByTestId('agent-md-task-t-err').textContent).toContain('失败');
+  });
+
+  it('无进行中供料任务时不渲染面板', () => {
+    renderTasks('/jobs');
+    expect(screen.queryByTestId('agent-md-task-panel')).toBeNull();
   });
 });

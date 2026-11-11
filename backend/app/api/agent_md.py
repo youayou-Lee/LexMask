@@ -4,8 +4,9 @@ Issue#75 喂Agent模式 API 路由
 Thin routing layer — business logic lives in
 app.services.agent_md_pipeline_service.
 
-五端点：上传（含加密 PDF 处理，复用 Issue#30 file_parser 既有链路与结构化
-错误码）/ 状态轮询 / 映射表 / 确认出稿 / 三件套产物下载。所有结构化错误走
+六端点：上传（含加密 PDF 处理，复用 Issue#30 file_parser 既有链路与结构化
+错误码）/ 状态轮询 / 映射表 / 确认出稿 / 三件套产物下载 / 本人未完成任务列表
+（Issue#282）。所有结构化错误走
 AppError envelope（前端 localizeError 按 error_code 映射）。
 """
 import asyncio
@@ -13,7 +14,7 @@ import logging
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from app.core.audit import audit_log
@@ -110,6 +111,24 @@ async def upload(
     return {"task_id": task.task_id}
 
 
+@router.get("/agent-md/tasks")
+async def list_tasks(
+    limit: int = Query(50, ge=1, le=200),
+    owner_id: str = Depends(require_auth),
+):
+    """Issue#282：当前 owner 的未完成供料任务（active / awaiting_review / failed）。
+
+    completed 不出现在这里——已完成回看走 /files 历史页，避免两个列表重复。
+    """
+    from app.services.agent_md_task_store import get_agent_md_task_store
+
+    store = get_agent_md_task_store()
+    return {
+        "items": store.list_for_owner(owner_id, limit=limit),
+        "counts": store.counts_for_owner(owner_id),
+    }
+
+
 @router.get("/agent-md/{task_id}/status")
 async def status(task_id: str, owner_id: str = Depends(require_auth)):
     """任务状态轮询（Stage1 进度 / 失败原因 / 解析丢弃计数）。
@@ -155,7 +174,13 @@ async def confirm(task_id: str, body: dict, owner_id: str = Depends(require_auth
     显式 `acknowledge_zero_entities=true`；若用户主动停用了全部实体类型
     （`entity_types_used` 为空）则豁免——那不是"没识别出来"而是"没让它识别"。
     """
-    task = _require_ready(task_id, owner_id)
+    task = _get_owned(task_id, owner_id)
+    if task.state == TaskState.COMPLETED and task.output_file_id:
+        # Issue#282：重复 confirm 返回既有结果（与管线幂等语义一致），
+        # 否则用户在网络重试/双击时会拿到 409 而不是已产出的三件套。
+        return _confirm_response(task)
+    if task.state != TaskState.MAPPING_READY:
+        raise AppError(status_code=409, error_code="TASK_NOT_READY", message="映射表尚未就绪")
     zero_entities = not task.mapping
     acknowledged = body.get("acknowledge_zero_entities") is True
     if zero_entities and task.entity_types_used and not acknowledged:
@@ -190,7 +215,11 @@ async def confirm(task_id: str, body: dict, owner_id: str = Depends(require_auth
                 "warnings_total": len(task.warnings),
             },
         )
-    base = f"{settings.API_PREFIX}/agent-md/{task_id}/artifacts"
+    return _confirm_response(task)
+
+
+def _confirm_response(task):
+    base = f"{settings.API_PREFIX}/agent-md/{task.task_id}/artifacts"
     return {
         "output_file_id": task.output_file_id,
         "downloads": {"md": f"{base}/md", "mapping": f"{base}/mapping", "retained": f"{base}/retained"},

@@ -72,6 +72,7 @@ def build_file_list_items(
                 has_output=bool(info.get("output_path")),
                 entity_count=_entity_count(info),
                 upload_source=eff,
+                agent_md_task_id=info.get("agent_md_task_id"),
                 job_id=job_key,
                 batch_group_id=bg_key,
                 batch_group_count=cnt,

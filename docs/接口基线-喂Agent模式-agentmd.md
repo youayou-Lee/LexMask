@@ -1,4 +1,4 @@
-# 接口基线：供料模式（agent-md，五端点 + MinerU sidecar 16581；原名「喂Agent」，2026-10 起 Issue#196 全站更名）
+# 接口基线：供料模式（agent-md，六端点 + MinerU sidecar 16581；原名「喂Agent」，2026-10 起 Issue#196 全站更名）
 
 > 对应 Issue：#75（喂Agent并行模式——MinerU+NER→脱敏MD+映射表，可直接投喂云端 AI）
 > 服务位置：LexMask backend `/api/v1/agent-md/*`（`backend/app/api/agent_md.py`，业务逻辑在 `app/services/agent_md_pipeline_service.py`）；外部依赖 MinerU 3.4 sidecar（实例内 `127.0.0.1:16581`，独立 venv 常驻）。
@@ -16,7 +16,7 @@
 | 部署 | sidecar 启停命令见 §6；`start_all_dcu.sh` 待加段落原文亦见 §6（实际实例操作在验收阶段执行） |
 | 配置项 | `MINERU_API_BASE_URL`（默认 `http://127.0.0.1:16581`）· `MINERU_POLL_INTERVAL`（2.0s）· `MINERU_TASK_TIMEOUT`（7200s）· `AGENT_MD_CHUNK_CHARS`（6000，NER 分块） |
 
-## 2. 接口定义（五端点）
+## 2. 接口定义（六端点）
 
 ### POST /api/v1/agent-md/upload
 
@@ -82,7 +82,7 @@
 
 `action` 语义：`keep`＝替换（默认）；`exclude`＝保留原文；`custom`＝自定义替换文本（空值回退原占位符）；未知 id 静默忽略。未在 `decisions` 中出现的行按草稿默认值执行。
 
-非 `mapping_ready` 状态调用 → 任务置 `failed`（message=`task not ready`），此后状态机不再推进；接口层同时回 `409 TASK_NOT_READY`。
+非 `mapping_ready` 状态调用 → 接口层先回 `409 TASK_NOT_READY`，不推进状态机（管线内同状态调用仍会置 `failed` 兜底）。已 `completed` 的任务重复调用 confirm 幂等返回既有 `output_file_id` 与三件套下载地址（Issue#282）。
 
 响应 `200`：
 
@@ -92,6 +92,21 @@
                "mapping": "/api/v1/agent-md/<task_id>/artifacts/mapping",
                "retained": "/api/v1/agent-md/<task_id>/artifacts/retained"}}
 ```
+
+### GET /api/v1/agent-md/tasks
+
+Issue#282：当前账号未完成的供料任务索引（`completed` 不在此列，已完成回看走 `/files?source=agent_md`）。必带本人鉴权；`limit` 默认 50、夹取 1..200。
+
+响应 `200`：
+
+```json
+{"items": [{"task_id": "<uuid>", "filename": "案卷.pdf", "state": "mapping_ready",
+            "stage": "ner", "message": "", "pages_done": 3, "pages_total": 10,
+            "output_file_id": null, "created_at": "...", "updated_at": "..."}],
+ "counts": {"active": 0, "awaiting_review": 1}}
+```
+
+`active` = `uploaded/parsing/ner_running` + `failed`（含重启中断，仍未收口）；`awaiting_review` = `mapping_ready`。`items` 按 `updated_at` 倒序。
 
 ### GET /api/v1/agent-md/{task_id}/artifacts/{kind}
 
@@ -121,6 +136,7 @@ uploaded → parsing → ner_running → mapping_ready → completed
                 └──────────┴──────────→ failed（任一阶段异常；confirm 过早也会判死）
 ```
 
+- **持久化与重启（Issue#282）**：任务元数据随状态推进写入 `agent_md_tasks` SQLite；`mapping_ready` 时把 segs/entities/mapping/structured_md 存为 payload（`completed` 后清空）。确认出稿采用两阶段提交：先把 `output_file_id` 写入任务行，再写三产物并登记 file_store；若在登记后、completed 前崩溃，重启自愈为 `completed`，重试复用同一 id，不会为同一任务生成重复产物行。服务/容器重启后 `mapping_ready` 任务可继续复核与确认；重启时仍在 `uploaded/parsing/ner_running` 的任务统一置 `failed`，`message` 以 `interrupted:` 开头（显式告知需重新发起）。payload 损坏/版本未知置 `failed`，`message` 以 `payload_corrupt:` 开头。
 - **两阶段串行**：Stage1（解析→NER→映射草稿）后台异步进行；Stage2（确认出稿）仅在 `mapping_ready` 受理。Stage1 进行中（等锁/解析/NER 任一窗口）收到 confirm 都判死不复活。
 - **全局串行解析锁**：多任务共用一把 asyncio Lock，MinerU 解析排队执行（sidecar 自身亦单并发）；NER 阶段不占锁。
 - **sidecar 契约要点**（Task 0 实测校准）：提交必须显式 `backend=pipeline`（默认 hybrid-engine 在 DCU 实例必失败）+ `response_format_zip=true` + `return_content_list=true` + `return_images=true`；状态只有 `pending/processing/completed/failed` 字面量、**无页级进度字段**；结果 zip 内 `<stem>/<parse_method>/` 下取 `*.md`、`*_content_list_v2.json`、`images/*`；任务结果保留 24h，failed 取件 409、未知 id 404。
@@ -133,9 +149,11 @@ uploaded → parsing → ner_running → mapping_ready → completed
 
 | 产物 | 文件 | 内容 |
 |---|---|---|
-| 脱敏稿 | `<output_file_id>.md` | Markdown 全文，`excluded=false` 的实体已替换为占位符（段间 `\n\n`，阅读序保持） |
-| 映射表 | `<output_file_id>.mapping.json` | `{"items": [{id, original_text, entity_type, replacement, excluded}]}` |
-| 保留字段 | `<output_file_id>.retained_fields.json` | `{"retained_fields": [{text, type, page}]}`——所有 `exclude` 保留的原文清单 |
+| 脱敏稿 | `<原文件名 stem>_脱敏MD_<YYYYmmdd_HHMM>_<id前4>.md` | Markdown 全文，`excluded=false` 的实体已替换为占位符（段间 `\n\n`，阅读序保持） |
+| 映射表 | `<stem>_映射表_<YYYYmmdd_HHMM>_<id前4>.json` | `{"items": [{id, original_text, entity_type, replacement, excluded}]}` |
+| 保留字段 | `<stem>_保留清单_<YYYYmmdd_HHMM>_<id前4>.json` | `{"retained_fields": [{text, type, page}]}`——所有 `exclude` 保留的原文清单 |
+
+**来源标记（Issue#282）**：confirm 登记产物时写 `upload_source="agent_md"`、`agent_md_task_id=<task_id>`、`file_type="txt"`；因此 `GET /api/v1/files?source=agent_md` 可列出已完成供料产物，且前端历史页「打开结果」能回到本任务结果页。批量供料仍归属 `batch`。历史（#282 之前）单文件供料记录没有来源字段，按「有 `vl_md_meta` + 文件名 `.md` 结尾且含 `_脱敏MD_`」兼容识别；VL-MD 产物也写 `vl_md_meta`，但不满足文件名条件，不会被误收。
 
 **还原指引**：脱敏 MD + 映射表 JSON 直接送既有还原工具 `POST /api/v1/vlmd/restore`（Issue#70/#50 T7；映射表格式与 #66 产物同构、兼容），即可还原原文——「换身份留关系」双向可逆。
 
@@ -168,3 +186,4 @@ wait_health http://127.0.0.1:16581/docs "MinerU-API" 120
 | 日期 | 变更 | 依据 |
 |---|---|---|
 | 2026-10-08 | 五端点 + sidecar 契约初版落库（Task 0 实测校准 + Tasks 1–10 落码） | Issue#75 |
+| 2026-11-12 | 第六端点 `GET /agent-md/tasks`；任务索引持久化与重启恢复/中断显式化；confirm 幂等；产物来源标 `agent_md`；`/files` 新增来源枚举与旧数据兼容识别 | Issue#282 |

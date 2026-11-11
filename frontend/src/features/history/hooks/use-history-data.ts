@@ -8,7 +8,11 @@ import { localizeErrorMessage } from '@/utils/localizeError';
 import type { FileListItem, FileListResponse } from '@/types';
 import { useSearchParams } from 'react-router-dom';
 
-export type SourceTab = 'all' | 'playground' | 'batch';
+export type SourceTab = 'all' | 'playground' | 'batch' | 'agent_md';
+
+export function parseSourceTab(raw: string | null): SourceTab {
+  return raw === 'playground' || raw === 'batch' || raw === 'agent_md' ? raw : 'all';
+}
 
 export type HistoryMessage = { text: string; tone: 'ok' | 'warn' | 'err' };
 
@@ -259,7 +263,7 @@ export function useHistoryData() {
   const urlSource = searchParams.get('source');
   const urlJobId = searchParams.get('jobId');
   const initialSourceTab =
-    urlSource === 'batch' ? 'batch' : urlSource === 'playground' ? 'playground' : 'all';
+    parseSourceTab(urlSource);
   // Lazy init: avoid a synchronous localStorage read + JSON.parse on every render.
   const [initialCache] = useState(() =>
     readHistoryListCache(initialSourceTab, urlJobId, 1, 10, {
@@ -282,7 +286,7 @@ export function useHistoryData() {
   const [tableLoading, setTableLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [sourceTab, setSourceTab] = useState<SourceTab>(
-    urlSource === 'batch' ? 'batch' : urlSource === 'playground' ? 'playground' : 'all',
+    parseSourceTab(urlSource),
   );
   const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(() => new Set());
   const knownBatchIdsRef = useRef<Set<string>>(new Set());
@@ -420,7 +424,7 @@ export function useHistoryData() {
 
   useEffect(() => {
     const nextSourceTab =
-      urlSource === 'batch' ? 'batch' : urlSource === 'playground' ? 'playground' : 'all';
+      parseSourceTab(urlSource);
     const nextJobId = urlJobId ?? null;
     const cached = readHistoryListCache(nextSourceTab, nextJobId, 1, pageSizeRef.current, {
       allowStale: true,

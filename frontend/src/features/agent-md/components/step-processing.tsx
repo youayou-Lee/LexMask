@@ -58,7 +58,13 @@ export function StepProcessing({ status, pollOnce, onError, onFail }: StepProces
     return () => window.clearInterval(poll);
   }, [failed, pollOnce, onError, t]);
 
-  const failMessage = pollIssue ?? status?.message ?? '';
+  const rawFail = pollIssue ?? status?.message ?? '';
+  // 后端用 interrupted:/payload_corrupt: 机读前缀；展示层翻译成可读文案，不裸露前缀。
+  const failMessage = rawFail.startsWith('interrupted:')
+    ? t('agentMd.taskInterrupted')
+    : rawFail.startsWith('payload_corrupt:')
+      ? t('agentMd.taskCorrupt')
+      : rawFail;
   const nerRunning = status?.stage === 'ner' || status?.state === 'ner_running';
   const pagesTotal = status?.pages_total ?? 0;
   const droppedEmptyTable = status?.dropped_blocks?.empty_table ?? 0;
@@ -67,7 +73,10 @@ export function StepProcessing({ status, pollOnce, onError, onFail }: StepProces
   const warningsTotal = status?.warnings_total ?? 0;
   const remainingMinutes =
     pagesTotal > 0
-      ? Math.max(0, Math.ceil((pagesTotal * PARSE_SECONDS_PER_PAGE) / 60) - Math.floor(elapsed / 60))
+      ? Math.max(
+          0,
+          Math.ceil((pagesTotal * PARSE_SECONDS_PER_PAGE) / 60) - Math.floor(elapsed / 60),
+        )
       : 0;
 
   return (

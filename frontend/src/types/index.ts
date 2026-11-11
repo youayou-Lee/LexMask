@@ -193,7 +193,9 @@ export interface FileListItem {
   has_output: boolean;
   entity_count: number;
 
-  upload_source?: 'playground' | 'batch';
+  upload_source?: 'playground' | 'batch' | 'agent_md';
+
+  agent_md_task_id?: string | null;
 
   job_id?: string | null;
 
