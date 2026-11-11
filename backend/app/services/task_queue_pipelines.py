@@ -134,6 +134,46 @@ def _boxes_by_page(raw: Any) -> dict[int, list[dict[str, Any]]]:
     return out
 
 
+def _routing_fields_from_quality(quality: dict) -> dict:
+    """Issue#273：成功页账本 routing 字段——从 ``pipeline_status["page_routing"]`` 提取。
+
+    Task 8 的 finalize 在识别结果里合成了完整路由块（决策/仲裁终值/计时），
+    成功页直接取它。file 模式 / 无路由块 ⇒ 空 dict（调用方 ``**`` 展开 = 零键、
+    零噪声，与「file 模式账本无新字段」一致）。
+    """
+    pr = (quality.get("pipeline_status") or {}).get("page_routing") or {}
+    if not pr:
+        return {}
+    fields = {"text_source": pr.get("text_source"),
+              "text_metrics": {"action": pr["decision"]["action"],
+                               "reason": pr["decision"]["reason"],
+                               "signals": pr["decision"]["signals"]},
+              "stage_ms": pr.get("stage_ms") or {}}
+    for k in ("switched_from", "switch_reason", "verify_incomplete"):
+        if pr.get(k) is not None:
+            fields[k] = pr[k]
+    return fields
+
+
+def _routing_fields_from_file_store(file_id: str, page: int) -> dict:
+    """Issue#273：超时/失败页账本 routing 字段——决策即落账（Task 7）的证据回读。
+
+    超时/异常页拿不到识别结果（无 ``pipeline_status``），但路由决策在 run_page
+    之前已写进 file_store ``info["page_routing"][str(page)]`` ⇒ 从那里补记，
+    保住「本页按什么文本来源跑的」这条排查线。file 模式下 file_store 也没有
+    page_routing ⇒ 空 dict（零键）。
+    """
+    from app.services.file_operations import get_file_info
+
+    info = get_file_info(file_id) or {}
+    pr = (info.get("page_routing") or {}).get(str(page)) or {}
+    if not pr.get("decision"):
+        return {}
+    return {"text_source": pr.get("text_source"),
+            "text_metrics": {"action": pr["decision"]["action"],
+                             "reason": pr["decision"]["reason"]}}
+
+
 class RecognitionPipelineMixin:
     """识别流水线：解析 -> NER/Vision -> 完成识别（可选入队匿名化）。"""
 
@@ -701,17 +741,21 @@ class RecognitionPipelineMixin:
         )
         sparse_probe: dict[str, Any] = {"ran": False}
         if pages > 1 and _file_type_value(fi.get("file_type")) == "pdf_scanned":
-            try:
-                from app.services.vision_service import prime_pdf_text_layer_sparse_probe
+            # Issue#273：probe 预热是 file 模式 docline 的决策面；page 模式文本来源
+            # 由逐页路由决策指挥 ⇒ 跳过预热（决策面唯一）。settings 在本函数上文
+            # 已惰性导入（:656 附近），此处直接可用。
+            if settings.RECOGNITION_ROUTING_MODE != "page":
+                try:
+                    from app.services.vision_service import prime_pdf_text_layer_sparse_probe
 
-                sparse_probe = await prime_pdf_text_layer_sparse_probe(
-                    str(fi.get("file_path") or ""),
-                    fi.get("file_type"),
-                    page=1,
-                )
-            except Exception:
-                sparse_probe = {"ran": False, "error": "probe_failed"}
-                logger.debug("unable to prime scanned PDF text-layer sparse probe", exc_info=True)
+                    sparse_probe = await prime_pdf_text_layer_sparse_probe(
+                        str(fi.get("file_path") or ""),
+                        fi.get("file_type"),
+                        page=1,
+                    )
+                except Exception:
+                    sparse_probe = {"ran": False, "error": "probe_failed"}
+                    logger.debug("unable to prime scanned PDF text-layer sparse probe", exc_info=True)
         page_sem = asyncio.Semaphore(page_concurrency)
         store = self._get_store()
         store.update_item_progress(
@@ -910,6 +954,10 @@ class RecognitionPipelineMixin:
                                         "status": "timeout",
                                         "active_pages_at_end": active_pages,
                                         **({"error": timeout_reason} if exc_reason else {}),
+                                        # Issue#273：决策即落账（Task 7）——超时页拿不到
+                                        # 识别结果，但从 file_store 补记已发生的路由决策
+                                        # （file 模式/未落账 ⇒ 空 dict 零键，B6）。
+                                        **_routing_fields_from_file_store(task.file_id, p),
                                     }
                                 }
                             }
@@ -976,6 +1024,9 @@ class RecognitionPipelineMixin:
                                                 "error": f"{type(exc).__name__}: {exc}"[:200],
                                             }
                                         },
+                                        # Issue#273：同 timeout 路径——file_store 已落账的
+                                        # 路由决策补记（空 dict 零键，file 模式零噪声）。
+                                        **_routing_fields_from_file_store(task.file_id, p),
                                     }
                                 }
                             }
@@ -1007,6 +1058,9 @@ class RecognitionPipelineMixin:
                                         "cache_status": dict(quality.get("cache_status") or {}),
                                         "pipeline_status": dict(quality.get("pipeline_status") or {}),
                                         "warnings": list(quality.get("warnings") or []),
+                                        # Issue#273：finalize 合成的路由块并入页账
+                                        # （file 模式/无路由块 ⇒ 空 dict 零键，A5）。
+                                        **_routing_fields_from_quality(quality),
                                     }
                                 }
                             }
