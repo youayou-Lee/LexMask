@@ -123,8 +123,9 @@ class AgentMdPipelineService:
         时任务置 FAILED（message="task not ready"）并原样返回。并发重复 confirm
         由 ``_confirm_lock`` 串行化：后到者看到 COMPLETED 直接返回既有任务。
 
-        写盘顺序（Issue#282）：写三产物 → 登记 file_store → 单条 UPDATE
-        置 completed 且清 payload。崩溃最坏停在 mapping_ready，可重试。
+        写盘顺序（Issue#282 两阶段提交）：先落 output_file_id → 写三产物 →
+        登记 file_store → 单条 UPDATE 置 completed 且清 payload。任一步崩溃
+        都停在 mapping_ready 且可重试；id 复用，重启时记录齐全则自愈。
         """
         async with self._confirm_lock:
             task = self.get_task(task_id)
