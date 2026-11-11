@@ -155,7 +155,7 @@ def test_writer_contract_all_twelve_events(log_env):
     events_fields = {
         "route_decided": dict(source="docline_gate", gate="no_text_layer", signals={}, verdict="fallback:no_text_layer"),
         "text_layer_extracted": dict(chars=1, blocks=1, pages=1, ms=1),
-        "chunk_failed": dict(stage="docline", chunk_index=0, error_type="TypeError", traceback_frames=[], message_sanitized="x"),
+        "chunk_failed": dict(stage="docline", chunk_index=0, error_type="TypeError", traceback_frames=[], message_sanitized="x", kind="main"),
         "ner_done": dict(ms=1, regions=1),
         "ocr_done": dict(ms=1, regions=1, source="ocr"),
         "page_done": dict(ms=1, stage_ms={}, regions=1),

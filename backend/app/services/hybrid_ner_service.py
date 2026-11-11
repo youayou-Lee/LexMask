@@ -28,6 +28,7 @@ from app.core.safe_regex import (
 )
 from app.models.schemas import Entity
 from app.models.type_mapping import canonical_type_id, linkage_groups_for_type
+from app.services import page_event_log as page_events
 from app.services.has_service import HaSService, has_service
 
 # 类型别名，兼容 EntityTypeConfig 和 CustomEntityType
@@ -222,8 +223,19 @@ class HybridNERService:
                         *(run_chunk(chunk) for chunk in chunks),
                         return_exceptions=True,
                     )
-                    for chunk_result in chunk_results:
+                    for chunk_index, chunk_result in enumerate(chunk_results):
                         if isinstance(chunk_result, BaseException):
+                            # Issue#279/#277：HaS 视觉线块级异常结构化入账（第二处
+                            # chunk_failed，与 docline 的块失败同一 schema）。纯旁路：
+                            # 写入失败只计数，gather 吞异常与降级语义不变。
+                            page_events.log_event(
+                                "chunk_failed",
+                                stage="has_vision",
+                                chunk_index=chunk_index,
+                                error_type=type(chunk_result).__name__,
+                                traceback_frames=page_events.traceback_frames(chunk_result),
+                                message_sanitized=str(chunk_result)[:200],
+                            )
                             logger.warning("  HaS chunk failed: %s", chunk_result)
                             continue
                         has_entities.extend(chunk_result)

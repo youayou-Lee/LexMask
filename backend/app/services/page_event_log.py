@@ -53,7 +53,9 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     "text_layer_extracted": EventSchema(optional=("chars", "blocks", "pages", "ms")),
     "chunk_failed": EventSchema(
         required=("stage", "chunk_index", "error_type"),
-        optional=("traceback_frames", "message_sanitized"),
+        # Issue#279 Task5：kind 回补白名单（main/residual 标注调用趟次；
+        # 块号直接用必填的 chunk_index，不另设 chunk_no 冗余字段）。
+        optional=("traceback_frames", "message_sanitized", "kind"),
     ),
     "ner_done": EventSchema(optional=("calls", "ms", "entities", "regions", "supplemented")),
     "ocr_done": EventSchema(optional=("ms", "regions", "source")),
