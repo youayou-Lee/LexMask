@@ -317,21 +317,50 @@ async def test_action_verify_tl_failed_adopts_ocr_evidence(exec_env, tmp_path):
 
 @pytest.mark.asyncio
 async def test_action_verify_tl_failed_and_evidence_timeout_raises(exec_env, monkeypatch, tmp_path):
-    """文本层失败且证据 OCR 也超时 ⇒ TimeoutError（页失败走 #199 语义）。"""
+    """文本层失败且证据 OCR 也超时 ⇒ RoutingEvidenceTimeout（页失败走 #199 语义）。"""
     monkeypatch.setattr(settings, "ROUTING_VERIFY_OCR_TIMEOUT_SEC", 0.1)
     stub = _ExecStub(
         tl_error=ValueError("sparse native text layer (3 chars < 120)"),
         tl_chars=3,
         ocr_sleep=0.3,
     )
-    with pytest.raises(TimeoutError):
+    with pytest.raises(TimeoutError) as exc_info:  # RoutingEvidenceTimeout 是其子类
         await stub.run(str(tmp_path / "a.pdf"), _decision("text_layer_verify"))
+
+    # C1：专类而非裸 TimeoutError——is_page_fatal 只认专类（分类档专测另钉）。
+    from app.services.vision_service import RoutingEvidenceTimeout, is_page_fatal_stage_error
+
+    assert isinstance(exc_info.value, RoutingEvidenceTimeout)
+    assert "routing" in str(exc_info.value)
+    assert is_page_fatal_stage_error(exc_info.value) is True
 
     outcome = stub.service.last_page_routing_outcome
     assert outcome["winner"] == "ocr"
     assert outcome["switch_reason"] == "text_layer_stage_error"
     assert outcome["verify_incomplete"] is True
     assert outcome["escalate_volume"] is False
+
+
+def test_is_page_fatal_timeout_tier_only_matches_dedicated_class():
+    """C1 回归钉：is_page_fatal 的超时档只匹配 RoutingEvidenceTimeout 专类。
+
+    裸 ``TimeoutError`` / ``socket.timeout``（含 ocr_cache inflight 兜底的既有
+    消息形态）必须维持「stage failed + 页 completed」原行为（改动中被 C1 破坏、
+    本钉恢复）；NER 预算档与普通结果不受影响。
+    """
+    import socket
+
+    from app.services.vision.has_text_analysis import HasTextNerPageBudgetExceeded
+    from app.services.vision_service import RoutingEvidenceTimeout, is_page_fatal_stage_error
+
+    assert is_page_fatal_stage_error(RoutingEvidenceTimeout("routing: boom")) is True
+    assert is_page_fatal_stage_error(TimeoutError()) is False
+    # socket.timeout 于 3.10+ 是 TimeoutError 的别名——保留别名形态的显式回归钉。
+    assert is_page_fatal_stage_error(socket.timeout()) is False  # noqa: UP041
+    # ocr_cache inflight 兜底的确切消息形态（_wait_for_ocr_output_inflight）
+    assert is_page_fatal_stage_error(TimeoutError("等待同图 OCR in-flight 结果超时（300s），按失败处理")) is False
+    assert is_page_fatal_stage_error(HasTextNerPageBudgetExceeded("budget")) is True
+    assert is_page_fatal_stage_error(([], None)) is False
 
 
 # --------------------------------------------------------- 4) 证据 OCR 证据降级

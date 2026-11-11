@@ -65,6 +65,16 @@ def decorate_page_fatal_reason(exc: BaseException, duration_ms: dict | None) -> 
     exc.args = (f"{head}{suffix}",)
 
 
+class RoutingEvidenceTimeout(TimeoutError):
+    """Issue#273 页路由证据链死线：文本层与证据 OCR 双双无产出（Task 9）。
+
+    专类而非裸 ``TimeoutError``：``is_page_fatal_stage_error`` 只把本类升级为
+    页级失败（#199 语义）；既有 ``TimeoutError`` 路径（ocr_cache inflight 兜底等）
+    维持「stage failed + 页 completed」原行为不被连坐。继承 TimeoutError 使
+    ``task_queue_pipelines`` 的页墙超时分支自然接住并透传原因（评审 I1）。
+    """
+
+
 def is_page_fatal_stage_error(result) -> bool:
     """阶段异常是否应**升级为页级失败**（门⑥ F8 加固，2026-10-29）。
 
@@ -79,19 +89,18 @@ def is_page_fatal_stage_error(result) -> bool:
     1. 「页级 NER 预算 strict 失败」（``HasTextNerPageBudgetExceeded``）——
        `task_queue_pipelines` 的 `except Exception` 会把它写进
        `recognition.failed_pages`，交付闸/导出 409 随之生效。
-    2. Issue#273 路由证据链死线（``TimeoutError``）——页路由 verify/both 动作下
-       文本层与证据 OCR 双双无产出时，页必须显式失败而非静默 0 区域完成（#199
-       语义，`run_ocr_has_job` raise 的接收端）。既有阶段链不外逸内建
-       TimeoutError（has_text_analysis 的预算墙内部自升自捕；httpx 超时包装为
-       ``httpx.TimeoutException``；MinerU 换源内部捕获），故本档不改变既有阶段
-       的行为。其它阶段异常（OCR 服务抖动、视觉通道故障）维持既有
-       「降级 + warning」语义不变。
+    2. Issue#273 路由证据链死线（``RoutingEvidenceTimeout``，TimeoutError 子类）——
+       页路由 verify/both 动作下文本层与证据 OCR 双双无产出时，页必须显式失败
+       而非静默 0 区域完成（#199 语义，`run_ocr_has_job` raise 的接收端）。
+       **只匹配本专类**：既有 TimeoutError 路径（ocr_cache inflight 兜底等）维持
+       「stage failed + 页 completed」原行为。其它阶段异常（OCR 服务抖动、视觉
+       通道故障）维持既有「降级 + warning」语义不变。
     """
     from app.services.vision.has_text_analysis import HasTextNerPageBudgetExceeded
 
     if isinstance(result, HasTextNerPageBudgetExceeded):
         return bool(getattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True))
-    return isinstance(result, TimeoutError)
+    return isinstance(result, RoutingEvidenceTimeout)
 
 from PIL import Image, ImageOps
 
@@ -565,7 +574,9 @@ class VisionService:
                         tl_boxes = list(tl_result[0] or []) if tl_result else None
                     except Exception:
                         # 真实方法异常时 stats 已落位（含 char_count），下方统一读取。
-                        logger.info("PDF text layer not used for page %d (routing)", page)
+                        logger.info(
+                            "PDF text layer not used for page %d (routing)", page, exc_info=True
+                        )
                 tl_chars = int((getattr(self, "last_pdf_text_layer_stats", None) or {}).get("char_count") or 0)
                 tl_entities = len(tl_boxes or [])
                 tl_metrics = {
@@ -666,7 +677,7 @@ class VisionService:
                         )
                         return ocr_boxes, None
                     # 双侧无产出：先落诚实 outcome 再抛——页按 #199 语义显式失败
-                    # （is_page_fatal_stage_error 的 TimeoutError 档接收）。
+                    # （is_page_fatal_stage_error 的 RoutingEvidenceTimeout 专类档接收）。
                     self._record_page_routing_outcome(
                         winner="ocr",
                         switched_from="text_layer",
@@ -679,7 +690,9 @@ class VisionService:
                     )
                     if evidence_error is not None:
                         raise evidence_error
-                    raise TimeoutError("routing: text layer failed and evidence OCR timed out")
+                    raise RoutingEvidenceTimeout(
+                        "routing: text layer failed and evidence OCR timed out"
+                    )
 
                 if evidence_timed_out or evidence_error is not None:
                     # 证据阶段死线（或通道故障）⇒ 对账未实际发生：保留文本层 +

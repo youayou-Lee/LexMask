@@ -439,17 +439,30 @@ class RecognitionPipelineMixin:
                     ),
                     timeout=page_timeout,
                 )
-            except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041
+            except (TimeoutError, asyncio.TimeoutError) as exc:  # noqa: UP041
                 elapsed = _elapsed_ms(started)
+                # 评审 I1（Issue#273）：带消息的 TimeoutError 子类（路由
+                # RoutingEvidenceTimeout、ocr_cache inflight 兜底）⇒ 原因透传；
+                # 真页墙超时 str 为空 ⇒ 文案不变（主路径同款处理）。
+                exc_reason = str(exc).strip()
+                timeout_reason = f"page retry timeout after {page_timeout:.0f}s"
+                if exc_reason:
+                    timeout_reason = f"{timeout_reason}: {exc_reason}"[:200]
                 records[str(page)] = {
                     "page": page,
                     "started_at": started_at,
                     "finished_at": _utc_iso(),
                     "duration_ms": elapsed,
                     "status": "timeout",
+                    **({"error": timeout_reason} if exc_reason else {}),
                 }
-                failed_map[str(page)] = f"page retry timeout after {page_timeout:.0f}s"
-                logger.warning("[queue] item=%s page %d retry TIMEOUT", task.item_id[:8], page)
+                failed_map[str(page)] = timeout_reason
+                logger.warning(
+                    "[queue] item=%s page %d retry TIMEOUT: %s",
+                    task.item_id[:8],
+                    page,
+                    timeout_reason,
+                )
             except Exception as exc:  # 页级隔离：单页再失败不得作废其它页
                 elapsed = _elapsed_ms(started)
                 reason = f"{type(exc).__name__}: {exc}"[:_ERROR_MSG_MAX_LEN]
@@ -875,9 +888,16 @@ class RecognitionPipelineMixin:
                         timeout=page_timeout,
                     )
                 # Issue#139：见 _run_recognition 处的同类说明（3.10 两类分立 + 必须重排到 OSError 之前）。
-                except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041
+                except (TimeoutError, asyncio.TimeoutError) as exc:  # noqa: UP041
                     page_ms = _elapsed_ms(page_started)
                     active_pages = max(0, active_pages - 1)
+                    # 评审 I1（Issue#273）：真页墙超时 str 为空 ⇒ 文案不变；带消息的
+                    # TimeoutError 子类（路由 RoutingEvidenceTimeout、ocr_cache inflight
+                    # 兜底）⇒ 原因透传，否则失败页只剩「timeout after Ns」无因可查。
+                    exc_reason = str(exc).strip()
+                    timeout_reason = f"{stage_label} page timeout after {page_timeout:.0f}s"
+                    if exc_reason:
+                        timeout_reason = f"{timeout_reason}: {exc_reason}"[:200]
                     self._record_item_performance(
                         store,
                         task.item_id,
@@ -889,6 +909,7 @@ class RecognitionPipelineMixin:
                                         "duration_ms": page_ms,
                                         "status": "timeout",
                                         "active_pages_at_end": active_pages,
+                                        **({"error": timeout_reason} if exc_reason else {}),
                                     }
                                 }
                             }
@@ -898,9 +919,7 @@ class RecognitionPipelineMixin:
                     # Issue#199 页级隔离：单页超时**不上抛**——记录后由本阶段收尾
                     # 汇入 failed_pages，其余页照常完成（极端页不得作废整卷）。
                     if stage_failed is not None:
-                        stage_failed[p] = (
-                            f"{stage_label} page timeout after {page_timeout:.0f}s"
-                        )
+                        stage_failed[p] = timeout_reason
                     # Issue#238：超时页也计入已完成——页账走到头才算数，进度条不卡条。
                     bump_stage_progress(stage_label, stage_pages)
                 except MemoryError:
