@@ -114,7 +114,7 @@ def _vision_signature(
 ) -> dict[str, Any]:
     from app.core.config import settings
 
-    return {
+    signature: dict[str, Any] = {
         # v6 (Issue#41): has-text NER 截断治理动了识别链路的预算与分批行为，
         # bump 让既有页缓存失效、首跑 cache miss 重建，避免旧 key 回放治理前的框。
         # 新增 ner_governance 指纹：未来只翻 env 切帽/校准而不 bump version 时，
@@ -147,6 +147,15 @@ def _vision_signature(
         # old detector produced.
         "detector_epoch": os.environ.get("VISION_DETECTOR_EPOCH", "0"),
     }
+    # Issue#273：页级路由改变文本来源的选择（page 模式由路由决策指挥、不再走
+    # 文档级 docline），同一路由链内识别口径也可能随 ROUTING_VERSION 演进。
+    # **file 模式（回滚开关）签名与 v6 逐字段一致**——不加任何键，老缓存原样命中；
+    # page 模式靠新增两键变键：既有页缓存全量失效重建（首次 cache miss），
+    # 不会回放 page/file 旧口径的框。version 字段本身保持 6 不动。
+    if str(getattr(settings, "RECOGNITION_ROUTING_MODE", "file") or "file") == "page":
+        signature["routing_mode"] = "page"
+        signature["routing_version"] = int(getattr(settings, "ROUTING_VERSION", 1) or 1)
+    return signature
 
 
 def _page_value(mapping: Any, page: int) -> Any:
@@ -665,7 +674,31 @@ async def detect_vision(
     # Issue#129 起**默认开启**（`TEXT_LAYER_DOCLINE_ENABLED=True`）：置 false 即整链回退
     # 到 #115 之前的逐页视觉线；任何资格不符/异常**一律退回旧路径**（不 5xx）。
     # 注意：`force=True` 只绕视觉缓存，**不**重跑文档级 memo（链结果是文件的函数）。
-    if ocr_has_enabled:
+    page_routing = None
+    _route_ms = 0
+    from app.core.config import settings  # 惰性：与本文件其余惰性 import 同风格
+
+    routing_mode = str(getattr(settings, "RECOGNITION_ROUTING_MODE", "file") or "file")
+    if ocr_has_enabled and routing_mode == "page":
+        # Issue#273 页级路由（P0）：文本来源由逐页路由决策指挥——本任务只接线
+        # （decide 落账 + 决策透传），执行面（vision_service 内按决策走文本层）
+        # 由 Task 9 实现；decide/finalize 任何失败都不改变识别主链（decide 内部
+        # 已 fail-closed，finalize 只写账本与 pipeline_status）。
+        from app.services.page_routing import router as page_router
+
+        _route_started = time.perf_counter()
+        page_routing = await page_router.decide(file_id, snapshot, page)
+        _route_ms = _elapsed_ms(_route_started)
+        logger.info(
+            "issue273 page_routing decide file=%s page=%d action=%s reason=%s elapsed_ms=%d",
+            file_id[:8],
+            page,
+            page_routing.action,
+            page_routing.reason,
+            _route_ms,
+        )
+        doc_boxes, doc_memo = None, None
+    elif ocr_has_enabled:
         # 门⑥ 第三轮 Important#3：必须传**总开关生效后**的类型表，且管线被租户整体
         # 关掉时根本不调用本链——否则「用户关掉的 OCR+HaS」会被文档级链复活。
         doc_boxes, doc_memo = await text_layer_doc_boxes_for_page(
@@ -690,6 +723,9 @@ async def detect_vision(
         ocr_has_types=pipeline_ocr_types,
         visual_feature_types=effective_visual_feature_types,
         include_result_image=include_result_image,
+        # Issue#273：page 模式透传本页路由决策（Task 9 在 vision_service 内消费，
+        # 按 decision.action 决定文本层执行面）；file 模式恒 None（签名旧形态）。
+        page_routing=page_routing,
     )
     if doc_boxes is not None:
         bounding_boxes = VisionService()._deduplicate_boxes([*doc_boxes, *bounding_boxes])
@@ -726,6 +762,23 @@ async def detect_vision(
                 *existing_warnings,
                 *warnings,
             ]
+    if page_routing is not None:
+        # Issue#273：消费仲裁结果（Task 9 产出 last_page_routing_outcome；未产出时
+        # 防御 None ⇒ 维持 prelim 文本来源、不动状态），合成 pipeline_status 块并
+        # 改写账本终值。finalize 只做账本/状态回写，识别主链已在上面完成。
+        from app.services.page_routing import router as page_router
+
+        outcome = getattr(vision_service, "last_page_routing_outcome", None)
+        routing_status = await page_router.finalize(file_id, page, page_routing, outcome)
+        # decide 阶段计时：decide 内计时优先（Task 9 起决策可自带 stage_ms），
+        # orchestrator 侧兜底补 judge 键（当前 decide 不计时 ⇒ 统一在此补齐）。
+        _decision_stage = routing_status.setdefault("decision", {}).get("stage_ms")
+        if not isinstance(_decision_stage, dict):
+            _decision_stage = {}
+            routing_status["decision"]["stage_ms"] = _decision_stage
+        if not _decision_stage.get("judge"):
+            _decision_stage["judge"] = _route_ms
+        pipeline_status["page_routing"] = routing_status
     duration_ms["request_total_ms"] = _elapsed_ms(started)
     cache_status = {
         "vision_result": "force_refresh" if force else "miss",

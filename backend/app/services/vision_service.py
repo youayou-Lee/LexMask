@@ -316,7 +316,15 @@ class VisionService:
         ocr_has_types: list = None,
         visual_feature_types: list = None,
         include_result_image: bool = True,
+        page_routing=None,
     ) -> tuple[list[BoundingBox], str | None]:
+        """Issue#273：``page_routing`` 为页级路由决策（``PageDecision``）或 None。
+
+        Task 8 只加形参**原样忽略**——file 模式恒 None、page 模式暂按既有 OCR
+        主链执行，双模执行行为零改变；Task 9 在此消费决策（按 ``decision.action``
+        决定文本层执行面），并把仲裁结果挂到 ``self.last_page_routing_outcome``
+        供编排层 ``finalize`` 收割。
+        """
         total_start = time.perf_counter()
         duration_ms: dict[str, int | dict[str, int]] = {"ocr_has": 0, "visual_features": 0}
         self.last_visual_feature_stage_duration_ms = {}
