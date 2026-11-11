@@ -659,7 +659,10 @@ async def run_document_ner(
                             has_client.ner, text, use_labels
                         ), False
             except Exception as exc:  # noqa: BLE001 - 单块失败不得拖垮整卷
-                logger.warning("docline NER chunk failed: %s", exc)
+                # Issue#277：补全完整 traceback——2026-11-12 生产实录（file=f5ea1139）
+                # 只有一行消息 `'int' object is not iterable`、无栈可查，定位烧掉整晚；
+                # 任何逃逸异常都必须自带行号。语义不变：仍按块失败记账。
+                logger.warning("docline NER chunk failed: %s", exc, exc_info=True)
                 async with lock:
                     stats["http_errors"] += 1
                 return None

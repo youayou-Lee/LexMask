@@ -202,6 +202,16 @@ async def lifespan(app: FastAPI):
     from app.services.file_management_service import run_startup_migrations
     run_startup_migrations()
 
+    # 0b-2. Issue#282：供料任务索引——建库并把上次运行中断的任务显式置 failed
+    ensure_db_healthy(settings.AGENT_MD_TASK_DB_PATH)
+    try:
+        from app.services.agent_md_task_store import get_agent_md_task_store
+        _swept = get_agent_md_task_store().mark_interrupted()
+        if _swept:
+            logger.info("agent_md: marked %d interrupted task(s) as failed", _swept)
+    except Exception:
+        logger.exception("agent_md task sweep failed")
+
     # 0c. Seed the entity-type store on disk (moved out of import time)
     from app.services.entity_type_service import persist_entity_types_at_startup
     persist_entity_types_at_startup()

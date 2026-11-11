@@ -18,6 +18,11 @@ export type HistoryGroup =
   | { kind: 'batch'; batch_group_id: string; batch_group_count: number; rows: FileListItem[] }
   | { kind: 'date_group'; label: string; rows: FileListItem[] };
 
+function singleSessionLabel(row: FileListItem): string {
+  const key = row.upload_source === 'agent_md' ? 'history.agentSession' : 'history.singleSession';
+  return t(key).replace('{id}', row.file_id.slice(0, 8));
+}
+
 function getHistoryBatchGroupId(row: FileListItem): string | null {
   if (row.upload_source !== 'batch' && !row.batch_group_id) return null;
   return row.batch_group_id ?? row.job_id ?? row.file_id;
@@ -27,7 +32,7 @@ export function buildHistoryGroups(rows: FileListItem[], sourceTab: SourceTab): 
   if (sourceTab === 'playground') {
     return rows.map((r) => ({
       kind: 'date_group' as const,
-      label: t('history.singleSession').replace('{id}', r.file_id.slice(0, 8)),
+      label: singleSessionLabel(r),
       rows: [r],
     }));
   }
@@ -39,7 +44,7 @@ export function buildHistoryGroups(rows: FileListItem[], sourceTab: SourceTab): 
     if (!bg) {
       out.push({
         kind: 'date_group',
-        label: t('history.singleSession').replace('{id}', r.file_id.slice(0, 8)),
+        label: singleSessionLabel(r),
         rows: [r],
       });
       i++;
