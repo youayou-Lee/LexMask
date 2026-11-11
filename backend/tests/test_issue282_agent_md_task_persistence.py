@@ -253,6 +253,13 @@ def test_confirm_aborts_when_pending_id_persist_fails(tmp_path, sample_pdf, monk
     with pytest.raises(RuntimeError, match="disk full"):
         svc.confirm_nowait(task.task_id, [])
     assert not list(tmp_path.glob("a_脱敏MD_*.md"))
+    assert not list(tmp_path.glob("a_映射表_*.json"))
+    assert not list(tmp_path.glob("a_保留清单_*.json"))
+    from app.services import file_management_service as fms
+    assert not [
+        rec for rec in fms.file_store.values()
+        if isinstance(rec, dict) and rec.get("agent_md_task_id") == task.task_id
+    ]
     assert store.load(task.task_id)["state"] == "mapping_ready"
 
 
