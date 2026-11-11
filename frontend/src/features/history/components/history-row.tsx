@@ -239,6 +239,11 @@ export const HistoryDataRow = memo(function HistoryDataRow({
   const deliveryState = getHistoryDeliveryState(row, t);
   const reviewAction = buildHistoryReviewAction(row, navLabels);
   const playgroundResume = buildPlaygroundResumeAction(row);
+  const agentMdOpenLink =
+    row.upload_source === 'agent_md' && row.agent_md_task_id
+      ? `/agent-md?taskId=${encodeURIComponent(row.agent_md_task_id)}`
+      : null;
+  const canCompare = row.has_output && row.upload_source !== 'agent_md';
   const actionIconBtnBase = cn(HISTORY_ACTION_ICON_BTN_BASE, density.rowHeight < 36 && 'size-6');
   const actionPlaceholder = (
     <span
@@ -289,7 +294,9 @@ export const HistoryDataRow = memo(function HistoryDataRow({
                 variant="secondary"
                 className="text-2xs shrink-0 rounded-full px-2 py-0.5"
               >
-                {t('history.tab.playground')}
+                {row.upload_source === 'agent_md'
+                  ? t('history.tab.agent_md')
+                  : t('history.tab.playground')}
               </Badge>
             )}
             <p className="min-w-0 truncate text-sm font-medium" title={row.original_filename}>
@@ -339,7 +346,20 @@ export const HistoryDataRow = memo(function HistoryDataRow({
         </div>
 
         <div className="jobs-action-cell">
-          {reviewAction.kind === 'link' ? (
+          {agentMdOpenLink ? (
+            <Button
+              variant="outline"
+              size="icon"
+              className={cn(actionIconBtnBase, 'bg-background hover:bg-muted')}
+              title={t('history.openAgentMdResult')}
+              aria-label={t('history.openAgentMdResult')}
+              asChild
+            >
+              <Link to={agentMdOpenLink} data-testid={`open-agent-md-${row.file_id}`}>
+                <ArrowRight data-icon="inline-end" />
+              </Link>
+            </Button>
+          ) : reviewAction.kind === 'link' ? (
             <Button
               variant="outline"
               size="icon"
@@ -370,7 +390,7 @@ export const HistoryDataRow = memo(function HistoryDataRow({
           )}
         </div>
         <div className="jobs-action-cell">
-          {row.has_output && (
+          {canCompare && (
             <Button
               variant="outline"
               size="icon"
@@ -383,7 +403,7 @@ export const HistoryDataRow = memo(function HistoryDataRow({
               <ArrowLeftRight data-icon="inline-start" />
             </Button>
           )}
-          {!row.has_output ? actionPlaceholder : null}
+          {!canCompare ? actionPlaceholder : null}
         </div>
         <div className="jobs-action-cell">
           <Button

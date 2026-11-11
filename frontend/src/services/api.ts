@@ -213,7 +213,7 @@ export const fileApi = {
   list: async (
     page = 1,
     pageSize = 10,
-    opts?: { source?: 'playground' | 'batch'; embed_job?: boolean; job_id?: string },
+    opts?: { source?: 'playground' | 'batch' | 'agent_md'; embed_job?: boolean; job_id?: string },
   ): Promise<FileListResponse> =>
     api.get('/files', {
       params: {

@@ -882,6 +882,8 @@ const zhBase: Record<string, string> = {
   'batchWizard.waitConfig': '请等待配置清单加载完成。',
 
   'history.singleSession': '单次 · {id}',
+  'history.agentSession': '供料会话 · {id}',
+  'history.openAgentMdResult': '打开结果',
   'history.selectFile': '选择 {name}',
   'history.selectAllGroup': '全选本组',
   'history.unredactedStatus': '未匿名化',
@@ -1122,6 +1124,7 @@ const zhOverrides: Record<string, string> = {
   'history.tab.all': '全部',
   'history.tab.playground': '单文件',
   'history.tab.batch': '批量任务',
+  'history.tab.agent_md': '供料',
   'history.downloadOriginalZip': '下载原始 ZIP',
   'history.downloadOriginalZipShort': '原始 ZIP',
   'history.downloadRedactedZip': '下载匿名化 ZIP',
@@ -2725,6 +2728,18 @@ Object.assign(zhOverrides, {
   'tasks.tab.active': '进行中',
   'tasks.tab.review': '待复核',
   'tasks.tab.done': '已完成',
+});
+
+// Issue#282 任务中心供料任务面板（单文件供料按状态并入任务中心）
+Object.assign(zhOverrides, {
+  'tasks.agentMd.title': '供料任务',
+  'tasks.agentMd.empty': '暂无进行中的供料任务',
+  'tasks.agentMd.pages': '{done}/{total} 页',
+  'tasks.agentMd.state.active': '进行中',
+  'tasks.agentMd.state.review': '待复核',
+  'tasks.agentMd.state.failed': '已中断',
+  'tasks.agentMd.loadFailed': '供料任务加载失败',
+  'agentMd.listFailed': '供料任务列表加载失败',
 });
 
 // Issue#262 二期 Task 10b：识别范围三区弹窗（语义/文字有无/视觉特征 + 方案保存复用）

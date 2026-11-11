@@ -456,6 +456,7 @@ const enBase: Record<string, string> = {
   'history.compareFailed': 'Failed to load comparison',
   'history.tab.all': 'All',
   'history.tab.batch': 'Batch',
+  'history.tab.agent_md': 'Agent Feed',
   'history.noDownloadable': 'No downloadable files',
   'history.hasUnredacted': 'Some selected files are not yet redacted',
   'history.zipStarted': 'ZIP download started',
@@ -954,6 +955,8 @@ const enBase: Record<string, string> = {
   'batchWizard.waitConfig': 'Please wait for recognition lists to load.',
 
   'history.singleSession': 'Single · {id}',
+  'history.agentSession': 'Feed · {id}',
+  'history.openAgentMdResult': 'Open result',
   'history.selectFile': 'Select {name}',
   'history.selectAllGroup': 'Select all in group',
   'history.unredactedStatus': 'Unredacted',
@@ -2777,6 +2780,18 @@ Object.assign(enOverrides, {
   'tasks.tab.active': 'In progress',
   'tasks.tab.review': 'Awaiting review',
   'tasks.tab.done': 'Completed',
+});
+
+// Issue#282 tasks hub feed-task panel
+Object.assign(enOverrides, {
+  'tasks.agentMd.title': 'Feed tasks',
+  'tasks.agentMd.empty': 'No feed tasks in progress',
+  'tasks.agentMd.pages': '{done}/{total} pages',
+  'tasks.agentMd.state.active': 'In progress',
+  'tasks.agentMd.state.review': 'Awaiting review',
+  'tasks.agentMd.state.failed': 'Interrupted',
+  'tasks.agentMd.loadFailed': 'Failed to load feed tasks',
+  'agentMd.listFailed': 'Failed to load feed tasks',
 });
 
 // Issue#262 wave 2 Task 10b: recognition scope dialog (NER / character-presence / visual + schemes)

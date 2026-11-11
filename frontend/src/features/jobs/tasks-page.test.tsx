@@ -66,6 +66,31 @@ const { mockedJobs } = vi.hoisted(() => ({
   },
 }));
 
+const { mockedAgentTasks } = vi.hoisted(() => ({
+  mockedAgentTasks: {
+    items: [] as Array<{
+      task_id: string;
+      filename: string;
+      state: string;
+      stage: string;
+      message: string;
+      pages_done: number;
+      pages_total: number;
+      output_file_id?: string | null;
+      created_at: string;
+      updated_at: string;
+    }>,
+    counts: { active: 0, awaiting_review: 0 },
+    loading: false,
+    err: null as string | null,
+    refresh: vi.fn(),
+  },
+}));
+
+vi.mock('./hooks/use-agent-md-tasks', () => ({
+  useAgentMdTasks: () => mockedAgentTasks,
+}));
+
 vi.mock('./hooks/use-jobs', async (importOriginal) => {
   // 只换 useJobs；PAGE_SIZE_OPTIONS / canDeleteJob 等运行时导出保留原实现
   // （jobs-pagination / jobs-table 仍从本模块消费）。
@@ -107,6 +132,9 @@ function activateTab(testId: string) {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  mockedAgentTasks.items = [];
+  mockedAgentTasks.counts = { active: 0, awaiting_review: 0 };
+  mockedAgentTasks.err = null;
 });
 
 describe('Issue#262：任务中心合并页', () => {
@@ -184,5 +212,38 @@ describe('Issue#262：任务中心合并页', () => {
     expect(screen.getByTestId('location-probe').getAttribute('data-search')).toBe(
       '?source=batch&jobId=j-1&view=done',
     );
+  });
+});
+
+describe('Issue#282：供料任务并入任务中心', () => {
+  it('进行中/待审阅供料任务出现在面板，计数并入 active/review 徽标', () => {
+    mockedAgentTasks.counts = { active: 2, awaiting_review: 1 };
+    mockedAgentTasks.items = [
+      {
+        task_id: 't-1',
+        filename: '借条.pdf',
+        state: 'mapping_ready',
+        stage: 'ner',
+        message: '',
+        pages_done: 2,
+        pages_total: 2,
+        output_file_id: null,
+        created_at: '2026-11-12T04:00:00Z',
+        updated_at: '2026-11-12T04:00:00Z',
+      },
+    ];
+
+    renderTasks('/jobs');
+    expect(screen.getByTestId('agent-md-task-panel')).toBeTruthy();
+    const row = screen.getByTestId('agent-md-task-t-1');
+    expect(row.getAttribute('href')).toBe('/agent-md?taskId=t-1');
+    // 工单 7 + 供料 2；工单 3 + 供料 1
+    expect(screen.getByTestId('tasks-tab-active').textContent).toContain('9');
+    expect(screen.getByTestId('tasks-tab-review').textContent).toContain('4');
+  });
+
+  it('无进行中供料任务时不渲染面板', () => {
+    renderTasks('/jobs');
+    expect(screen.queryByTestId('agent-md-task-panel')).toBeNull();
   });
 });

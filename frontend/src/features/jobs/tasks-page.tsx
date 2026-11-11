@@ -23,6 +23,8 @@ import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { InteractionLockOverlay } from '@/components/InteractionLockOverlay';
 import { HistoryView } from '@/features/history';
 import { useJobs, type JobsStatusFilter } from './hooks/use-jobs';
+import { useAgentMdTasks } from './hooks/use-agent-md-tasks';
+import { AgentMdTaskPanel } from './components/agent-md-task-panel';
 import { JobsFilters } from './components/jobs-filters';
 import { JobsTable } from './components/jobs-table';
 import { JobsPagination } from './components/jobs-pagination';
@@ -40,9 +42,16 @@ function readTasksView(raw: string | null): TasksView {
 }
 
 type JobsState = ReturnType<typeof useJobs>;
+type AgentMdTasksState = ReturnType<typeof useAgentMdTasks>;
 
 /** 工单视图：features/jobs/index.tsx:29-74 的组装整体搬入，改接页面级 useJobs 结果。 */
-function JobsLedgerView({ jobs }: { jobs: JobsState }) {
+function JobsLedgerView({
+  jobs,
+  agentTasks,
+}: {
+  jobs: JobsState;
+  agentTasks: AgentMdTasksState;
+}) {
   const t = useT();
   const s = jobs;
   const lockLabel = s.deletingJobId
@@ -71,6 +80,14 @@ function JobsLedgerView({ jobs }: { jobs: JobsState }) {
           <AlertDescription>{s.err}</AlertDescription>
         </Alert>
       )}
+
+      {/* Issue#282：供料任务与工单并列，同样按状态进任务中心。 */}
+      <AgentMdTaskPanel
+        items={agentTasks.items}
+        loading={agentTasks.loading}
+        err={agentTasks.err}
+        onRetry={agentTasks.refresh}
+      />
 
       <JobsTable
         rows={s.rows}
@@ -134,6 +151,7 @@ export function TasksPage() {
 
   // 工单 hook 在页面级实例化（done 视图也不停轮询属于合并页既有预期，见任务计划）。
   const jobs = useJobs();
+  const agentTasks = useAgentMdTasks();
 
   // 仅随 view 变化把外层视图预置进内层 tab 一次（done 不预置；用户仍可改内层 tab）。
   React.useEffect(() => {
@@ -172,7 +190,9 @@ export function TasksPage() {
               data-testid="tasks-tab-active"
             >
               {t('tasks.tab.active')}
-              <span className={tabCountClass}>{jobs.pageMetrics.activeJobs}</span>
+              <span className={tabCountClass}>
+                {jobs.pageMetrics.activeJobs + agentTasks.counts.active}
+              </span>
             </TabsTrigger>
             <TabsTrigger
               value="review"
@@ -180,7 +200,9 @@ export function TasksPage() {
               data-testid="tasks-tab-review"
             >
               {t('tasks.tab.review')}
-              <span className={tabCountClass}>{jobs.pageMetrics.awaitingReviewItems}</span>
+              <span className={tabCountClass}>
+                {jobs.pageMetrics.awaitingReviewItems + agentTasks.counts.awaiting_review}
+              </span>
             </TabsTrigger>
             <TabsTrigger value="done" className="whitespace-nowrap" data-testid="tasks-tab-done">
               {t('tasks.tab.done')}
@@ -189,7 +211,11 @@ export function TasksPage() {
         </Tabs>
 
         {/* 条件渲染（非 CSS 隐藏）：active/review 不发 /files，done 不重复抬列表请求。 */}
-        {view === 'done' ? <HistoryView /> : <JobsLedgerView jobs={jobs} />}
+        {view === 'done' ? (
+          <HistoryView />
+        ) : (
+          <JobsLedgerView jobs={jobs} agentTasks={agentTasks} />
+        )}
       </div>
     </div>
   );
