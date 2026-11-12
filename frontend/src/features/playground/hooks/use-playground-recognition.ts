@@ -651,6 +651,10 @@ export function usePlaygroundRecognition() {
   return {
     entityTypes,
     textConfigState,
+    // Issue#267：弹窗 unavailable 区重试按钮的目标——重取两目录；调用方必须传
+    // preserveSelection=true（已就绪维度过滤保留，未就绪维度走默认集），传 false 会
+    // 把已就绪维度的用户选择重置为默认集。与 window focus 自动重取同口径。
+    loadRecognitionConfig,
     selectedTypes,
     selectedTypesRef,
     setSelectedTypes,
