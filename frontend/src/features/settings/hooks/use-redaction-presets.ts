@@ -31,6 +31,7 @@ import {
 } from '@/services/recognition-config';
 import { localizePipelineConfig, localizePresetName } from '../lib/redaction-display';
 import type { EntityTypeConfig, PipelineConfig } from './use-entity-types';
+import { RECOGNITION_FETCH_TIMEOUT_MS } from './use-entity-types';
 
 function sortPresets(presets: RecognitionPreset[]): RecognitionPreset[] {
   return [...presets].sort((left, right) => {
@@ -105,7 +106,7 @@ export function useRedactionPresets() {
     try {
       setLoading(true);
       setLoadError(null);
-      setEntityTypes((await fetchRecognitionEntityTypes(false, 3_500)) as EntityTypeConfig[]);
+      setEntityTypes((await fetchRecognitionEntityTypes(false, RECOGNITION_FETCH_TIMEOUT_MS)) as EntityTypeConfig[]);
     } catch {
       setEntityTypes([]);
       setLoadError(t('settings.loadFailed'));
@@ -118,7 +119,7 @@ export function useRedactionPresets() {
     try {
       setLoadError(null);
       setPipelines(
-        ((await fetchRecognitionPipelines(3_500)) as PipelineConfig[]).map((pipeline) =>
+        ((await fetchRecognitionPipelines(RECOGNITION_FETCH_TIMEOUT_MS)) as PipelineConfig[]).map((pipeline) =>
           localizePipelineConfig(pipeline, t),
         ),
       );

@@ -111,6 +111,12 @@ export function buildPipelineTypeId(name: string, mode: PipelineMode) {
   return `custom_${mode}_${suffix}`;
 }
 
+// Issue#267：目录接口经远程隧道单程可达数百毫秒，1.2s 会间歇性 abort——
+// 与 use-playground-recognition.ts（25s+同款注释）与批量向导（use-batch-config 25s）
+// 同接口同裁决：快在缓存，不靠掐超时。（taxonomy 请求走 authFetch 无超时，为已知
+// 边界——authFetch 对连接拒绝快速失败，挂死型是窄场景，方案 v2 §2.4/§5 scope out。）
+export const RECOGNITION_FETCH_TIMEOUT_MS = 25_000;
+
 export function useEntityTypes() {
   const [entityTypes, setEntityTypes] = useState<EntityTypeConfig[]>([]);
   const [textTaxonomy, setTextTaxonomy] = useState<TextTaxonomyDomain[]>([]);
@@ -128,7 +134,7 @@ export function useEntityTypes() {
       if (!initialLoadDone.current) setLoading(true);
       setLoadError(null);
       const [types, taxonomyRes] = await Promise.all([
-        fetchRecognitionEntityTypes(false, 1_200),
+        fetchRecognitionEntityTypes(false, RECOGNITION_FETCH_TIMEOUT_MS),
         authFetch('/api/v1/custom-types/taxonomy').then((res) => {
           if (!res.ok) throw new Error(`taxonomy ${res.status}`);
           return res.json() as Promise<{ domains: TextTaxonomyDomain[] }>;
@@ -151,7 +157,7 @@ export function useEntityTypes() {
     try {
       setPipelinesLoading(true);
       setLoadError(null);
-      const fetched = (await fetchRecognitionPipelines(1_200)) as PipelineConfig[];
+      const fetched = (await fetchRecognitionPipelines(RECOGNITION_FETCH_TIMEOUT_MS)) as PipelineConfig[];
       const merged = Array.from(
         fetched.reduce((acc, pipeline) => {
           const existing = acc.get(pipeline.mode);
