@@ -2263,6 +2263,16 @@ ELOG
 - **为什么**：①TasksPage 页面级 `useJobs` 以 `tab='all'` 初始 + 预置 effect `changeTab('active')` 自纠——首挂固定两次 GET /jobs，第 1 发响应因请求序号递增被整包丢弃（纯浪费，`?view=review` 同）；②`?view=done` 下工单 hook 无条件实例化且 tab/rows 恒停 `'all'` 页 1，页 1 含任一运行态工单即每 900ms 静默轮询 /jobs 不停——用户停留在结果视图期间持续白烧请求。
 - **改了什么**：`useJobs` 增加 `options` 参数面（全仓唯一生产调用点 tasks-page.tsx）——`initialTab` 由 URL `?view=` 注入（active→'active'、review→'awaiting_review'、done→'all'，挂载即正确 tab，预置 effect 挂载时变 no-op、仅负责挂载后页签切换；顺带消除 `?view=review` 首帧闪 `'all'` 行、初始缓存读从死 `'all'` 改按实际初始 tab）；`pollingEnabled`（缺省 true 向后兼容）轮询 gate 条件化——done 视图传 false 只停 900ms 轮询、**不砍首挂 GET**（done 页签徽标仍消费首挂 pageMetrics；已记录行为变化：done 视图下 jobs 徽标停刷、切回 ≤900ms 恢复）。e2e/smoke_routes.py 跟随 /settings/redaction 两行先例补 `/settings?tab=words` + `/settings/word-pools` 覆盖。
 - **测试**：新增 `tasks-page.network.test.tsx` 6 例（真 hook + listJobs 计数：三种 view 首挂恰 1 次带 status 入参断言、done 停轮询 + 徽标供数回归钉、active 对照轮询仍在防过度收紧、bogus 归一钉杀 M6）；`tasks-page.test.tsx` mock 参数化（initialTab/pollingEnabled 入参钉、挂载 changeTab no-op 断言）。红性先证：实现前 5 红 + 1 绿（缺省=2、review=2、done 轮询 1→4、bogus=2；徽标钉基线即绿）。变异 M1-M6：M1/M2a/M2b/M3/M4/M6 全 KILLED（M5b 真机 AC6-only 诚实标注）；done 轮询用例 mock rows 必含 running 态 job（空页下 hasActiveJobs=false 首条件短路、gate 变异杀不死——独立评审探针 T4 实证）。全量 523 passed / 70 文件零回归；tsc 双门 + build 绿；lint 零新增（4 errors/11 warnings 均基线既有、未触碰文件）。
+### 修正（Issue#289）批量行失败页点击拆分「看/重试」：首点只展开详情，重试收敛到面板内显式按钮
+
+- **为什么**：PR#288 门⑥ I-2 发现点红色（失败）页格会「展开详情 + 触发该页重试」一次点击两件事——只想看原因的用户会误发重试（终态失败页撞 409 `item_busy` 弹错误 toast，或非预期重排队），「查看原因」与「发起重试」两个意图被合并。
+- **改了什么**（`frontend/src/features/batch/components/batch-page-matrix.tsx`，纯前端，后端零改动）：
+  - 点击任何格子（含失败页）只展开/收起「这页发生了什么」详情面板；失败页永不进选择集（#199 红线 activate 早退 + toggle 守卫双层原样）。
+  - 重试入口收敛到失败页面板内的显式按钮 `page-detail-retry`（仅批量接线渲染），四态=可重试（awaiting_review）/重试中/识别中忙（hint「需先完成识别…」）/已终态（hint「任务已进入终态…」，新键 `pageDetail.retryUnavailableTerminal`）；底部失败 hint 与面板同口径，重试在飞残窗落忙态措辞（门⑥ M2），不再同屏矛盾。批量「重试失败页(n)」按钮与 409 文案化路径不变。
+  - 有意行为面变化：失败/未跑页格 cursor 恒为可点（点击展开永远有意义）、`aria-disabled` 跟随矩阵禁用位（pending 格由恒 true 翻转）；禁用态唯一 cursor 语义（双类不并存）。
+  - 单文件结果页与部分导出弹窗挂载点零改动（本就不传 `onRetryPage`，保持只读）。
+- **文档**：`docs/用户指南/排查与日志-使用指南.md` §一 同步改回（PR#288 曾如实描述旧交互）——点红格只展示、重试走面板按钮、删除「只想看原因改走单文件」绕行段。
+- **测试**：前端净增 11 例（issue289 组件契约 9 例 + issue279 挂载点只读 1 例 + issue257-retry 面板按钮接线 1 例）、改写 3 处旧 conflated 断言；红性先证 11 红/30 绿后转绿；全量 528/528；变异 M1-M5 杀手全命中（M5 经实现期实测修正为双摘除注入——activate 早退与 toggle 守卫互为掩蔽，单点变异必 SURVIVED）。AC10 真机四场景挂账部署窗口。
 
 
 ## 2026-11-12
