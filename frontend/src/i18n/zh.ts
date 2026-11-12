@@ -16,7 +16,6 @@ const zhBase: Record<string, string> = {
   'nav.structured.delivery.sub': '任务与导出',
   'nav.jobs': '任务进度',
   'nav.jobs.sub': '进度 · 复核 · 下载',
-  'nav.redactionList': '配置清单设置',
   'nav.redactionList.sub': '识别项组合',
   'nav.systemSettings': '系统设置',
   'nav.systemSettings.sub': '运行与权限',
@@ -330,8 +329,6 @@ const zhBase: Record<string, string> = {
   'page.visionModel.title': '高级设置',
   'page.visionModel.sub': 'OCR 与图像识别服务连接',
 
-  'preset.saveText.success': '已另存为文本配置清单。',
-  'preset.saveVision.success': '已另存为图像配置清单。',
   'preset.save.failed': '保存失败',
 
   'jobDetail.batchTask': '批量任务',
@@ -990,7 +987,6 @@ const zhBase: Record<string, string> = {
   'error.visionDetectionFailed': '图像识别失败',
   'error.reRecognizeFailed': '重新识别失败',
 
-  'nav.wordPools': '替换词池',
   'nav.wordPools.sub': '化名替换模式词池',
 
   'batchWizard.step1.textMethodPseudonym': '化名替换',
@@ -1044,7 +1040,6 @@ const zhOverrides: Record<string, string> = {
   'nav.batch.sub': '默认混合文件',
   'nav.jobs': '任务进度',
   'nav.jobs.sub': '进度 · 复核 · 下载',
-  'nav.redactionList': '配置清单设置',
   'nav.redactionList.sub': '识别项组合',
   'nav.textModel': '文本识别服务',
   'nav.visionModel': '图像识别服务',
@@ -1770,7 +1765,6 @@ Object.assign(zhOverrides, {
   'nav.batch.sub': '混合文件队列',
   'nav.jobs': '任务中心',
   'nav.jobs.sub': '进度 · 复核 · 下载',
-  'nav.redactionList': '配置清单设置',
   'nav.redactionList.sub': '识别项组合',
   // Issue#262：法律默认档——识别项/配置清单/词库收进「高级设置」单入口。
   'nav.advanced': '高级设置',

@@ -2,12 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
 import {
-  createPreset,
   presetAppliesText,
   presetAppliesVision,
   type RecognitionPreset,
 } from '@/services/presetsApi';
-import { usePresets, useInvalidatePresets } from '@/services/hooks/use-presets';
+import { usePresets } from '@/services/hooks/use-presets';
 import {
   fetchRecognitionEntityTypes,
   fetchRecognitionPipelines,
@@ -33,11 +32,8 @@ import { t, useI18n } from '@/i18n';
 import { STORAGE_KEYS } from '@/constants/storage-keys';
 import { getScopedStorageItem, setScopedStorageItem } from '@/lib/storage';
 import { useAuth } from '@/features/auth/auth-context';
-import { showToast } from '@/components/Toast';
-import { localizeErrorMessage } from '@/utils/localizeError';
 import { localizePresetName } from '@/features/settings/lib/redaction-display';
 import {
-  buildPlaygroundTextGroups,
   type ConfigLoadState,
   flattenVisionTypes,
   normalizeVisionPipelines,
@@ -115,7 +111,6 @@ export function usePlaygroundRecognition() {
   const ownerKey =
     status?.authenticated && status.username ? status.username.toLowerCase() : 'anonymous';
   const presetsQuery = usePresets();
-  const invalidatePresets = useInvalidatePresets();
 
   const cachedConfig = getCachedRecognitionConfig(ownerKey);
   const cachedEntityTypes = cachedConfig ? sortEntityTypes(cachedConfig.entityTypes) : [];
@@ -154,7 +149,6 @@ export function usePlaygroundRecognition() {
   const selectedOcrHasTypesRef = useRef(selectedOcrHasTypes);
   const selectedVisualFeatureTypesRef = useRef(selectedVisualFeatureTypes);
   const [pipelines, setPipelines] = useState<PipelineConfig[]>(cachedPipelines);
-  const [typeTab, setTypeTab] = useState<'text' | 'vision'>('text');
   // 处理方式上层二选一：打码（默认，走 replacementMode 三选一）/ 替换（化名映射确认）
   const [processingMode, setProcessingMode] = useState<'mask' | 'replace'>('mask');
   const [replacementMode, setReplacementModeState] = useState<
@@ -186,9 +180,6 @@ export function usePlaygroundRecognition() {
   const [playgroundPresets, setPlaygroundPresets] = useState<RecognitionPreset[]>([]);
   const [playgroundPresetTextId, setPlaygroundPresetTextId] = useState<string | null>(null);
   const [playgroundPresetVisionId, setPlaygroundPresetVisionId] = useState<string | null>(null);
-  const [presetDialogKind, setPresetDialogKind] = useState<'text' | 'vision' | null>(null);
-  const [presetDialogName, setPresetDialogName] = useState('');
-  const [presetSaving, setPresetSaving] = useState(false);
   const [presetApplySeq, setPresetApplySeq] = useState(0);
 
   useEffect(() => {
@@ -354,86 +345,6 @@ export function usePlaygroundRecognition() {
   useEffect(() => {
     setPlaygroundPresets(presetsQuery.data ?? []);
   }, [presetsQuery.data]);
-
-  const closePresetDialog = useCallback(() => {
-    if (presetSaving) return;
-    setPresetDialogKind(null);
-    setPresetDialogName('');
-  }, [presetSaving]);
-
-  const openTextPresetDialog = useCallback(() => {
-    setPresetDialogKind('text');
-    setPresetDialogName('');
-  }, []);
-
-  const openVisionPresetDialog = useCallback(() => {
-    setPresetDialogKind('vision');
-    setPresetDialogName('');
-  }, []);
-
-  const saveTextPresetFromPlayground = useCallback(async () => {
-    const name = presetDialogName.trim();
-    if (!name) {
-      showToast(t('settings.redaction.nameRequired'), 'error');
-      return;
-    }
-
-    setPresetSaving(true);
-    try {
-      const created = await createPreset({
-        name,
-        kind: 'text',
-        selectedEntityTypeIds: selectedTypes,
-        ocrHasTypes: [],
-        visualFeatureTypes: [],
-        replacementMode: 'structured',
-      });
-      await invalidatePresets();
-      setPlaygroundPresetTextId(created.id);
-      setActivePresetTextId(created.id);
-      closePresetDialog();
-      showToast(t('preset.saveText.success'), 'success');
-    } catch (error) {
-      showToast(localizeErrorMessage(error, 'preset.save.failed'), 'error');
-    } finally {
-      setPresetSaving(false);
-    }
-  }, [closePresetDialog, presetDialogName, selectedTypes, invalidatePresets]);
-
-  const saveVisionPresetFromPlayground = useCallback(async () => {
-    const name = presetDialogName.trim();
-    if (!name) {
-      showToast(t('settings.redaction.nameRequired'), 'error');
-      return;
-    }
-
-    setPresetSaving(true);
-    try {
-      const created = await createPreset({
-        name,
-        kind: 'vision',
-        selectedEntityTypeIds: [],
-        ocrHasTypes: selectedOcrHasTypes,
-        visualFeatureTypes: uniqueIds(selectedVisualFeatureTypes),
-        replacementMode: 'structured',
-      });
-      await invalidatePresets();
-      setPlaygroundPresetVisionId(created.id);
-      setActivePresetVisionId(created.id);
-      closePresetDialog();
-      showToast(t('preset.saveVision.success'), 'success');
-    } catch (error) {
-      showToast(localizeErrorMessage(error, 'preset.save.failed'), 'error');
-    } finally {
-      setPresetSaving(false);
-    }
-  }, [
-    closePresetDialog,
-    presetDialogName,
-    selectedVisualFeatureTypes,
-    selectedOcrHasTypes,
-    invalidatePresets,
-  ]);
 
   const fetchEntityTypes = useCallback(
     async (preserveSelection = false) => {
@@ -602,11 +513,6 @@ export function usePlaygroundRecognition() {
 
   const sortedEntityTypes = useMemo(() => sortEntityTypes(entityTypes), [entityTypes]);
 
-  const playgroundTextGroups = useMemo(
-    () => buildPlaygroundTextGroups(sortedEntityTypes),
-    [sortedEntityTypes],
-  );
-
   const setPlaygroundTextTypeGroupSelection = useCallback(
     (ids: string[], turnOn: boolean) => {
       clearPlaygroundTextPresetTracking();
@@ -666,8 +572,6 @@ export function usePlaygroundRecognition() {
     selectedOcrHasTypesRef,
     selectedVisualFeatureTypesRef,
     pipelines,
-    typeTab,
-    setTypeTab,
     processingMode,
     setProcessingMode: setProcessingModeGuarded,
     replacementMode,
@@ -682,19 +586,9 @@ export function usePlaygroundRecognition() {
     playgroundPresetVisionId,
     selectPlaygroundTextPresetById,
     selectPlaygroundVisionPresetById,
-    saveTextPresetFromPlayground,
-    saveVisionPresetFromPlayground,
-    presetDialogKind,
-    presetDialogName,
-    setPresetDialogName,
-    presetSaving,
-    closePresetDialog,
-    openTextPresetDialog,
-    openVisionPresetDialog,
     clearPlaygroundTextPresetTracking,
     clearPlaygroundVisionPresetTracking,
     sortedEntityTypes,
-    playgroundTextGroups,
     setPlaygroundTextTypeGroupSelection,
     toggleVisionType,
     updateOcrHasTypes,
