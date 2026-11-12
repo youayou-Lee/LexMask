@@ -270,6 +270,51 @@ def test_a1_small_volume_no_exclusive(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _first_terminal_page(store) == 2, store.page_statuses()
 
 
+def test_a1_m3_trigger_face_pages2_k1_no_exclusive(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """触发面 `>2` 子句的杀手测态：pages=2 ∧ k=1（验收 M3 修复轮）。
+
+    现有 pages=2∧k=2 测态下 `len(page_ids) > page_concurrency`（2>2=False）
+    先否决，掩蔽 `>2` 子句——M3 变异（>2→>1）前后行为全同而存活。k=1 时
+    第二子句放行（2>1=True），`>2` 成为唯一否决面：正常代码不独占
+    （2>2=False、绝无 exclusive launch 日志），变异体必然进入独占窗口。
+    独占窗口的显式事件 = 「first-page exclusive launch」日志行（run_page 的
+    store 侧副作用全在 page_sem 之内，k=1 下与非独占同形，不可作观测面）。
+    k=1 是 GPU 压力强制降并发的真实可达场景（_effective_vision_page_concurrency）。
+    """
+    import logging
+
+    _patch_asyncio_timeout(monkeypatch)
+    monkeypatch.setattr(settings, "BATCH_RECOGNITION_PAGE_CONCURRENCY", 1, raising=False)
+    monkeypatch.setattr(settings, "BATCH_RECOGNITION_FIRST_PAGE_PRIORITY", True, raising=False)
+    store = _StagesFakeStore()
+    queue = _queue(store)
+    started: list[int] = []
+
+    async def _detect(file_id: str, page: int, **kwargs: Any) -> dict[str, Any]:
+        started.append(page)
+        await asyncio.sleep(0.02)
+        return {"boxes": []}
+
+    _vision_stubs(monkeypatch, pages=2, detect=_detect)
+
+    async def scenario() -> None:
+        await queue._run_vision(_item(), dict(_VISION_CFG))
+
+    with caplog.at_level(logging.INFO, logger="app.services.task_queue_pipelines"):
+        _run(scenario)
+
+    # 杀手断言：pages=2（≤ 触发面）即使 k=1 也不得进入独占首发窗口。
+    exclusive_lines = [
+        r.getMessage() for r in caplog.records if "first-page exclusive launch" in r.getMessage()
+    ]
+    assert exclusive_lines == [], exclusive_lines
+    # 防假绿：不独占不影响终态集合与页账本完整性（page_statuses 键为字符串页号）。
+    assert sorted(store.page_statuses()) == ["1", "2"], store.page_statuses()
+    assert sorted(started) == [1, 2], started
+
+
 def test_a1_page1_failure_does_not_block_rest(monkeypatch: pytest.MonkeyPatch) -> None:
     """页 1 失败不熔断（#199 页级隔离）：其余页照常完成。"""
     _patch_asyncio_timeout(monkeypatch)
