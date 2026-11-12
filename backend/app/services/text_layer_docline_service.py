@@ -39,6 +39,7 @@ from app.core.safe_regex import (
     safe_finditer,
     scaled_timeout,
 )
+from app.services import page_event_log as page_events
 
 logger = logging.getLogger(__name__)
 
@@ -632,7 +633,9 @@ async def run_document_ner(
     failed_ranges: list[tuple[int, int]] = []
     lock = asyncio.Lock()
 
-    async def ask(text: str, use_labels: list[str]) -> dict[str, list[str]]:
+    async def ask(
+        text: str, use_labels: list[str], *, chunk_no: int, kind: str = "main"
+    ) -> dict[str, list[str]]:
         if not text.strip() or not use_labels:
             return {}
         async with semaphore:
@@ -659,10 +662,26 @@ async def run_document_ner(
                             has_client.ner, text, use_labels
                         ), False
             except Exception as exc:  # noqa: BLE001 - 单块失败不得拖垮整卷
-                # Issue#277：补全完整 traceback——2026-11-12 生产实录（file=f5ea1139）
-                # 只有一行消息 `'int' object is not iterable`、无栈可查，定位烧掉整晚；
+                # Issue#279/#277：块级异常结构化入账（代码帧堆栈 + 脱敏消息），替代
+                # 一行裸 warning。纯旁路：写入失败只计数，失败路径行为不变。
+                # docline 是整卷链路，不传 page（writer 上下文默认解析）。
+                page_events.log_event(
+                    "chunk_failed",
+                    stage="docline",
+                    chunk_index=int(chunk_no),
+                    kind=kind,
+                    error_type=type(exc).__name__,
+                    traceback_frames=page_events.traceback_frames(exc),
+                    message_sanitized=str(exc)[:200],
+                )
+                # Issue#277（PR#283）：stdout 侧同样补全完整 traceback——2026-11-12
+                # 生产实录（file=f5ea1139）只有一行消息、无栈可查，定位烧掉整晚；
                 # 任何逃逸异常都必须自带行号。语义不变：仍按块失败记账。
-                logger.warning("docline NER chunk failed: %s", exc, exc_info=True)
+                # （换基合并：#283 的 exc_info 与 #279 的结构化事件并存。）
+                logger.warning(
+                    "docline NER chunk failed: %s (chunk=%s kind=%s)",
+                    exc, chunk_no, kind, exc_info=True,
+                )
                 async with lock:
                     stats["http_errors"] += 1
                 return None
@@ -675,9 +694,18 @@ async def run_document_ner(
             # 而 `NER_ERRORS`（`has_client` 侧）记的是**上游异常分类**且经
             # `retry_sync` 重试后才计 1 次 ⇒ 同一块失败在两侧数字**天然不等，
             # 不可做差分对账**，只可各自与自己的期望值比对。
+            page_events.log_event(
+                "chunk_failed",
+                stage="docline",
+                chunk_index=int(chunk_no),
+                kind=kind,
+                error_type="NoUsableResult",
+                traceback_frames=[],
+                message_sanitized="docline NER chunk returned no usable result (ok=False)",
+            )
             logger.warning(
                 "docline NER chunk returned no usable result (ok=False); "
-                "counting it as a failed chunk"
+                "counting it as a failed chunk (chunk=%s kind=%s)", chunk_no, kind,
             )
             async with lock:
                 stats["http_errors"] += 1
@@ -690,9 +718,9 @@ async def run_document_ner(
                     break
         return result or {}
 
-    async def one_chunk(chunk: tuple[str, int, int]) -> None:
+    async def one_chunk(chunk_no: int, chunk: tuple[str, int, int]) -> None:
         text = chunk[0]
-        result = await ask(text, labels)
+        result = await ask(text, labels, chunk_no=chunk_no)
         if result is None:
             # 块级硬失败：该块覆盖的字符**不计入 coverage**，且整卷判不合格
             # （门⑥ 第二轮 Critical#2 的「失败必须可见」要求）。
@@ -713,7 +741,7 @@ async def run_document_ner(
         residual = _residual_text(text, hit_values)
         if len(residual) < _MIN_RESIDUAL_CHARS:
             return
-        residual_result = await ask(residual, labels)
+        residual_result = await ask(residual, labels, chunk_no=chunk_no, kind="residual")
         if residual_result is None:
             async with lock:
                 failed_ranges.append((chunk[1], chunk[2]))
@@ -727,7 +755,17 @@ async def run_document_ner(
                     if cleaned:
                         bucket.add(cleaned)
 
-    await asyncio.gather(*(one_chunk(chunk) for chunk in chunks))
+    await asyncio.gather(*(one_chunk(chunk_no, chunk) for chunk_no, chunk in enumerate(chunks)))
+
+    # Issue#279/#277：卷级 NER 收官事件。docline 整卷一次、无页上下文——不传 page，
+    # writer 落 page=null。纯旁路：无上下文/禁用/写失败只计数，主链返回不受影响。
+    page_events.log_event(
+        "ner_done",
+        calls=stats["calls"],
+        supplemented=stats["residual_calls"],
+        ms=int((time.perf_counter() - started) * 1000),
+        entities=sum(1 for values in values_by_type.values() for value in values if value),
+    )
 
     # **regex 保证层**（Issue#115 评审 I-3）：租户配置的 regex 类型在既有 OCR+HaS 链里
     # 由 `_apply_regex_fallback` 兜底；文档级链没有那一步，若不在此补上，配置了正则类型的

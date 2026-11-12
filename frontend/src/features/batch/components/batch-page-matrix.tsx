@@ -7,6 +7,10 @@
 //  - failed  = status failed 或 timeout（timeout 对用户就是失败，原因码区分在提示里）
 //  - pending = 还没有该页的终态记录（未跑到或正在跑）
 // 失败页**不可选**：#199 红线规定失败页不进交付，这里从选择层面就挡住。
+//
+// Issue#279：点页格在既有交互（选择/重试）之外再展开「这页发生了什么」详情面板
+// （路由 / 各阶段耗时 / 机读失败类型 / 尝试次数），并在卷头渲染路由摘要 chip。
+// 数据全部来自既有 page-status 响应扩展字段（A4.3：不新增 JSONL 读取接口）。
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -45,6 +49,23 @@ const STATE_STYLES: Record<PageCellState, string> = {
   pending: 'border-border bg-muted text-muted-foreground',
 };
 
+/** 已知 docline fallback 原因码的 i18n 键空间；未知码直显原文（同 retryError 的处理）。 */
+const FALLBACK_REASON_KEYS: Record<string, string> = {
+  watermark_overlay_hit: 'pageDetail.fallbackReason.watermark_overlay_hit',
+  no_text_layer: 'pageDetail.fallbackReason.no_text_layer',
+  build_budget: 'pageDetail.fallbackReason.build_budget',
+  verdict_unusable: 'pageDetail.fallbackReason.verdict_unusable',
+  repeated_fragment_coverage: 'pageDetail.fallbackReason.repeated_fragment_coverage',
+};
+
+/** 已知 stage_ms 键的人话；未知键（含 `pipeline.key` 前缀形态）直显原文。 */
+const STAGE_LABEL_KEYS: Record<string, string> = {
+  ocr_has: 'pageDetail.stage.ocr_has',
+  ner: 'pageDetail.stage.ner',
+  mineru: 'pageDetail.stage.mineru',
+  vision: 'pageDetail.stage.vision',
+};
+
 export function BatchPageMatrix({
   status,
   selected,
@@ -58,10 +79,13 @@ export function BatchPageMatrix({
   const t = useT();
   const [visibleCount, setVisibleCount] = useState(PAGE_CHUNK);
   const [rangeText, setRangeText] = useState('');
+  // Issue#279：当前展开详情的页（单槽——点另一页即换页展开，再点同页收起）。
+  const [expandedPage, setExpandedPage] = useState<number | null>(null);
   // Shift 连选的锚点：点过的上一页（只在可选页上更新）。
   const anchorRef = useRef<number | null>(null);
   useEffect(() => {
     setVisibleCount(PAGE_CHUNK);
+    setExpandedPage(null);
   }, [status.item_id, status.page_count]);
   const visiblePages = useMemo(
     () => status.pages.slice(0, visibleCount),
@@ -107,7 +131,23 @@ export function BatchPageMatrix({
     [status.pages],
   );
 
+  // Issue#279：fallback 原因码/stage 键翻人话；字典没有的码直显原文（translate 缺键返回键本身）。
+  const humanizeFallback = (code: string) => {
+    const key = FALLBACK_REASON_KEYS[code];
+    if (!key) return code;
+    const text = t(key);
+    return text === key ? code : text;
+  };
+  const humanizeStage = (stage: string) => {
+    const key = STAGE_LABEL_KEYS[stage];
+    if (!key) return stage;
+    const text = t(key);
+    return text === key ? stage : text;
+  };
+
   const activate = (page: number, state: PageCellState, shiftKey = false) => {
+    // 详情展开与选择/重试是并行的两件事：Shift 连选是批量操作，不顺手换展开页。
+    if (!shiftKey) setExpandedPage((prev) => (prev === page ? null : page));
     if (state === 'failed') {
       if (retryable && onRetryPage) onRetryPage(page);
       return;
@@ -142,8 +182,39 @@ export function BatchPageMatrix({
     return t('batchWizard.pages.statePending');
   };
 
+  // Issue#279：卷头路由摘要——docline 接管 / 逐页 + 首个 fallback 码人话；无证据不出 chip。
+  const routeChip = (() => {
+    const summary = status.route_summary;
+    if (!summary) return null;
+    if (summary.verdict === 'docline') {
+      return (
+        <span
+          className="inline-flex items-center rounded-full border border-[var(--success-border)] bg-[var(--success-surface)] px-2 py-0.5 text-xs text-[var(--success-foreground)]"
+          data-testid="page-route-chip"
+        >
+          {t('pageDetail.chipDocline')}
+        </span>
+      );
+    }
+    return (
+      <span
+        className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+        data-testid="page-route-chip"
+      >
+        {t('pageDetail.chipFallback').replace(
+          '{reason}',
+          humanizeFallback(summary.fallback_reason_code || ''),
+        )}
+      </span>
+    );
+  })();
+
+  // Issue#279：展开页的详情投影；页记录缺 detail（旧数据）时字段回落，不空转崩。
+  const expandedCell = expandedPage === null ? null : status.pages.find((cell) => cell.page === expandedPage) ?? null;
+
   return (
     <div className="flex flex-col gap-2" data-testid="page-matrix">
+      {routeChip && <div className="flex items-center">{routeChip}</div>}
       <div className="flex flex-wrap items-center gap-1.5">
         <label className="text-xs text-muted-foreground" htmlFor="page-range-input">
           {t('batchWizard.pages.rangeLabel')}
@@ -284,6 +355,8 @@ export function BatchPageMatrix({
                 data-state={cell.state}
                 data-selected={isSelected ? 'true' : 'false'}
                 data-retryable={cell.state === 'failed' && retryable ? 'true' : 'false'}
+                data-expanded={expandedPage === cell.page ? 'true' : 'false'}
+                aria-expanded={expandedPage === cell.page ? 'true' : 'false'}
                 onClick={(event) => activate(cell.page, cell.state, event.shiftKey)}
               >
                 {cell.page}
@@ -306,6 +379,71 @@ export function BatchPageMatrix({
           </div>
         )}
       </div>
+
+      {expandedCell && (
+        <div
+          className="rounded-lg border border-border/70 bg-muted/40 p-2 text-xs"
+          data-testid="page-detail-panel"
+          data-page={expandedCell.page}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium">
+              {t('pageDetail.title').replace('{page}', String(expandedCell.page))}
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-6 px-1.5 text-xs"
+              onClick={() => setExpandedPage(null)}
+              data-testid="page-detail-close"
+            >
+              {t('pageDetail.close')}
+            </Button>
+          </div>
+          <div className="mt-1 flex flex-col gap-0.5" data-testid="page-detail-body">
+            <span data-testid="page-detail-route">
+              {t('pageDetail.route')}
+              {'：'}
+              {expandedCell.detail?.route_verdict === 'docline'
+                ? t('pageDetail.routeDocline')
+                : t('pageDetail.routePagePipeline')}
+              {expandedCell.detail?.fallback_reason_code
+                ? `（${humanizeFallback(expandedCell.detail.fallback_reason_code)}）`
+                : ''}
+            </span>
+            {(expandedCell.duration_ms != null || expandedCell.detail?.duration_ms != null) && (
+              <span data-testid="page-detail-duration">
+                {t('pageDetail.duration').replace(
+                  '{ms}',
+                  String(expandedCell.duration_ms ?? expandedCell.detail?.duration_ms ?? 0),
+                )}
+              </span>
+            )}
+            {expandedCell.detail?.stage_ms && Object.keys(expandedCell.detail.stage_ms).length > 0 && (
+              <span data-testid="page-detail-stage-ms">
+                {t('pageDetail.stageMs')}
+                {'：'}
+                {Object.entries(expandedCell.detail.stage_ms)
+                  .map(([stage, ms]) => `${humanizeStage(stage)} ${ms}ms`)
+                  .join(' / ')}
+              </span>
+            )}
+            {expandedCell.detail?.error_type && (
+              <span className="text-destructive" data-testid="page-detail-error-type">
+                {t('pageDetail.errorType')}
+                {'：'}
+                {expandedCell.detail.error_type}
+              </span>
+            )}
+            <span data-testid="page-detail-attempts">
+              {(expandedCell.detail?.attempts ?? 1) > 1
+                ? t('pageDetail.attempts').replace('{count}', String(expandedCell.detail?.attempts ?? 1))
+                : t('pageDetail.noRetry')}
+            </span>
+          </div>
+        </div>
+      )}
 
       {counts.failed > 0 && (
         <p className="text-xs text-destructive" data-testid="page-matrix-failed-hint">

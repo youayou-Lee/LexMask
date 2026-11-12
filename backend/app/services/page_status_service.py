@@ -103,6 +103,75 @@ def _failed_page_map(item_row: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def _text_layer_route_of(record: dict[str, Any]) -> tuple[bool, str | None, Any]:
+    """读页记录 ``pipeline_status.text_layer_doc`` → (该页是否被 docline 接管, fallback 原因码, coverage)。
+
+    缺块 / 形状异常一律按「未接管、无码、无覆盖率」处理（``#165`` 之前的旧页记录
+    没有 ``pipeline_status``，不能让投影对旧数据抛错）。
+    """
+    pipeline_status = record.get("pipeline_status")
+    if not isinstance(pipeline_status, dict):
+        return False, None, None
+    text_layer_doc = pipeline_status.get("text_layer_doc")
+    if not isinstance(text_layer_doc, dict):
+        return False, None, None
+    ran = text_layer_doc.get("ran") is True
+    code = text_layer_doc.get("fallback_reason_code")
+    code = str(code) if code not in (None, "") else None
+    return ran, code, text_layer_doc.get("coverage")
+
+
+def _route_summary_of(raw_pages: dict[str, Any], page_count: int) -> dict[str, Any] | None:
+    """卷级路由摘要（Issue#279）：docline 接管优先，其次首个非空 fallback 码，两无 → None。
+
+    与 per-page ``route_verdict`` 同源（同一份页账），但卷级只报「整卷走了哪条路」：
+    任一页被 docline 接管即 ``docline``（fallback 码置 None）；否则整卷逐页时取
+    第一个非空 ``fallback_reason_code`` 作人话解释；页账里毫无路由证据 → None。
+    """
+    docline_hit = False
+    first_fallback: str | None = None
+    for page_no in range(1, page_count + 1):
+        record = raw_pages.get(str(page_no))
+        if not isinstance(record, dict):
+            continue
+        ran, code, _coverage = _text_layer_route_of(record)
+        if ran:
+            docline_hit = True
+        if first_fallback is None and code:
+            first_fallback = code
+    if docline_hit:
+        return {"verdict": "docline", "fallback_reason_code": None}
+    if first_fallback:
+        return {"verdict": "page_pipeline", "fallback_reason_code": first_fallback}
+    return None
+
+
+def _page_detail_of(record: dict[str, Any], retry_counts: dict[str, Any], page_no: int) -> dict[str, Any]:
+    """per-page「这页发生了什么」（Issue#279）：路由 / 分段耗时 / 失败类型 / 尝试次数。
+
+    只读页账既有字段做投影，不改变三态判定（state/reason 逻辑零改动）；
+    ``fallback_reason_code``/``coverage``/``stage_ms`` 缺省时省键（None-safe 透传），
+    ``error_type``/``attempts`` 恒在（成功页 error_type=None、无账 attempts=1）。
+    """
+    ran, fallback_code, coverage = _text_layer_route_of(record)
+    detail: dict[str, Any] = {
+        "route_verdict": "docline" if ran else "page_pipeline",
+        "error_type": str(record["error_type"]) if record.get("error_type") else None,
+        # attempts 口径与事件埋点一致（task_queue_pipelines.retry_count_of）：已重试次数 + 1。
+        "attempts": _safe_int(retry_counts.get(str(page_no)), 0) + 1,
+    }
+    if fallback_code is not None:
+        detail["fallback_reason_code"] = fallback_code
+    if coverage is not None:
+        detail["coverage"] = coverage
+    breakdown = record.get("duration_breakdown_ms")
+    if isinstance(breakdown, dict) and breakdown:
+        detail["stage_ms"] = dict(breakdown)
+    if record.get("duration_ms") is not None:
+        detail["duration_ms"] = _safe_int(record.get("duration_ms"), 0) or None
+    return detail
+
+
 def _page_state(record: dict[str, Any]) -> str:
     status = str(record.get("status") or "").strip().lower()
     if status == "completed":
@@ -130,6 +199,8 @@ def build_page_status(
     recognition = _coerce_dict(_performance_of(item_row).get("recognition"))
     raw_pages = recognition.get("pages") if isinstance(recognition.get("pages"), dict) else {}
     failed_map = _failed_page_map(item_row)
+    retry_counts = recognition.get("page_retry_counts")
+    retry_counts = retry_counts if isinstance(retry_counts, dict) else {}
 
     pages: list[dict[str, Any]] = []
     for page_no in range(1, page_count + 1):
@@ -151,6 +222,9 @@ def build_page_status(
                 "reason": reason,
                 "duration_ms": _safe_int(record.get("duration_ms"), 0) or None,
                 "cache_hit": bool(str(record.get("cache_status") or "").startswith("hit")),
+                # Issue#279：这页发生了什么（路由/分段耗时/失败类型/尝试次数）——
+                # 纯只读扩展，state/reason 判定不动。
+                "detail": _page_detail_of(record, retry_counts, page_no),
             }
         )
 
@@ -173,6 +247,8 @@ def build_page_status(
         "snapshot_at": snapshot_at or datetime.now(UTC).isoformat(),
         "pages": pages,
         "failed_pages": sorted(set(failed_pages)),
+        # Issue#279：卷头路由摘要（docline 接管 / 逐页 + 首个 fallback 码 / 证据全无 → None）。
+        "route_summary": _route_summary_of(raw_pages, page_count),
     }
 
 
