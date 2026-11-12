@@ -256,7 +256,19 @@ export function WordPoolsSettings() {
         <div className="page-stack gap-3 overflow-hidden">
           {loadError && (
             <Alert variant="destructive">
-              <AlertDescription>{loadError}</AlertDescription>
+              {/* Issue#267：页签失败态统一形态（destructive Alert + 重试）；重试走本地 load。 */}
+              <AlertDescription className="flex items-center justify-between gap-3">
+                <span>{loadError}</span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 shrink-0"
+                  data-testid="word-pools-load-error-retry"
+                  onClick={() => void load()}
+                >
+                  {t('common.retry')}
+                </Button>
+              </AlertDescription>
             </Alert>
           )}
 

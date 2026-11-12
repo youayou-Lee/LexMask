@@ -134,6 +134,14 @@ export function useRedactionPresets() {
     void reloadPresets();
   }, [fetchEntityTypes, fetchPipelinesData, reloadPresets]);
 
+  // Issue#267：页签失败态重试入口——三个目录/预设加载并行重发。
+  // 开头 setLoadError(null) 为防御性冗余（fetchEntityTypes/fetchPipelinesData 开头本就
+  // 自清），保留以对抗三调用并发时 reloadPresets 粘滞 catch（current ?? …）的乱序窗口。
+  const reload = useCallback(async () => {
+    setLoadError(null);
+    await Promise.allSettled([fetchEntityTypes(), fetchPipelinesData(), reloadPresets()]);
+  }, [fetchEntityTypes, fetchPipelinesData, reloadPresets]);
+
   // Refresh when entity types are changed in the settings entity-type editor
   useEffect(() => {
     const handler = () => {
@@ -377,6 +385,8 @@ export function useRedactionPresets() {
     // Data
     loading,
     loadError,
+    // Issue#267：页签失败态重试入口（redaction-list Alert 重试按钮消费）
+    reload,
     effectiveEntityTypes,
     effectivePipelines,
     textPresets,

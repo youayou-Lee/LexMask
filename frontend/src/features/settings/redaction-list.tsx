@@ -60,7 +60,20 @@ export function RedactionList() {
         <div className="page-stack gap-3 overflow-hidden">
           {state.loadError && (
             <Alert variant="destructive">
-              <AlertDescription>{state.loadError}</AlertDescription>
+              {/* Issue#267：页签失败态统一形态（destructive Alert + 重试）；重试走
+                  useRedactionPresets.reload（三目录/预设加载并行重发）。 */}
+              <AlertDescription className="flex items-center justify-between gap-3">
+                <span>{state.loadError}</span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 shrink-0"
+                  data-testid="redaction-load-error-retry"
+                  onClick={() => void state.reload()}
+                >
+                  {t('common.retry')}
+                </Button>
+              </AlertDescription>
             </Alert>
           )}
 
