@@ -228,7 +228,9 @@ export function stagesViewFromPerformance(
 ): StagesView | null {
   const rows = stagesFromPerformance(perf);
   if (rows === null || rows.length === 0) return null;
-  const done = rows.filter((r) => r.state !== 'running').map((r) => r.name);
+  // 门⑥ M-4：done 只收 completed——failed/skipped 段不得渲染成「✓ 已完成」
+  //（诚实显示；该态在轮询上几乎不可达——item FAILED 先写、loading 先退——纯防御）。
+  const done = rows.filter((r) => r.state === 'completed').map((r) => r.name);
   const running = rows.filter((r) => r.state === 'running');
   const acceleratorRunning = running.some((r) => r.name === 'accelerator');
   const primary = running.find((r) => r.name !== 'accelerator') ?? null;

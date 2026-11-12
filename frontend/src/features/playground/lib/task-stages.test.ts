@@ -249,6 +249,15 @@ describe('Issue#274 stagesViewFromPerformance — 视图模型', () => {
     expect(view!.etaSec).toBeNull();
   });
 
+  it('门⑥ M-4：非 completed 终态（failed）不入 done——失败段不得渲染为 ✓ 已完成', () => {
+    const view = stagesViewFromPerformance(
+      PERF_STAGES([row('preflight', 'failed'), row('page_loop', 'running')]),
+      { completed: 0, total: 86, previousEtaSec: null },
+    );
+    expect(view!.done).toEqual([]);
+    expect(view!.current).toBe('page_loop');
+  });
+
   it('accelerator running 并行 ⇒ current 仍是 page_loop、accelerator 单独标注', () => {
     const view = stagesViewFromPerformance(
       PERF_STAGES([

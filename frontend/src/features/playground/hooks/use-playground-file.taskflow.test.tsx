@@ -545,6 +545,204 @@ describe('Issue#194 识别页任务流（T9）', () => {
     expect(screen.getByTestId('playground-loading-stage').textContent).toBe('视觉识别');
     expect(screen.getByTestId('playground-loading-elapsed').textContent).toBe('已运行 1 分 5 秒');
   });
+
+  // --- Issue#274 门⑥ I-1：ETA 严格单调记忆必须按「任务/段」复位 ---
+  // 机制钉（宿主接线级）：lastEtaSecRef 是 hook 实例级长命 ref，纯函数判据全部
+  // 显式传 previousEtaSec（这正是首轮漏网机制）——本组两条用例从宿主轮询序列
+  // 层钉「新任务 preflight 复位」与「两段式段切换复位」，缺复位即被上一段尾值
+  // 钳死（显示值停在旧 ETA）。
+
+  const etaPages = (ms: number, label: string, count = 4) =>
+    Object.fromEntries(
+      Array.from({ length: count }, (_, i) => [
+        String(i + 1),
+        {
+          status: 'completed',
+          duration_ms: ms,
+          stage_duration_ms: { [label]: ms },
+          cache_status: { vision_result: 'miss' },
+        },
+      ]),
+    );
+
+  const etaStages = [
+    {
+      name: 'preflight',
+      started_at: CREATED,
+      finished_at: CREATED,
+      state: 'completed',
+      detail: {},
+    },
+    {
+      name: 'page_loop',
+      started_at: CREATED,
+      finished_at: null,
+      state: 'running',
+      detail: { page_count: 20 },
+    },
+  ];
+
+  it('Issue#274 I-1（a）：重跑 preflight-only 账 ⇒ 单调记忆复位，新任务 ETA 不被上一任务尾值钳死', async () => {
+    renderHarness();
+    await dropTextFile();
+    await waitFor(() => expect(harness.task!.taskForFile('f1')).toBeDefined());
+
+    // 任务 A：page_loop + 4×1000ms 样本 ⇒ ETA = ceil(16×1000/1) = 16s
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'vision', {
+        items: [
+          makeItem({
+            status: 'vision',
+            progress_stage: 'vision',
+            progress_current: 4,
+            progress_total: 20,
+            progress_message: '视觉识别 page 4/20',
+            performance: {
+              recognition: {
+                mode: 'vision',
+                page_count: 20,
+                stages: etaStages,
+                current_segment: { index: 1, total: 1, label: '视觉识别', concurrency: 1 },
+                pages: etaPages(1000, '视觉识别'),
+              },
+            },
+          }),
+        ],
+      }),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('playground-loading-eta').textContent).toBe('约 16 秒'),
+    );
+
+    // 重跑起步：stages 账只剩 preflight（清账+① 重开，page_loop 未起）
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'vision', {
+        items: [
+          makeItem({
+            status: 'vision',
+            progress_stage: 'vision',
+            progress_current: 0,
+            progress_total: 20,
+            progress_message: 'Vision recognition queued for 20 page(s)',
+            performance: {
+              recognition: {
+                mode: 'vision',
+                page_count: 20,
+                stages: [{ ...etaStages[0], state: 'running', finished_at: null }],
+                pages: {},
+              },
+            },
+          }),
+        ],
+      }),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId('playground-loading-eta')).toBeNull(),
+    );
+
+    // 新一卷 page_loop：4×2000ms 样本 ⇒ 重算 32s；若未复位（I-1 缺陷）⇒ min(32,16)=16
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'vision', {
+        items: [
+          makeItem({
+            status: 'vision',
+            progress_stage: 'vision',
+            progress_current: 4,
+            progress_total: 20,
+            progress_message: '视觉识别 page 4/20',
+            performance: {
+              recognition: {
+                mode: 'vision',
+                page_count: 20,
+                stages: etaStages,
+                current_segment: { index: 1, total: 1, label: '视觉识别', concurrency: 1 },
+                pages: etaPages(2000, '视觉识别'),
+              },
+            },
+          }),
+        ],
+      }),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('playground-loading-eta').textContent).toBe('约 32 秒'),
+    );
+  });
+
+  it('Issue#274 I-1（b）：两段式段切换 ⇒ 单调记忆复位，第二段 ETA 重新起算（方案 §2.3）', async () => {
+    renderHarness();
+    await dropTextFile();
+    await waitFor(() => expect(harness.task!.taskForFile('f1')).toBeDefined());
+
+    // 第一段（OCR+HaS）：4×1000ms ⇒ ETA 16s
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'vision', {
+        items: [
+          makeItem({
+            status: 'vision',
+            progress_stage: 'vision',
+            progress_current: 4,
+            progress_total: 20,
+            progress_message: 'OCR+HaS识别 page 4/20',
+            performance: {
+              recognition: {
+                mode: 'vision',
+                page_count: 20,
+                stages: etaStages,
+                current_segment: { index: 1, total: 2, label: 'OCR+HaS识别', concurrency: 1 },
+                pages: etaPages(1000, 'OCR+HaS识别'),
+              },
+            },
+          }),
+        ],
+      }),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('playground-loading-eta').textContent).toBe('约 16 秒'),
+    );
+
+    // 第二段（视觉合并）：页账被整替重写为本段样本 4×2000ms ⇒ 重算 34s；
+    // 未复位则 min(34,16)=16（与「段切换 ETA 重新起算」矛盾）
+    vi.mocked(getJob).mockResolvedValue(
+      makeDetail('processing', 'vision', {
+        items: [
+          makeItem({
+            status: 'vision',
+            progress_stage: 'vision',
+            progress_current: 3,
+            progress_total: 20,
+            progress_message: '视觉特征识别 page 3/20',
+            performance: {
+              recognition: {
+                mode: 'vision',
+                page_count: 20,
+                stages: etaStages,
+                current_segment: { index: 2, total: 2, label: '视觉特征识别', concurrency: 1 },
+                pages: etaPages(2000, '视觉特征识别'),
+              },
+            },
+          }),
+        ],
+      }),
+    );
+    await act(async () => {
+      await harness.task!.refresh();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('playground-loading-eta').textContent).toBe('约 34 秒'),
+    );
+  });
 });
 
 // --- Issue#194 终审 A：扫描件停待确认后经任务中心/历史回场 ⇒ 不得重复提交识别任务 ---

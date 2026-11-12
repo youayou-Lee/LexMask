@@ -26,6 +26,7 @@ import {
   stageStartedAtFromPerformance,
 } from '../lib/task-progress';
 import {
+  currentSegmentRuntime,
   hasRecognitionFinishedAt,
   optimisticPreflightEligible,
   stagesFromPerformance,
@@ -207,8 +208,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
   const [taskTextMode, setTaskTextMode] = useState(false);
   // --- Issue#274：三段式阶段条（stages 账派生；无账时按乐观①门控兜底） ---
   const [taskStages, setTaskStages] = useState<StagesView | null>(null);
-  // ETA 严格单调（v2/F10）：跨拍保存上次显示值，新算值只许下调。
+  // ETA 严格单调（v2/F10）：跨拍保存上次显示值，新算值只许下调；
+  // 单调记忆带 key（jobId:段标签），任务/段切换即复位（门⑥ I-1，见识别分支内注释）。
   const lastEtaSecRef = useRef<number | null>(null);
+  const lastEtaKeyRef = useRef<string | null>(null);
   /** 迁移处理守卫：每个 job 的 awaiting_review/终态处理只执行一次（防重复拉快照/重复报错）。 */
   const handledJobRef = useRef<string | null>(null);
   /** 用户主动取消过的 job：provider 报 failed 时静默（cancelProcessing 已收拾过 UI）。 */
@@ -747,6 +750,16 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       const perfNow = task.performance ?? null;
       const stageRows = stagesFromPerformance(perfNow);
       if (stageRows !== null && stageRows.length > 0) {
+        // Issue#274 门⑥ I-1：ETA 严格单调记忆按「任务/段」失效——
+        // (a) 账里还没有 page_loop（新任务/重跑的 ① preflight 阶段）⇒ 复位：
+        //     否则上一任务尾值成为本任务永久上界（86 页新卷大半程被钳死）；
+        // (b) 当前段标签变化（两段式段切换，方案 §2.3「段切换 ETA 重新起算」）⇒ 复位。
+        const hasPageLoopRow = stageRows.some((row) => row.name === 'page_loop');
+        const etaKey = `${task.jobId}:${currentSegmentRuntime(perfNow).label ?? ''}`;
+        if (!hasPageLoopRow || etaKey !== lastEtaKeyRef.current) {
+          lastEtaSecRef.current = null;
+        }
+        lastEtaKeyRef.current = etaKey;
         const view = stagesViewFromPerformance(perfNow, {
           completed: task.current,
           total: task.total,
