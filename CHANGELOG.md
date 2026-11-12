@@ -3,6 +3,7 @@
 
 ## 2026-11-12
 
+<<<<<<< HEAD
 ### 增强（Issue#273）P0 页级路由：每页自决「文字从哪来」（文本层/OCR/双跑仲裁），`RECOGNITION_ROUTING_MODE=page|file` 开关可一键回滚
 
 - **为什么**：混排 PDF（扫描件误带文本层、文本层缺损、水印层伪装正文）在文件级启发式下整卷同源——一层错全卷错。用户拍板（2026-11-12）：默认策略 `text_layer_verify`（先信文本层但必须对账）、对账粒度=整页 OCR、同卷连续 3 页对账通过后剩余页升 `text_layer`。P0 落点：页级动作决策 + 结果级证据自证/改判 + 决策即落账（账本字段 + 离线重放 A7），不新造识别通道、不动调度（P1/P2 出界）。
@@ -13,6 +14,44 @@
   - 证据 OCR 死线与披露（拍板 b）：`text_layer_verify` 对账跑整页证据 OCR，`ROUTING_VERIFY_OCR_TIMEOUT_SEC`（默认 90s）超时 ⇒ `verify_incomplete=true` + 保留文本层不误判（`RoutingEvidenceTimeout` 专类收窄页失败档）；`verify_incomplete` 页不计入升档计数、不携带整卷升级标记；部分导出说明页逐页披露 `verify_incomplete` 清单。证据 OCR 可关（`ROUTING_VERIFY_OCR_EVIDENCE_ENABLED=false` ⇒ verify 降级直信）。
   - 阈值全进 `config.py` 14 键（judge 不 import settings，经 `routing_thresholds.get_routing_thresholds()` 注入）；`ROUTING_VERSION` 进缓存签名与账本（行为版本可追溯）。
 - **测试**：issue273 家族后端 12 文件 112 例——judge 判定序全规则 + 灰区先于升档/升级钉、arbiter K1/K2 严格大于（恰等号负样本）+ 改判链 `switched_from` + metrics 双侧审计 + 证据有效性三态、state 升档粘性/抽样确定性/种子差异、signals 真卷采集与 fail-closed、registry 目录在场必须可解析（坏 JSON 不得静默蒸发成 skip）与 CI 回落、execution 四动作全路径 + B9 空证据 + 证据死线/关闭降级、wiring 双模分流 + 缓存签名键集钉 + A8 fail-closed、ledger 三收尾路径记账 + file 模式零新字段 + prime 门双案钉、导出披露；A3 性能判据（86 页混排真卷 memo 后单页「采集+judge」中位 0.300ms，门限 <20ms）与 A7 决策重放判据（账本 signals+routing_version 原样回放同决策，合成 + 真卷全页）入 `test_issue273_perf_replay.py`。
+=======
+### 修正（Issue#281）供料产物两处替换缺陷：跨页切开的实体漏替换 + 标签叠字
+
+- **为什么**：本地真卷冒烟发现两处「能读但会误导」的缺陷。①实体原文被页边界（页脚数字 + `<!-- page N of M -->`）切成两半时，产物侧不存在连续形态，字节级 replace 与空白柔性正则都匹配不到；更隐蔽的是同一事实的 OCR 空白变体项（更长的 flex 项）先替换掉唯一连续形态后，被切开的项既「不缺席」（别处有连续形态）也「不残留」（切开形态不是逐字原文），前向覆盖闸与零残留闸双假绿，真实案号随产物出厂。②OCR 原文自带类型短名（「案号（2023）…号」）而占位符是「案号N」，替换后成「案号案号N」叠字，污染下游字段。
+- **改了什么**（`backend/app/services/agent_md_replace.py`，纯逻辑）：
+  - `_apply_page_split`：对每个非 excluded 映射项枚举原文被页注释切开的全部切分点，构造「head 字符序列 + 页边界噪声 + tail 字符序列」正则（字符间 `\s*`，与 flex 同口径），替换时**把页边界噪声原样回插**——页脚数字与页注释必须保留，否则结构对账判页标记序列变化；覆盖闸/残留闸同步纳入该形态（已落地项不再按「原文连续出现」判缺席或残留）。
+  - `_collapse_label_duplication`：replacement 形如「短名+序号」且叠字真实存在时收口为单个标签，映射表 replacement 不变（审阅口径不漂移）；legacy 拍平重建路径同样生效。
+- **测试**：新增 `backend/tests/test_issue281_pagesplit_label.py` 6 例（跨页切开 + 空白变体互吃 + 仅切开形态 + 页脚/页注释保留 + 结构化/legacy 两路叠字收口 + excluded 不动）；后端全量 2947 passed / 18 failed（与 preview 基线同集合，容器信号量权限问题）。
+- **本地真卷验证**：同一 6 页扫描件（同一映射 30 条）用修复后代码重跑——跨页切开的真案号落地为「案号4」（修复前 0 次、原样残留）、「案号案号5」收口为「案号5」、页标记 6/6 且结构对账通过；映射表与保留清单与修复前逐字节相同（只改产物 md）。
+
+### 修正（Issue#281 续）供料产物：Markdown 转义/全角失配整卷拒产 + 短数字项吃掉页标记
+
+- **为什么**：五卷真卷验收（6/6/2/78/86 页）暴露两处「表示失配 / 高频命中」缺陷，均导致整卷拿不到交付。①官方结构化 md 对检测面原文做了 Markdown 转义（`wxid_fixture0000001` → `wxid\_fixture0000001`）并把全角 `：`/`）` 半角化，字面与空白柔性双失配 ⇒ 前向覆盖闸判 `representation_mismatch`、整卷 fail-closed；②扫描卷 NER 把页码片段误判成 `CASE_NUMBER='10'/'11'`，字节级 `replace` 命中 `<!-- page 10 of 86 -->` 的页号 ⇒ 页标记序列 86→84、结构对账失败。
+- **改了什么**（`backend/app/services/` 纯逻辑）：
+  - `agent_md_replace.py` **折叠视图**：`_fold_md` 生成「去 `\`+ASCII 标点转义 + 全角 ASCII 折半角」副本并返回折叠下标→原文下标（前置转义符一并回退），`_fold_flex_pattern` / `_fold_spans` / `_fold_matches` / `_replace_fold` 在折叠副本上匹配、回原文按区间倒序替换；覆盖闸、残留闸、legacy `render_outputs` 兜底同步接入。
+  - `agent_md_ner.py` 默认 excluded 扩为「单字符或 ≤3 位纯数字」原文（映射表可见、律师可改）；渲染层 `degenerate_original` 硬闸同步扩容。
+  - `agent_md_replace.py` **页标记护甲**：替换与闸门期间把页标记换成私用区哨兵（`\ue000`+字母序号+`\ue001`，不含数字），覆盖闸/主循环/叠字收口/残留闸只认正文，返回前逐字节还原；覆盖与残留闸因此不再把页标记里的同形文本当证据。
+- **测试**：`backend/tests/test_issue281_pagesplit_label.py` 追加 5 例（转义态、全角态、转义+空白叠加、裸 ID、真失配仍 fail-closed）与 5 例（短数字排除、渲染层硬闸、护甲往返、页标记内同形原文不被替换、正文邻页标记替换）共 16 例（最终 31 例）；后端全量 2947 passed / 18 failed（与 preview 基线同集合，容器信号量权限问题）。
+- **模型召回兜底**：`agent_md_ner.py` 新增 `regex_pii_entities` / `merge_regex_entities`——身份证号 / 手机号 / 6222 银行卡号 / 微信 ID 四类正则补层（与 vl_md 管线同口径），仅当 NER 有「会真正打码」的实体完整包住命中时才丢弃（真卷 1 字符 `CASE_NUMBER:'4'` 压在身份证号首位的场景已补回归测试）；`SOCIAL_ACCOUNT` 占位短名为「社交账号」。
+- **本地真卷验证**：五卷（6 页文本 / 6 页扫描 / 2 页 / 78 页文本 / 86 页扫描）全部 completed；页标记 6/6、6/6、2/2、78/78、86/86；映射残留均为 0；78 页卷有 2 处微信 ID OCR 变体未被 NER 召回（检测侧召回边界，非替换层缺陷，另案）。
+
+### 修正（Issue#281 续二）跨页切开实体的 OCR 易混字符变体漏替换
+
+- **为什么**：自审构造样例发现，同一实体被页边界切开时，跨页两侧可能各带一处 OCR 混淆（`0`↔`O`、`1`↔`l`/`I`、`5`↔`S`、`8`↔`B`、`2`↔`Z`、`6`↔`G`、`9`↔`g`）；逐字相等的切分正则命中不了这种形态，产物会静默残留真实案号（构造样例逐字确认出厂）。
+- **改了什么**（`backend/app/services/agent_md_replace.py`，纯逻辑）：`_OCR_CONFUSABLES` + `_ocr_char_pattern` 把跨页切分正则的每个字符展开为辅音集合字符类（数字与易混字母互认），其余字符仍 `re.escape`；残留闸的「已落地切分形态」判定改在 `_unmask_page_markers` 还原视图上跑——页标记护甲把页注释换成哨兵，原判据在 masked md 上必然失配、是条死判据。
+- **测试**：`backend/tests/test_issue281_pagesplit_label.py` 追加 2 例（连续形态 + 易混变体并存时变体也被补替换；仅变体切开时不得误判 `representation_mismatch` 拒产），追加 7 例（异形噪声两处切开、嵌套前缀排序、夹正文 fail-closed、叠字收口作用域、识别范围过滤、4 位数字排除、类型 id 提取回归），共 34 例；红性由 monkeypatch 关掉 `_ocr_char_pattern` 复得（报 `representation_mismatch`）。ruff 通过；后端全量 2950 passed / 18 failed（与 preview 基线同集合）。
+- **回归修复**：识别范围过滤接线把 `EntityTypeConfig` 对象直接 `str()`（得到 repr 而非类型 id），正则补层被整体过滤——86 页扫描卷回到 24 个身份证号 + 22 个手机号未打码；新增 `_entity_type_ids()` 按 id/type_id/dict 取键并补两例回归钉；另修「跨页切开处原文自带类型标签」时叠字收口不生效（预算按「标签+原文头两字」计，切开的处数也计入），补一例。
+- **边界**：非易混字符的任意差异（如 `30` vs `38`）仍不覆盖——模糊相似度闸会误伤「相邻不同案号」的真卷，登记为已知边界。
+### 修正（Issue#277）docline 块级 TypeError `'int' object is not iterable`：NER 标量/字典桶解析出口单点治理 + 补查路由 + 块级 catch 带完整栈
+
+- **现象与代价**：86 页真卷（`扫描型PDF误判为文本型-2.pdf`）跑识别，整卷文本层链烧 ≈97s 后 `docline NER chunk failed: 'int' object is not iterable` ⇒ `failed_chunks=1/26` ⇒ 命中「块失败 ⇒ 整卷弃权」分支，97s 结果全丢，每页退化为逐页 OCR+NER 从头重算（首屏 104.8s）。且块级 catch 只打异常消息不打栈——本次定位靠日志时序取证+探针活抓调用栈才闭环。
+- **根因链**（每环有实证）：`LEGAL_CASE_ID`（案号）贡献第二个查询标签「文书编号」⇒ docline 实发 **20 个标签**（表面 19 个识别项）⇒ 预算 20×160+1990//2=4195 > 完成帽 4096 ⇒ 帽驱动切批 **[19, 1]**、单类型批恰为清单末位的「文书编号」（探针活抓 25 次调用栈全部落在帽分批递归，`types=['文书编号']`）⇒ 模型偶发把单值回成**标量桶**（`{"文书编号": 2022}`）⇒ 帽分批合并循环 `for value in values`（位于 `ner_checked` 大 try **之外**）迭代 int ⇒ TypeError 逃逸到 docline 块级 catch。
+- **修了什么**：
+  - **解析出口单点形状治理**：`has_client._sanitize_ner_buckets`——列表桶逐字节保留（合法形状零漂移）；假值标量（0/None/""）≈ 模型答「无」，按 `{}` 口径剥除；真值标量/字典桶 = 该类型结论「没拿到」（#108 口径）：confirmed=False、绝不落缓存键（防 #263 同族「部分并集洗白成完整结论」fail-open），并路由进**既有 missing-type 补查**换温度轨迹二机会（#209 C2「切断桶并入补查」同款先例）；补查不可用（短文本同键重发/禁补查）或仍标量 ⇒ 保持 False 走既有「块失败 ⇒ 整卷弃权」语义（Issue 验收明文要求不变）。补查块从 json_repair 分支提升为函数级，截断缺失与标量缺失共用同一条补查路径。
+  - **可观测**：docline 块级 catch 补 `exc_info=True`——下次任何逃逸异常日志自带完整栈与行号。
+- **测试**：后端 +15 例（`test_issue277_docline_scalar_bucket.py`）——红绿钉两条（修复前 TypeError 逐字消息在 `has_client.py:1418` 复现、切批形状 [19,1] 末批 `['文书编号']` 与生产实录逐字节同形；修复后补查恢复⇒confirmed=True+全类型键落缓存 / 补查仍标量⇒False+缓存键绝不落盘）、形状矩阵 8 形（int/str/dict/假值标量/空列表/列表保真/混合）、垃圾键标量走 #108 I-4 口径且不影响 confirmed（门⑥ I-1：请求类型全对的块不得被垃圾键毒化判失败）、禁补查层、短文本不自连补查（防 #108 的 3×120s 自连接挂起形态）、块级 catch traceback 钉。全量 2955 passed / 48 skipped（collected 3003）/ 0 failed，与 preview 基线 comm -3 恰差新增用例、零既有差异。
+- **真卷实弹**（分支镜像一次性容器，生产同源 20 标签）：86 页卷并发 4 连跑 5 次——0 次 TypeError、0 failed_chunks、0 http_errors（docline 建链 76.3–188.7s/跑），同卷期间截断补查路径正常触发 22 次全健康。修复前后对照：修复前 = 97s docline 白烧 + 全卷逐页 OCR+NER 重算；修复后 = docline 一次建链即终局。
+>>>>>>> origin/preview
 
 ### 增强（Issue#257 一期之三·需求重对齐）单文件任务也能选页导出：页格嵌在文件处理页 + 范围输入 + 去掉失败页勾选
 
@@ -25,6 +64,19 @@
   - 抽取 `usePartialExportSelection`（选择/提交/记录/任务轮询），批量对话框与单文件面板共用一套口径。
 - **测试**：后端 +9 例（自动排除失败页两处、按文件反查五项契约、标题跳页/连续/单页三形态）；前端 +19 例（`page-range` 8 例含全角与反向 Shift、页格范围/Shift/prune 3 例、单文件面板 5 例含「无勾选框直接提交」与「底栏汇总不留占位符」、既有测试改口径）。全量后端 2916 passed / 18 failed（与 preview 基线同集合，容器信号量权限问题）；前端 498 passed。
 - **本地实机验证**（`/single`，acc257 登录）：识别中浮层显示「成功 0 · 失败 0 · 未跑 10」并逐页转绿；复核弹窗范围输入 `3-6` → 选中 3、4、5、6，导出产物 5 页（说明页 + 4 页，说明页逐字列出「原卷第 3、4、5、6 页 / 共 4 页 / 原卷总页数：10」）；注入失败页后页格第 4 页红叉不可选、「已选 9 页（1-10）· 将排除 1 页失败页」、无勾选框可直接导出 9 页。
+
+
+### 增强（Issue#282）任务中心接入供料模式：供料任务持久化可续审 + 按状态可见 + 结果可回看
+
+- **为什么**：单文件供料任务只活在进程内存和 localStorage 里——刷新/重启就丢，任务中心也只列工单，供料任务进行中和待复核时完全不可见；完成后的产物虽在文件库，却因没有来源标被归进「单文件」，且离开结果页就再也回不去，用户只能重新跑一遍。
+- **改了什么**：
+  - **持久化索引**：新增 `agent_md_tasks` SQLite 表（`backend/app/services/agent_md_task_store.py`，路径 `AGENT_MD_TASK_DB_PATH`，默认 `DATA_DIR/agent_md_tasks.sqlite3`）。元数据随状态推进落盘；`mapping_ready→completed` 期间额外保存 payload（segs/entities/mapping/structured_md），`completed` 时单条 UPDATE 清空 payload。启动 sweep 把遗留 `uploaded/parsing/ner_running` 标为 `failed`（message 以 `interrupted:` 开头），坏 payload 置 `payload_corrupt:`。
+  - **管线恢复**：`get_task` 内存未命中回落 DB，`mapping_ready` 可跨进程/容器重启继续确认；`confirm` 加锁串行、`COMPLETED` 重复确认幂等返回既有三件套；出稿采用两阶段提交（先落 output_file_id，再写产物登记），崩溃重试复用同一 id、重启自愈为 completed；产物登记补 `upload_source="agent_md"`、`agent_md_task_id`、`file_type=txt`。
+  - **列表契约**：新增 `GET /api/v1/agent-md/tasks?limit=50`（仅本人、按 updated_at 降序、排除 completed、带 active/awaiting_review counts）。
+  - **来源枚举**：`/files` 来源新增 `agent_md`；历史单文件供料按「有 vl_md_meta + 文件名 .md 且含 `_脱敏MD_`」兼容识别（避免把 VL-MD 产物误收）；客户端上传侧仍只允许 playground/batch，不能伪造 agent_md。
+  - **前端**：任务中心进行中/待复核页签上方新增「供料任务」面板（5s 轮询、页面隐藏 30s），徽标计数并入工单，面板按 active/review 视图过滤（失败与重启中断分别显示「失败/已中断」）；历史页新增「供料」来源页签，行徽标区分供料、有 task_id 时给「打开结果」，供料行隐藏「查看对比」；`/agent-md?taskId=` 支持 completed/mapping_ready/进行中/中断四态深链恢复，completed 先验 md 可读再恢复。
+- **测试**：后端 +20 例（store payload 往返/counts、completed 排除与排序、sweep 只动运行态、DDL 幂等、mapping_ready 跨实例恢复并 confirm、completed 重载幂等、坏 payload fail-closed、并发 confirm 同 output_file_id、pending id 复用与写盘失败中止、崩溃自愈、列表 owner 隔离 + 401、`/files?source=` 四来源、备份清单）；前端 +14 例（四态深链、面板按视图分流与徽标=行数、失败/中断分栏、history 供料页签请求参数与行入口/隐藏对比）。后端全量 2843 passed（21 failed 均为容器环境既有项：无 git/eval 脚手架/watermark 路径）；前端 510 passed，`tsc` 双配置、`vite build`、改动文件 eslint 全绿。
+- **本地实机验证**（隔离 compose 栈 + 真实 MinerU/NER）：3 页 canary 解析→待复核→**容器重建**→mapping sha256 一致→确认出稿三件套可下载；另一任务解析中重启→`failed / interrupted:`；历史 10 条旧供料记录按来源列出、md 可下载且无「打开结果」、合成 VL-MD 行落入单文件不入供料；非法 source 400；任务中心面板显示「待复核/已中断」并入徽标；`?taskId=` 完成态直接回结果页、待复核态直接进映射表。
 
 ## 2026-11-11
 

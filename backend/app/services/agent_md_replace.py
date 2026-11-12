@@ -26,6 +26,291 @@ _HTML_TAG_RES = {tag: re.compile(rf"<{tag}\b", re.IGNORECASE)
 # 管道表行内未转义竖线（\| 是 md 转义字面量，不是分隔符）
 _UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
 
+# ---- Issue#281：跨页切开实体 + 类型标签叠字 -------------------------------
+
+# 结构化产物里的页边界 = 页脚数字 + 页注释。实体原文恰好被它切成两半时
+# （上一页末是前半、下一页首是后半），产物侧不存在连续形态，字节级 replace
+# 与空白柔性正则都匹配不到，真实标识随即出厂。匹配形态：
+#   （head 字符序列）+ 页边界噪声 + （tail 字符序列）
+# 字符间允许 `\s*`（与 flex 同口径，容忍 OCR 空白差）。替换时**把页边界噪声
+# 原样回插**——页脚数字与页注释必须保留，否则 verify_structure_integrity 的
+# 页标记序列对账会判结构破坏。
+# 噪声形态不止「页脚数字 + 小写页注释」一种：实测还有 4 位页脚（\d{1,3}
+# 吃不下）、大写 `<!-- Page 2 of 3 -->`、中文页脚「第 2 页 共 3 页」。噪声
+# 只可能由空白/数字/页注释/中文页脚字构成，故此处按**字符集**放宽容纳，但
+# 要求至少含一个页注释——保证只在跨页处生效，不会误伤正文。
+_PAGE_BREAK_NOISE = (
+    r"(?P<pbnoise>(?:[\s0-9第页共]*<!--[^>]*-->[\s0-9第页共]*)+)"
+)
+# 占位符形如「类型短名+序号」（案号1/地址2/银行卡1）；OCR 原文本身可能已带
+# 同款类型短名，替换后成「案号案号1」叠字。
+# OCR 字符级易混（0/O/o、1/l/I、2/Z、5/S、6/G、8/B、9/g）：扫描件被切开的一半
+# 常带这类噪声，切分正则若只认逐字相等会静默漏网（真卷扫描线常见）。
+_OCR_CONFUSABLES = {
+    "0": "0Oo", "O": "0Oo", "o": "0Oo",
+    "1": "1lI", "l": "1lI", "I": "1lI",
+    "2": "2Z", "Z": "2Z",
+    "5": "5S", "S": "5S",
+    "6": "6G", "G": "6G",
+    "8": "8B", "B": "8B",
+    "9": "9g", "g": "9g",
+}
+
+
+def _ocr_char_pattern(ch: str) -> str:
+    """单字符 → 正则片段：易混字符展开为字符类，其余逐字转义。"""
+    group = _OCR_CONFUSABLES.get(ch)
+    if group:
+        return "[" + re.escape(group) + "]"
+    return re.escape(ch)
+
+
+_LABEL_SUFFIX_RE = re.compile(r"^(.*?)(\d+)$")
+
+# ---- Issue#281 追加：产物面 Markdown 转义 / 全半角形态差（表示失配自愈）----
+#
+# zip 官方 md 对 `_` `*` `[` 等做反斜杠转义（`wxid\_fixture0000001`），并把
+# 部分全角标点半角化；检测面 segs 拿到的是未转义原文。字面比对必然失配，
+# 前向覆盖闸（representation_mismatch）会把整卷拦死——真卷实测 2/5 卷。
+# 自愈思路：把 md 折成「去转义 + 全角 ASCII 折半角」的逐字符映射视图，在
+# 视图上按空白柔性正则定位，再用索引映射回原文区间替换。只放宽形态差
+# （转义/空白/全半角），真失配（文本根本不在 md）仍 fail-closed。
+_FULLWIDTH_ASCII_LOW, _FULLWIDTH_ASCII_HIGH = 0xFF01, 0xFF5E
+_MD_ESCAPE_TARGET = set("\\`*_{}[]()#+-.!|~<>:\"'$%&,;=?@^")
+
+
+def _fold_md(md: str) -> tuple[str, list[int]]:
+    """折叠视图：去 md 转义反斜杠、全角 ASCII→半角、全角空格→半角。
+
+    返回 (折叠文本, 折叠下标→原文下标)。折叠逐字符一一对应或只删除转义符，
+    因此映射总是良定义。
+    """
+    out: list[str] = []
+    idx: list[int] = []
+    i, n = 0, len(md)
+    while i < n:
+        ch = md[i]
+        if ch == "\\" and i + 1 < n and md[i + 1] in _MD_ESCAPE_TARGET:
+            i += 1  # 跳过转义符本身，下一字符按原样映射到其原文下标
+            continue
+        code = ord(ch)
+        if _FULLWIDTH_ASCII_LOW <= code <= _FULLWIDTH_ASCII_HIGH:
+            ch = chr(code - 0xFEE0)
+        elif ch == "\u3000":
+            ch = " "
+        out.append(ch)
+        idx.append(i)
+        i += 1
+    return "".join(out), idx
+
+
+def _fold_flex_pattern(original: str) -> re.Pattern[str] | None:
+    """折叠原文的空白柔性正则（与 flex 同口径：空白段以 ``\\s*`` 连接）。"""
+    folded, _ = _fold_md(original)
+    parts = [re.escape(p) for p in re.split(r"\s+", folded) if p]
+    if not parts:
+        return None
+    return re.compile(r"\s*".join(parts))
+
+
+def _fold_spans(md: str, pattern: re.Pattern[str]) -> list[tuple[int, int]]:
+    """折叠视图上的命中区间 → 原文区间（含前置转义符）。"""
+    folded, idx = _fold_md(md)
+    spans: list[tuple[int, int]] = []
+    for mo in pattern.finditer(folded):
+        if mo.end() <= mo.start():
+            continue
+        start = idx[mo.start()]
+        if start > 0 and md[start - 1] == "\\" and md[start] in _MD_ESCAPE_TARGET:
+            start -= 1  # 转义符属于该实体的形态，整段替换掉
+        spans.append((start, idx[mo.end() - 1] + 1))
+    return spans
+
+
+def _fold_matches(md: str, original: str, folded: str | None = None) -> bool:
+    """折叠视图上是否还能找到原文形态。
+
+    ``folded`` 可传入**本次闸门统一计算**的折叠文本：同一 md 上逐项判定时
+    不重复折叠（门⑥ 冷评审实测 1200 项 × 2 次闸门 = 2400 次折叠，43.8KB
+    卷上累计 23.6s；统一计算后只折叠 2 次）。
+    """
+    pat = _fold_flex_pattern(original)
+    if pat is None:
+        return False
+    return bool(pat.search(folded if folded is not None else _fold_md(md)[0]))
+
+
+def _replace_fold(md: str, original: str, replacement: str) -> str:
+    """折叠视图定位 → 原文区间倒序替换（结构不动，只多一条定位通路）。"""
+    pat = _fold_flex_pattern(original)
+    if pat is None:
+        return md
+    spans = _fold_spans(md, pat)
+    for start, end in reversed(spans):
+        md = md[:start] + replacement + md[end:]
+    return md
+
+
+# ---- Issue#281 追加：页标记护甲 -------------------------------------------
+#
+# 短数字映射项（NER 误报的 '10'/'11'，或与页号同形的实体）整文 replace 会把
+# `<!-- page 10 of 86 -->` 的页号改掉——真卷扫描线实测页标记 86→84，结构对账
+# 直接把整卷 fail-closed。护甲：替换与闸门期间把页标记换成私用区哨兵（哨兵
+# 不含映射原文可能命中的字符），收尾原样还原；覆盖/残留闸也只认正文，不把
+# 页标记里的同形文本当证据。
+_MASK_ALPHA = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _mask_token(index: int) -> str:
+    """哨兵：私用区字符包住字母序号（不含数字，避免被短数字项命中）。"""
+    letters = ""
+    while True:
+        letters = _MASK_ALPHA[index % len(_MASK_ALPHA)] + letters
+        index //= len(_MASK_ALPHA)
+        if not index:
+            return f"\ue000{letters}\ue001"
+
+
+def _mask_page_markers(md: str) -> tuple[str, list[str]]:
+    """页标记 → 哨兵；返回 (替换后文本, 原文页标记列表)。"""
+    raw: list[str] = []
+
+    def _swap(mo: re.Match[str]) -> str:
+        raw.append(mo.group(0))
+        return _mask_token(len(raw) - 1)
+
+    return _PAGE_MARKER_RE.sub(_swap, md), raw
+
+
+def _unmask_page_markers(md: str, markers: list[str]) -> str:
+    """哨兵 → 原页标记（逐字节还原）。"""
+    for i, original in enumerate(markers):
+        md = md.replace(_mask_token(i), original)
+    return md
+
+
+def _page_boundary_char_pairs(md: str) -> set[tuple[str, str]]:
+    """每个页边界两侧可能的 (左页末字, 右页首字)。
+
+    切开实体一定在某个边界上，切分点两侧字符必与其中一对相同——用它把
+    「每项枚举全部切分点」收窄到「只枚举真有边界的切分点」（1200 项 × 46KB
+    卷上 re.compile 从 1.8 万次降到数十次）。
+
+    边界噪声（页脚数字/中文页脚/空白）夹在两侧，故每侧各取若干候选：
+    左页从右往左跳过噪声字符，收录最近 3 个正文字符；右页同理从左往右。
+    """
+    noise = set(" \t\r\n")
+    left_cands: set[str] = set()
+    right_cands: set[str] = set()
+    for mo in _PAGE_MARKER_RE.finditer(md):
+        left = md[: mo.start()]
+        taken = 0
+        for ch in reversed(left):
+            if ch in noise:
+                continue
+            left_cands.add(ch)
+            taken += 1
+            if taken >= 10:
+                break
+        right = md[mo.end():]
+        taken = 0
+        for ch in right:
+            if ch in noise:
+                continue
+            right_cands.add(ch)
+            taken += 1
+            if taken >= 10:
+                break
+    return {(a, b) for a in left_cands for b in right_cands}
+
+
+def _page_split_patterns(
+    original: str, boundary_pairs: set[tuple[str, str]] | None = None
+) -> list[re.Pattern[str]]:
+    """枚举原文被页边界切开的全部形态（每个切分点一个正则）。
+
+    切分点在**去空白后**的字符序列上枚举：原文自身带空白时（OCR 变体），
+    去掉空白再切，避免切在空白处产出空段。
+    """
+    chars = [c for c in original if not c.isspace()]
+    if len(chars) < 2:
+        return []
+    pats: list[re.Pattern[str]] = []
+    for i in range(1, len(chars)):
+        if boundary_pairs is not None and (chars[i - 1], chars[i]) not in boundary_pairs:
+            continue
+        head = r"\s*".join(_ocr_char_pattern(c) for c in chars[:i])
+        tail = r"\s*".join(_ocr_char_pattern(c) for c in chars[i:])
+        pats.append(re.compile(head + _PAGE_BREAK_NOISE + tail))
+    return pats
+
+
+def _apply_page_split(
+    md: str, items: list[MappingItem]
+) -> tuple[str, dict[str, list[re.Pattern[str]]]]:
+    """把跨页切开的实体替换成占位符（页边界噪声原样保留）。
+
+    返回 (md, {映射项 id: 该 id 用过的正则})——后者供覆盖闸/残留闸判定用：
+    这类项在产物上已落地，不能按「原文是否连续出现」判缺席或残留。
+    """
+    applied: dict[str, list[re.Pattern[str]]] = {}
+    if "<!--" not in md or "page" not in md:
+        return md, applied
+    boundary_pairs = _page_boundary_char_pairs(md)
+    # 门⑥重要项：与主替换循环同口径按 len 降序——短实体是长实体的天然前缀，
+    # 先跑短项会把长实体从中间切断（切开处落成短项占位符、尾字孤立）且三闸全绿。
+    for m in sorted(items, key=lambda m: len(m.original_text), reverse=True):
+        pats = _page_split_patterns(m.original_text, boundary_pairs)
+        if not pats:
+            continue
+        before = md
+        rep = m.replacement or ""
+        for pat in pats:
+            md = pat.sub(lambda mo, _rep=rep: _rep + mo.group("pbnoise"), md)
+        if md != before:
+            applied[m.id] = pats
+    return md, applied
+
+
+def _collapse_label_duplication(
+    md: str, items: list[MappingItem], source_md: str | None = None
+) -> str:
+    """收口「标签+占位符」叠字：OCR 原文自带类型短名时只保留一个标签。
+
+    只在 replacement 形如「短名+序号」且叠字真实存在时动手；映射表
+    replacement 不变（审阅面口径不漂移）。
+
+    门⑥ 冷评审：全局 ``replace`` 会改到**不是本次替换插入**的同形正文
+    （正文里本就有的 OCR 叠字也会被吃掉一个标签）。传 ``source_md``（替换
+    前文本）时只收口「替换前就存在 label+original」的处数——即本次替换真正
+    造出来的叠字；legacy 路径不传时退回旧全局口径（该路径没有结构化页边界，
+    无法精确归因）。
+    """
+    for m in items:
+        rep = m.replacement or ""
+        mt = _LABEL_SUFFIX_RE.match(rep)
+        if not mt:
+            continue
+        label = mt.group(1)
+        if not label.strip():
+            continue
+        dup = label + rep
+        budget = None
+        if source_md is not None:
+            # 原文可能被页边界切开（标签+原文只在产物面拼合），故用「标签+原文头
+            # 两个字符」计预算；切开的处数同样计入，否则 split 造出的叠字收不掉。
+            head = m.original_text[:2] if len(m.original_text) > 2 else m.original_text
+            budget = source_md.count(label + head)
+        for _ in range(3):  # 防御多重叠字，收敛即停
+            if budget is not None:
+                if budget <= 0:
+                    break
+                budget -= 1
+            if dup not in md:
+                break
+            md = md.replace(dup, rep)
+    return md
+
 
 def apply_decisions(mapping: list[MappingItem], decisions: list[dict]) -> list[MappingItem]:
     """把用户决策落到映射表上（就地修改并返回）。
@@ -99,15 +384,27 @@ def render_outputs(
 
     md = _SEP.join(pieces)
 
+    _source_before_fallback = md
     # 全文兜底：NER 只标注了部分出现处，同值其余出现处也要替换（E4 零残留）。
     # 长文本优先（len 降序）避免子串嵌套损坏；excluded 项跳过（保留原文）；
-    # 占位符含 [] 而原文不含，不会误伤已插入的占位符；空原文跳过防误插。
+    # 占位符形如「案号1」已不含方括号（#248 起），与原文可能同形；已插入的
+    # 占位符是否被二次命中由下游折叠/残留闸兜底，空原文跳过防误插。
     for m in sorted(
         (m for m in mapping if not m.excluded and m.original_text),
         key=lambda m: len(m.original_text),
         reverse=True,
     ):
+        before = md
         md = md.replace(m.original_text, m.replacement)
+        if md == before:
+            # Issue#281 追加：拍平重建路径也做形态差自愈（md 转义/全半角）。
+            md = _replace_fold(md, m.original_text, m.replacement)
+
+    # Issue#281：原文自带类型短名（「案号（2023）…号」）时，替换后会出现
+    # 「案号案号1」叠字——产物侧收口为单个标签，映射表 replacement 不变。
+    md = _collapse_label_duplication(
+        md, [m for m in mapping if not m.excluded and m.replacement]
+    )
 
     mapping_json = {
         "items": [
@@ -199,13 +496,17 @@ def render_outputs_on_structure(
     # 门④真机事故硬闸（2026-11-06）：单字符原文整文 replace 命中全卷高频
     # 字符（'0' 毁掉全部页标记/数字）——草稿默认已排除，此处拦用户在审阅
     # 里显式改 keep→replace 的路径，fail-closed 不给默认流程留暗雷。
-    degenerate = [m for m in items if len(m.original_text) == 1]
+    degenerate = [
+        m for m in items
+        if len(m.original_text) == 1
+        or (m.original_text.isdigit() and len(m.original_text) <= 4)
+    ]
     if degenerate:
         first = degenerate[0]
         raise ValueError(
-            f"degenerate_original: {len(degenerate)} 个映射项原文为单字符"
-            f"（{first.original_text!r} 等）——整文替换会命中全卷高频字符毁掉"
-            "产物（页标记/数字全灭），该类项必须保留原文（excluded）"
+            f"degenerate_original: {len(degenerate)} 个映射项原文为单字符/短数字"
+            f"（{first.original_text!r} 等）——整文替换会命中全卷高频字符"
+            "（页标记/数字全灭），该类项必须保留原文（excluded）"
         )
     bad = [m for m in items if _REPLACEMENT_STRUCTURAL_RE.search(m.replacement or "")]
     if bad:
@@ -227,6 +528,13 @@ def render_outputs_on_structure(
             )
 
     md = structured_md
+    # Issue#281：先做**跨页切开替换**——页边界（页脚数字 + 页注释）把实体
+    # 切成两半时，产物侧没有连续形态，后续 plain/flex 都匹配不到；此处按
+    # 每个切分点跨页注释匹配，替换值落在页首段、页注释原样保留。
+    md, _split_applied = _apply_page_split(md, items)
+    # Issue#281 追加：页标记护甲——替换/闸门期间换成哨兵，收尾原样还原。
+    # 短数字项或与页号同形的实体因此不会改动页标记；覆盖/残留闸也只认正文。
+    md, _markers = _mask_page_markers(md)
     # 门④实弹修正：拍平 segs 的实体文本可能含换行（跨单元格拼接，如车牌
     # ``桂A\\n2026``），结构化 md 里同事实是连续/异形空白形态——字节级
     # replace 替换不到。含空白项改走**空白柔性匹配**：按空白切段、逐段
@@ -249,8 +557,19 @@ def render_outputs_on_structure(
         seg = _seg_of_offset(segs, ent.start)
         if seg is not None and seg.source in ("img_ocr", "sentinel"):
             exempt.add(ent.text)
-    uncovered = [m for m in _plain if m.original_text not in md and m.original_text not in exempt]
-    uncovered += [m for m in _flex if not _flex_res[m.id].search(md) and m.original_text not in exempt]
+    _folded_md = _fold_md(md)[0]
+    uncovered = [
+        m for m in _plain
+        if m.original_text not in md and m.original_text not in exempt
+        and m.id not in _split_applied
+        and not _fold_matches(md, m.original_text, _folded_md)
+    ]
+    uncovered += [
+        m for m in _flex
+        if not _flex_res[m.id].search(md) and m.original_text not in exempt
+        and m.id not in _split_applied
+        and not _fold_matches(md, m.original_text, _folded_md)
+    ]
     if uncovered:
         names = "、".join(repr(m.original_text) for m in uncovered[:3])
         raise ValueError(
@@ -263,13 +582,42 @@ def render_outputs_on_structure(
     # pattern 空转、尾段残留产物且三闸全放行）。并回单循环：plain 走
     # 字节级 replace、flex 走 pattern.sub，排序语义与 legacy 逐一同构。
     for m in sorted(_plain + _flex, key=lambda m: len(m.original_text), reverse=True):
+        before = md
         if m.id in _flex_res:
             md = _flex_res[m.id].sub(m.replacement, md)
         else:
             md = md.replace(m.original_text, m.replacement)
+        if md == before:
+            # Issue#281 追加：md 转义（`wxid\_...`）/全半角形态差使字面与空白
+            # 柔性都空转——折叠视图定位后按原文区间替换，只放宽形态差。
+            md = _replace_fold(md, m.original_text, m.replacement)
 
-    residual = [m for m in _plain if m.original_text in md]
-    residual += [m for m in _flex if _flex_res[m.id].search(md)]
+    # Issue#281：标签叠字收口（「案号案号1」→「案号1」），映射表不变。
+    md = _collapse_label_duplication(md, items, structured_md)
+
+    residual: list[MappingItem] = []
+    seen_residual: set[str] = set()
+
+    def _add_residual(cands: list[MappingItem]) -> None:
+        for c in cands:
+            if c.id not in seen_residual:
+                seen_residual.add(c.id)
+                residual.append(c)
+
+    _residual_folded = _fold_md(md)[0]
+    _add_residual([m for m in items
+                   if m.original_text in md
+                   or _fold_matches(md, m.original_text, _residual_folded)])
+    _add_residual([m for m in items
+                   if m.id in _flex_res and _flex_res[m.id].search(md)])
+    # 跨页切开项：替换后原文不再成立；若正则仍命中（替换值回插原文等），
+    # 与零残留闸同口径 fail-closed。
+    # 护甲里页注释被哨兵替换，split 正则含 `<!-- page ... -->` 必然失配——
+    # 该判定必须跑在还原页标记后的文本上，否则是死判据（门⑥ 自审）。
+    _residual_view = _unmask_page_markers(md, _markers)
+    _add_residual([m for m in items
+                   if m.id in _split_applied
+                   and any(p.search(_residual_view) for p in _split_applied[m.id])])
     if residual:
         names = "、".join(repr(m.original_text) for m in residual[:3])
         raise ValueError(
@@ -277,6 +625,8 @@ def render_outputs_on_structure(
             f"（{names}{' 等' if len(residual) > 3 else ''}）——替换值回插原文或"
             "映射自冲突，禁止出厂"
         )
+
+    md = _unmask_page_markers(md, _markers)
 
     mapping_json = {
         "items": [

@@ -63,8 +63,46 @@ export function AgentMd() {
   useEffect(() => {
     if (bootstrapped.current) return;
     bootstrapped.current = true;
-    let cancelled = false;
     void (async () => {
+      const taskIdParam = searchParams.get('taskId');
+      if (taskIdParam) {
+        setSearchParams({}, { replace: true });
+        try {
+          const st = await agentMdApi.status(taskIdParam);
+          if (st.state === 'completed') {
+            let artifactsOk = false;
+            try {
+              const mdRes = await authFetch(agentMdApi.artifactUrl(taskIdParam, 'md'));
+              artifactsOk = mdRes.ok;
+            } catch {
+              artifactsOk = false;
+            }
+            if (!artifactsOk) {
+              setError(t('agentMd.taskExpired'));
+              return;
+            }
+            onUploaded(taskIdParam);
+            setStatus(st);
+            setStep('result');
+            return;
+          }
+          if (st.state === 'mapping_ready') {
+            const m = await agentMdApi.mapping(taskIdParam);
+            onUploaded(taskIdParam);
+            setStatus(st);
+            setItems(m.items);
+            setStep('review');
+            localStorage.setItem(ACTIVE_TASK_KEY, taskIdParam);
+            return;
+          }
+          onUploaded(taskIdParam);
+          setStatus(st);
+          if (RESUMABLE_STATES.has(st.state)) localStorage.setItem(ACTIVE_TASK_KEY, taskIdParam);
+        } catch {
+          setError(t('agentMd.taskExpired'));
+        }
+        return;
+      }
       const fileId = searchParams.get('fileId');
       const filename = searchParams.get('filename');
       if (fileId) {
@@ -72,11 +110,9 @@ export function AgentMd() {
         setSearchParams({}, { replace: true });
         try {
           const { task_id } = await agentMdApi.startFromFileId(fileId, filename ?? undefined);
-          if (!cancelled) startTask(task_id);
+          startTask(task_id);
         } catch (err) {
-          if (!cancelled) {
-            setError(err instanceof Error && err.message ? err.message : t('agentMd.uploadFailed'));
-          }
+          setError(err instanceof Error && err.message ? err.message : t('agentMd.uploadFailed'));
         }
         return;
       }
@@ -88,7 +124,6 @@ export function AgentMd() {
           localStorage.removeItem(ACTIVE_TASK_KEY);
           return;
         }
-        if (cancelled) return;
         if (st.state === 'completed') {
           // completed 产物可能已被清理（用户验收反馈：恢复后「产物读取失败」且无出口）。
           // 先验产物可读；不可读则清键回上传步并提示；可读则一次性恢复（读完即清键，下次访问全新上传）。
@@ -101,7 +136,7 @@ export function AgentMd() {
           }
           if (!artifactsOk) {
             localStorage.removeItem(ACTIVE_TASK_KEY);
-            if (!cancelled) setError(t('agentMd.taskExpired'));
+            setError(t('agentMd.taskExpired'));
             return;
           }
           localStorage.removeItem(ACTIVE_TASK_KEY); // one-shot：completed 只恢复这一次
@@ -115,7 +150,7 @@ export function AgentMd() {
       } catch {
         // 404/网络失败/任何恢复意外：任务不可续，清键回上传步，绝不留死路页面（用户验收反馈）
         localStorage.removeItem(ACTIVE_TASK_KEY);
-        if (!cancelled) setError(t('agentMd.taskExpired'));
+        setError(t('agentMd.taskExpired'));
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -168,9 +203,7 @@ export function AgentMd() {
           }}
         />
       )}
-      {step === 'result' && taskId && (
-        <StepResult taskId={taskId} onNewUpload={resetToUpload} />
-      )}
+      {step === 'result' && taskId && <StepResult taskId={taskId} onNewUpload={resetToUpload} />}
     </div>
   );
 }

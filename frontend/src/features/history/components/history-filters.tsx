@@ -134,6 +134,13 @@ export function HistoryFilterMenu({
                 >
                   {t('history.tab.batch')}
                 </TabsTrigger>
+                <TabsTrigger
+                  value="agent_md"
+                  className={filterTabClass}
+                  data-testid="source-tab-agent_md"
+                >
+                  {t('history.tab.agent_md')}
+                </TabsTrigger>
               </TabsList>
             </Tabs>
           </FilterGroup>

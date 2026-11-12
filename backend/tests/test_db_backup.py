@@ -55,6 +55,21 @@ def test_backup_all_covers_full_inventory(data_dir, tmp_path):
     assert status["jobs"]["last_success_at"]
 
 
+def test_agent_md_tasks_snapshot_in_inventory(data_dir, tmp_path, monkeypatch):
+    """Issue#282：供料任务索引库必须进备份清单并真实产出快照。"""
+    agent_db = data_dir / "agent_md_tasks.sqlite3"
+    _make_sqlite(str(agent_db), "agent-md")
+    monkeypatch.setattr(settings, "AGENT_MD_TASK_DB_PATH", str(agent_db))
+
+    names = [name for name, _, _ in db_backup.backup_inventory()]
+    assert "agent_md_tasks" in names
+
+    results = db_backup.backup_all()
+    assert results.get("agent_md_tasks") is True
+    backup_dir = str(tmp_path / "backups")
+    assert any(f.startswith("agent_md_tasks_") for f in os.listdir(backup_dir))
+
+
 def test_small_file_snapshot_atomic_and_retention(data_dir, tmp_path):
     src = data_dir / "auth.json"
     backup_dir = str(tmp_path / "backups")
