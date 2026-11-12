@@ -74,3 +74,24 @@ def test_empty_evidence_with_entities_counts_valid():
 def test_tl_stage_error_switches_unconditionally():
     v = arbitrate(SideResult(0, 0), SideResult(50, 1), T, tl_stage_error=True)
     assert (v.winner, v.switch_reason) == ("ocr", "text_layer_stage_error")
+
+
+def test_arbiter_module_import_surface_is_pure():
+    # 终审 M-1：arbiter 纯函数钉（对照 judge 家族的同型钉）——import 面白名单。
+    import sys
+
+    import app.services.page_routing.arbiter as m
+    banned = {"fitz", "httpx", "sqlalchemy", "redis", "requests", "file_store", "settings"}
+    hit = banned & set(sys.modules) & set(getattr(m, "__dict__", {}).keys())
+    assert not hit, f"arbiter.py 不允许 import {hit}"
+
+
+def test_arbiter_source_has_no_io_imports():
+    # 终审 M-1：源码 token 钉——arbiter 只允许纯比较逻辑，禁任何 IO/存储/配置依赖。
+    import inspect
+
+    import app.services.page_routing.arbiter as m
+    src = inspect.getsource(m)
+    for token in ("import fitz", "import httpx", "import requests", "sqlalchemy",
+                  "file_store", "settings"):
+        assert token not in src, token

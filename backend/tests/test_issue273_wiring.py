@@ -159,16 +159,26 @@ def test_file_mode_signature_identical_to_v6(monkeypatch):
 
 
 def test_page_mode_signature_has_routing_fields(monkeypatch):
-    """page 模式追加 ``routing_mode``/``routing_version``，``version`` 字段保持 6。
+    """page 模式追加 ``routing_mode``/``routing_version``/``routing_thresholds_fp``，
+    ``version`` 字段保持 6。
 
-    靠新键变键：老缓存 key（无这两个键）与 page 模式新 key 不相等 ⇒ 既有页缓存
+    靠新键变键：老缓存 key（无这三个键）与 page 模式新 key 不相等 ⇒ 既有页缓存
     全量失效重建（首次 cache miss），不会回放 page/file 旧口径的框。
+    阈值指纹（终审 I-2/M-4）：值必须与 ``thresholds_fingerprint(get_routing_thresholds())``
+    一致——阈值翻 env 而不 bump ROUTING_VERSION 时签名仍变（ner_governance 先例语义）。
     """
     monkeypatch.setattr(settings, "RECOGNITION_ROUTING_MODE", "page")
     sig = orch._vision_signature(1, [], [])
     assert sig["routing_mode"] == "page"
     assert sig["routing_version"] == int(settings.ROUTING_VERSION)
     assert sig["version"] == 6  # v6 字段不动，靠新增键变键
+    from app.core.routing_thresholds import get_routing_thresholds, thresholds_fingerprint
+
+    expected_fp = thresholds_fingerprint(get_routing_thresholds())
+    assert sig["routing_thresholds_fp"] == expected_fp
+    # 指纹形态钉：16 位 hex（sha256 前 16 位）
+    assert len(expected_fp) == 16
+    int(expected_fp, 16)
 
 
 # --------------------------------------------------------------------- 双模分流

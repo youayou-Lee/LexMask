@@ -44,7 +44,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 from app.core.config import settings
-from app.core.routing_thresholds import get_routing_thresholds
+from app.core.routing_thresholds import get_routing_thresholds, thresholds_fingerprint
 from app.services.page_routing import judge as judge_mod
 from app.services.page_routing import signals as page_signals
 from app.services.page_routing import state as state_mod
@@ -245,6 +245,10 @@ async def _judge_and_record(
         upgraded=upgraded,
         sampled=sampled,
         escalated=escalated,
+        # A7（终审 I-2）：阈值指纹随决策落账（file_store decision dict +
+        # pipeline_status 同源），重放可校验决策所用阈值口径；阈值翻 env 而
+        # 不 bump ROUTING_VERSION 时指纹仍变。
+        thresholds_fp=thresholds_fingerprint(thresholds),
     )
     entry = {
         "decision": decision.as_dict(),

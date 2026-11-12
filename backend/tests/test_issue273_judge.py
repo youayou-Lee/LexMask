@@ -79,6 +79,13 @@ def test_escalated_volume_is_both():
     assert (d.action, d.reason) == ("both", "volume_escalated_both")
 
 
+def test_escalated_outranks_upgraded_in_combined_state():
+    # 终审 I-1 组合态钉：抽样改判引发整卷升级后，后续页即使已 upgraded 直信、
+    # 整卷升级语义也不得被升档遮蔽——escalated 判定必须在 upgraded 之前 ⇒ both。
+    d = judge.judge_page(_sig(), T, routing_version=1, upgraded=True, escalated=True)
+    assert (d.action, d.reason) == ("both", "volume_escalated_both")
+
+
 def test_gray_zone_resolved_before_escalation():
     # 门⑥ 挂账钉：灰区页在整卷升级之前先走 L2 判定——灰区不享受升级豁免
     #（ink 缺失/过低都 fail-closed 退 ocr，escalated=True 压不过规则 6）。

@@ -33,6 +33,7 @@ class PageDecision:
     signals: dict          # asdict(PageSignals)
     reason: str
     routing_version: int
+    thresholds_fp: str = ""  # A7 阈值指纹（终审 I-2）；空串=未注入（既有调用兼容）
 
     def as_dict(self) -> dict:
         # signals 字段本身已是 dict（judge 侧已做舍入），asdict 对普通 dict 原样深拷贝。

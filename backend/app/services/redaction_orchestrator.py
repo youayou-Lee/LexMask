@@ -155,6 +155,12 @@ def _vision_signature(
     if str(getattr(settings, "RECOGNITION_ROUTING_MODE", "file") or "file") == "page":
         signature["routing_mode"] = "page"
         signature["routing_version"] = int(getattr(settings, "ROUTING_VERSION", 1) or 1)
+        # Issue#273 终审 I-2/M-4：阈值指纹进 page 模式签名——阈值翻 env 而不
+        # bump ROUTING_VERSION 时签名仍变（语义同 ner_governance 指纹先例）。
+        # file 模式不加该键（回滚开关键集钉不破）。
+        from app.core.routing_thresholds import get_routing_thresholds, thresholds_fingerprint
+
+        signature["routing_thresholds_fp"] = thresholds_fingerprint(get_routing_thresholds())
     return signature
 
 

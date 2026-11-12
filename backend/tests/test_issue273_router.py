@@ -261,7 +261,32 @@ async def test_finalize_three_passes_upgrades_then_volume_escalates(routing_env,
     await router_mod.finalize("f-1", 1, decision, outcome_esc)
     assert state.escalated_to_both is True
 
-    # 升档生效：未抽样页直接信任文本层
+    # 终审 I-1 裁定：整卷升级（spec §2.4）= 无条件语义，组合态（upgraded+escalated）
+    # 下升档直信不得遮蔽整卷升级 ⇒ 判定序 escalated 先于 upgraded，页走 both 哨兵。
+    upgraded_decision = await router_mod.decide("f-1", store["f-1"], 1)
+    assert upgraded_decision.action == "both"
+    assert upgraded_decision.reason == "volume_escalated_both"
+
+
+@pytest.mark.asyncio
+async def test_finalize_upgraded_without_escalation_direct_trusts(routing_env, monkeypatch, tmp_path):
+    """纯升档（无整卷升级）：未抽样页直接信任文本层（upgraded_after_3_pass）。
+
+    终审 I-1 换序后的对照钉：只有 escalated（而非 upgraded）在判定序里前置，
+    单独的 upgraded 直信路径不变。
+    """
+    store = routing_env
+    monkeypatch.setattr(settings, "ROUTING_VERIFY_UPGRADE_PASS", 3)
+    path = _make_pdf(tmp_path, [_LINES_CLEAR])
+    store["f-1"] = {"file_type": "pdf", "file_path": path}
+    decision = await router_mod.decide("f-1", store["f-1"], 1)
+
+    for _ in range(3):
+        await router_mod.finalize("f-1", 1, decision, _pass_outcome())
+    state = router_mod._state_for("f-1", path)
+    assert state.upgraded is True
+    assert state.escalated_to_both is False
+
     upgraded_decision = await router_mod.decide("f-1", store["f-1"], 1)
     assert upgraded_decision.action == "text_layer"
     assert upgraded_decision.reason == "upgraded_after_3_pass"
