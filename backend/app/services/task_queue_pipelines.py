@@ -195,6 +195,128 @@ def _routing_fields_from_file_store(file_id: str, page: int) -> dict:
 class RecognitionPipelineMixin:
     """识别流水线：解析 -> NER/Vision -> 完成识别（可选入队匿名化）。"""
 
+    # ------------------------------------------------------------------
+    # Issue#274：阶段状态机（performance.recognition.stages）
+    #
+    # 形状：[{name, started_at, finished_at, state, detail}]，state ∈
+    # running|completed|failed|skipped。单写者 = _run_vision 所在协程（item 级）；
+    # 每次变更**全数组整替落账**（replace_paths 防语义漂移），读经
+    # store.get_item_performance 回读（替身缺该方法时 fail-open 为空表）。
+    # 语义钉：stages = 最近一次**整卷识别**的阶段账；单页重试（_run_page_retry）
+    # 不改写（§2.1.2）。加速器（#275）开跑时 _stage_begin("accelerator",
+    # from_prev=False) 即插即用——②' 与 ② 并行，事件不带 from（§2.4/F8）。
+    # ------------------------------------------------------------------
+
+    def _read_stages(self, store: Any, item_id: str) -> list[dict[str, Any]]:
+        """读现账 stages（fail-open：替身/坏形/读失败 → 空表）。"""
+        try:
+            perf = store.get_item_performance(item_id)
+        except Exception:  # noqa: BLE001 - fail-open：账面缺失不阻断识别
+            return []
+        try:
+            raw = (perf or {}).get("recognition", {}).get("stages")
+            return [dict(row) for row in raw if isinstance(row, dict)] if isinstance(raw, list) else []
+        except (AttributeError, TypeError, ValueError):
+            return []
+
+    def _write_stages(self, store: Any, item_id: str, stages: list[dict[str, Any]]) -> None:
+        """全数组整替落账（replace_paths 精确到 stages 路径；_record_item_performance 自带 fail-open）。"""
+        self._record_item_performance(
+            store,
+            item_id,
+            {"recognition": {"stages": stages}},
+            replace_paths=(("recognition", "stages"),),
+        )
+
+    def _emit_stage_event(self, to: str, from_stage: str | None) -> None:
+        """stage_changed 事件（#279 schema：required to / optional from；卷级 page=None）。
+
+        并行段（accelerator）begin 传 from_stage=None——复盘工具不得把它误读为
+        ② 的后继（方案 §2.4/F8）。log_event 自身 fail-open；此处再兜一层。
+        """
+        try:
+            from app.services import page_event_log as page_events
+
+            page_events.log_event(
+                "stage_changed",
+                page=None,
+                to=str(to),
+                **({"from": str(from_stage)} if from_stage else {}),
+            )
+        except Exception:  # noqa: BLE001 - 事件故障不改主链与账面
+            logger.debug("issue274 stage_changed event failed", exc_info=True)
+
+    def _stage_begin(
+        self,
+        store: Any,
+        item_id: str,
+        name: str,
+        detail: dict[str, Any] | None = None,
+        *,
+        from_prev: bool = True,
+    ) -> None:
+        """append 一条 running 行 + stage_changed 事件。fail-open（AC11/M10 面）。"""
+        try:
+            stages = self._read_stages(store, item_id)
+            prev = str(stages[-1].get("name")) if stages and stages[-1].get("name") else None
+            stages.append(
+                {
+                    "name": str(name),
+                    "started_at": _utc_iso(),
+                    "finished_at": None,
+                    "state": "running",
+                    "detail": dict(detail or {}),
+                }
+            )
+            self._write_stages(store, item_id, stages)
+            self._emit_stage_event(str(name), prev if from_prev else None)
+        except Exception:  # noqa: BLE001 - stages 落账失败绝不影响识别主链
+            logger.debug("issue274 stage_begin %s failed item=%s", name, item_id[:8], exc_info=True)
+
+    def _stage_end(
+        self,
+        store: Any,
+        item_id: str,
+        name: str,
+        state: str,
+        detail_patch: dict[str, Any] | None = None,
+    ) -> None:
+        """把最后一条同名 running 行落终态 + detail 合并。fail-open；无 running 行只 debug。"""
+        try:
+            stages = self._read_stages(store, item_id)
+            for row in reversed(stages):
+                if row.get("name") == name and row.get("state") == "running":
+                    row["finished_at"] = _utc_iso()
+                    row["state"] = str(state)
+                    if detail_patch:
+                        detail = dict(row.get("detail") or {})
+                        detail.update(detail_patch)
+                        row["detail"] = detail
+                    break
+            else:
+                logger.debug(
+                    "issue274 stage_end: no running %r row item=%s (fail-open skip)", name, item_id[:8]
+                )
+                return
+            self._write_stages(store, item_id, stages)
+        except Exception:  # noqa: BLE001 - 同 _stage_begin
+            logger.debug("issue274 stage_end %s failed item=%s", name, item_id[:8], exc_info=True)
+
+    def _close_running_stages(self, store: Any, item_id: str) -> None:
+        """兜底：异常路径上仍 running 的 stage 就地落 failed（_run_recognition finally 调）。"""
+        try:
+            stages = self._read_stages(store, item_id)
+            dirty = False
+            for row in stages:
+                if row.get("state") == "running":
+                    row["finished_at"] = _utc_iso()
+                    row["state"] = "failed"
+                    dirty = True
+            if dirty:
+                self._write_stages(store, item_id, stages)
+        except Exception:  # noqa: BLE001 - 兜底自身也 fail-open
+            logger.debug("issue274 stages fail-safe close failed item=%s", item_id[:8], exc_info=True)
+
     async def _run_recognition(self, task: TaskItem) -> None:
         from app.services.job_store import JobItemStatus, JobStatus
 
@@ -247,6 +369,13 @@ class RecognitionPipelineMixin:
             # 标记处理中
             store.update_item_status(task.item_id, JobItemStatus.PROCESSING)
             self._try_update_job_status(store, task.job_id, JobStatus.PROCESSING)
+
+            # Issue#274（v2/F1）：stages 清账前移到识别 try 入口（parse 之前）——
+            # parse 阶段不写 progress，重跑 item 在 parse 期间轮询不得带回上一轮
+            # 旧阶段账（前端「以账为准」会渲染误导性旧阶段条）。agent_md/vl_md/
+            # text(NER) 路径不写 stages，清账无害。_record_item_performance 自带
+            # fail-open，清账失败不影响主链。
+            self._write_stages(store, task.item_id, [])
 
             # 1) 供料批量（Issue#196）：自带解析（MinerU/文本直取），不走标准 parse——
             #    解析重复劳动且扫描件会白跑一次 OCR 预析。解析/直取 → NER → 映射草稿
@@ -353,6 +482,9 @@ class RecognitionPipelineMixin:
                 task.item_id,
                 {"recognition": {"finished_at": _utc_iso(), "duration_ms": total_ms}},
             )
+            # Issue#274：兜底收口——异常路径上仍 running 的 stage 就地落 failed，
+            # 防止 stages 停留 running 误导前端（正常路径已在 _run_vision 内收口）。
+            self._close_running_stages(store, task.item_id)
             logger.info(
                 "[queue] item=%s recognition total elapsed=%.2fs",
                 task.item_id[:8],
@@ -873,6 +1005,15 @@ class RecognitionPipelineMixin:
                     logger.debug("unable to prime scanned PDF text-layer sparse probe", exc_info=True)
         page_sem = asyncio.Semaphore(page_concurrency)
         store = self._get_store()
+        # Issue#274 阶段①「文档预检」起算：LA 可用性预检 / GPU 并发决策 / sparse
+        # probe / 类型解析覆盖在本段内（detail 回填在下方 recognition 初始化落账处
+        # 合并写，不额外加 DB 往返）。stages 落账 fail-open，绝不影响主链。
+        self._stage_begin(
+            store,
+            task.item_id,
+            "preflight",
+            {"routing_mode": str(getattr(settings, "RECOGNITION_ROUTING_MODE", "file") or "file")},
+        )
         store.update_item_progress(
             task.item_id,
             stage="vision",
@@ -946,6 +1087,23 @@ class RecognitionPipelineMixin:
         # current_segment 随段起跑覆写（段号/段数/段名/该段实际并发），前端数字行、
         # 段名行编号与「并行处理中」都从这里取，不靠前端猜配置。
         segment_total = 2 if (pages > 1 and visual_feature_types != []) else 1
+        # Issue#274：preflight detail 回填与 recognition 初始化合并为一次落账
+        #（读现账失败 ⇒ 不带 stages 键，fail-open 保持既有行为）。
+        _stages_now = self._read_stages(store, task.item_id)
+        if _stages_now and _stages_now[-1].get("name") == "preflight" and _stages_now[-1].get("state") == "running":
+            _preflight_detail = dict(_stages_now[-1].get("detail") or {})
+            _preflight_detail.update(
+                {
+                    "la_probe": (
+                        "ok" if la_available is True else ("unavailable" if la_available is False else "skipped")
+                    ),
+                    "page_concurrency": page_concurrency,
+                    "page_concurrency_reason": page_concurrency_reason,
+                    "sparse_probe": sparse_probe,
+                    "routing_mode": str(getattr(settings, "RECOGNITION_ROUTING_MODE", "file") or "file"),
+                }
+            )
+            _stages_now[-1]["detail"] = _preflight_detail
         self._record_item_performance(
             store,
             task.item_id,
@@ -965,8 +1123,10 @@ class RecognitionPipelineMixin:
                         "concurrency": page_concurrency,
                     },
                     "pages": {},
+                    **({"stages": _stages_now} if _stages_now else {}),
                 }
             },
+            replace_paths=(("recognition", "stages"),) if _stages_now else (),
         )
         active_pages = 0
         max_active_pages = 0
@@ -1198,6 +1358,10 @@ class RecognitionPipelineMixin:
                                         "status": "completed",
                                         "active_pages_at_end": active_at_end,
                                         "duration_breakdown_ms": _duration_breakdown_from_quality(quality),
+                                        # Issue#274（F2）：段标签耗时——与失败分支同键对称，
+                                        # 供 ETA 按段取样本（两段式下 pages.<p> 整替重写，
+                                        # 只有段标签键能区分样本属于哪一段）。
+                                        "stage_duration_ms": {stage_label: page_ms},
                                         "cache_status": dict(quality.get("cache_status") or {}),
                                         "pipeline_status": dict(quality.get("pipeline_status") or {}),
                                         "warnings": list(quality.get("warnings") or []),
@@ -1264,12 +1428,28 @@ class RecognitionPipelineMixin:
             signature_visual_feature_types: list[str] | None = None,
             stage_label: str = "视觉识别",
             page_filter: set[int] | None = None,
+            first_launch: bool = False,
         ) -> dict[int, str]:
             """跑一阶段页任务，返回本阶段失败页 {page: reason}（Issue#199 页级隔离）。
 
             页级失败在 run_page 内记录并就地返回，不再触发「首错取消全部兄弟页」；
             cancel+raise 处理器只接基础设施异常（store/调度层）。`page_filter` 供
             二阶段（视觉特征合并）跳过一阶段已失败的页。
+
+            Issue#274：`first_launch=True`（item 的第一次段调用）启用**第 1 页独占
+            首发**——调度器结构性保证「最先调度 + 最先落账」，非并发参数的巧合。
+            规范三句（方案 §2.2.1，实现不得走样）：
+            (a) 下方 create_task 页源**必须迭代切片后的剩余列表**（否则页 1 双跑，
+                M11/AC1 判红）；循环体本身不动。
+            (b) `stage_total` **恒传全段页数（含页 1）**——剩余页的进度文案保持
+                `page x/86` 与页 1 同口径（防 x/85 off-by-one，用户可见且 total
+                参与前端条宽）。
+            (c) 独占窗口置于下方 try/except（cancel+raise）**之外**——窗口内页 1
+                是唯一任务，CancelledError/MemoryError 直接传播即正确语义（无兄弟
+                页可 cancel，不得把窗口塞进 try 再补 cancel 循环）；页 1 的普通
+                异常由 run_page 页内隔离吸收（#199）。
+            触发面 = first_launch 且 BATCH_RECOGNITION_FIRST_PAGE_PRIORITY 且
+            卷页数 > 2 且 > 并发槽位（#175 门①.5 教训：N=k 碰撞区；N ≤ 2 不独占）。
             """
             stage_failed: dict[int, str] = {}
             page_ids = (
@@ -1281,6 +1461,31 @@ class RecognitionPipelineMixin:
             nonlocal completed_pages, reported_current
             completed_pages = 0
             reported_current = 0
+            # Issue#274：首段第 1 页独占首发窗口（try 之外——规范 (c)）。
+            launch_ids = page_ids
+            if (
+                first_launch
+                and bool(getattr(settings, "BATCH_RECOGNITION_FIRST_PAGE_PRIORITY", True))
+                and len(page_ids) > 2
+                and len(page_ids) > page_concurrency
+            ):
+                logger.info(
+                    "[queue] item=%s %s first-page exclusive launch (1/%d, concurrency=%d)",
+                    task.item_id[:8], stage_label, len(page_ids), page_concurrency,
+                )
+                await run_page(
+                    page_ids[0],
+                    selected_ocr_types=selected_ocr_types,
+                    selected_visual_feature_types=selected_visual_feature_types,
+                    merge_existing=merge_existing,
+                    signature_ocr_types=signature_ocr_types,
+                    signature_visual_feature_types=signature_visual_feature_types,
+                    stage_label=stage_label,
+                    stage_total=len(page_ids),
+                    stage_failed=stage_failed,
+                )
+                launch_ids = page_ids[1:]
+            # 规范 (a)：页源 = 切片后的剩余列表；规范 (b)：stage_total 恒全段页数。
             page_tasks = {
                 asyncio.create_task(
                     run_page(
@@ -1295,7 +1500,7 @@ class RecognitionPipelineMixin:
                         stage_failed=stage_failed,
                     )
                 ): p
-                for p in page_ids
+                for p in launch_ids
             }
             try:
                 for page_task in asyncio.as_completed(page_tasks):
@@ -1306,6 +1511,19 @@ class RecognitionPipelineMixin:
                 raise
             return stage_failed
 
+        # Issue#274：①→② 切换——第一个页任务实际开跑前一刻（事件 stage_changed
+        # {to=page_loop, from=preflight} 与账面同源落账）。
+        self._stage_end(store, task.item_id, "preflight", "completed")
+        self._stage_begin(
+            store,
+            task.item_id,
+            "page_loop",
+            {
+                "page_count": pages,
+                "page_concurrency": page_concurrency,
+                "segment_total": segment_total,
+            },
+        )
         try:
             if pages > 1 and visual_feature_types != []:
                 # Merge-pass concurrency: default 1 = historical serial behaviour;
@@ -1330,6 +1548,9 @@ class RecognitionPipelineMixin:
                         selected_ocr_types=ocr_types,
                         selected_visual_feature_types=[],
                         stage_label="OCR+HaS识别",
+                        # Issue#274：item 的第一次段调用才启用独占首发；视觉合并段
+                        # （页 1 已有账）与页过滤路径不适用。
+                        first_launch=True,
                     )
                 )
                 page_sem = asyncio.Semaphore(visual_merge_concurrency)
@@ -1365,6 +1586,8 @@ class RecognitionPipelineMixin:
                 failed_pages = await run_page_stage(
                     selected_ocr_types=ocr_types,
                     selected_visual_feature_types=visual_feature_types,
+                    # Issue#274：单段路径同样是 item 的第一次段调用。
+                    first_launch=True,
                 )
             # Issue#199：失败清单**无条件写**（含空 dict）——深合并语义下，重跑全成功
             # 必须清掉上一次的失败键，否则 reject→重跑留下假警示（冷审 I1）。
@@ -1410,6 +1633,18 @@ class RecognitionPipelineMixin:
                         "vision_ms": _elapsed_ms(vision_started),
                         "max_active_pages": max_active_pages,
                     }
+                },
+            )
+            # Issue#274：② 逐页识别收口——失败页不改 state（诚实记账走 failed_pages），
+            # detail 计数在此一次性合成（页终态处不逐页改写 stages，两段式下避免双计）。
+            self._stage_end(
+                store,
+                task.item_id,
+                "page_loop",
+                "completed",
+                {
+                    "completed_pages": max(0, pages - len(failed_pages)),
+                    "failed_pages_count": len(failed_pages),
                 },
             )
             logger.info(

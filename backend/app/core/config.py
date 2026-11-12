@@ -342,6 +342,12 @@ class Settings(BaseSettings):
     # keeps the historical serial behaviour (safe on a single GPU); deployments
     # with one LocateAnything instance per card can raise to 2.
     BATCH_VISUAL_MERGE_PAGE_CONCURRENCY: int = 1
+    # Issue#274：首段第 1 页独占首发——调度器结构性保证「最先调度 + 最先落账」
+    #（非并发参数的巧合）。触发面 = 卷页数 > 2 且 > 并发槽位（#175 门①.5 教训：
+    # N=k 碰撞区须覆盖；N ≤ 2 时页 1 本就在首发窗口，独占无收益只牺牲并发峰值）。
+    # 置 False 回退「全部页同时入信号量池」的旧行为。窗口墙钟代价见方案 §2.2.1
+    #（page 模式 <1%、file 回滚模式 <10%）。
+    BATCH_RECOGNITION_FIRST_PAGE_PRIORITY: bool = True
     # GPU memory used/total ratio at/above which vision page concurrency is
     # forced down to 1. Raise on multi-service cards whose *static* residency is
     # already high (e.g. dual-GPU prod ~80% at idle) so healthy load is not
