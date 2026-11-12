@@ -1,9 +1,10 @@
 """Issue#273 Task 5：L1/L2 页级信号采集器 + 文件级 memo。
 
 页级路由的信号源：``collect_l1`` 采文本面指标（字符量/垃圾率/词长/字体表/阅读序/
-页内复读）+ **图像覆盖率**（B3 修复后随 memo 一次采齐——判定序规则 5.5 需要在
-灰区之前看到「整页图+内嵌层」，不能等灰区才触发的 L2 补采），``collect_l2``
-采渲染面指标（词框墨迹中位数/图像覆盖率，后者保留返回以向后兼容）。
+页内复读）+ **图像覆盖闸**（B3 修复后随 memo 一次采齐——判定序规则 5.5 需要在
+灰区之前看到「整页图+内嵌层」，不能等灰区才触发的 L2 补采；口径=最大单图未剪裁
+面积占比，与执行层 ``_is_scanned_page`` 同谓词），``collect_l2``
+采渲染面指标（词框墨迹中位数/图像覆盖闸，后者保留返回以向后兼容）。
 
 设计要点：
 
@@ -61,7 +62,7 @@ class _PageData:
     fonts: list[tuple] = field(default_factory=list)
     width: float = 0.0
     height: float = 0.0
-    coverage: float | None = None  # 图像覆盖率（原 L2 专属；B3 修复后 L1 即采，判定序 5.5 的输入面）
+    coverage: float | None = None  # 图像覆盖闸=最大单图未剪裁面积占比（B3 修复后 L1 即采，判定序 5.5 的输入面）
     error: bool = False
 
 
@@ -108,7 +109,7 @@ def _probe(file_path: str) -> _DocProbe:
                     # coverage 随 memo 一次采齐（get_image_info 毫秒级，A3 <20ms 判据安全）；
                     # 单项失败只降级为 None，不污染该页的词框/字体提取。
                     try:
-                        pd.coverage = _image_coverage(page, pd.width, pd.height)
+                        pd.coverage = _max_image_coverage(page, pd.width, pd.height)
                     except Exception:
                         pd.coverage = None
                 except Exception:
@@ -264,7 +265,7 @@ def _page_repeat_ratio(word_texts: list[str]) -> float:
 
 
 def collect_l2(file_path: str, page: int, dpi: int) -> tuple[float | None, float | None]:
-    """L2 渲染面信号：(词框墨迹中位数, 图像覆盖率)。绝不抛。
+    """L2 渲染面信号：(词框墨迹中位数, 图像覆盖闸)。绝不抛。
 
     整体失败（文件打不开/非 PDF/页缺失）⇒ ``(None, None)``；单项失败
     （numpy 缺失、页上无有效词框、coverage 计算异常）时仅该项为 ``None``、
@@ -284,7 +285,7 @@ def collect_l2(file_path: str, page: int, dpi: int) -> tuple[float | None, float
                 return (None, None)
             pg = doc[page - 1]
             try:
-                coverage = _image_coverage(pg, pd.width, pd.height)
+                coverage = _max_image_coverage(pg, pd.width, pd.height)
             except Exception:
                 coverage = None
             try:
@@ -296,21 +297,25 @@ def collect_l2(file_path: str, page: int, dpi: int) -> tuple[float | None, float
         return (None, None)
 
 
-def _image_coverage(pg: fitz.Page, width: float, height: float) -> float | None:
-    """图像 bbox 与页面的相交面积和 / 页面积，封顶 1.0；无图 ⇒ 0.0。"""
+def _max_image_coverage(pg: fitz.Page, width: float, height: float) -> float | None:
+    """最大单图未剪裁面积占比——与 file_parser._is_scanned_page 同谓词，消除两闸语义差。
+
+    取「单张图 bbox 的 ``abs()``（未剪裁面积）/ 页面积」的最大值：不与页 rect 求交
+    ⇒ 90° 旋转页（图 bbox 与旋转后页 rect 错位，交集只剩 ~0.7）仍得 1.0，
+    与执行层 ``abs(rect) >= SCAN_PAGE_IMAGE_COVERAGE_RATIO × 页面积`` 的判定
+    完全一致；无图 ⇒ 0.0（封顶 1.0 只影响展示值，不影响 ≥0.9 判定方向）；
+    页面积非法 ⇒ None。
+    """
     page_area = width * height
     if page_area <= 0:
         return None
-    total = 0.0
+    max_ratio = 0.0
     for info in pg.get_image_info():
         bbox = info.get("bbox")
         if not bbox:
             continue
-        r = fitz.Rect(bbox) & fitz.Rect(0.0, 0.0, width, height)
-        if r.is_empty:
-            continue
-        total += abs(r.width * r.height)
-    return min(1.0, total / page_area)
+        max_ratio = max(max_ratio, abs(fitz.Rect(bbox)) / page_area)
+    return min(1.0, max_ratio)
 
 
 def _page_ink(pg: fitz.Page, pd: _PageData, dpi: int) -> float | None:

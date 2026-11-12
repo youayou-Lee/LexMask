@@ -119,6 +119,31 @@ def test_collect_l1_fullpage_image_with_text_layer(tmp_path):
     assert s.image_coverage is not None and s.image_coverage >= 0.9
 
 
+def test_collect_l1_rotated_fullpage_image_with_text_layer(tmp_path):
+    # 门⑥ I-1：90° 旋转页缝隙——旧口径「图 bbox 与页 rect 剪裁交面积和/页面积」在
+    # 旋转页上（bbox 与旋转后页 rect 错位，交集只剩 ~0.7）漏过规则 5.5，而执行层
+    # _is_scanned_page 用未剪裁 abs(rect) 仍判扫描 ⇒ 两闸缝隙重开。routing 侧谓词
+    # 对齐执行层后旋转不变：整页图+内嵌层+页级 /Rotate 90 必须 image_coverage ≥0.9。
+    scratch = fitz.open()
+    spage = scratch.new_page()
+    y = 72
+    for line in ["人民法院判决书正文"] * 8:
+        spage.insert_text((72, y), line, fontsize=12, fontname="china-s")
+        y += 20
+    pix = spage.get_pixmap(dpi=150)
+    scratch.close()
+    path = str(tmp_path / "rotated_fullpage_image.pdf")
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "人民法院判决书正文", fontsize=12, fontname="china-s")
+    page.insert_image(page.rect, pixmap=pix)
+    page.set_rotation(90)  # 扫描仪常写的页级旋转元数据
+    doc.save(path)
+    s = signals.collect_l1(path, 1)
+    assert s.probe_error is False
+    assert s.image_coverage is not None and s.image_coverage >= 0.9
+
+
 def test_l1_memo_same_object(tmp_path):
     # 需求书原断言引用不存在的属性（s1.signals_dict_key）且三元恒真（已知瑕疵）；
     # 按其注释意图改写：两次采集的关键数值完全一致 ⇒ memo 生效（同文件只 probe 一次）。

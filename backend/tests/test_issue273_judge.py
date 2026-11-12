@@ -62,6 +62,13 @@ def test_fullpage_image_with_layer_is_ocr():
     assert (d.action, d.reason) == ("ocr", "fullpage_image_with_layer")
 
 
+def test_image_coverage_boundary_equals_is_ocr():
+    # 门⑥ I-2：恰等号钉——image_coverage == 0.9 必须进 ocr（>= 语义钉死，与执行层
+    # abs(rect) >= SCAN_PAGE_IMAGE_COVERAGE_RATIO × 页面积 的判定方向一致）。
+    d = judge.judge_page(_sig(image_coverage=0.9), T, routing_version=1)
+    assert (d.action, d.reason) == ("ocr", "fullpage_image_with_layer")
+
+
 def test_partial_image_coverage_does_not_trigger_fullpage_rule():
     # 低于阈值（部分插图页）不触发 5.5 ⇒ 走 default_verify。
     d = judge.judge_page(_sig(image_coverage=0.38), T, routing_version=1)

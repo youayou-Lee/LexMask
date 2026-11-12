@@ -20,7 +20,7 @@ class PageSignals:
     reading_order_agreement: float | None = None
     page_repeat_ratio: float = 0.0
     ink_alignment: float | None = None      # L2；None=未采样
-    image_coverage: float | None = None     # L2
+    image_coverage: float | None = None     # L1（最大单图未剪裁面积占比，判定序 5.5 输入面）；None=未采到
     probe_error: bool = False               # 采集器故障 ⇒ fail-closed 退 ocr
 
 
