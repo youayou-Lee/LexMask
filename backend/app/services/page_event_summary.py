@@ -8,6 +8,9 @@
   最后一条计 source（重试翻绿归 retry 桶）；终态为 page_failed 的页计入
   failed_pages 且不进任何 source 桶，翻绿（其后 page_done）即除名——
   「重试翻绿后 summary 失败页清零」由重算天然成立；
+* 产出形态（门⑥ I-1）：failed_pages 的键 = "<item_id>:<page>"（跨卷同页号不坍缩，
+  多卷任务两卷第 3 页各失败各留一键；键序按 (page, item_id) 稳定输出）；slowest_page
+  带 item_id 字段 {"item_id", "page", "ms"}——与 §2.1 目录布局的 (item, page) 口径一致；
 * 计时面（page_count / avg_page_ms / slowest_page）：与归宿面同键 (item_id, page)，
   取该页首见终态事件的 ms——重试翻绿页计首次处理耗时，重试不重复计入；
   page_count 即去重 (item, page) 数，与 DB 账本总页数一致（多卷 149+80 页 → 229）。
@@ -60,23 +63,30 @@ def compute_summary(job_dir: Path) -> dict[str, Any]:
                     latest_page[item_key] = (str(rec.get("source") or "page_pipeline"), ms, "")
                 if item_key not in first_page_ms:
                     first_page_ms[item_key] = ms
-    failed_pages: dict[str, str] = {}
-    for (_item, page), (source, _ms, error) in sorted(latest_page.items()):
+    # 终态仍失败的页收集为 (page, item_id, error)，末尾按 (page, item_id) 稳定重建键；
+    # 翻绿页不进桶也不列失败
+    failed_entries: list[tuple[int, str, str]] = []
+    for (item, page), (source, _ms, error) in sorted(latest_page.items()):
         if source == "failed":
-            failed_pages[str(page)] = error   # 终态仍失败的页；翻绿页不进桶也不列失败
+            failed_entries.append((page, item, error))
         else:
             bucket = source if source in pages_by_source else "page_pipeline"
             pages_by_source[bucket] += 1
     page_ms_list = [first_page_ms[key] for key in sorted(first_page_ms)]
     avg = round(sum(page_ms_list) / len(page_ms_list)) if page_ms_list else 0
-    slowest = {"page": None, "ms": 0}
-    for (_item, page), ms in sorted(first_page_ms.items()):
+    # 门⑥ I-1：跨卷同页号不坍缩——slowest 带 item_id；并列 ms 时 sorted 序（item_id, page）
+    # 先到者胜，输出稳定
+    slowest: dict[str, Any] = {"item_id": None, "page": None, "ms": 0}
+    for (item, page), ms in sorted(first_page_ms.items()):
         if ms > slowest["ms"]:
-            slowest = {"page": page, "ms": ms}
+            slowest = {"item_id": item, "page": page, "ms": ms}
     return {
         "page_count": len(first_page_ms),
         "pages_by_source": pages_by_source,
-        "failed_pages": dict(sorted(failed_pages.items(), key=lambda kv: int(kv[0]))),
+        "failed_pages": {
+            f"{item}:{page}": error
+            for page, item, error in sorted(failed_entries, key=lambda e: (e[0], e[1]))
+        },
         "avg_page_ms": avg,
         "slowest_page": slowest,
         "ner_calls_total": ner_calls,

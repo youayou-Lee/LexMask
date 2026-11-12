@@ -37,8 +37,9 @@ def test_summary_full_fields_from_injected_events(tmp_path):
     s = compute_summary(job)
     assert s["page_count"] == 4
     assert s["pages_by_source"] == {"docline": 2, "page_pipeline": 0, "retry": 1}
-    assert s["failed_pages"] == {"3": "BudgetExceeded"}
-    assert s["slowest_page"] == {"page": 3, "ms": 2000}
+    # 键 = "item_id:page"（跨卷同页号不坍缩，门⑥ I-1）；按 (page, item) 稳定排序
+    assert s["failed_pages"] == {"item1:3": "BudgetExceeded"}
+    assert s["slowest_page"] == {"item_id": "item1", "page": 3, "ms": 2000}
     assert s["avg_page_ms"] == round((500 + 1500 + 2000 + 700) / 4)
     assert s["ner_calls_total"] == 6 and s["ner_ms_total"] == 100 and s["ocr_ms_total"] == 300
     assert s["retry_count"] == 1
@@ -76,3 +77,25 @@ def test_summary_failed_page_cleared_when_turned_green(tmp_path):
     assert s["pages_by_source"] == {"docline": 0, "page_pipeline": 0, "retry": 1}
     assert s["page_count"] == 1
     assert s["retry_count"] == 1
+
+
+def test_summary_multi_volume_same_page_no_collapse(tmp_path):
+    """门⑥ I-1：跨卷同页号不坍缩——两卷同页失败各留一键（item:page）、slowest 带真最大卷的 item_id。"""
+    job = tmp_path / "j4"
+    _write_events(job, "volA", [
+        {"event": "page_failed", "page": 3, "stage": "ner", "error_type": "BudgetExceeded",
+         "message_sanitized": "m", "traceback_frames": [], "attempts": 1, "ms": 100},
+        {"event": "page_done", "page": 5, "ms": 120, "regions": 1, "source": "docline"},
+    ])
+    _write_events(job, "volB", [
+        {"event": "page_failed", "page": 3, "stage": "ocr", "error_type": "OcrTimeout",
+         "message_sanitized": "m", "traceback_frames": [], "attempts": 1, "ms": 250},
+        {"event": "page_done", "page": 5, "ms": 900, "regions": 1, "source": "page_pipeline"},
+    ])
+    s = compute_summary(job)
+    assert s["page_count"] == 4
+    # 两卷同页号 3 的失败都保留（键 = item:page，按 (page, item) 排序），不同 error_type 不互吞
+    assert s["failed_pages"] == {"volA:3": "BudgetExceeded", "volB:3": "OcrTimeout"}
+    # 同页号 5 不同 ms：slowest_page 带真最大值所属卷的 item_id
+    assert s["slowest_page"] == {"item_id": "volB", "page": 5, "ms": 900}
+    assert s["avg_page_ms"] == round((100 + 120 + 250 + 900) / 4)
