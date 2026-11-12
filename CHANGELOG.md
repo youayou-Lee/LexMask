@@ -3,16 +3,15 @@
 
 ## 2026-11-13
 
-### 增强（Issue#274）P1 首屏优先调度 + 三段式阶段进度——整卷识别「第一秒就知道在干什么、还要多久」（父 #272 架构 v2）
+### 清扫（Issue#269）死代码四件：i18n 死 title 键 + settings barrel 死导出 + rec hook 公开面收缩 + preset 弹窗残留
 
-- **为什么**：86 页真卷首屏 104.8s（file 模式下整卷文本层链在首个页请求里同步建链，#273 page 模式已结构性解除）期间 UI 恒显「0/86」，用户按 2s/页推断以为卡死（已发生）；进度只有「逐页」一个计数，没有阶段语义与 ETA。
-- **改了什么**：
-  - 阶段状态机落账：`performance.recognition.stages=[{name,started_at,finished_at,state,detail}]`（`task_queue_pipelines.py` mixin 助手 `_read_stages/_write_stages/_stage_begin/_stage_end/_close_running_stages`，单写者=识别协程；全数组整替写 replace_paths=(("recognition","stages"),)，fail-open 双层绝不影响主链）。阶段① `preflight`（LA 预检/并发决策/sparse probe/detail 回填 la_probe·page_concurrency·sparse_probe·routing_mode）→ ② `page_loop`（页循环聚合，失败页不改 state——诚实记账走 `failed_pages`；②' `accelerator` 为 #275 预留扩展点，仅在加速器真实开跑时出现——配置≠显示）。stages 语义=最近一次**整卷识别**的阶段账：清账写点前移到 `_run_recognition` 识别 try 入口（parse 之前，重跑 parse 窗口不再带回旧阶段账）；单页重试不改写。
-  - 阶段切换事件接 #279：`stage_changed{to, from?}`（schema 已预留本期补生产者）；卷级事件显式 `page=None`（带页上下文也强制 None，变异 M6 钉）；并行段 begin 省略 `from`（F8）；异常路径 `_close_running_stages` 兜底落 failed。
-  - 首屏优先调度：`BATCH_RECOGNITION_FIRST_PAGE_PRIORITY`（默认 True）——item 首段第 1 页**独占首发**（其余页在页 1 终态后才创建，调度器结构保证「最先调度+最先落账」非并发巧合）；触发面=卷页数>2 且>并发槽位（#175 门①.5 教训：N=k 碰撞区、N≤2 不独占）；规范三句（方案 §2.2.1）：create_task 页源必须切片（M11/AC1「页 1 恰跑一次」钉）、stage_total 恒全段页数（防 x/85 off-by-one）、窗口置于 try/cancel 之外且取消/内存异常直接传播。页 1 失败不熔断（#199 页级隔离不变）。
-  - ETA 数据增量：completed 页账补写 `stage_duration_ms:{stage_label: ms}`（与失败分支同键对称，F2——两段式 pages.<p> 整替重写下只有段标签键能区分样本段属）。
-  - 前端：`playground/lib/task-stages.ts` 纯函数（stages 解析/乐观①门控/ETA 保守版=p75+剔除缓存命中页+严格单调 min）；`PlaygroundLoading` 阶段条**叠加**不替换（`playground-loading-stages`，①✓→②当前·一句话说明·约 Xs/约 N 秒/页；②' 附注「不影响逐页进度」）；乐观①门控四条（vision 段 && current===0 && 无 finished_at && 无 stages 账——parse/重跑窗口显示中性文案不误显①，F1+v3 注记 1）；批量行走既有 message 映射零回归替代（F3：`Vision recognition queued for N page(s)` → 文档预检段，后端零改动；前端 1 处 null 钉有意翻转）。
-- **测试**：后端新增 `test_issue274_first_screen_stages.py` 19 例（独占首发顺序/恰跑一次/total 口径/开关/触发面含 pages=2∧k=1 杀手测态/失败不熔断 + stages 形状/失败页语义/两段式/预检回填 + 事件/故障注入 + 加速器配置≠显示 + file 模式 + 重跑清账 + AC11 条件式注入 + F2 增键；M3 杀手由验收修复轮 `6dee09a` 补杀）；`test_issue199` u9 键集钉同步 F2 增量（留痕）；后端全量 **3232 passed / 48 skipped / 0 failed**（独立验收复跑口径 = 3213 基线 + 19 新测；failed 集合 comm -3 零差异）。前端 vitest 全量 **545 passed**（含 task-stages 20 + 组件 5 + taskflow 门⑥ I-1 接线判据 2）、tsc.test rc=0、build 绿；`task-progress.test` 一处 null 钉 + `taskflow (j)` 一处段名钉随 F3 有意翻转（留痕）。变异 13/13 KILLED（M1 独占守卫/M2 默认翻转/M3 触发面/M4' 清账写点/M5 事件接线/M6 page=None/M7a 剔缓存/M7b p75/M8a finished_at 守卫/M8b 乐观恒关/M9 并行段 from/M10 fail-open/M11 create_task 源；M3 首轮被 `>page_concurrency` 子句掩蔽 SURVIVED，验收修复轮补 pages=2∧concurrency=1 测态后 KILLED）。门⑥修复轮（I-1/M-4）：ETA 单调记忆按任务/段复位（preflight-only 账 + 段标签双复位点，防跨任务尾值钳死）；阶段条 done 只收 completed（failed/skipped 不渲染 ✓）。挂账：AC1b/AC9b（86 页真卷 ≤5s 与文案一致性）【云门④】、AC4b（加速器真开关语义）随 #275 落地回补。
+- **为什么**：PR#265 门⑥挂账 triage ④。方案 select 弹窗替代旧 preset 弹窗与页签化改版后，一批键/导出/hook 公开面只剩测试引用或彻底零消费，继续留着会误导后来者以为仍是活契约。
+- **清扫了什么**（净删 162 行，零行为变更）：
+  - i18n：`nav.redactionList` / `nav.wordPools` 裸 title 键（zh 三副本+en 三副本 / zh+en 各一；`.sub` 活键保留）；`preset.saveText.success` / `preset.saveVision.success`（随 hook 死代码失去唯一消费方；`preset.save.failed` 活键保留）。
+  - `features/settings/index.tsx` barrel：`RedactionListSettings` / `WordPoolsSettings` 死导出移除（settings-hub 直引 `'./word-pools'`、测试 vi.mock 直指模块文件；barrel 其余四导出为 router 活消费保留）。
+  - `use-playground-recognition` 公开面收缩：`typeTab`/`setTypeTab`（含 `use-playground.ts` 里为已消失消费者保留的 image 模式同步 effect）、preset 弹窗全套（`openTextPresetDialog`/`openVisionPresetDialog`/`saveTextPresetFromPlayground`/`saveVisionPresetFromPlayground`/`closePresetDialog`/`presetDialogKind`/`presetDialogName`/`setPresetDialogName`/`presetSaving`——识别范围弹窗自带保存）、`playgroundTextGroups`；三个组件测试的 mock 对象同步清理死字段。
+- **验证**：逐项 grep 证明零消费后才删（含 vi.mock 路径核对）；全量 69 文件/517 passed（=preview 基线，纯删除零新增）；tsc 双门 rc=0；build 绿且 bundle 实际瘦身（345.35→343.59 kB）。
+- **挂账**：无（③④的残留面复查结论已并入本次清扫）。
 
 ## 2026-11-12
 
