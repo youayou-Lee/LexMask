@@ -94,9 +94,17 @@ export const PlaygroundUpload: FC<PlaygroundUploadProps> = ({ ctx }) => {
     : undefined;
   const showOfflineHint =
     backendUnavailable || backendChecking || showVisualWarning || otherServicesBlocked;
-  const warningMainText = showVisualWarning
-    ? t('playground.upload.visualOfflineHint').replace('{count}', String(selectedVisualTypeCount))
-    : t(serviceHintKey);
+  // Issue#270：组合故障（视觉 + 其他服务同时 blocked）主文案换组合版键——单视觉文案
+  // 结尾「其余识别不受影响」在组合故障下是错误陈述。分支序：组合 > 单视觉 > 通用。
+  const warningMainText =
+    showVisualWarning && otherServicesBlocked
+      ? t('playground.upload.visualOfflineCombinedHint').replace(
+          '{count}',
+          String(selectedVisualTypeCount),
+        )
+      : showVisualWarning
+        ? t('playground.upload.visualOfflineHint').replace('{count}', String(selectedVisualTypeCount))
+        : t(serviceHintKey);
 
   // 默认选中 effect 与 chip 点击用到的字段先解构（exhaustive-deps 按标识符收集依赖）。
   const {

@@ -254,6 +254,37 @@ describe('Task 9b：告警人话化（playground-offline-hint 沿用）', () => 
     expect(container.querySelector('[data-testid="playground-offline-hint"]')).toBeNull();
   });
 
+  // Issue#270：组合故障（视觉 + 其他服务同时 blocked）主文案要涵盖两者——
+  // 不再复用单视觉文案（其结尾「其余识别不受影响」在组合故障下是错误陈述）。
+  it('组合故障（视觉+其他服务同时 blocked，已选视觉要素）→ 主文案为组合版，不含「其余识别不受影响」', () => {
+    mockHealthState.health = {
+      all_online: false,
+      services: {
+        paddle_ocr: { name: 'PaddleOCR', status: 'offline' },
+        has_ner: { name: 'HaS Text', status: 'online' },
+        visual_features: { name: 'visual', status: 'offline' },
+      },
+    };
+    const rec = makeRec({
+      entityTypes: CATALOG_A,
+      selectedTypes: [...LEGAL_IDS],
+      selectedVisualFeatureTypes: ['OFFICIAL_SEAL', 'SIGNATURE'],
+    });
+    const { container } = render(<PlaygroundUpload ctx={makeCtx(rec)} />);
+
+    const hint = container.querySelector('[data-testid="playground-offline-hint"]');
+    expect(hint).not.toBeNull();
+    // 组合版主文案特征片段（visualOfflineCombinedHint）
+    expect(hint?.textContent).toContain('均未正常运行');
+    // 不含单视觉文案的错误陈述（旧代码渲染 visualOfflineHint 必含 → 对旧代码红）
+    expect(hint?.textContent).not.toContain('其余识别不受影响');
+    // 人话口径不变：主文案无黑话；详情折叠仍如实列出全部受影响服务
+    expect(hint?.textContent).not.toContain('start_local');
+    fireEvent.click(container.querySelector('[data-testid="playground-offline-hint-details"]') as Element);
+    expect(hint?.textContent).toContain('start_local');
+    expect(container.querySelector('[data-testid="playground-affected-services"]')).not.toBeNull();
+  });
+
   it('视觉特征离线但其余服务离线（视觉未选）→ 走通用提示（paddle_ocr 离线仍要知情）', () => {
     mockHealthState.health = {
       all_online: false,
