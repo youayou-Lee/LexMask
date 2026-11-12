@@ -743,7 +743,7 @@ class RecognitionPipelineMixin:
         if pages > 1 and _file_type_value(fi.get("file_type")) == "pdf_scanned":
             # Issue#273：probe 预热是 file 模式 docline 的决策面；page 模式文本来源
             # 由逐页路由决策指挥 ⇒ 跳过预热（决策面唯一）。settings 在本函数上文
-            # 已惰性导入（:656 附近），此处直接可用。
+            # 已惰性导入（:696 附近），此处直接可用。
             if settings.RECOGNITION_ROUTING_MODE != "page":
                 try:
                     from app.services.vision_service import prime_pdf_text_layer_sparse_probe

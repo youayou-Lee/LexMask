@@ -31,6 +31,36 @@ def test_tie_keeps_text_layer_and_no_switch():
     assert v2.winner == "text_layer"
 
 
+def test_entities_exact_multiple_keeps_text_layer():
+    # K2 恰等号负样本：3 == 2×1.5 不改判（严格 >）——保留文本层、无改判痕迹。
+    v = arbitrate(SideResult(100, 2), SideResult(100, 3), T)
+    assert (v.winner, v.switched_from, v.switch_reason, v.evidence_valid) == (
+        "text_layer", None, None, True,
+    )
+
+
+def test_ocr_switch_path_marks_switched_from_text_layer():
+    # 门⑥ 挂账钉：两条改判路径都必须带 switched_from="text_layer"（账本改判链）。
+    v_chars = arbitrate(SideResult(100, 5), SideResult(200, 5), T)
+    assert v_chars.switched_from == "text_layer"
+    v_entities = arbitrate(SideResult(1000, 4), SideResult(1000, 7), T)
+    assert v_entities.switched_from == "text_layer"
+    v_zero = arbitrate(SideResult(900, 0), SideResult(900, 2), T)
+    assert v_zero.switched_from == "text_layer"
+
+
+def test_metrics_records_both_sides_for_any_verdict():
+    # 门⑥ 挂账钉：metrics 无论改判与否都记 chars/entities 双侧数值（审计面）。
+    v_switch = arbitrate(SideResult(100, 5), SideResult(200, 5), T)
+    assert v_switch.metrics == {"chars": {"text_layer": 100, "ocr": 200},
+                                "entities": {"text_layer": 5, "ocr": 5}}
+    v_keep = arbitrate(SideResult(1000, 5), SideResult(1000, 5), T)
+    assert v_keep.metrics == {"chars": {"text_layer": 1000, "ocr": 1000},
+                              "entities": {"text_layer": 5, "ocr": 5}}
+    v_invalid = arbitrate(SideResult(1000, 5), SideResult(0, 0), T)
+    assert v_invalid.metrics["chars"]["ocr"] == 0 and v_invalid.metrics["entities"]["ocr"] == 0
+
+
 def test_empty_evidence_is_invalid_not_pass():
     v = arbitrate(SideResult(1000, 5), SideResult(0, 0), T)
     assert v.winner == "text_layer" and v.evidence_valid is False

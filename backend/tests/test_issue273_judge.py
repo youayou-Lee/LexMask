@@ -1,7 +1,7 @@
 import json
-import pytest
-from app.services.page_routing.types import PageSignals, RoutingThresholds
+
 from app.services.page_routing import judge
+from app.services.page_routing.types import PageSignals, RoutingThresholds
 
 T = RoutingThresholds(
     min_chars=120, max_garbage=0.15, max_word_chars=400,
@@ -79,6 +79,13 @@ def test_escalated_volume_is_both():
     assert (d.action, d.reason) == ("both", "volume_escalated_both")
 
 
+def test_gray_zone_resolved_before_escalation():
+    # 门⑥ 挂账钉：灰区页在整卷升级之前先走 L2 判定——灰区不享受升级豁免
+    #（ink 缺失/过低都 fail-closed 退 ocr，escalated=True 压不过规则 6）。
+    d = judge.judge_page(_sig(chars=150, ink_alignment=0.001), T, routing_version=1, escalated=True)
+    assert (d.action, d.reason) == ("ocr", "ink_alignment_low")
+
+
 def test_needs_l2_boundary_only():
     assert judge.needs_l2(_sig(chars=150), T) is True       # 150 < 120×1.5
     assert judge.needs_l2(_sig(chars=800), T) is False
@@ -107,6 +114,7 @@ def test_short_word_ratio_and_avg_word_len_not_in_p0_rules():
 
 def test_judge_module_import_surface_is_pure():
     import sys
+
     import app.services.page_routing.judge as m
     banned = {"fitz", "httpx", "sqlalchemy", "redis", "requests"}
     hit = banned & set(sys.modules) & set(getattr(m, "__dict__", {}).keys())
@@ -115,6 +123,7 @@ def test_judge_module_import_surface_is_pure():
 
 def test_judge_source_has_no_io_imports():
     import inspect
+
     import app.services.page_routing.judge as m
     src = inspect.getsource(m)
     for token in ("import fitz", "import httpx", "import requests", "sqlalchemy", "file_store"):

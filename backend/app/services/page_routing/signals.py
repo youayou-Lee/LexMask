@@ -254,7 +254,12 @@ def _page_repeat_ratio(word_texts: list[str]) -> float:
 
 
 def collect_l2(file_path: str, page: int, dpi: int) -> tuple[float | None, float | None]:
-    """L2 渲染面信号：(词框墨迹中位数, 图像覆盖率)。失败 ⇒ (None, None)，绝不抛。"""
+    """L2 渲染面信号：(词框墨迹中位数, 图像覆盖率)。绝不抛。
+
+    整体失败（文件打不开/非 PDF/页缺失）⇒ ``(None, None)``；单项失败
+    （numpy 缺失、页上无有效词框、coverage 计算异常）时仅该项为 ``None``、
+    另一项照常返回。
+    """
     try:
         probe = _load(file_path)
         if probe is None or probe.error is not None or not probe.is_pdf:

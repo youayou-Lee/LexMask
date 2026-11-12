@@ -92,13 +92,14 @@ def _stub_vision(
     pages: int,
     detect: Any,
     file_info_extra: dict[str, Any] | None = None,
+    file_type: str = "image",
 ) -> None:
     """test_issue139._vision_stubs 的可扩展版：file_info 可带 page_routing 账本。"""
     import app.services.file_operations as fo
     import app.services.redaction_orchestrator as ro
 
     def _get_file_info(file_id: str) -> dict[str, Any]:
-        info: dict[str, Any] = {"file_id": file_id, "page_count": pages, "file_type": "image"}
+        info: dict[str, Any] = {"file_id": file_id, "page_count": pages, "file_type": file_type}
         if file_info_extra:
             info.update(file_info_extra)
         return info
@@ -261,3 +262,79 @@ def test_file_mode_records_no_routing_fields(monkeypatch: pytest.MonkeyPatch) ->
         for page, entry in (patch.get("recognition", {}).get("pages") or {}).items():
             overlap = set(entry) & _NEW_FIELDS
             assert not overlap, f"page {page} 出现 file 模式不该有的字段: {overlap}"
+
+
+# ---------------------------------------------------------------------------
+# 5) prime 门双案钉：probe 预热只属 file 模式（page 模式决策面唯一 ⇒ 跳过）
+# ---------------------------------------------------------------------------
+def _stub_prime_probe(monkeypatch: pytest.MonkeyPatch, calls: list[dict[str, Any]]) -> None:
+    """替身 ``vision_service.prime_pdf_text_layer_sparse_probe``（_run_vision 调用时才 import）。"""
+    import app.services.vision_service as vs
+
+    async def _prime(file_path: str, file_type: Any, *, page: int = 1) -> dict[str, Any]:
+        calls.append({"file_path": file_path, "file_type": file_type, "page": page})
+        return {"ran": True, "pages_probed": 1}
+
+    monkeypatch.setattr(vs, "prime_pdf_text_layer_sparse_probe", _prime)
+
+
+def _recognition_with_probe(store: _FakeStore) -> dict[str, Any]:
+    for patch in store.performance:
+        rec = patch.get("recognition") or {}
+        if "pdf_text_layer_sparse_probe" in rec:
+            return rec
+    raise AssertionError(f"performance 未记录 pdf_text_layer_sparse_probe: {store.performance}")
+
+
+def test_page_mode_skips_sparse_probe_prime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """page 模式（默认）：pdf_scanned 多页也**不调** probe 预热——决策面唯一。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "RECOGNITION_ROUTING_MODE", "page", raising=False)
+    store = _FakeStore()
+    queue = _queue(store)
+
+    async def _detect(file_id: str, page: int, **kwargs: Any) -> dict[str, Any]:
+        return _boxes_result(page)
+
+    prime_calls: list[dict[str, Any]] = []
+    _stub_prime_probe(monkeypatch, prime_calls)
+    _stub_vision(monkeypatch, pages=2, detect=_detect, file_type="pdf_scanned")
+
+    async def scenario() -> None:
+        await queue._run_vision(_item(), dict(_VISION_CFG))
+
+    _run(scenario)
+    assert prime_calls == [], "page 模式不得预热 sparse probe（文本来源由逐页路由决策指挥）"
+    assert _recognition_with_probe(store)["pdf_text_layer_sparse_probe"] == {"ran": False}
+
+
+def test_file_mode_primes_sparse_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """file 模式（回滚口径）：probe 预热被调用、结果透传进 performance。"""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "RECOGNITION_ROUTING_MODE", "file", raising=False)
+    store = _FakeStore()
+    queue = _queue(store)
+
+    async def _detect(file_id: str, page: int, **kwargs: Any) -> dict[str, Any]:
+        return _boxes_result(page)
+
+    prime_calls: list[dict[str, Any]] = []
+    _stub_prime_probe(monkeypatch, prime_calls)
+    _stub_vision(
+        monkeypatch,
+        pages=2,
+        detect=_detect,
+        file_type="pdf_scanned",
+        file_info_extra={"file_path": "/store/f-1.pdf"},
+    )
+
+    async def scenario() -> None:
+        await queue._run_vision(_item(), dict(_VISION_CFG))
+
+    _run(scenario)
+    assert len(prime_calls) == 1, prime_calls
+    assert prime_calls[0]["page"] == 1
+    assert prime_calls[0]["file_path"] == "/store/f-1.pdf"
+    assert _recognition_with_probe(store)["pdf_text_layer_sparse_probe"] == {"ran": True, "pages_probed": 1}

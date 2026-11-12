@@ -12,7 +12,8 @@ def test_pass_then_upgrade_at_three():
 
 def test_switch_resets_counter_not_upgrade():
     s = state.VolumeRoutingState()
-    state.record_pass(s, 3); state.record_pass(s, 3)
+    state.record_pass(s, 3)
+    state.record_pass(s, 3)
     state.record_switch(s)
     assert s.consecutive_passes == 0 and s.upgraded is False
 
@@ -32,7 +33,7 @@ def test_pick_sample_pages_deterministic_and_includes_first():
     c = state.pick_sample_pages(100, 2, "xyz")
     assert a == b and 1 in a and len(a) == 2
     assert all(1 <= p <= 100 for p in a)
-    assert a != c or True  # 不同种子通常不同（不硬断言防退化）
+    assert a != c  # 不同种子（abc/xyz 实测 1,71 vs 1,22）必须选到不同页；退化即红
 
 
 def test_pick_sample_pages_zero_and_tiny_volume():
