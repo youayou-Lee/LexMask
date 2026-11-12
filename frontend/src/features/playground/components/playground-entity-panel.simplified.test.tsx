@@ -114,6 +114,37 @@ describe('Issue#262：复核态右栏精简', () => {
     expect(screen.getByTestId('playground-redact-btn')).not.toBeNull();
   });
 
+  it('高级抽屉开关 aria-controls 指向面板 id：展开态面板存在、收起态不在 DOM（动态读值 + 身份断言）', () => {
+    // Issue#266 ①：aria-controls 动态读值（防改名断裂 M4）；收起态条件挂载
+    // 面板不在 DOM——ARIA disclosure 允许指向暂缺元素。身份断言（M4b）：
+    // 找到的元素内含水印输入，锁「找到的就是那个抽屉」。
+    const { container } = render(<PlaygroundEntityPanel {...baseProps} />);
+    const toggle = screen.getByTestId('playground-advanced-toggle');
+    const controlsId = toggle.getAttribute('aria-controls');
+    expect(controlsId).not.toBeNull();
+    expect(document.getElementById(controlsId as string)).toBeNull();
+    fireEvent.click(toggle);
+    const panel = document.getElementById(controlsId as string);
+    expect(panel).not.toBeNull();
+    expect(panel?.querySelector('[data-testid="playground-watermark-input"]')).not.toBeNull();
+    fireEvent.click(toggle);
+    expect(container.ownerDocument.getElementById(controlsId as string)).toBeNull();
+  });
+
+  it('高级抽屉开关带 focus-visible 焦点环样式（钉类名形态：jsdom 无法验视觉，行为由门④真机验）', () => {
+    render(<PlaygroundEntityPanel {...baseProps} />);
+    const cls = screen.getByTestId('playground-advanced-toggle').className;
+    // 口径注记（F4）：本断言钉类名形态；若仓内统一 focus-ring utility 需同步改本断言。
+    for (const seg of [
+      'focus-visible:outline-none',
+      'focus-visible:ring-2',
+      'focus-visible:ring-ring',
+      'focus-visible:ring-offset-2',
+    ]) {
+      expect(cls).toContain(seg);
+    }
+  });
+
   it('replace 模式渲染化名映射、mask 模式渲染交付水印（显隐条件不变，均在主控件区）', () => {
     // mask（baseProps）：交付水印在、化名映射不在
     render(<PlaygroundEntityPanel {...baseProps} />);
