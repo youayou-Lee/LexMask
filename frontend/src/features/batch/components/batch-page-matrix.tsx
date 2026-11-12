@@ -482,10 +482,12 @@ export function BatchPageMatrix({
               .join('、'),
           )}
           {' · '}
-          {/* Issue#289 F4：与面板按钮同口径——忙态与终态的禁用原因文案不混用。 */}
+          {/* Issue#289 F4：与面板按钮同口径——忙态/重试在飞与终态的禁用原因文案不混用。
+              门⑥ M2：重试在飞 + 快照仍 awaiting_review 的残窗里落「等待当前重试结束」
+              措辞，不与同屏按钮「重试中…」矛盾。 */}
           {retryable
             ? t('batchWizard.pages.retryHint')
-            : busy
+            : retrying || busy
               ? t('batchWizard.pages.retryUnavailable')
               : t('pageDetail.retryUnavailableTerminal')}
         </p>

@@ -132,6 +132,11 @@ describe('详情面板内重试按钮四态（Issue#289）', () => {
     expect(button.hasAttribute('disabled')).toBe(true);
     expect(button.textContent).toContain('重试中');
     expect(screen.queryByTestId('page-detail-retry-unavailable')).toBeNull();
+    // 门⑥ M2：重试在飞 + 快照仍 awaiting_review 的残窗里，底部 hint 落「等待当前重试
+    // 结束」措辞，不冒充终态（与同屏按钮「重试中…」不矛盾）。
+    const hint = screen.getByTestId('page-matrix-failed-hint');
+    expect(hint.textContent).toContain('需先完成识别');
+    expect(hint.textContent).not.toContain('终态');
   });
 });
 
