@@ -152,6 +152,46 @@ def _boxes_by_page(raw: Any) -> dict[int, list[dict[str, Any]]]:
     return out
 
 
+def _routing_fields_from_quality(quality: dict) -> dict:
+    """Issue#273：成功页账本 routing 字段——从 ``pipeline_status["page_routing"]`` 提取。
+
+    Task 8 的 finalize 在识别结果里合成了完整路由块（决策/仲裁终值/计时），
+    成功页直接取它。file 模式 / 无路由块 ⇒ 空 dict（调用方 ``**`` 展开 = 零键、
+    零噪声，与「file 模式账本无新字段」一致）。
+    """
+    pr = (quality.get("pipeline_status") or {}).get("page_routing") or {}
+    if not pr:
+        return {}
+    fields = {"text_source": pr.get("text_source"),
+              "text_metrics": {"action": pr["decision"]["action"],
+                               "reason": pr["decision"]["reason"],
+                               "signals": pr["decision"]["signals"]},
+              "stage_ms": pr.get("stage_ms") or {}}
+    for k in ("switched_from", "switch_reason", "verify_incomplete"):
+        if pr.get(k) is not None:
+            fields[k] = pr[k]
+    return fields
+
+
+def _routing_fields_from_file_store(file_id: str, page: int) -> dict:
+    """Issue#273：超时/失败页账本 routing 字段——决策即落账（Task 7）的证据回读。
+
+    超时/异常页拿不到识别结果（无 ``pipeline_status``），但路由决策在 run_page
+    之前已写进 file_store ``info["page_routing"][str(page)]`` ⇒ 从那里补记，
+    保住「本页按什么文本来源跑的」这条排查线。file 模式下 file_store 也没有
+    page_routing ⇒ 空 dict（零键）。
+    """
+    from app.services.file_operations import get_file_info
+
+    info = get_file_info(file_id) or {}
+    pr = (info.get("page_routing") or {}).get(str(page)) or {}
+    if not pr.get("decision"):
+        return {}
+    return {"text_source": pr.get("text_source"),
+            "text_metrics": {"action": pr["decision"]["action"],
+                             "reason": pr["decision"]["reason"]}}
+
+
 class RecognitionPipelineMixin:
     """识别流水线：解析 -> NER/Vision -> 完成识别（可选入队匿名化）。"""
 
@@ -481,17 +521,30 @@ class RecognitionPipelineMixin:
                     ),
                     timeout=page_timeout,
                 )
-            except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041
+            except (TimeoutError, asyncio.TimeoutError) as exc:  # noqa: UP041
                 elapsed = _elapsed_ms(started)
+                # 评审 I1（Issue#273）：带消息的 TimeoutError 子类（路由
+                # RoutingEvidenceTimeout、ocr_cache inflight 兜底）⇒ 原因透传；
+                # 真页墙超时 str 为空 ⇒ 文案不变（主路径同款处理）。
+                exc_reason = str(exc).strip()
+                timeout_reason = f"page retry timeout after {page_timeout:.0f}s"
+                if exc_reason:
+                    timeout_reason = f"{timeout_reason}: {exc_reason}"[:200]
                 records[str(page)] = {
                     "page": page,
                     "started_at": started_at,
                     "finished_at": _utc_iso(),
                     "duration_ms": elapsed,
                     "status": "timeout",
+                    **({"error": timeout_reason} if exc_reason else {}),
                 }
-                failed_map[str(page)] = f"page retry timeout after {page_timeout:.0f}s"
-                logger.warning("[queue] item=%s page %d retry TIMEOUT", task.item_id[:8], page)
+                failed_map[str(page)] = timeout_reason
+                logger.warning(
+                    "[queue] item=%s page %d retry TIMEOUT: %s",
+                    task.item_id[:8],
+                    page,
+                    timeout_reason,
+                )
                 # Issue#279：重试终态事件（纯旁路）。attempt = 该页累计重试序号（含本次，
                 # = 既有账 +1），与 retry_started / DB page_retry_counts 同基（终审 I-4；
                 # 在页循环内取值——page_retry_counts 到 finalization 才写，此处读到旧账）。
@@ -505,7 +558,7 @@ class RecognitionPipelineMixin:
                     page=page,
                     stage="retry",
                     error_type="PageTimeout",
-                    message_sanitized=f"retry timeout after {page_timeout:.0f}s",
+                    message_sanitized=timeout_reason,
                     traceback_frames=[],
                     attempts=retry_count_of(store, task.item_id, page) + 1,
                     ms=elapsed,
@@ -803,17 +856,21 @@ class RecognitionPipelineMixin:
         )
         sparse_probe: dict[str, Any] = {"ran": False}
         if pages > 1 and _file_type_value(fi.get("file_type")) == "pdf_scanned":
-            try:
-                from app.services.vision_service import prime_pdf_text_layer_sparse_probe
+            # Issue#273：probe 预热是 file 模式 docline 的决策面；page 模式文本来源
+            # 由逐页路由决策指挥 ⇒ 跳过预热（决策面唯一）。settings 在本函数上文
+            # 已惰性导入（:696 附近），此处直接可用。
+            if settings.RECOGNITION_ROUTING_MODE != "page":
+                try:
+                    from app.services.vision_service import prime_pdf_text_layer_sparse_probe
 
-                sparse_probe = await prime_pdf_text_layer_sparse_probe(
-                    str(fi.get("file_path") or ""),
-                    fi.get("file_type"),
-                    page=1,
-                )
-            except Exception:
-                sparse_probe = {"ran": False, "error": "probe_failed"}
-                logger.debug("unable to prime scanned PDF text-layer sparse probe", exc_info=True)
+                    sparse_probe = await prime_pdf_text_layer_sparse_probe(
+                        str(fi.get("file_path") or ""),
+                        fi.get("file_type"),
+                        page=1,
+                    )
+                except Exception:
+                    sparse_probe = {"ran": False, "error": "probe_failed"}
+                    logger.debug("unable to prime scanned PDF text-layer sparse probe", exc_info=True)
         page_sem = asyncio.Semaphore(page_concurrency)
         store = self._get_store()
         store.update_item_progress(
@@ -994,9 +1051,16 @@ class RecognitionPipelineMixin:
                         timeout=page_timeout,
                     )
                 # Issue#139：见 _run_recognition 处的同类说明（3.10 两类分立 + 必须重排到 OSError 之前）。
-                except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041
+                except (TimeoutError, asyncio.TimeoutError) as exc:  # noqa: UP041
                     page_ms = _elapsed_ms(page_started)
                     active_pages = max(0, active_pages - 1)
+                    # 评审 I1（Issue#273）：真页墙超时 str 为空 ⇒ 文案不变；带消息的
+                    # TimeoutError 子类（路由 RoutingEvidenceTimeout、ocr_cache inflight
+                    # 兜底）⇒ 原因透传，否则失败页只剩「timeout after Ns」无因可查。
+                    exc_reason = str(exc).strip()
+                    timeout_reason = f"{stage_label} page timeout after {page_timeout:.0f}s"
+                    if exc_reason:
+                        timeout_reason = f"{timeout_reason}: {exc_reason}"[:200]
                     self._record_item_performance(
                         store,
                         task.item_id,
@@ -1009,6 +1073,11 @@ class RecognitionPipelineMixin:
                                         "status": "timeout",
                                         "error_type": "PageTimeout",
                                         "active_pages_at_end": active_pages,
+                                        **({"error": timeout_reason} if exc_reason else {}),
+                                        # Issue#273：决策即落账（Task 7）——超时页拿不到
+                                        # 识别结果，但从 file_store 补记已发生的路由决策
+                                        # （file 模式/未落账 ⇒ 空 dict 零键，B6）。
+                                        **_routing_fields_from_file_store(task.file_id, p),
                                     }
                                 }
                             }
@@ -1029,9 +1098,7 @@ class RecognitionPipelineMixin:
                     # Issue#199 页级隔离：单页超时**不上抛**——记录后由本阶段收尾
                     # 汇入 failed_pages，其余页照常完成（极端页不得作废整卷）。
                     if stage_failed is not None:
-                        stage_failed[p] = (
-                            f"{stage_label} page timeout after {page_timeout:.0f}s"
-                        )
+                        stage_failed[p] = timeout_reason
                     # Issue#238：超时页也计入已完成——页账走到头才算数，进度条不卡条。
                     bump_stage_progress(stage_label, stage_pages)
                 except MemoryError:
@@ -1089,6 +1156,9 @@ class RecognitionPipelineMixin:
                                                 "error": f"{type(exc).__name__}: {exc}"[:200],
                                             }
                                         },
+                                        # Issue#273：同 timeout 路径——file_store 已落账的
+                                        # 路由决策补记（空 dict 零键，file 模式零噪声）。
+                                        **_routing_fields_from_file_store(task.file_id, p),
                                     }
                                 }
                             }
@@ -1131,6 +1201,9 @@ class RecognitionPipelineMixin:
                                         "cache_status": dict(quality.get("cache_status") or {}),
                                         "pipeline_status": dict(quality.get("pipeline_status") or {}),
                                         "warnings": list(quality.get("warnings") or []),
+                                        # Issue#273：finalize 合成的路由块并入页账
+                                        # （file 模式/无路由块 ⇒ 空 dict 零键，A5）。
+                                        **_routing_fields_from_quality(quality),
                                     }
                                 }
                             }

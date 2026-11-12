@@ -39,6 +39,7 @@ from test_issue139_pipeline_asyncio_timeout import (
 
 import app.services.task_queue as tq
 from app.services.job_store import JobItemStatus
+from app.services.vision_service import RoutingEvidenceTimeout
 
 _VISION_CFG: dict[str, Any] = {"visual_feature_types": [], "ocr_has_types": ["姓名"]}
 
@@ -419,6 +420,81 @@ def test_u11_failed_page_records_stage_status_and_error(monkeypatch: pytest.Monk
 
     # 同 item 其它页不得被这条失败记录污染
     assert store.page_entry(2).get("status") == "completed", store.performance
+
+
+# ---------------------------------------------------------------------------
+# Issue#273 评审 I1：带消息的 TimeoutError 子类（路由 RoutingEvidenceTimeout）
+# 穿透 run_page 时原因必须透传；裸页墙超时（str 为空）文案不变由 U1 钉住
+# ---------------------------------------------------------------------------
+def test_routing_evidence_timeout_reason_carried_into_failed_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """路由证据链死线穿透 run_page：页账 status=timeout 且 reason 含 'routing'。"""
+    _patch_asyncio_timeout(monkeypatch)
+    store = _FakeStore()
+    queue = _queue(store)
+
+    async def _detect(file_id: str, page: int, **kwargs: Any) -> dict[str, Any]:
+        raise RoutingEvidenceTimeout("routing: text layer failed and evidence OCR timed out")
+
+    _vision_stubs(monkeypatch, pages=2, detect=_detect)
+
+    async def scenario() -> None:
+        await queue._run_vision(_item(), dict(_VISION_CFG))  # 不得上抛（页级隔离不变）
+
+    _run(scenario)
+    assert store.page_statuses() == {"1": "timeout", "2": "timeout"}, store.performance
+    failed = _failed_pages_of(store)
+    assert failed is not None and set(failed) == {"1", "2"}, failed
+    assert "routing: text layer failed and evidence OCR timed out" in str(failed["1"]), failed
+    # 页账 error 同步透传（timeout 记录此前无 error 字段）
+    entry = store.page_entry(1)
+    assert entry.get("status") == "timeout", entry
+    assert "routing" in str(entry.get("error")), entry
+
+
+def test_page_retry_timeout_reason_carried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """I1 同款处理：单页重试路径（_run_page_retry）的超时原因透传。"""
+    _patch_asyncio_timeout(monkeypatch)
+
+    class _RetryStore(_FakeStore):
+        """补 ``get_item_performance``（真库语义：回读 item 行 performance_json）。"""
+
+        def get_item_performance(self, item_id: str) -> dict[str, Any]:
+            return json.loads(self.item.get("performance_json") or "{}")
+
+    store = _RetryStore()
+    store.item["performance_json"] = json.dumps(
+        {
+            "recognition": {
+                "page_count": 2,
+                "failed_pages": {"2": "OCR+HaS识别 page timeout after 300s"},
+            }
+        }
+    )
+    queue = _queue(store)
+
+    async def _detect(file_id: str, page: int, **kwargs: Any) -> dict[str, Any]:
+        assert kwargs.get("force") is True, "单页重试必须绕视觉缓存（既有硬要求）"
+        raise RoutingEvidenceTimeout("routing: text layer failed and evidence OCR timed out")
+
+    _vision_stubs(monkeypatch, pages=2, detect=_detect)
+
+    task = tq.TaskItem(
+        job_id="job-0001", item_id="item-0001", file_id="file-0001",
+        task_type="page_retry", meta={"pages": [2]},
+    )
+
+    async def scenario() -> None:
+        await queue._run_page_retry(task)
+
+    _run(scenario)
+    entry = store.page_entry(2)
+    assert entry.get("status") == "timeout", store.performance
+    assert "routing: text layer failed and evidence OCR timed out" in str(entry.get("error")), entry
+    # 失败清单消账语义不变：重试仍超时 ⇒ 该页留在失败清单且带原因
+    failed = _failed_pages_of(store)
+    assert failed is not None and "routing" in str(failed.get("2")), failed
 
 
 # ---------------------------------------------------------------------------

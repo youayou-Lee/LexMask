@@ -267,6 +267,34 @@ def _safe_reason(reason: Any) -> str:
     return text[:_REASON_MAX_CHARS]
 
 
+def verify_incomplete_pages_of(file_info: Any, pages: Iterable[Any]) -> list[int]:
+    """读取 included 页里 ``page_routing`` 记了 ``verify_incomplete`` 的页号（升序去重）。
+
+    Issue#273 拍板 b（交付+披露）：对账未实际发生的页按文本层结果交付，但必须
+    在说明页里如实点名。账本形状（T7/T8 finalize 契约）：键为 ``str(page)``、
+    ``verify_incomplete`` 为 bool（决策即落账的初记条目没有该键 = False）。
+
+    **静默兜底**：说明页是交付物，不能因诊断信息崩——``page_routing`` 键缺失
+    （file 模式/旧任务）、类型不对、条目非 dict、脏值一律按「无此类页」处理返回
+    空表；只认严格 ``True``（账本契约是 bool，脏字符串真值不构成披露依据）。
+    """
+    try:
+        routing = (file_info or {}).get("page_routing")
+        if not isinstance(routing, dict):
+            return []
+        included = sorted({_safe_int(p, 0) for p in pages or []})
+        hits: list[int] = []
+        for page in included:
+            if page <= 0:
+                continue
+            entry = routing.get(str(page))
+            if isinstance(entry, dict) and entry.get("verify_incomplete") is True:
+                hits.append(page)
+        return hits
+    except Exception:  # noqa: BLE001 - 披露信息读取失败绝不阻断导出
+        return []
+
+
 def build_cover_lines(
     *,
     pages: Sequence[int],
@@ -276,8 +304,14 @@ def build_cover_lines(
     generated_at: str,
     export_id: str,
     recognized_pages_at_export: int,
+    verify_incomplete_pages: Sequence[int] = (),
 ) -> list[str]:
-    """说明页文本。**逐页列举**（不得写成「第 1-5 页」——那会在跳页时撒谎）。"""
+    """说明页文本。**逐页列举**（不得写成「第 1-5 页」——那会在跳页时撒谎）。
+
+    ``verify_incomplete_pages`` 非空 ⇒ 追加「未完成对账页」段（Issue#273 拍板 b）：
+    这些页对账未实际发生、按文本层结果交付，须如实点名建议复核；空/缺省 ⇒ 不加段
+    （零噪声，file 模式与旧任务不受影响）。
+    """
     page_list = sorted({_safe_int(p, 0) for p in pages})
     labels = _page_label_chunks(page_list, max_width=_COVER_TEXT_WIDTH)
     lines: list[str] = ["【部分导出说明】"]
@@ -293,6 +327,14 @@ def build_cover_lines(
         lines.append(f"本次排除的失败页：第 {page} 页{reason_text}")
     if len(excluded_list) > _COVER_PAGES_PER_LINE:
         lines.append(f"（另有 {len(excluded_list) - _COVER_PAGES_PER_LINE} 页失败页已排除）")
+    verify_list = sorted({_safe_int(p, 0) for p in verify_incomplete_pages})
+    verify_list = [p for p in verify_list if p > 0]
+    if verify_list:
+        verify_labels = _page_label_chunks(verify_list, max_width=_COVER_TEXT_WIDTH)
+        suffix = "（该页按文本层结果交付，建议复核）"
+        lines.append(f"未完成对账页：{verify_labels[0]}{suffix}")
+        for extra in verify_labels[1:]:
+            lines.append(f"（续）未完成对账页：{extra}{suffix}")
     lines.append(f"结果快照时间：{snapshot_at}")
     lines.append(f"生成时间：{generated_at}")
     lines.append(f"识别成功页数：{max(_safe_int(recognized_pages_at_export, 0), 0)}")
@@ -579,6 +621,9 @@ async def submit_partial_export(
     boxes_snapshot = normalize_boxes(file_info.get("bounding_boxes"))
     source_path = str(file_info.get("file_path") or "")
     pages_snapshot = sorted({_safe_int(p, 0) for p in pages})
+    # Issue#273 拍板 b：included 页里的对账未完成页在快照期一次取齐（helper 内部
+    # 静默兜底，file 模式/旧任务/账本异常都返回空表 ⇒ 说明页零噪声）。
+    verify_incomplete_snapshot = verify_incomplete_pages_of(file_info, pages_snapshot)
     snapshot = snapshot_at
 
     async def _runner(task: ExportTask, progress: Any) -> list[dict[str, Any]]:
@@ -591,6 +636,7 @@ async def submit_partial_export(
             generated_at=generated_at,
             export_id=task.export_id,
             recognized_pages_at_export=len(recognized),
+            verify_incomplete_pages=verify_incomplete_snapshot,
         )
         work_dir = os.path.join(task.out_dir, "work")
         arcname = f"{_safe_name(title)}.pdf"
