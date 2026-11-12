@@ -552,6 +552,38 @@ describe('Task 10b：方案三态与自定义态', () => {
     expect(customOption.disabled).toBe(true);
   });
 
+  // Issue#270 回归钉：方案被别处删除（presets 清单 refetch 不含所选方案）→
+  // trackedPresetId 守卫（userPresets.find）返回 null → select 立即落自定义态，
+  // value 恒在 options 内、无悬空空白一格。守卫被删（变异 M1）本钉必红。
+  it('方案被删除（presets 清单刷新不含所选方案）→ select 立即落自定义（手动勾选），无悬空 value', () => {
+    const rec = makeRec({
+      selectedTypes: ['PERSON'],
+      selectedOcrHasTypes: ['OCR_ID'],
+      selectedVisualFeatureTypes: ['OFFICIAL_SEAL'],
+      playgroundPresetTextId: 'preset-1',
+      playgroundPresetVisionId: 'preset-1',
+      textPresetsPg: [USER_PRESET],
+      visionPresetsPg: [USER_PRESET],
+    });
+    const { rerender } = render(
+      <RecognitionScopeDialog open onOpenChange={vi.fn()} rec={rec} visionApplicable />,
+    );
+    expect((screen.getByTestId('playground-scheme-select') as HTMLSelectElement).value).toBe(
+      'preset-1',
+    );
+
+    // 模拟别处删除方案：presets 清单刷新后不再含 preset-1（rerender 同一新 rec）
+    mockPresetState.list = [];
+    rerender(
+      <RecognitionScopeDialog open onOpenChange={vi.fn()} rec={rec} visionApplicable />,
+    );
+    const select = screen.getByTestId('playground-scheme-select') as HTMLSelectElement;
+    expect(select.value).toBe('custom');
+    // 渲染兜底确认：选中 option 是「自定义（手动勾选）」，不是空白一格
+    expect(select.selectedOptions).toHaveLength(1);
+    expect(select.selectedOptions[0].textContent).toBe('自定义（手动勾选）');
+  });
+
   it('应用 legal → setSelectedTypes(法律集)+clearTextTracking+updateOcr/Visual(后端默认)+clearVisionTracking', () => {
     const rec = makeRec({
       selectedTypes: ['PERSON', 'MED_PATIENT'],
@@ -671,6 +703,38 @@ describe('Task 12b：全局搜索（三区过滤 + 不分页 + 即点即存不�
       previous: string[],
     ) => string[];
     expect(adder(['PERSON'])).toEqual(['PERSON', 'BANK_CARD']);
+  });
+
+  // Issue#270 行为钉（裁决固化，不改行为）：搜索态下区「全选/全不选」仍作用于
+  // 整区目录（selectZoneAll 用 ids=types 全量，不用 matchedTypes）。用户若反馈
+  // 误选未显示项，届时收窄 matchedTypes 为有意行为变更——本钉变红即提醒重审。
+  // 变异 M3（改用 matchedTypes）本钉必红。
+  it('搜索态下区「全选/全不选」作用于整区目录而非匹配项（不收窄 matchedTypes）', () => {
+    const rec = makeRec({
+      entityTypes: WIDE_CATALOG,
+      pipelines: [],
+      selectedTypes: [],
+      selectedOcrHasTypes: [],
+      selectedVisualFeatureTypes: [],
+    });
+    renderDialog(rec);
+    // 搜索 'Type1' 只显示 11 项命中（Type1/Type10..Type19），其余 9 项不可见
+    fireEvent.change(searchBox(), { target: { value: 'Type1' } });
+    expect(zone('ner').textContent).toContain('匹配 11 项');
+
+    fireEvent.click(zoneAll('ner'));
+    expect(rec.clearPlaygroundTextPresetTracking).toHaveBeenCalled();
+    expect(rec.setSelectedTypes).toHaveBeenCalledTimes(1);
+    // 全选实参 = 整区全量 20 类（含 9 个未显示项），不是匹配子集
+    const selectArg = vi.mocked(rec.setSelectedTypes).mock.calls[0][0] as string[];
+    expect(selectArg).toHaveLength(20);
+    expect([...selectArg].sort()).toEqual(
+      WIDE_CATALOG.map((type) => type.id).sort(),
+    );
+
+    fireEvent.click(zoneNone('ner'));
+    expect(rec.setSelectedTypes).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(rec.setSelectedTypes).mock.calls[1][0]).toEqual([]);
   });
 
   it('翻到第2页后搜索再清空 → 分页恢复且页码保持搜索前状态（第2/3页）', () => {
