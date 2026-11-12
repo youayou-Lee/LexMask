@@ -319,13 +319,15 @@ class RecognitionPipelineMixin:
                 total_ms / 1000,
             )
             # Issue#279：识别收尾复算任务级 summary（可观测面聚合，不读 DB）并清事件上下文。
-            from app.services.page_event_log import clear_event_context
+            from app.services.page_event_log import clear_event_context, close_job
             from app.services.page_event_summary import write_summary
             try:
                 write_summary(task.job_id)
             except Exception:  # noqa: BLE001 - fail-open（write_summary 内部已兜，此处双保险）
                 logger.debug("page event summary write failed", exc_info=True)
             clear_event_context()
+            # 终审 I-1：关 writer 缓存的 fd——长生命周期 worker 不随任务数积攒缓存条目。
+            close_job(task.job_id)
             store.touch_job_updated(task.job_id)
             self._refresh_job_status(store, task.job_id)
 
@@ -490,9 +492,13 @@ class RecognitionPipelineMixin:
                 }
                 failed_map[str(page)] = f"page retry timeout after {page_timeout:.0f}s"
                 logger.warning("[queue] item=%s page %d retry TIMEOUT", task.item_id[:8], page)
-                # Issue#279：重试终态事件（纯旁路）。attempt=本轮序号（首重试=1）。
+                # Issue#279：重试终态事件（纯旁路）。attempt = 该页累计重试序号（含本次，
+                # = 既有账 +1），与 retry_started / DB page_retry_counts 同基（终审 I-4；
+                # 在页循环内取值——page_retry_counts 到 finalization 才写，此处读到旧账）。
                 page_events.log_event(
-                    "retry_done", page=page, attempt=index, outcome="failed", ms=elapsed
+                    "retry_done", page=page,
+                    attempt=retry_count_of(store, task.item_id, page) + 1,
+                    outcome="failed", ms=elapsed,
                 )
                 page_events.log_event(
                     "page_failed",
@@ -501,7 +507,7 @@ class RecognitionPipelineMixin:
                     error_type="PageTimeout",
                     message_sanitized=f"retry timeout after {page_timeout:.0f}s",
                     traceback_frames=[],
-                    attempts=index,
+                    attempts=retry_count_of(store, task.item_id, page) + 1,
                     ms=elapsed,
                 )
             except Exception as exc:  # 页级隔离：单页再失败不得作废其它页
@@ -519,9 +525,11 @@ class RecognitionPipelineMixin:
                 logger.warning(
                     "[queue] item=%s page %d retry FAILED: %s", task.item_id[:8], page, reason
                 )
-                # Issue#279：同上——异常路带代码帧与机读 error_type。
+                # Issue#279：同上——异常路带代码帧与机读 error_type（attempt 同基，I-4）。
                 page_events.log_event(
-                    "retry_done", page=page, attempt=index, outcome="failed", ms=elapsed
+                    "retry_done", page=page,
+                    attempt=retry_count_of(store, task.item_id, page) + 1,
+                    outcome="failed", ms=elapsed,
                 )
                 page_events.log_event(
                     "page_failed",
@@ -530,7 +538,7 @@ class RecognitionPipelineMixin:
                     error_type=type(exc).__name__,
                     message_sanitized=reason[:200],
                     traceback_frames=page_events.traceback_frames(exc),
-                    attempts=index,
+                    attempts=retry_count_of(store, task.item_id, page) + 1,
                     ms=elapsed,
                 )
             else:
@@ -549,9 +557,11 @@ class RecognitionPipelineMixin:
                     task.item_id[:8], page, elapsed,
                 )
                 # Issue#279：重试翻绿页——retry_done + page_done(source=retry)，
-                # 供 summary 把该页按「重试」口径归桶。
+                # 供 summary 把该页按「重试」口径归桶（attempt 同基，终审 I-4）。
                 page_events.log_event(
-                    "retry_done", page=page, attempt=index, outcome="success", ms=elapsed
+                    "retry_done", page=page,
+                    attempt=retry_count_of(store, task.item_id, page) + 1,
+                    outcome="success", ms=elapsed,
                 )
                 page_events.log_event(
                     "page_done",
@@ -599,6 +609,8 @@ class RecognitionPipelineMixin:
 
         current = store.get_item(task.item_id) or item
         if str(current.get("status") or "") == JobItemStatus.CANCELLED.value:
+            # 取消早退同样是任务终点：循环里已写过页事件，fd 缓存须关（终审 I-1）。
+            page_events.close_job(task.job_id)
             return
         try:
             # 终局进度文案：不写的话行上会一直挂着最后一页的「page retry i/n」陈旧口径。
@@ -627,6 +639,8 @@ class RecognitionPipelineMixin:
                 write_summary(task.job_id)
             except Exception:  # noqa: BLE001 - fail-open（write_summary 内部已兜，此处双保险）
                 logger.debug("page event summary write failed", exc_info=True)
+            # 终审 I-1：重试收尾关 writer fd（识别入口 finally 同款）。
+            page_events.close_job(task.job_id)
             store.touch_job_updated(task.job_id)
             self._refresh_job_status(store, task.job_id)
         except Exception:

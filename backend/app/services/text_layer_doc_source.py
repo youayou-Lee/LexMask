@@ -288,9 +288,15 @@ async def _build(
         # PII 最小化（#203 AC4）：水印串含真实姓名+编号，reason/detail 只带计数
         # 与占比，不带命中片段字面量。permanent：层内容是文件快照的函数，重试
         # 不会变好——落永久负缓存，重试不重建、不再撞墙（回落逐页线照常工作）。
+        # 快照带全四个决策输入（终审 I-3）：coverage 阈值 + 三个测量参数——
+        # 覆盖度本身随测量参数变，复盘时缺了就无法重现闸判定。
         _route(
             "repeated_fragment_coverage", "fallback:repeated_fragment_coverage",
-            dict(repeat), ("TEXT_LAYER_MAX_REPEATED_FRAGMENT_COVERAGE",),
+            dict(repeat),
+            ("TEXT_LAYER_MAX_REPEATED_FRAGMENT_COVERAGE",
+             "TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS",
+             "TEXT_LAYER_REPEATED_FRAGMENT_MIN_REPEATS",
+             "TEXT_LAYER_REPEATED_FRAGMENT_MIN_PAGES"),
         )
         raise _TransientIneligible(
             f"repeated_fragment_coverage:{float(repeat['coverage']):.3f}",

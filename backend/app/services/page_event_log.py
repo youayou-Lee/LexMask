@@ -64,6 +64,8 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
         required=("stage", "error_type"),
         optional=("message_sanitized", "traceback_frames", "attempts", "ms"),
     ),
+    # attempt 语义（终审 I-4 裁定）：retry_started/retry_done 的 attempt、重试路
+    # page_failed 的 attempts = 该页累计重试序号（含本次），与 DB page_retry_counts 同基。
     "retry_started": EventSchema(required=("attempt",), optional=("trigger",)),
     "retry_done": EventSchema(required=("attempt", "outcome"), optional=("ms",)),
     # —— 以下四种为架构 v2（#272-#275）预留：writer 契约可验（A1.7），本期无生产者 ——
@@ -98,6 +100,11 @@ ROUTE_SETTINGS_KEYS: tuple[str, ...] = (
     "TEXT_LAYER_MIN_INK_ALIGNMENT",
     "TEXT_LAYER_MAX_WORD_CHARS",
     "TEXT_LAYER_PAGE_MIN_CHARS",
+    # 重复片段闸的三个**测量**参数（终审 I-3，A1.4/A1.5 收口）：coverage 阈值之外，
+    # 覆盖度本身随这三个键变——闸决策输入必须在 config_hash 里可复盘。
+    "TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS",
+    "TEXT_LAYER_REPEATED_FRAGMENT_MIN_REPEATS",
+    "TEXT_LAYER_REPEATED_FRAGMENT_MIN_PAGES",
 )
 
 # ---------------------------------------------------------------------------
@@ -180,10 +187,24 @@ def set_current_page(page: int | None) -> None:
 # ---------------------------------------------------------------------------
 
 def route_thresholds_snapshot(keys: tuple[str, ...]) -> dict[str, Any]:
-    return {key: getattr(settings, key) for key in keys}
+    """闸阈值快照。fail-open（spec 铁律「日志任何故障 fail-open」，终审 I-2）：
+    单键读取失败（缺键/设置改名）跳过该键；整体故障返回 {}；绝不上抛——
+    本函数在 docline 闸帧内被调用，AttributeError 外泄会改变识别路由。"""
+    out: dict[str, Any] = {}
+    for key in keys:
+        try:
+            out[key] = getattr(settings, key)
+        except Exception:  # noqa: BLE001 - 缺键不进快照（宁缺勿错，快照是旁路证据）
+            continue
+    return out
 
 def route_config_hash() -> str:
-    payload = {k: repr(getattr(settings, k)) for k in ROUTE_SETTINGS_KEYS}
+    """route 设置子集（ROUTE_SETTINGS_KEYS）的内容哈希。fail-open（终审 I-2）：
+    任何读取故障返回 ""（空串=本任务 hash 不可用，可判别），绝不上抛。"""
+    try:
+        payload = {k: repr(getattr(settings, k)) for k in ROUTE_SETTINGS_KEYS}
+    except Exception:  # noqa: BLE001 - 子集键缺失时 hash 不可信，给空串而非崩闸
+        return ""
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
 
 # ---------------------------------------------------------------------------
@@ -252,13 +273,19 @@ def _safe_component(value: str) -> str:
     return cleaned or "_"
 
 def _open_fd(job_id: str, item_id: str) -> int:
-    key = f"{job_id}\x00{item_id}"
+    # 终审 I-1：缓存键按**消毒后**成分算——与磁盘目录名/文件名同一坐标系。
+    # 否则 retention sweep 以消毒目录名 close_job 时关不到 raw 键的缓存条目：
+    # 目录被 rmtree 后 fd 指向已 unlink 的 inode，后续 log_event 照常「成功」
+    # 计数却写进虚空（fd 泄漏 + 事件静默丢失）。
+    jid_s = _safe_component(job_id)
+    iid_s = _safe_component(item_id)
+    key = f"{jid_s}\x00{iid_s}"
     fd = _fd_cache.get(key)
     if fd is not None:
         return fd
     directory = job_log_dir(job_id)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{_safe_component(item_id)}.jsonl"
+    path = directory / f"{iid_s}.jsonl"
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     _fd_cache[key] = fd
     return fd
@@ -337,8 +364,9 @@ def log_event(
         _bump("write_errors")
         _warn_once("write_error", f"page_event_log: write failed ({getattr(exc, 'errno', '?')}), recognition unaffected")
         # 丢弃坏 fd，恢复后重开（A1.2「恢复后可续写」）。fd 可能是 _open_fd 抛错
-        # 前未取得的——从缓存按 key 取，不许引用未绑定变量。
-        key = f"{jid}\x00{iid}"
+        # 前未取得的——从缓存按 key 取，不许引用未绑定变量。key 与 _open_fd 同消毒
+        # 口径（终审 I-1）。
+        key = f"{_safe_component(jid)}\x00{_safe_component(iid)}"
         cached = _fd_cache.get(key)
         if cached is not None:
             with contextlib.suppress(OSError):
@@ -351,7 +379,9 @@ def _utc_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 def close_job(job_id: str) -> None:
-    prefix = f"{job_id}\x00"
+    # 参数与缓存键同消毒（终审 I-1）：retention sweep 传的是消毒后的目录名，
+    # 调用方也可能传原始 id——两种形态都必须命中同一条缓存（幂等）。
+    prefix = f"{_safe_component(job_id)}\x00"
     for key, fd in list(_fd_cache.items()):
         if key.startswith(prefix):
             with contextlib.suppress(OSError):

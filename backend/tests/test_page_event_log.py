@@ -197,3 +197,95 @@ def test_safe_component_blocks_dot_traversal(log_env):
     sentinel.write_text("x", encoding="utf-8")
     pel.delete_job_logs("..")  # 修前会 rmtree 逃逸到日志根之外；修后不动任何根外内容
     assert log_env.exists() and sentinel.exists()
+
+
+def _cache_keys_for(job_dir_name: str) -> set[str]:
+    return {k for k in pel._fd_cache if k.split("\x00")[0] == job_dir_name}
+
+
+def test_close_job_then_write_reopens_fd(log_env):
+    """终审 I-1：close_job 关掉缓存 fd → 后续写走重开路径（O_APPEND 不丢行）。"""
+    with pel.event_context("jobclose", "itemclose"):
+        assert pel.log_event("page_done", page=1, ms=1) is True
+    assert _cache_keys_for("jobclose")
+    pel.close_job("jobclose")
+    assert not _cache_keys_for("jobclose")
+    with pel.event_context("jobclose", "itemclose"):
+        assert pel.log_event("page_done", page=2, ms=2) is True
+    lines = _read_lines(log_env, "jobclose", "itemclose")
+    assert [e["page"] for e in lines] == [1, 2]
+
+
+def test_fd_cache_keyed_by_sanitized_components(log_env):
+    """终审 I-1：_fd_cache 按**消毒后**成分键控（与磁盘目录名同一坐标系）。
+
+    retention sweep 拿到的是消毒后的目录名（child.name）——writer 若用原始 id
+    （含路径分隔符等）做缓存键，sweep 方 close_job(消毒名) 就关不到那条缓存。
+    close_job / delete_job_logs 对参数做同一消毒：传原始 id 或消毒名都幂等命中。
+    """
+    raw = "job/../a"
+    safe = pel._safe_component(raw)
+    assert safe != raw
+    with pel.event_context(raw, "it/em"):
+        assert pel.log_event("page_done", page=1, ms=1) is True
+    # 缓存键落在消毒坐标系（修前是 raw 键 → RED）
+    assert _cache_keys_for(safe)
+    assert not _cache_keys_for(raw)
+    # sweep 生产形态：以消毒目录名关缓存
+    pel.close_job(safe)
+    assert not _cache_keys_for(safe)
+    # delete_job_logs 传原始 id：同样关缓存并整目录移除
+    with pel.event_context(raw, "it/em"):
+        assert pel.log_event("page_done", page=2, ms=2) is True
+    pel.delete_job_logs(raw)
+    assert not pel.job_log_dir(raw).exists()
+    assert not _cache_keys_for(safe)
+
+
+def test_thresholds_snapshot_failopen_on_missing_key(log_env):
+    """终审 I-2：快照读设置走 fail-open——缺键（如未来设置改名）跳过该键，绝不上抛。"""
+    snap = pel.route_thresholds_snapshot(
+        ("TEXT_LAYER_MIN_COVERAGE", "DEFINITELY_NOT_A_KEY")
+    )
+    assert "TEXT_LAYER_MIN_COVERAGE" in snap
+    assert "DEFINITELY_NOT_A_KEY" not in snap
+
+
+def test_config_hash_failopen_on_bogus_route_key(log_env, monkeypatch):
+    """终审 I-2：route 子集混入缺失键 → hash 内部兜住返回字符串，绝不上抛进闸帧。"""
+    monkeypatch.setattr(
+        pel, "ROUTE_SETTINGS_KEYS", pel.ROUTE_SETTINGS_KEYS + ("DEFINITELY_NOT_A_KEY",)
+    )
+    assert isinstance(pel.route_config_hash(), str)
+
+
+def test_config_hash_covers_repeated_fragment_keys(log_env, monkeypatch):
+    """终审 I-3：重复片段闸的三个测量参数在 route 子集内——改任一个 hash 都要变
+    （闸决策输入必须可在事件里复盘，与 test_config_hash_ignores_unrelated_settings 对偶）。"""
+    for key in (
+        "TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS",
+        "TEXT_LAYER_REPEATED_FRAGMENT_MIN_REPEATS",
+        "TEXT_LAYER_REPEATED_FRAGMENT_MIN_PAGES",
+    ):
+        assert key in pel.ROUTE_SETTINGS_KEYS
+    h1 = pel.route_config_hash()
+    monkeypatch.setattr(settings, "TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS", 99)
+    assert pel.route_config_hash() != h1
+
+
+def test_write_throughput_p95_under_1ms(log_env):
+    """Spec A1.6 性能钉：500 条 page_done 就地写，单条 p95 延迟 < 1ms。
+
+    事件埋点是识别链的旁路——任何单点开销放大都会拖慢整卷识别。
+    """
+    import time
+
+    durations: list[float] = []
+    with pel.event_context("jobperf", "itemperf"):
+        for i in range(500):
+            t0 = time.perf_counter()
+            assert pel.log_event("page_done", page=i, ms=1) is True
+            durations.append(time.perf_counter() - t0)
+    durations.sort()
+    p95 = durations[int(0.95 * len(durations))]
+    assert p95 < 0.001, f"p95 write latency {p95 * 1000:.3f}ms exceeds 1ms budget"

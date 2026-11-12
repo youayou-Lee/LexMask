@@ -1,4 +1,5 @@
 """A5：删任务即清目录 + TTL 孤儿清扫（mtime 改老可操作）。"""
+import json
 import os
 import time
 
@@ -47,3 +48,29 @@ def test_logs_sweep_ttl_zero_disables(log_env, monkeypatch):
     monkeypatch.setattr(retention_service, "_logs_root", lambda: log_env)
     assert retention_service.logs_sweep() == 0
     assert (log_env / "jobx").exists()
+
+
+def test_sweep_then_write_recreates_dir_no_void_write(log_env, monkeypatch):
+    """终审 I-1：TTL 清扫必须先关 writer 缓存的 fd——否则同 job 再写事件时
+    _open_fd 命中指向已 unlink inode 的陈旧 fd：written 照涨、返回 True，
+    磁盘上目录却永不重建（写进虚空 + fd 只增不减）。"""
+    with pel.event_context("jobA", "itemA"):
+        assert pel.log_event("page_done", page=1, ms=1) is True
+    written_before = pel.stats()["written"]
+    stale = time.time() - (settings.PAGE_EVENT_LOG_TTL_DAYS + 1) * 86400
+    os.utime(log_env / "jobA", (stale, stale))
+    monkeypatch.setattr(retention_service, "_logs_root", lambda: log_env)
+    assert retention_service.logs_sweep() == 1
+    assert not (log_env / "jobA").exists()
+    # 清扫后同 job 再写：fd 缓存已被清扫关掉 ⇒ 目录/文件重建、事件落盘可读
+    with pel.event_context("jobA", "itemA"):
+        assert pel.log_event("page_done", page=2, ms=2) is True
+    assert pel.stats()["written"] == written_before + 1
+    path = log_env / "jobA" / "itemA.jsonl"
+    assert path.exists()
+    lines = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [e["page"] for e in lines] == [2]

@@ -180,8 +180,12 @@ def test_repeated_fragment_gate_emits_fallback(log_env, monkeypatch, tmp_path):
     assert evs[-1]["verdict"] == "fallback:repeated_fragment_coverage"
     assert evs[-1]["signals"] == {"coverage": 0.9, "fragment_kinds": 2,
                                   "max_fragment_pages": 5}
+    # 终审 I-3：快照带全四个闸决策输入（coverage 阈值 + 三个测量参数，后者取 config 默认值）
     assert evs[-1]["thresholds_snapshot"] == {
         "TEXT_LAYER_MAX_REPEATED_FRAGMENT_COVERAGE": 0.5,
+        "TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS": 10,
+        "TEXT_LAYER_REPEATED_FRAGMENT_MIN_REPEATS": 8,
+        "TEXT_LAYER_REPEATED_FRAGMENT_MIN_PAGES": 5,
     }
 
 

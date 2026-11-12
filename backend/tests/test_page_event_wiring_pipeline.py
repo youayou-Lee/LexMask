@@ -319,6 +319,21 @@ class TestRunRecognitionPageEvents:
         # 清上下文后的写不落盘（事件条数不变）
         assert len(_of(_events(log_env), "page_done")) == done_before
 
+    def test_recognition_finalization_closes_writer_fds(
+        self, log_env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """终审 I-1：识别收尾关 writer 缓存的 fd——长生命周期 worker 不积攒缓存条目。"""
+        store = _FakeStore()
+        queue = _queue(store)
+
+        async def _detect(file_id: str, page: int, **kwargs: Any) -> dict[str, Any]:
+            return {"boxes": []}
+
+        _patch_recognition_io(monkeypatch, queue, detect=_detect)
+        _run(lambda: queue._run_recognition(_item()))
+
+        assert not [k for k in pel._fd_cache if k.startswith(f"{_JOB_ID}\x00")]
+
     def test_events_disabled_db_mirror_still_written(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -411,7 +426,7 @@ class TestRunPageRetryEvents:
         # 帧必须指向代码现场且不含消息文本
         assert any("test_issue257_page_retry_task.py" in f for f in event["traceback_frames"])
         assert all("ner boom again" not in f for f in event["traceback_frames"])
-        assert event["attempts"] == 1  # attempts=index（第 1 轮重试）
+        assert event["attempts"] == 1  # attempts = 该页累计重试序号（无账 → 0+1）
         recognition = harness.perf()["recognition"]
         assert recognition["page_retry_counts"] == {"5": 1}
         assert "5" in (recognition.get("failed_pages") or {})  # 失败账保持
@@ -432,7 +447,7 @@ class TestRunPageRetryEvents:
         assert event["error_type"] == "PageTimeout"
         assert event["traceback_frames"] == []
         assert "retry timeout after" in event["message_sanitized"]
-        assert event["attempts"] == 1
+        assert event["attempts"] == 1  # 无账 → 0+1（与 retry_started 同基）
         done = _of(events, "retry_done")
         assert len(done) == 1 and done[0]["outcome"] == "failed"
         assert harness.perf()["recognition"]["page_retry_counts"] == {"5": 1}
@@ -470,15 +485,58 @@ class TestRunPageRetryEvents:
 
         events = _events(log_env, job_id=harness.jid, item_id=harness.iid)
         done = _of(events, "retry_done")
+        # attempt = 该页累计重试序号（与 retry_started/DB page_retry_counts 同基）：
+        # 两页均无既有账 ⇒ 各自 0+1=1（终审裁定：不再是批内枚举序号 index）。
         assert [(e["page"], e["attempt"], e["outcome"]) for e in done] == [
             (5, 1, "success"),
-            (7, 2, "success"),
+            (7, 1, "success"),
         ]
         assert [(e["page"], e["source"]) for e in _of(events, "page_done")] == [
             (5, "retry"),
             (7, "retry"),
         ]
         assert harness.perf()["recognition"]["page_retry_counts"] == {"5": 1, "7": 1}
+
+    def test_retry_attempt_uses_per_page_total_count_basis(
+        self, tmp_path, log_env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """既有账 {"5": 2} ⇒ retry_done.attempt 与 page_failed.attempts 都 = 2+1=3。
+
+        终审 I-4：retry_done / 重试路 page_failed 与 retry_started 同基——
+        「该页累计重试序号（含本次）」，在页循环内、finalization 写账**之前**取值。
+        """
+        harness = _Harness(tmp_path)
+        harness.store.update_item_performance(
+            harness.iid,
+            {"recognition": {"failed_pages": {"5": "ocr boom"},
+                             "page_retry_counts": {"5": 2}}},
+        )
+        _patch_detect(monkeypatch, harness, behaviour="fail")  # ValueError("ner boom again")
+
+        asyncio.run(harness.queue._run_page_retry(harness.task([5])))
+
+        events = _events(log_env, job_id=harness.jid, item_id=harness.iid)
+        done = _of(events, "retry_done")
+        assert len(done) == 1
+        assert done[0]["page"] == 5
+        assert done[0]["attempt"] == 3
+        failed = _of(events, "page_failed")
+        assert len(failed) == 1
+        assert failed[0]["attempts"] == 3
+        # finalization 写账：本轮落账后该页累计 3
+        assert harness.perf()["recognition"]["page_retry_counts"] == {"5": 3}
+
+    def test_retry_finalization_closes_writer_fds(
+        self, tmp_path, log_env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """终审 I-1：页重试收尾同样关 writer fd（与识别入口同款边界）。"""
+        harness = _Harness(tmp_path)
+        _boxes_by_page(harness, {"5": []})
+        _patch_detect(monkeypatch, harness, behaviour="ok")
+
+        asyncio.run(harness.queue._run_page_retry(harness.task([5])))
+
+        assert not [k for k in pel._fd_cache if k.startswith(f"{harness.jid}\x00")]
 
 
 # ---------------------------------------------------------------------------
