@@ -5,6 +5,7 @@ T = RoutingThresholds(
     min_chars=120, max_garbage=0.15, max_word_chars=400, min_reading_order=0.8,
     max_page_repeat=0.3, boundary_chars_band=1.5, max_type3_ratio=0.5,
     min_embedded_ratio=0.5, min_ink=0.02, chars_multiple=1.3, entities_multiple=1.5,
+    fullpage_image_coverage=0.9,
 )
 
 

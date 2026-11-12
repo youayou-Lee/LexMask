@@ -1,7 +1,9 @@
 """Issue#273 Task 5：L1/L2 页级信号采集器 + 文件级 memo。
 
 页级路由的信号源：``collect_l1`` 采文本面指标（字符量/垃圾率/词长/字体表/阅读序/
-页内复读），``collect_l2`` 采渲染面指标（词框墨迹中位数/图像覆盖率）。
+页内复读）+ **图像覆盖率**（B3 修复后随 memo 一次采齐——判定序规则 5.5 需要在
+灰区之前看到「整页图+内嵌层」，不能等灰区才触发的 L2 补采），``collect_l2``
+采渲染面指标（词框墨迹中位数/图像覆盖率，后者保留返回以向后兼容）。
 
 设计要点：
 
@@ -59,6 +61,7 @@ class _PageData:
     fonts: list[tuple] = field(default_factory=list)
     width: float = 0.0
     height: float = 0.0
+    coverage: float | None = None  # 图像覆盖率（原 L2 专属；B3 修复后 L1 即采，判定序 5.5 的输入面）
     error: bool = False
 
 
@@ -102,6 +105,12 @@ def _probe(file_path: str) -> _DocProbe:
                     rect = page.rect
                     pd.width = float(rect.width)
                     pd.height = float(rect.height)
+                    # coverage 随 memo 一次采齐（get_image_info 毫秒级，A3 <20ms 判据安全）；
+                    # 单项失败只降级为 None，不污染该页的词框/字体提取。
+                    try:
+                        pd.coverage = _image_coverage(page, pd.width, pd.height)
+                    except Exception:
+                        pd.coverage = None
                 except Exception:
                     # 单页提取失败只记该页，不污染整文件缓存。
                     pd.error = True
@@ -180,6 +189,7 @@ def _signals_from_page(page: int, pd: _PageData) -> PageSignals:
         font_kinds=n_fonts,
         embedded_ratio=embedded_ratio,
         type3_ratio=type3_ratio,
+        image_coverage=pd.coverage,
         reading_order_agreement=_reading_order_agreement(pd.words),
         page_repeat_ratio=_page_repeat_ratio(pd.word_texts),
     )

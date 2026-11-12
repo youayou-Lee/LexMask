@@ -736,6 +736,7 @@ class Settings(BaseSettings):
     ROUTING_BOUNDARY_CHARS_BAND: float = 1.5        # chars 贴近下限的灰区带倍数
     ROUTING_MAX_TYPE3_RATIO: float = 0.5            # 灰区：Type3 字体占比上限
     ROUTING_MIN_EMBEDDED_RATIO: float = 0.5         # 灰区：嵌入字体占比下限
+    ROUTING_FULLPAGE_IMAGE_COVERAGE: float = 0.9    # 整页图像覆盖 ≥ 此值且有文本层 ⇒ 判 ocr（扫描页 OCR 产物层语义，宁慢不漏）
     ROUTING_L2_RENDER_DPI: int = 100                # L2 渲染 DPI
     ROUTING_VERIFY_OCR_TIMEOUT_SEC: int = 90        # 证据 OCR 阶段死线（超时⇒verify_incomplete）
     ROUTING_VERIFY_OCR_EVIDENCE_ENABLED: bool = True  # 证据 OCR 逃生口（False⇒verify 降级直信）

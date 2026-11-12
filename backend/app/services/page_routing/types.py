@@ -68,3 +68,4 @@ class RoutingThresholds:
     min_ink: float
     chars_multiple: float
     entities_multiple: float
+    fullpage_image_coverage: float

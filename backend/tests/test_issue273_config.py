@@ -16,6 +16,7 @@ def test_issue273_routing_defaults():
     assert settings.ROUTING_L2_RENDER_DPI == 100
     assert settings.ROUTING_VERIFY_OCR_TIMEOUT_SEC == 90
     assert settings.ROUTING_VERIFY_OCR_EVIDENCE_ENABLED is True
+    assert settings.ROUTING_FULLPAGE_IMAGE_COVERAGE == 0.9
 
 
 def test_issue273_routing_mode_validator_rejects_unknown():

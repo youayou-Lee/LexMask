@@ -7,7 +7,7 @@ T = RoutingThresholds(
     min_chars=120, max_garbage=0.15, max_word_chars=400,
     min_reading_order=0.80, max_page_repeat=0.30, boundary_chars_band=1.5,
     max_type3_ratio=0.5, min_embedded_ratio=0.5, min_ink=0.02,
-    chars_multiple=1.3, entities_multiple=1.5,
+    chars_multiple=1.3, entities_multiple=1.5, fullpage_image_coverage=0.9,
 )
 
 
@@ -52,6 +52,26 @@ def test_garbage_glued_order_repeat_rules():
     ]:
         d = judge.judge_page(_sig(**kw), T, routing_version=1)
         assert (d.action, d.reason) == ("ocr", reason), kw
+
+
+def test_fullpage_image_with_layer_is_ocr():
+    # 规则 5.5：整页图+内嵌文本层 ⇒ 层是扫描 OCR 产物（执行层 is_scanned_page 同
+    # 语义），宁 OCR——验收 B3 发现的判定-执行闸缝隙（老闸拒绝 ⇒ 白付一次失败的
+    # 文本层试探且升档被压死），判定序必须在灰区之前吸收该信号。
+    d = judge.judge_page(_sig(image_coverage=0.95), T, routing_version=1)
+    assert (d.action, d.reason) == ("ocr", "fullpage_image_with_layer")
+
+
+def test_partial_image_coverage_does_not_trigger_fullpage_rule():
+    # 低于阈值（部分插图页）不触发 5.5 ⇒ 走 default_verify。
+    d = judge.judge_page(_sig(image_coverage=0.38), T, routing_version=1)
+    assert (d.action, d.reason) == ("text_layer_verify", "default_verify")
+
+
+def test_image_coverage_none_skips_fullpage_rule():
+    # coverage 未采到（None）⇒ 跳过 5.5 不拦，保守放行后续规则。
+    d = judge.judge_page(_sig(image_coverage=None), T, routing_version=1)
+    assert (d.action, d.reason) == ("text_layer_verify", "default_verify")
 
 
 def test_gray_zone_low_ink_is_ocr():

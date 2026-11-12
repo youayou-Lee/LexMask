@@ -22,6 +22,7 @@ def get_routing_thresholds() -> RoutingThresholds:
         min_ink=float(settings.TEXT_LAYER_MIN_INK_ALIGNMENT),
         chars_multiple=float(settings.ROUTING_CHARS_MULTIPLE),
         entities_multiple=float(settings.ROUTING_ENTITIES_MULTIPLE),
+        fullpage_image_coverage=float(settings.ROUTING_FULLPAGE_IMAGE_COVERAGE),
     )
 
 

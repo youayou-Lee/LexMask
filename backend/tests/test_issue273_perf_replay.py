@@ -95,6 +95,7 @@ def test_thresholds_fingerprint_is_pure_and_discriminating():
         max_type3_ratio=t1.max_type3_ratio, boundary_chars_band=t1.boundary_chars_band,
         max_page_repeat=t1.max_page_repeat, min_reading_order=t1.min_reading_order,
         max_word_chars=t1.max_word_chars, max_garbage=t1.max_garbage, min_chars=t1.min_chars,
+        fullpage_image_coverage=t1.fullpage_image_coverage,
     )
     assert thresholds_fingerprint(scrambled) == fp_a
 

@@ -91,6 +91,10 @@ def judge_page(
     if signals.page_repeat_ratio > t.max_page_repeat:
         return _ocr(p, "page_repeat_ratio_high", signals, routing_version, thresholds_fp=thresholds_fp)
 
+    # 5.5 整页图+内嵌层 ⇒ 层是扫描 OCR 产物（执行层 is_scanned_page 同语义），宁 OCR
+    if signals.image_coverage is not None and signals.image_coverage >= t.fullpage_image_coverage:
+        return _ocr(p, "fullpage_image_with_layer", signals, routing_version, thresholds_fp=thresholds_fp)
+
     # 6. 灰区 ⇒ L2 墨迹判定（在升档/抽样之前：灰区页不享受豁免）
     if needs_l2(signals, t):
         if signals.ink_alignment is None:

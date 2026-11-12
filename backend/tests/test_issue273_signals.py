@@ -95,6 +95,30 @@ def test_collect_l2_image_coverage(tmp_path):
     assert coverage is not None and 0.3 < coverage < 0.7
 
 
+def test_collect_l1_fullpage_image_with_text_layer(tmp_path):
+    # 「整页图+内嵌文本层」（扫描页 OCR 产物层的典型形态）：coverage 必须在 L1
+    # 即可采到——判定序规则 5.5（judge 侧）以 collect_l1 的 image_coverage 为输入，
+    # 不能再等灰区才触发的 L2 补采。夹具=先渲染文字页 pixmap（模拟扫描成像），
+    # 正式页 insert_text 文本层 + 整页矩形 insert_image 贴图。
+    scratch = fitz.open()
+    spage = scratch.new_page()
+    y = 72
+    for line in ["人民法院判决书正文"] * 8:
+        spage.insert_text((72, y), line, fontsize=12, fontname="china-s")
+        y += 20
+    pix = spage.get_pixmap(dpi=150)
+    scratch.close()
+    path = str(tmp_path / "fullpage_image.pdf")
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "人民法院判决书正文", fontsize=12, fontname="china-s")
+    page.insert_image(page.rect, pixmap=pix)
+    doc.save(path)
+    s = signals.collect_l1(path, 1)
+    assert s.probe_error is False
+    assert s.image_coverage is not None and s.image_coverage >= 0.9
+
+
 def test_l1_memo_same_object(tmp_path):
     # 需求书原断言引用不存在的属性（s1.signals_dict_key）且三元恒真（已知瑕疵）；
     # 按其注释意图改写：两次采集的关键数值完全一致 ⇒ memo 生效（同文件只 probe 一次）。
