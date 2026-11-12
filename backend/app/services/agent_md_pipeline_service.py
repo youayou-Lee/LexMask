@@ -573,7 +573,10 @@ class AgentMdPipelineService:
         """缺省实体类型解析（终审 C2）：与 #66 同款口径——默认九类清单经
         ``resolve_requested_entity_types`` 按 owner 三态配置过滤（停用不识别、
         自定义项一等公民）。显式构造参数优先，仅在 entity_types 为空时调用。"""
-        from app.services.entity_type_service import resolve_requested_entity_types
+        from app.services.entity_type_service import (
+            EntityTypeConfig,
+            resolve_requested_entity_types,
+        )
         from app.services.vl_md_pipeline_service import VL_MD_DEFAULT_TYPE_IDS
 
         defaults = list(VL_MD_DEFAULT_TYPE_IDS)
@@ -581,7 +584,19 @@ class AgentMdPipelineService:
         # owner 在识别范围里显式停用则仍按配置过滤（resolve 负责三态）。
         if "WECHAT_ALIPAY" not in defaults:
             defaults.append("WECHAT_ALIPAY")
-        return resolve_requested_entity_types(defaults, owner_id or None)
+        resolved = resolve_requested_entity_types(defaults, owner_id or None)
+        # 2026-11-12 真卷事故：该类型未登记进类型库，`resolve` 对未知 id 静默
+        # continue → 补层拿到的 type_ids 里没有它，正则命中全被「未启用」过滤，
+        # 微信/支付宝 ID 静默漏打码（当时 0 残留纯属 NER 恰好标成电话）。这里在
+        # 供料链路内补一个**只走正则**的合成配置（use_llm=False，不喂模型）。
+        if not any(getattr(t, "id", "") == "WECHAT_ALIPAY" for t in resolved):
+            resolved.append(EntityTypeConfig(
+                id="WECHAT_ALIPAY",
+                name="支付账号",
+                use_llm=False,
+                description="微信/支付宝账号（wxid_ 等），仅正则兜底，不参与 NER 打标",
+            ))
+        return resolved
 
 
 def _entity_type_ids(types) -> set[str]:

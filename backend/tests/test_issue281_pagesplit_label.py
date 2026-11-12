@@ -481,3 +481,21 @@ def test_label_dup_created_by_page_split_is_collapsed():
     out, _, _ = render_outputs_on_structure(md, [], [], [item])
     assert "案号案号" not in out
     assert "[案号1" in out
+
+
+def test_supply_pipeline_resolves_regex_only_wechat_type():
+    """供料默认类型必须包含 WECHAT_ALIPAY（只走正则、不喂模型）。
+
+    2026-11-12 真卷验收发现：`_resolve_entity_types` 里 append 的 id 被
+    `resolve_requested_entity_types` 静默丢弃（类型库无登记），随后
+    `merge_regex_entities(..., type_ids)` 把全部微信/支付宝项当「未启用」过滤，
+    补层等于不存在。此例钉住「解析结果里真的带上该类型且 use_llm=False」。
+    """
+    from app.services.agent_md_pipeline_service import AgentMdPipelineService
+
+    types = AgentMdPipelineService._resolve_entity_types(None)
+    by_id = {getattr(t, "id", None): t for t in types}
+    assert "WECHAT_ALIPAY" in by_id, sorted(by_id)
+    wx = by_id["WECHAT_ALIPAY"]
+    assert wx.name == "支付账号"
+    assert wx.use_llm is False
