@@ -3,7 +3,6 @@
 
 ## 2026-11-12
 
-<<<<<<< HEAD
 ### 增强（Issue#273）P0 页级路由：每页自决「文字从哪来」（文本层/OCR/双跑仲裁），`RECOGNITION_ROUTING_MODE=page|file` 开关可一键回滚
 
 - **为什么**：混排 PDF（扫描件误带文本层、文本层缺损、水印层伪装正文）在文件级启发式下整卷同源——一层错全卷错。用户拍板（2026-11-12）：默认策略 `text_layer_verify`（先信文本层但必须对账）、对账粒度=整页 OCR、同卷连续 3 页对账通过后剩余页升 `text_layer`。P0 落点：页级动作决策 + 结果级证据自证/改判 + 决策即落账（账本字段 + 离线重放 A7），不新造识别通道、不动调度（P1/P2 出界）。
@@ -14,7 +13,7 @@
   - 证据 OCR 死线与披露（拍板 b）：`text_layer_verify` 对账跑整页证据 OCR，`ROUTING_VERIFY_OCR_TIMEOUT_SEC`（默认 90s）超时 ⇒ `verify_incomplete=true` + 保留文本层不误判（`RoutingEvidenceTimeout` 专类收窄页失败档）；`verify_incomplete` 页不计入升档计数、不携带整卷升级标记；部分导出说明页逐页披露 `verify_incomplete` 清单。证据 OCR 可关（`ROUTING_VERIFY_OCR_EVIDENCE_ENABLED=false` ⇒ verify 降级直信）。
   - 阈值全进 `config.py` 14 键（judge 不 import settings，经 `routing_thresholds.get_routing_thresholds()` 注入）；`ROUTING_VERSION` 进缓存签名与账本（行为版本可追溯）。
 - **测试**：issue273 家族后端 12 文件 112 例——judge 判定序全规则 + 灰区先于升档/升级钉、arbiter K1/K2 严格大于（恰等号负样本）+ 改判链 `switched_from` + metrics 双侧审计 + 证据有效性三态、state 升档粘性/抽样确定性/种子差异、signals 真卷采集与 fail-closed、registry 目录在场必须可解析（坏 JSON 不得静默蒸发成 skip）与 CI 回落、execution 四动作全路径 + B9 空证据 + 证据死线/关闭降级、wiring 双模分流 + 缓存签名键集钉 + A8 fail-closed、ledger 三收尾路径记账 + file 模式零新字段 + prime 门双案钉、导出披露；A3 性能判据（86 页混排真卷 memo 后单页「采集+judge」中位 0.300ms，门限 <20ms）与 A7 决策重放判据（账本 signals+routing_version 原样回放同决策，合成 + 真卷全页）入 `test_issue273_perf_replay.py`。
-=======
+
 ### 修正（Issue#281）供料产物两处替换缺陷：跨页切开的实体漏替换 + 标签叠字
 
 - **为什么**：本地真卷冒烟发现两处「能读但会误导」的缺陷。①实体原文被页边界（页脚数字 + `<!-- page N of M -->`）切成两半时，产物侧不存在连续形态，字节级 replace 与空白柔性正则都匹配不到；更隐蔽的是同一事实的 OCR 空白变体项（更长的 flex 项）先替换掉唯一连续形态后，被切开的项既「不缺席」（别处有连续形态）也「不残留」（切开形态不是逐字原文），前向覆盖闸与零残留闸双假绿，真实案号随产物出厂。②OCR 原文自带类型短名（「案号（2023）…号」）而占位符是「案号N」，替换后成「案号案号N」叠字，污染下游字段。
@@ -51,7 +50,6 @@
   - **可观测**：docline 块级 catch 补 `exc_info=True`——下次任何逃逸异常日志自带完整栈与行号。
 - **测试**：后端 +15 例（`test_issue277_docline_scalar_bucket.py`）——红绿钉两条（修复前 TypeError 逐字消息在 `has_client.py:1418` 复现、切批形状 [19,1] 末批 `['文书编号']` 与生产实录逐字节同形；修复后补查恢复⇒confirmed=True+全类型键落缓存 / 补查仍标量⇒False+缓存键绝不落盘）、形状矩阵 8 形（int/str/dict/假值标量/空列表/列表保真/混合）、垃圾键标量走 #108 I-4 口径且不影响 confirmed（门⑥ I-1：请求类型全对的块不得被垃圾键毒化判失败）、禁补查层、短文本不自连补查（防 #108 的 3×120s 自连接挂起形态）、块级 catch traceback 钉。全量 2955 passed / 48 skipped（collected 3003）/ 0 failed，与 preview 基线 comm -3 恰差新增用例、零既有差异。
 - **真卷实弹**（分支镜像一次性容器，生产同源 20 标签）：86 页卷并发 4 连跑 5 次——0 次 TypeError、0 failed_chunks、0 http_errors（docline 建链 76.3–188.7s/跑），同卷期间截断补查路径正常触发 22 次全健康。修复前后对照：修复前 = 97s docline 白烧 + 全卷逐页 OCR+NER 重算；修复后 = docline 一次建链即终局。
->>>>>>> origin/preview
 
 ### 增强（Issue#257 一期之三·需求重对齐）单文件任务也能选页导出：页格嵌在文件处理页 + 范围输入 + 去掉失败页勾选
 
