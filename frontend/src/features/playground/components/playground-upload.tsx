@@ -116,9 +116,20 @@ export const PlaygroundUpload: FC<PlaygroundUploadProps> = ({ ctx }) => {
   } = rec;
   const availableTextIds = entityTypes.map((type) => type.id);
   const legalSelection = resolveLegalTextSelection(availableTextIds);
-  const catalogReady = availableTextIds.length > 0;
+  // Issue#267：目录就绪由 textConfigState 状态机派生（'ready' 仅在目录非空时设置，
+  // use-playground-recognition.ts），不再依赖「数组非空」的间接推断；两处实现漂移时以状态机为准。
+  const catalogReady = rec.textConfigState === 'ready';
   const isLegalActive = catalogReady && sameIdSelection(selectedTypes, legalSelection);
   const isAllActive = catalogReady && sameIdSelection(selectedTypes, availableTextIds);
+  // Issue#267：目录未就绪时 chip 置灰 + title 把「为什么置灰」讲清楚（三态各有文案）。
+  const catalogHintKey =
+    !catalogReady
+      ? rec.textConfigState === 'loading'
+        ? 'playground.scope.catalogLoading'
+        : rec.textConfigState === 'empty'
+          ? 'playground.scope.catalogEmpty'
+          : 'playground.scope.catalogUnavailable'
+      : undefined;
   // Task 9b 标签墙：当前 selectedTypes 的实时镜像（目录序；弹窗勾选与 chip 切换同步）。
   const selectedTagTypes = entityTypes.filter((type) => selectedTypes.includes(type.id));
   // Task 10b：OCR/LA 两区是否适用 = 扫描件/图片（与 use-playground-file.ts 的
@@ -132,10 +143,15 @@ export const PlaygroundUpload: FC<PlaygroundUploadProps> = ({ ctx }) => {
   // 透传契约不动）；视觉侧沿用后端默认 pipeline 集（official_seal / signature 本就在
   // default_enabled 集，见 config/legalPreset.ts 顶部说明）。
   const selectLegalPreset = () => {
+    // Issue#267：防御守卫——目录数组为空时 resolveLegalTextSelection 会回落空集
+    // （legalPreset.ts fail-open 分支），宁可不动也不写空集。覆盖 ready∧空 的人工态
+    // 与任何状态机/数组漂移；常态路径由 chip disabled 拦截。
+    if (entityTypes.length === 0) return;
     setSelectedTypes(resolveLegalTextSelection(entityTypes.map((type) => type.id)));
     clearPlaygroundTextPresetTracking();
   };
   const selectAllTypes = () => {
+    if (entityTypes.length === 0) return;
     setSelectedTypes(entityTypes.map((type) => type.id));
     clearPlaygroundTextPresetTracking();
   };
@@ -195,9 +211,11 @@ export const PlaygroundUpload: FC<PlaygroundUploadProps> = ({ ctx }) => {
                 type="button"
                 data-testid="playground-preset-chip-legal"
                 aria-pressed={isLegalActive}
+                disabled={!catalogReady}
+                title={catalogHintKey ? t(catalogHintKey) : undefined}
                 onClick={selectLegalPreset}
                 className={cn(
-                  'rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+                  'rounded-full border px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
                   isLegalActive
                     ? 'border-foreground bg-background text-foreground shadow-[var(--shadow-sm)]'
                     : 'border-border/70 bg-background/60 text-muted-foreground hover:border-border hover:text-foreground',
@@ -209,9 +227,11 @@ export const PlaygroundUpload: FC<PlaygroundUploadProps> = ({ ctx }) => {
                 type="button"
                 data-testid="playground-preset-chip-all"
                 aria-pressed={isAllActive}
+                disabled={!catalogReady}
+                title={catalogHintKey ? t(catalogHintKey) : undefined}
                 onClick={selectAllTypes}
                 className={cn(
-                  'rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+                  'rounded-full border px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
                   isAllActive
                     ? 'border-foreground bg-background text-foreground shadow-[var(--shadow-sm)]'
                     : 'border-border/70 bg-background/60 text-muted-foreground hover:border-border hover:text-foreground',
