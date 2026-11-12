@@ -84,7 +84,7 @@ def is_page_fatal_stage_error(result) -> bool:
     只扫了一部分」的交付面（云实测 2026-10-29：页 133 撞预算 179.7s ⇒
     status=completed、failed_pages={}、ocr_has 区域数 0）。
 
-    本函数把两类异常升级为页级失败：
+    本函数把三类异常升级为页级失败：
 
     1. 「页级 NER 预算 strict 失败」（``HasTextNerPageBudgetExceeded``）——
        `task_queue_pipelines` 的 `except Exception` 会把它写进
@@ -93,13 +93,25 @@ def is_page_fatal_stage_error(result) -> bool:
        页路由 verify/both 动作下文本层与证据 OCR 双双无产出时，页必须显式失败
        而非静默 0 区域完成（#199 语义，`run_ocr_has_job` raise 的接收端）。
        **只匹配本专类**：既有 TimeoutError 路径（ocr_cache inflight 兜底等）维持
-       「stage failed + 页 completed」原行为。其它阶段异常（OCR 服务抖动、视觉
-       通道故障）维持既有「降级 + warning」语义不变。
+       「stage failed + 页 completed」原行为。
+    3. Issue#263 NER 服务级失败（``HasTextNerUnavailable``）——组失败（重试耗尽
+       后上抛）或负健康 TTL 内跳过 ⇒ 该页**没被 NER 扫过**，静默零实体放行即
+       漏打码（fail-open），升格页级失败（#199 语义）。受
+       ``HAS_NER_UNAVAILABLE_PAGE_FAIL`` 门控（False=运维回落阀，此时
+       `run_has_text_analysis` 不抛，本分支为双保险）。其它阶段异常（OCR 服务
+       抖动、视觉通道故障）维持既有「降级 + warning」语义不变。
     """
-    from app.services.vision.has_text_analysis import HasTextNerPageBudgetExceeded
+    from app.services.vision.has_text_analysis import (
+        HasTextNerPageBudgetExceeded,
+        HasTextNerUnavailable,
+    )
 
     if isinstance(result, HasTextNerPageBudgetExceeded):
         return bool(getattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True))
+    if isinstance(result, HasTextNerUnavailable):
+        # Issue#263：与 #209 同模式——kill switch 关闭时页级同样放行（双保险，
+        # 正常路径下 False 档根本不会抛出）。
+        return bool(getattr(settings, "HAS_NER_UNAVAILABLE_PAGE_FAIL", True))
     return isinstance(result, RoutingEvidenceTimeout)
 
 from PIL import Image, ImageOps
