@@ -119,8 +119,18 @@ describe('页格展开「这页发生了什么」（Issue#279）', () => {
     expect(screen.getByTestId('page-detail-error-type').textContent).toContain('ValueError');
     // 重试账 page_retry_counts=2 → attempts=3。
     expect(screen.getByTestId('page-detail-attempts').textContent).toContain('重试 3 次');
-    // 失败页不进选择集（#199 红线不动）。
+    // 失败页不进选择集（#199 红线不动；M5 杀手之一）。
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('无 onRetryPage 的挂载点不渲染面板重试按钮（单文件/导出弹窗保持只读，Issue#289）', () => {
+    render(<BatchPageMatrix status={makeStatus()} selected={new Set()} onChange={vi.fn()} />);
+
+    fireEvent.click(screen.getByTestId('page-cell-2'));
+    expect(screen.getByTestId('page-detail-panel').getAttribute('data-page')).toBe('2');
+    // 不传 prop 两种渲染条件下都无按钮 ⇒ 对 AC8/M3 不敏感，只钉挂载点只读。
+    expect(screen.queryByTestId('page-detail-retry')).toBeNull();
+    expect(screen.queryByTestId('page-detail-retry-unavailable')).toBeNull();
   });
 
   it('无 detail 的旧数据页照常展开（attempts 回落 1，不空面板崩）', () => {
