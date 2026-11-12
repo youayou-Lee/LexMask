@@ -449,24 +449,6 @@ def test_a2_precheck_detail_backfill(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 # AC3/AC9：stage_changed 事件 + 同源
 # ---------------------------------------------------------------------------
-def _patch_full_chain(monkeypatch: pytest.MonkeyPatch, store: _FakeStore, detect: Any, pages: int = 3) -> None:
-    """全链（_run_recognition）打桩：解析短路 + 视觉桩（沿 page_event_wiring 形态）。"""
-    import app.services.file_operations as fo
-
-    _patch_asyncio_timeout(monkeypatch)
-    store.job["config_json"] = json.dumps(_VISION_CFG)
-    _vision_stubs(monkeypatch, pages=pages, detect=detect)
-
-    async def _noop_parse(task: Any) -> None:
-        return None
-
-    monkeypatch.setattr(queue, "_parse_file", _noop_parse)
-
-
-def queue_for_patch(store: _FakeStore):
-    return _queue(store)
-
-
 def test_a3_stage_changed_events_and_ledger_same_source(monkeypatch: pytest.MonkeyPatch, log_env) -> None:
     """AC3/AC9：恰两条 stage_changed（preflight 无 from、page_loop 带 from、page=None），
     且每个事件 to 与 stages 账行同名（同源派生）。"""
@@ -554,7 +536,6 @@ def test_a4_no_accelerator_row_by_default_or_config_only(monkeypatch: pytest.Mon
     assert "accelerator" not in _stage_names(store), _stages(store)
 
     # mock 驱动：加速器真实开跑（#275 生产者未来的调用形态）⇒ 出现 ②' 行且事件无 from。
-    events_before = len(_stage_changed_events(log_env_dir_default()))
     queue._stage_begin(store, _ITEM_ID, "accelerator", {"blocks": 26}, from_prev=False)
     assert _stage_names(store)[-1] == "accelerator", _stages(store)
     acc = _stage(store, "accelerator")
@@ -562,11 +543,6 @@ def test_a4_no_accelerator_row_by_default_or_config_only(monkeypatch: pytest.Mon
     # page_loop 不受影响。
     assert _stage(store, "page_loop")["state"] == "completed"
 
-
-def log_env_dir_default() -> Any:
-    from app.services.page_event_log import _log_root
-
-    return _log_root().parent
 
 
 def test_a4_accelerator_begin_event_has_no_from(monkeypatch: pytest.MonkeyPatch, log_env) -> None:
@@ -637,7 +613,7 @@ def test_a10_rerun_clears_at_parse_and_replaces_rows(monkeypatch: pytest.MonkeyP
     _vision_stubs(monkeypatch, pages=3, detect=_detect)
 
     async def _spy_parse(task: Any) -> None:
-        parse_time_stages.append(((_merged(store).get("recognition") or {}).get("stages")))
+        parse_time_stages.append((_merged(store).get("recognition") or {}).get("stages"))
 
     monkeypatch.setattr(queue, "_parse_file", _spy_parse)
 
