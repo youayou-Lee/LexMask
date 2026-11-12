@@ -3,6 +3,17 @@
 
 ## 2026-11-12
 
+### 增强（Issue#273）P0 页级路由：每页自决「文字从哪来」（文本层/OCR/双跑仲裁），`RECOGNITION_ROUTING_MODE=page|file` 开关可一键回滚
+
+- **为什么**：混排 PDF（扫描件误带文本层、文本层缺损、水印层伪装正文）在文件级启发式下整卷同源——一层错全卷错。用户拍板（2026-11-12）：默认策略 `text_layer_verify`（先信文本层但必须对账）、对账粒度=整页 OCR、同卷连续 3 页对账通过后剩余页升 `text_layer`。P0 落点：页级动作决策 + 结果级证据自证/改判 + 决策即落账（账本字段 + 离线重放 A7），不新造识别通道、不动调度（P1/P2 出界）。
+- **改了什么**：
+  - 新包 `backend/app/services/page_routing/` 六模块：`judge`（纯函数 `judge_page` 判定序：probe 错误/字符下限/垃圾率/粘连/阅读序/页内复读 → 灰区必过 L2 墨迹对齐 → 升档/升级/抽样豁免；任何「判 ocr」的规则都是安全方向，灰区页不享受升档豁免）、`arbiter`（结果级仲裁：证据有效性前置——OCR 侧空证据=对账未实际发生≠通过；K1 chars 1.3×/K2 entities 1.5× 严格大于才改判、平局保留文本层、文本层阶段失败无条件采纳 OCR 证据）、`state`（卷内路由状态：连续通过计数升档（粘性）、确定性抽样页哨兵（含首页、按内容哈希可复现）、整卷升级 both；重启清零回落全卷 verify）、`signals`（L1 文本面采集复用 `compute_metrics` 单页口径 + 阅读序一致率 + 页内复读率；L2 低 DPI 渲染墨迹中位数/图像覆盖率仅灰区页触发；文件级 memo LRU≤128、任何异常 fail-closed 绝不抛）、`router`（编排 decide/finalize + 决策即落账 + 内容指纹含 inode 防同尺寸替换复用旧信任态；状态键挂文件指纹+sha16）、`registry`（历史误判样本库 loader，私有 testdata 登记、CI 无 testdata 合法回落 []）、`types`（决策/信号/仲裁/阈值唯一数据面）。
+  - 开关与接线：`RECOGNITION_ROUTING_MODE=page|file`（默认 `page`，validator 双值钉死）。page 模式 `detect_vision` 不调 docline 整卷链，改走 `router.decide` → 四动作（text_layer/text_layer_verify/ocr/both）落在既有识别路径上；file 模式与今天逐字节等价（`router.decide` 零调用 + 缓存签名键集相等断言钉死，page 模式靠新增 `routing_mode`/`routing_version` 键变键使旧页缓存全量失效）；page 模式同步跳过 `prime_pdf_text_layer_sparse_probe` 预热（决策面唯一）。
+  - 页账本新字段（`recognition.pages.<p>`，只增、缺省不写 None 噪声）：`text_source` / `text_metrics` / `stage_ms` / `switched_from` / `switch_reason` / `verify_incomplete`。成功页取 `pipeline_status["page_routing"]`（finalize 合成），超时/失败页从 file_store 决策即落账记录补记；file 模式零新字段（回滚口径）。`decide` 侧计时（judge/stage_ms）进决策 JSON。
+  - 证据 OCR 死线与披露（拍板 b）：`text_layer_verify` 对账跑整页证据 OCR，`ROUTING_VERIFY_OCR_TIMEOUT_SEC`（默认 90s）超时 ⇒ `verify_incomplete=true` + 保留文本层不误判（`RoutingEvidenceTimeout` 专类收窄页失败档）；`verify_incomplete` 页不计入升档计数、不携带整卷升级标记；部分导出说明页逐页披露 `verify_incomplete` 清单。证据 OCR 可关（`ROUTING_VERIFY_OCR_EVIDENCE_ENABLED=false` ⇒ verify 降级直信）。
+  - 阈值全进 `config.py` 14 键（judge 不 import settings，经 `routing_thresholds.get_routing_thresholds()` 注入）；`ROUTING_VERSION` 进缓存签名与账本（行为版本可追溯）。
+- **测试**：issue273 家族后端 12 文件 112 例——judge 判定序全规则 + 灰区先于升档/升级钉、arbiter K1/K2 严格大于（恰等号负样本）+ 改判链 `switched_from` + metrics 双侧审计 + 证据有效性三态、state 升档粘性/抽样确定性/种子差异、signals 真卷采集与 fail-closed、registry 目录在场必须可解析（坏 JSON 不得静默蒸发成 skip）与 CI 回落、execution 四动作全路径 + B9 空证据 + 证据死线/关闭降级、wiring 双模分流 + 缓存签名键集钉 + A8 fail-closed、ledger 三收尾路径记账 + file 模式零新字段 + prime 门双案钉、导出披露；A3 性能判据（86 页混排真卷 memo 后单页「采集+judge」中位 0.300ms，门限 <20ms）与 A7 决策重放判据（账本 signals+routing_version 原样回放同决策，合成 + 真卷全页）入 `test_issue273_perf_replay.py`。
+
 ### 增强（Issue#257 一期之三·需求重对齐）单文件任务也能选页导出：页格嵌在文件处理页 + 范围输入 + 去掉失败页勾选
 
 - **为什么**：一期上线后用户实测反馈三点——①选页导出只挂在批量任务上，单文件流程（`/single`）根本没有入口，而用户的真实用法就是「先跑一个文件」；②失败页要先勾一个「我已了解」才能导出，一个红勾比失败页本身还刺眼；③200 页里有 150 页要导出，只能一格一格点。重对齐后的需求：单文件就有、运行中就能看到哪一页有问题且不可选、不要勾选框、必须支持页码范围。
