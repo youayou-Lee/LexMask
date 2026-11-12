@@ -26,6 +26,10 @@ ROUTES = [
     "/settings?tab=redaction",
     # Issue#262 终审：旧 /settings/redaction 重定向本体也保留冒烟覆盖
     "/settings/redaction",
+    # Issue#262 D3：旧 /settings/word-pools 已重定向进 /settings?tab=words，冒烟改走新深链
+    "/settings?tab=words",
+    # Issue#268：旧 /settings/word-pools 重定向本体也保留冒烟覆盖
+    "/settings/word-pools",
     "/model-settings/text",
     "/model-settings/vision",
 ]
