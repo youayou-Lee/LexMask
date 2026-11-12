@@ -1,6 +1,7 @@
 // Copyright 2026 LexMask Contributors
 
 import type { JobSummary, JobTypeApi } from '@/services/jobsApi';
+import { isBatchWizardMode, type BatchWizardMode } from '@/constants/batch-wizard-modes';
 
 export type JobTypeForNav =
   | 'text_batch'
@@ -23,7 +24,9 @@ export type PrimaryNavAction =
   | { kind: 'link'; label: string; to: string }
   | { kind: 'none'; reason?: string };
 
-type BatchRouteMode = 'text' | 'image' | 'smart' | 'agent';
+// Issue#264：与路由放行白名单（router.tsx BatchRoute）共用单一来源常量派生类型，
+// 杜绝「resolveBatchRouteMode 产出 ∉ BatchRoute 白名单」的口径漂移。
+type BatchRouteMode = BatchWizardMode;
 
 export type JobPrimaryNavigationLabels = {
   continueConfig: string;
@@ -85,7 +88,7 @@ function resolveBatchRouteMode(
   jobConfig?: Record<string, unknown> | null,
 ): BatchRouteMode {
   const wizardMode = jobConfig?.batch_wizard_mode;
-  if (wizardMode === 'text' || wizardMode === 'image' || wizardMode === 'smart' || wizardMode === 'agent') {
+  if (isBatchWizardMode(wizardMode)) {
     return wizardMode;
   }
   if (jobType === 'text_batch') return 'text';

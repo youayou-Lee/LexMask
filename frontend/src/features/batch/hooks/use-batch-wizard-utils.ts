@@ -20,9 +20,9 @@ import type { BatchRow, PipelineCfg, ReviewEntity, Step, TextEntityType } from '
 
 // ── Pure helpers ──
 
-export function isBatchWizardMode(value: string | null | undefined): value is BatchWizardMode {
-  return value === 'text' || value === 'image' || value === 'smart' || value === 'agent';
-}
+// Issue#264：wizard 模式守卫收敛到单一来源常量（保持本模块既有导出面，
+// use-batch-wizard.ts 与 mode-agent.test.ts 的 import 路径不变）。
+export { isBatchWizardMode } from '@/constants/batch-wizard-modes';
 
 export type BatchJobType = 'text_batch' | 'image_batch' | 'smart_batch' | 'agent_batch';
 

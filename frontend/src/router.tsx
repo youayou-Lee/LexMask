@@ -7,6 +7,7 @@ import { Layout } from './components/Layout';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useT } from './i18n';
 import { SUSPENSE_SPINNER_DELAY_MS, ROUTE_PREFETCH_DELAY_MS } from './constants/timing';
+import { isBatchWizardMode } from './constants/batch-wizard-modes';
 import { isRegisterAuthSearch, resolveAuthNext } from './features/auth/auth-routing';
 import { useAuth } from './features/auth/auth-context';
 
@@ -202,9 +203,11 @@ function AuthRoute() {
 }
 
 // Issue#264：导出供路由行为契约测试直挂真实组件（纯导出，零行为差异）。
+// 放行白名单收敛到单一来源常量（constants/batch-wizard-modes）——与导航侧
+// resolveBatchRouteMode 共用同一份，杜绝「导航产物被路由弹回」的口径漂移。
 export function BatchRoute() {
   const { batchMode } = useParams();
-  if (batchMode !== 'smart' && batchMode !== 'agent') {
+  if (!isBatchWizardMode(batchMode)) {
     return <Navigate to="/batch" replace />;
   }
   return (
