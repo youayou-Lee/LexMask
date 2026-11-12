@@ -28,10 +28,11 @@ import {
   fetchRecognitionEntityTypes,
   fetchRecognitionPipelines,
   fetchRecognitionPresets,
+  // Issue#267：目录超时族单一来源（权威定义在服务层，见 recognition-config.ts）
+  RECOGNITION_FETCH_TIMEOUT_MS,
 } from '@/services/recognition-config';
 import { localizePipelineConfig, localizePresetName } from '../lib/redaction-display';
 import type { EntityTypeConfig, PipelineConfig } from './use-entity-types';
-import { RECOGNITION_FETCH_TIMEOUT_MS } from './use-entity-types';
 
 function sortPresets(presets: RecognitionPreset[]): RecognitionPreset[] {
   return [...presets].sort((left, right) => {

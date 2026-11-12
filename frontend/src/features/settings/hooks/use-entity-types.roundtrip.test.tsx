@@ -19,6 +19,10 @@ const authFetchMock = vi.hoisted(() => vi.fn());
 vi.mock('@/services/recognition-config', () => ({
   fetchRecognitionEntityTypes: fetchTypesMock,
   fetchRecognitionPipelines: fetchPipelinesMock,
+  // Issue#267 门⑥ M-2：常量权威定义下沉服务层后，消费侧 import 此键——
+  // mock 工厂必须镜像真实模块的导出面（缺键会使消费侧在 try 内抛错、
+  // 走 catch 分支把 loading 提前落 false，A7 首挂断言即红）。
+  RECOGNITION_FETCH_TIMEOUT_MS: 25_000,
 }));
 vi.mock('@/services/api-client', () => ({
   authFetch: authFetchMock,

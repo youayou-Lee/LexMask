@@ -10,6 +10,8 @@ import type { PipelineMode } from '@/services/defaultRedactionPreset';
 import {
   fetchRecognitionEntityTypes,
   fetchRecognitionPipelines,
+  // Issue#267：目录超时族单一来源（权威定义在服务层，见 recognition-config.ts）
+  RECOGNITION_FETCH_TIMEOUT_MS,
 } from '@/services/recognition-config';
 
 export interface EntityTypeConfig {
@@ -111,11 +113,9 @@ export function buildPipelineTypeId(name: string, mode: PipelineMode) {
   return `custom_${mode}_${suffix}`;
 }
 
-// Issue#267：目录接口经远程隧道单程可达数百毫秒，1.2s 会间歇性 abort——
-// 与 use-playground-recognition.ts（25s+同款注释）与批量向导（use-batch-config 25s）
-// 同接口同裁决：快在缓存，不靠掐超时。（taxonomy 请求走 authFetch 无超时，为已知
-// 边界——authFetch 对连接拒绝快速失败，挂死型是窄场景，方案 v2 §2.4/§5 scope out。）
-export const RECOGNITION_FETCH_TIMEOUT_MS = 25_000;
+// Issue#267：目录两请求的 25s 常量已下沉服务层（recognition-config.ts 单一来源，
+// 本文件 import 使用）。taxonomy 请求走 authFetch 无超时，为已知边界——authFetch
+// 对连接拒绝快速失败，挂死型是窄场景（方案 v2 §2.4/§5 scope out）。
 
 export function useEntityTypes() {
   const [entityTypes, setEntityTypes] = useState<EntityTypeConfig[]>([]);

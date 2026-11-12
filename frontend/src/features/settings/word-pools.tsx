@@ -19,7 +19,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { fetchRecognitionEntityTypes } from '@/services/recognition-config';
+import {
+  fetchRecognitionEntityTypes,
+  // Issue#267：目录超时族单一来源（权威定义在服务层，见 recognition-config.ts）
+  RECOGNITION_FETCH_TIMEOUT_MS,
+} from '@/services/recognition-config';
 import {
   deleteWordPool,
   exportWordPools,
@@ -108,7 +112,9 @@ export function WordPoolsSettings() {
 
   useEffect(() => {
     let cancelled = false;
-    fetchRecognitionEntityTypes(false)
+    // Issue#267 门⑥ M-1：同族目录接口第五消费点补显式超时——不传则落服务层默认
+    // 3.5s，远程隧道下间歇性 abort 后名称静默降级为 type id（.catch 吞掉不可见）。
+    fetchRecognitionEntityTypes(false, RECOGNITION_FETCH_TIMEOUT_MS)
       .then((types) => {
         if (cancelled) return;
         const names: Record<string, string> = {};
