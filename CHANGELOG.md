@@ -10,7 +10,7 @@
   - `EntityTypeSettingsPanel` 下沉进 types 页签（Radix inactive 卸载=天然按需）；三页签失败态统一「Alert+重试」（redaction-list / word-pools 各带 reload 重发）。
   - 弹窗三态面板：目录失败/不可用区带重试按钮（`preserveSelection=true`——重试不重置已就绪维度的用户选择）；空目录态人话提示；方案 select 门控堵三条空写路径。
   - 法律/全部 chip：目录未就绪 `disabled` + title 提示 + handler 守卫（不写空集）。
-  - 超时族：`use-entity-types` 两处 1.2s 与 `use-redaction-presets` 两处 3.5s 统一 `RECOGNITION_FETCH_TIMEOUT_MS=25s`（常量权威定义下沉服务层 `services/recognition-config.ts` 单一来源，settings 两 hook、playground 识别 hook、word-pools 类型名 effect 五消费点均 import 使用；服务层默认参数 3_500 不动；taxonomy 走 authFetch 无超时为已知边界，scope out 挂账）。
+  - 超时族：`use-entity-types` 两处 1.2s 与 `use-redaction-presets` 两处 3.5s 统一 `RECOGNITION_FETCH_TIMEOUT_MS=25s`（常量权威定义下沉服务层 `services/recognition-config.ts` 单一来源，settings 两 hook、playground 识别 hook、word-pools 类型名 effect 等 4 个消费方 7 处调用均改 import 使用；服务层默认参数 3_500 不动；taxonomy 走 authFetch 无超时为已知边界，scope out 挂账）。
 - **测试**：+15 例（advanced-hub 失败态、roundtrip 往返钉 renderHook、redaction/words error-retry、scope-dialog 三态 +100 行）；全量 72 文件/532 passed（基线 517 净增 15）；tsc 双门 + build 绿；变异 M1-M6 六条经独立验收复跑全 KILLED（删靶在消费侧：chip disabled/守卫、弹窗目录态分支、select disabled、hub 顶层 spinner、弹窗重试 onClick、redaction-list 重试按钮——删后指定判据红、还原绿）；E1-E3 真机门④挂账。
 - **挂账**：E1 断后端冷启走查 / E2 慢网间歇 abort 消失 / E3 页签往返走查——真机门④；taxonomy 无超时窄场景另案。
 
