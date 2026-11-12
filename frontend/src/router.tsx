@@ -201,7 +201,8 @@ function AuthRoute() {
   );
 }
 
-function BatchRoute() {
+// Issue#264：导出供路由行为契约测试直挂真实组件（纯导出，零行为差异）。
+export function BatchRoute() {
   const { batchMode } = useParams();
   if (batchMode !== 'smart' && batchMode !== 'agent') {
     return <Navigate to="/batch" replace />;
