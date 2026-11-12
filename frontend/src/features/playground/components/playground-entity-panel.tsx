@@ -291,16 +291,19 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
           type="button"
           data-testid="playground-advanced-toggle"
           aria-expanded={advancedOpen}
+          aria-controls="playground-advanced-panel"
           onClick={() => setAdvancedOpen((open) => !open)}
-          className="flex w-full items-center justify-between gap-2 rounded-xl border border-border/70 bg-muted/35 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/35 hover:text-foreground"
+          className="flex w-full items-center justify-between gap-2 rounded-xl border border-border/70 bg-muted/35 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/35 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         >
           {t('playground.advancedReview')}
           <ChevronDown
             className={cn('size-3.5 shrink-0 transition-transform', advancedOpen && 'rotate-180')}
           />
         </button>
+        {/* Issue#266：aria-controls 引用条件挂载的 id——收起时面板不在 DOM，ARIA
+            disclosure 允许指向暂缺元素；不改永久挂载+hidden（渲染行为变更出界）。 */}
         {advancedOpen && (
-          <div className="flex min-h-0 flex-col gap-2.5">
+          <div id="playground-advanced-panel" className="flex min-h-0 flex-col gap-2.5">
             <div className="space-y-1">
               <Label htmlFor="playground-watermark" className="text-xs text-muted-foreground">
                 {t('playground.watermarkLabel')}

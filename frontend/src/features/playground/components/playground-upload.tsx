@@ -263,6 +263,7 @@ export const PlaygroundUpload: FC<PlaygroundUploadProps> = ({ ctx }) => {
                   type="button"
                   data-testid="playground-offline-hint-details"
                   aria-expanded={offlineDetailsOpen}
+                  aria-controls="playground-offline-hint-details-panel"
                   onClick={() => setOfflineDetailsOpen((open) => !open)}
                   className="flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-medium transition-colors hover:bg-[var(--warning-foreground)]/10"
                 >
@@ -275,8 +276,13 @@ export const PlaygroundUpload: FC<PlaygroundUploadProps> = ({ ctx }) => {
                   />
                 </button>
               </div>
+              {/* Issue#266：aria-controls 引用条件挂载的 id——收起时不在 DOM，ARIA
+                  disclosure 允许指向暂缺元素；不改永久挂载+hidden（渲染行为变更出界）。 */}
               {offlineDetailsOpen && (
-                <div className="mt-1 space-y-0.5 border-t border-[var(--warning-foreground)]/25 pt-1">
+                <div
+                  id="playground-offline-hint-details-panel"
+                  className="mt-1 space-y-0.5 border-t border-[var(--warning-foreground)]/25 pt-1"
+                >
                   {attentionSummary && (
                     <p className="break-words">
                       <span className="font-medium">{t('playground.upload.affectedServices')}</span>{' '}
