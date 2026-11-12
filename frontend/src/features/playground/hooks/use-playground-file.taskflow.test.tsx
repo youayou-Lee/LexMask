@@ -172,6 +172,7 @@ function Probe({ onReady }: { onReady: (file: FileApi, task: TaskApi) => void })
           inFlight={file.taskRecognition ? file.taskInFlight : null}
           startedAt={file.taskRecognition ? file.taskStartedAt : null}
           textMode={file.taskRecognition ? file.taskTextMode : false}
+          stagesView={file.taskRecognition ? file.taskStages : null}
           onCancel={() => file.cancelProcessing()}
         />
       )}
@@ -475,7 +476,9 @@ describe('Issue#194 识别页任务流（T9）', () => {
     );
     expect(screen.getByTestId('playground-loading-nums').textContent).toBe('已完成 3/20');
 
-    // 无段名消息（vision 排队）→ 段行消失（不秀英文原文），顶部保持「正在识别」人话
+    // 无段名消息（vision 排队）→ Issue#274 F3 有意翻转：该 message 即 preflight
+    // 段的真实账（原钉「段行消失」随映射翻转）——段名行=文档预检 + 乐观阶段条
+    //（progress_stage='vision'/current=0/无 performance ⇒ 乐观①成立）。
     vi.mocked(getJob).mockResolvedValue(
       makeDetail('processing', 'vision', {
         items: [
@@ -493,9 +496,11 @@ describe('Issue#194 识别页任务流（T9）', () => {
       await harness.task!.refresh();
     });
     await waitFor(() =>
-      expect(screen.queryByTestId('playground-loading-stage')).toBeNull(),
+      expect(screen.getByTestId('playground-loading-stage').textContent).toBe('文档预检'),
     );
-    // Issue#238：段名消失但数字行保留（queued 0/20 也是真完成数）
+    // 乐观阶段条（① 文档预检中）随 queued 态出现（AC6 乐观路径）。
+    expect(screen.getByTestId('playground-loading-stages').textContent).toContain('文档预检');
+    // Issue#238：数字行保留（queued 0/20 也是真完成数）
     expect(screen.getByTestId('playground-loading-nums').textContent).toBe('已完成 0/20');
     expect(screen.getByTestId('loading-message').textContent).toBe('正在识别「a.txt」');
   });

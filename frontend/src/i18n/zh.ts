@@ -1250,12 +1250,22 @@ const zhOverrides: Record<string, string> = {
   'playground.taskStage.vision': '视觉识别',
   'playground.taskStage.text': '实体识别',
   'playground.taskStage.redaction': '打码',
+  // Issue#274：三段式阶段条（① 文档预检 ② 逐页识别 ②' 后台加速，可选段）
+  'playground.taskStage.preflight': '文档预检',
+  'playground.taskStage.preflightHint': '正在做文档预检：判定文本层是否可用',
+  'playground.taskStage.pageLoop': '逐页识别',
+  'playground.taskStage.pageLoopHint': '正在逐页识别',
+  'playground.taskStage.accelerator': '后台加速',
+  'playground.taskStage.acceleratorHint': '后台加速识别中（不影响逐页进度）',
   // Issue#238：进度卡诚实化——真完成数/并行中页数/已运行时长/段编号
   'playground.taskProgress.completed': '已完成 {completed}/{total}',
   'playground.taskProgress.inFlight': '并行处理中 {n} 页',
   'playground.taskProgress.elapsed': '已运行 {time}',
   'playground.taskProgress.segment': '第 {index} 段/共 {total} 段：{stage}',
   'playground.taskProgress.textRunning': '实体识别中',
+  // Issue#274：ETA 保守版（p75 + 剔除缓存页 + 严格单调）
+  'playground.taskProgress.etaAbout': '约 {time}',
+  'playground.taskProgress.perPage': '约 {sec} 秒/页',
   'playground.redactingTask': '正在打码「{filename}」',
   'playground.redactProgressLine': '打码 {completed}/{total} 页 · 已运行 {time}',
   'playground.redactProgressIndeterminate': '打码处理中 · 已运行 {time}',

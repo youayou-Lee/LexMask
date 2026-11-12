@@ -44,10 +44,17 @@ describe('recognitionStageFromMessage — 后端 message → 人话段名', () =
     });
   });
 
-  it('无段名的消息（排队/完成/解析）→ null（调用方回落既有文案）', () => {
-    expect(recognitionStageFromMessage('Vision recognition queued for 20 page(s)')).toBeNull();
+  it('无段名的消息（完成/解析）→ null（调用方回落既有文案）', () => {
     expect(recognitionStageFromMessage('vision_recognition_complete')).toBeNull();
     expect(recognitionStageFromMessage('text_recognition_complete')).toBeNull();
+  });
+
+  it('Issue#274 F3：排队消息 → 文档预检段（原 null 钉有意翻转：该 message 即 preflight 真实账）', () => {
+    expect(recognitionStageFromMessage('Vision recognition queued for 20 page(s)')).toEqual({
+      labelKey: 'playground.taskStage.preflight',
+      current: 0,
+      total: 20,
+    });
   });
 
   it('空/缺失/意外形状 → null', () => {

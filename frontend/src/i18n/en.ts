@@ -1283,12 +1283,22 @@ const enOverrides: Record<string, string> = {
   'playground.taskStage.vision': 'Vision recognition',
   'playground.taskStage.text': 'Entity recognition',
   'playground.taskStage.redaction': 'Redaction',
+  // Issue#274: three-segment stage bar (① doc pre-check ② page-by-page ②' background accelerator, optional)
+  'playground.taskStage.preflight': 'Doc pre-check',
+  'playground.taskStage.preflightHint': 'Running document pre-check: checking if the text layer is usable',
+  'playground.taskStage.pageLoop': 'Page-by-page recognition',
+  'playground.taskStage.pageLoopHint': 'Recognizing page by page',
+  'playground.taskStage.accelerator': 'Background accelerator',
+  'playground.taskStage.acceleratorHint': 'Accelerating in the background (page progress unaffected)',
   // Issue#238: honest progress card — true completed count / pages in parallel / elapsed / segment numbering
   'playground.taskProgress.completed': 'Completed {completed}/{total}',
   'playground.taskProgress.inFlight': '{n} pages in parallel',
   'playground.taskProgress.elapsed': 'Elapsed {time}',
   'playground.taskProgress.segment': 'Segment {index}/{total}: {stage}',
   'playground.taskProgress.textRunning': 'Recognizing entities',
+  // Issue#274: conservative ETA (p75 + cache-hit exclusion + strictly monotonic)
+  'playground.taskProgress.etaAbout': '~{time}',
+  'playground.taskProgress.perPage': '~{sec}s per page',
   'playground.redactingTask': 'Redacting "{filename}"',
   'playground.redactProgressLine': 'Redacting {completed}/{total} pages · Elapsed {time}',
   'playground.redactProgressIndeterminate': 'Redacting · Elapsed {time}',

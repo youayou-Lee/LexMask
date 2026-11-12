@@ -31,6 +31,11 @@ export type SingleTaskView = {
   message: string | null;
   error: string | null;
   /**
+   * Issue#274：item.progress_stage 原值（乐观①门控用——parse 窗口为 null、
+   * vision 段为 'vision'；单文件视图此前不透出该字段）。
+   */
+  progressStage?: string | null;
+  /**
    * Issue#194 Task 11：item 的原始 performance_json（识别进行中视图的已产出
    * 阶段行与结果页详情卡共用同一 buildProcessingRows 输入）。轻量轮询/占位为 null。
    */
@@ -95,6 +100,7 @@ export function buildSingleTaskView(params: {
     total: item?.progress_total ?? 0,
     message: item?.progress_message ?? null,
     error: item?.error_message ?? detail.error_message ?? null,
+    progressStage: item?.progress_stage ?? null,
     performance: item?.performance ?? null,
   };
 }
