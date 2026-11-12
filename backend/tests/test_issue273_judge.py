@@ -29,6 +29,20 @@ def test_chars_below_min_is_ocr():
     assert (d.action, d.reason) == ("ocr", "chars_below_min")
 
 
+def test_chars_below_min_band_interior_is_ocr():
+    # 变异清账（I-3 judge-1）：chars∈[80,120) 的样本必须仍被字符下限拦截——
+    # 只测 chars=50（远低于任何合理阈值）会让「阈值 120→80」类变异假绿。
+    d = judge.judge_page(_sig(chars=100), T, routing_version=1)
+    assert (d.action, d.reason) == ("ocr", "chars_below_min")
+
+
+def test_chars_equal_min_is_not_below_min():
+    # 变异清账（I-3 judge-3）：chars == min_chars 恰等号不算「低于下限」（严格 <）；
+    # 落入灰区带（120 < 120×1.5）后墨迹健康 ⇒ default_verify。
+    d = judge.judge_page(_sig(chars=120, ink_alignment=0.12), T, routing_version=1)
+    assert (d.action, d.reason) == ("text_layer_verify", "default_verify")
+
+
 def test_garbage_glued_order_repeat_rules():
     for kw, reason in [
         (dict(garbage_ratio=0.5), "garbage_ratio_high"),

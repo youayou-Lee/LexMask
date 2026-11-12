@@ -27,6 +27,19 @@ def test_upgrade_is_sticky_after_switch():
     assert s.upgraded is True
 
 
+def test_record_pass_freezes_counter_after_upgrade():
+    # 变异清账（I-3 state-1）：升档后 record_pass 必须早退——计数冻结在升级阈值，
+    # upgraded 粘性不受后续对账通过影响（去掉早退会让计数继续膨胀）。
+    s = state.VolumeRoutingState()
+    for _ in range(3):
+        state.record_pass(s, 3)
+    assert s.upgraded is True
+    state.record_pass(s, 3)
+    state.record_pass(s, 3)
+    assert s.consecutive_passes == 3
+    assert s.upgraded is True
+
+
 def test_pick_sample_pages_deterministic_and_includes_first():
     a = state.pick_sample_pages(100, 2, "abc")
     b = state.pick_sample_pages(100, 2, "abc")
