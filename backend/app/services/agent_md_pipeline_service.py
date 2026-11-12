@@ -33,7 +33,12 @@ from app.services.agent_md_adapter import (
     normalize_content_list,
     normalize_docvortex,
 )
-from app.services.agent_md_ner import build_mapping_draft, chunk_segments, run_ner
+from app.services.agent_md_ner import (
+    build_mapping_draft,
+    chunk_segments,
+    merge_regex_entities,
+    run_ner,
+)
 from app.services.agent_md_replace import (
     apply_decisions,
     render_outputs,
@@ -447,8 +452,11 @@ class AgentMdPipelineService:
             chunks = chunk_segments(segs)
             # run_ner 就地平移 Entity 偏移——每任务只调一次
             entity_types = self.entity_types or self._resolve_entity_types(task.owner_id)
-            task.entity_types_used = [str(t) for t in entity_types]
+            task.entity_types_used = sorted(_entity_type_ids(entity_types))
             entities, _ = await run_ner(chunks, entity_types, self.ner)
+            # Issue#281 续：数字类 PII/微信 ID 正则补层（模型召回兜底）
+            entities = merge_regex_entities(
+                entities, segs, _entity_type_ids(entity_types))
             task.entities = entities
             task.mapping = build_mapping_draft(entities)
             if task.state == TaskState.FAILED:  # NER await 窗口内被判死同样不复活
@@ -565,10 +573,51 @@ class AgentMdPipelineService:
         """缺省实体类型解析（终审 C2）：与 #66 同款口径——默认九类清单经
         ``resolve_requested_entity_types`` 按 owner 三态配置过滤（停用不识别、
         自定义项一等公民）。显式构造参数优先，仅在 entity_types 为空时调用。"""
-        from app.services.entity_type_service import resolve_requested_entity_types
+        from app.services.entity_type_service import (
+            EntityTypeConfig,
+            resolve_requested_entity_types,
+        )
         from app.services.vl_md_pipeline_service import VL_MD_DEFAULT_TYPE_IDS
 
-        return resolve_requested_entity_types(list(VL_MD_DEFAULT_TYPE_IDS), owner_id or None)
+        defaults = list(VL_MD_DEFAULT_TYPE_IDS)
+        # 供料产物面向下游 AI：微信/支付宝账号是身份类标识，默认纳入兜底范围；
+        # owner 在识别范围里显式停用则仍按配置过滤（resolve 负责三态）。
+        if "WECHAT_ALIPAY" not in defaults:
+            defaults.append("WECHAT_ALIPAY")
+        resolved = resolve_requested_entity_types(defaults, owner_id or None)
+        # 2026-11-12 真卷事故：该类型未登记进类型库，`resolve` 对未知 id 静默
+        # continue → 补层拿到的 type_ids 里没有它，正则命中全被「未启用」过滤，
+        # 微信/支付宝 ID 静默漏打码（当时 0 残留纯属 NER 恰好标成电话）。这里在
+        # 供料链路内补一个**只走正则**的合成配置（use_llm=False，不喂模型）。
+        if not any(getattr(t, "id", "") == "WECHAT_ALIPAY" for t in resolved):
+            resolved.append(EntityTypeConfig(
+                id="WECHAT_ALIPAY",
+                name="支付账号",
+                use_llm=False,
+                description="微信/支付宝账号（wxid_ 等），仅正则兜底，不参与 NER 打标",
+            ))
+        return resolved
+
+
+def _entity_type_ids(types) -> set[str]:
+    """把类型配置对象/字符串/dict 统一成类型 id 集合。
+
+    ``resolve_requested_entity_types`` 返回 ``EntityTypeConfig`` 对象，直接
+    ``str(t)`` 出来的是 repr（不是 id）——2026-11-12 真卷回归：正则补层拿到
+    这串 repr 后把所有项当「未启用」全部过滤，86 页卷 24 个身份证号静默漏打码。
+    """
+    ids: set[str] = set()
+    for t in types or []:
+        if isinstance(t, str):
+            ids.add(t)
+            continue
+        if isinstance(t, dict):
+            value = t.get("id") or t.get("type_id")
+        else:
+            value = getattr(t, "id", None) or getattr(t, "type_id", None)
+        if value:
+            ids.add(str(value))
+    return ids
 
 
 _ILLEGAL_FILENAME_CHARS = re.compile(r'[/\\:*?"<>|]')
