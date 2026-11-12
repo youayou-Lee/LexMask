@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from app.core.audit import audit_log
 from app.core.config import settings
@@ -124,6 +126,44 @@ async def trash_sweep() -> int:
     return purged
 
 
+def _logs_root() -> Path:
+    """日志根目录（测试注入点；与 page_event_log._log_root 同源推导）。"""
+    from app.core.config import settings
+    configured = str(getattr(settings, "PAGE_EVENT_LOG_DIR", "") or "").strip()
+    return Path(configured) if configured else Path(str(settings.DATA_DIR)) / "logs"
+
+
+def logs_sweep() -> int:
+    """孤儿任务日志清扫（A5.2）：mtime 超 TTL 的 job 目录整删；TTL=0 关。
+
+    终审 I-1：rmtree 前先关 writer 在**本进程**缓存的该 job fd——否则 worker
+    里指向已 unlink inode 的陈旧 fd 会让后续 log_event 照常「成功」计数却写进
+    虚空（目录永不重建）。child.name 已是消毒后的目录名，writer 的 close_job
+    同消毒口径，恰好命中。
+    """
+    import shutil
+
+    from app.core.config import settings
+    from app.services.page_event_log import close_job
+    ttl_days = int(getattr(settings, "PAGE_EVENT_LOG_TTL_DAYS", 14) or 0)
+    if ttl_days <= 0:
+        return 0
+    root = _logs_root()
+    if not root.is_dir():
+        return 0
+    cutoff = time.time() - ttl_days * 86400
+    removed = 0
+    for child in root.iterdir():
+        try:
+            if child.is_dir() and child.stat().st_mtime < cutoff:
+                close_job(child.name)
+                shutil.rmtree(child)
+                removed += 1
+        except OSError:
+            logger.debug("logs sweep skip %s", child, exc_info=True)
+    return removed
+
+
 async def retention_loop() -> None:
     await asyncio.sleep(_FIRST_SWEEP_DELAY_SECONDS)
     while True:
@@ -135,4 +175,8 @@ async def retention_loop() -> None:
             await trash_sweep()
         except Exception:
             logger.exception("trash sweep failed")
+        try:
+            logs_sweep()
+        except Exception:
+            logger.exception("page event logs sweep failed")
         await asyncio.sleep(_SWEEP_INTERVAL_SECONDS)

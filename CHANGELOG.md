@@ -51,6 +51,24 @@
   - **可观测**：docline 块级 catch 补 `exc_info=True`——下次任何逃逸异常日志自带完整栈与行号。
 - **测试**：后端 +15 例（`test_issue277_docline_scalar_bucket.py`）——红绿钉两条（修复前 TypeError 逐字消息在 `has_client.py:1418` 复现、切批形状 [19,1] 末批 `['文书编号']` 与生产实录逐字节同形；修复后补查恢复⇒confirmed=True+全类型键落缓存 / 补查仍标量⇒False+缓存键绝不落盘）、形状矩阵 8 形（int/str/dict/假值标量/空列表/列表保真/混合）、垃圾键标量走 #108 I-4 口径且不影响 confirmed（门⑥ I-1：请求类型全对的块不得被垃圾键毒化判失败）、禁补查层、短文本不自连补查（防 #108 的 3×120s 自连接挂起形态）、块级 catch traceback 钉。全量 2955 passed / 48 skipped（collected 3003）/ 0 failed，与 preview 基线 comm -3 恰差新增用例、零既有差异。
 - **真卷实弹**（分支镜像一次性容器，生产同源 20 标签）：86 页卷并发 4 连跑 5 次——0 次 TypeError、0 failed_chunks、0 http_errors（docline 建链 76.3–188.7s/跑），同卷期间截断补查路径正常触发 22 次全健康。修复前后对照：修复前 = 97s docline 白烧 + 全卷逐页 OCR+NER 重算；修复后 = docline 一次建链即终局。
+### 增强（Issue#279）页级结构化事件日志：每卷一份 JSONL 事件流 + 路由决策带阈值快照可复盘 + PII 三层防线 + 页格「这页发生了什么」
+
+- **为什么**：识别出问题时复盘只能翻 stdout 日志——docline 十道资格闸各打一行 `logger.info`，块级失败只有一行裸 warning 无块号无堆栈（#277 痛点），单页重试（#257）无任何事件记录。用户原口径：「每一页都得是独立的，并且这一页的处理情况也都要有合理的日志系统去记录」「一切行为都要记录数据，记录决策和结果，方便后续复盘」。
+- **改了什么**：
+  - **落盘布局**：`DATA_DIR/logs/<job_id>/<item_id>.jsonl`（每卷一文件——批量任务一 job 多卷、页号跨卷会撞，故为目录口径）+ 任务终态落一次 `summary.json`（页数分布/平均·最慢页/失败页与原因码/请求总数/各阶段总耗时，预留字段 `saved_by_accelerator`/`upgraded_pages`/`arbitrated_pages` 本期恒 0 也在产物）。
+  - **事件面**：`route_decided`（卷级；docline 十道资格闸判定即埋点——通过汇于 coverage 闸 accepted 单条、拒绝=首拒闸 fallback 单条，每卷至多一条；verdict 词汇表 `accepted | fallback:<码>`——闸拒绝=整卷回落逐页线继续产出，从不终止）、`text_layer_extracted`、`chunk_failed`（docline + HaS 视觉线**双点接线**，带 chunk_index/error_type/traceback_frames/脱敏消息——#277 的可观测面补充；该 bug 本体的修复与核销在 PR#283）、`ner_done`、`ocr_done`、`page_done`、`page_failed`、`retry_started`、`retry_done`；v2 架构（#272-#275）预留 4 种事件名（`arbitration`/`stage_changed`/`accelerator_*`）schema 已登记、本期无生产者。
+  - **决策可复盘**：每条 `route_decided` 带 `signals`（判定输入指标值）+ `thresholds_snapshot`（判定当时实际生效的阈值字典）+ `config_hash`（路由相关 settings 子集 sha256）——将来改阈值，旧日志仍能解释当时的判定，不被新阈值污染。
+  - **PII 三层防线**：①schema 白名单制——事件字段必须命中声明集，未声明字段拒写整事件并计数告警（没有自由文本通道）；②所有字符串字段过统一脱敏器（截断 + 身份证/手机号/银行卡/连续长中文串探针替换 `<redacted:类型:哈希>`，traceback 只存代码帧「文件:行号 in 函数」不含源码行与消息文本）；③审计脚本 `backend/scripts/audit_page_event_log.py` 全量正则扫描 + **`--self-test` 正控自检**（已知夹具必须命中，自检不过则扫描结论作废、退出非零——堵「正则写坏→永远零命中→证据力为零」，沿 #159 G4 先例）。
+  - **主流程零风险（fail-open）**：任何写盘故障（目录不可建/磁盘满/权限/不可序列化值）吞掉、计数 + 每类告警恰一次，绝不向识别链上抛；每事件拼好整行后单次 `os.write` + `O_APPEND`——多 worker（`WEB_CONCURRENCY>1`）逐行完整不交插；路径成分消毒防 `job_id` 穿越日志根。
+  - **前端（读 DB 账本镜像，不读 JSONL）**：页格点开「第 N 页发生了什么」（路由=文本层链接管/逐页识别、总耗时、各阶段耗时、异常类型、重试次数），卷头路由摘要 chip（「文本层链已接管 / 文本层链未接管（水印命中）·走逐页识别」）；网络面板无任何 JSONL 读取接口。
+  - **保留策略**：删任务整目录即刻消失（`delete_job` 钩子）；retention 巡检按 `PAGE_EVENT_LOG_TTL_DAYS` 清扫 mtime 超期孤儿目录——清扫前先关 writer 在本进程缓存的该 job fd（终审 I-1：否则目录删除后陈旧 fd 让后续事件照常「成功」计数却写进已 unlink 的 inode；识别/页重试收尾同样关 fd，长生命周期 worker 不积攒缓存条目；fd 缓存键与目录名同一消毒坐标系，原始 id 与消毒名幂等命中）。
+  - **attempt 同基（终审 I-4）**：`retry_done.attempt` 与重试路 `page_failed.attempts` 改为「该页累计重试序号（含本次）= 既有账 +1」，与 `retry_started`、DB `page_retry_counts` 同基（此前 retry_done 用批内枚举序号：同页同轮 started=1/done=2、重复轮 done 恒 1）。
+  - **闸快照读护（终审 I-2）**：`route_thresholds_snapshot`/`route_config_hash` 内部 fail-open——缺键（设置改名）跳过该键 / hash 返回空串，AttributeError 不再可能逃出 docline 闸帧改变识别路由。
+  - **重复片段闸决策输入全进快照与 route 子集（终审 I-3）**：`TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS`/`TEXT_LAYER_REPEATED_FRAGMENT_MIN_REPEATS`/`TEXT_LAYER_REPEATED_FRAGMENT_MIN_PAGES` 补入 coverage 闸的 `thresholds_snapshot` 与 `ROUTE_SETTINGS_KEYS`（改任一个 config_hash 都变）。
+  - **性能钉（A1.6）**：500 条 page_done 单条 p95 写延迟 < 1ms（埋点是识别链旁路）。
+  - **两脚本用法**：`python backend/scripts/summarize_job_log.py DATA_DIR/logs/<job_id>` 一条命令从 JSONL 复算 summary，与 `summary.json`、DB 账本三源 diff=0（字节比对须排除 `generated_at`）；`python backend/scripts/audit_page_event_log.py --self-test DATA_DIR/logs/<job_id>` PII 探针扫描（exit 0=干净 / 1=命中 / 2=用法错）。
+  - **开关（backend/.env）**：`PAGE_EVENT_LOG_ENABLED`（默认 True）、`PAGE_EVENT_LOG_DIR`（空=跟随 `DATA_DIR/logs`）、`PAGE_EVENT_LOG_TTL_DAYS`（默认 14，0=关=仅随任务删除，validator 夹 0-365）。
+- **测试**：后端 +63 例 8 文件（写入器 schema 白名单/fail-open 全形态/并发 append+双进程 O_APPEND 无交插/13 种事件名契约（9 生产者+4 预留；Issue 清单口径 12+未知事件拒写另钉）/路径防穿越/阈值快照防污染/config_hash 无关设置不敏感/脱敏与堆栈纯净、summary 全字段注入判据与 (item,page) 去重口径、docline 十闸埋点钉、chunk 双点、页终态/重试接线、retention 删目录与 TTL 清扫、审计脚本 self-test；前端 `issue279-page-detail.test.tsx` 7 例页格展开与卷头 chip 契约）。后端全量 3004 passed / 48 skipped；门④真卷 E2E 执行手册另落私有仓 `docs/acceptance/issue279-gate4-checklist.md`。
 
 ### 增强（Issue#257 一期之三·需求重对齐）单文件任务也能选页导出：页格嵌在文件处理页 + 范围输入 + 去掉失败页勾选
 

@@ -813,6 +813,17 @@ class Settings(BaseSettings):
     def _validate_trash_retention_days(cls, v: int) -> int:
         return max(1, min(365, v))
 
+    # ---- Issue#279 页级结构化事件日志（JSONL）----
+    # 目录空=跟随 DATA_DIR/logs；TTL 天=孤儿日志清扫阈值（0=关，仅随任务删除）。
+    PAGE_EVENT_LOG_ENABLED: bool = True
+    PAGE_EVENT_LOG_DIR: str = ""
+    PAGE_EVENT_LOG_TTL_DAYS: int = 14
+
+    @field_validator("PAGE_EVENT_LOG_TTL_DAYS")
+    @classmethod
+    def _validate_page_event_log_ttl_days(cls, v: int) -> int:
+        return max(0, min(365, v))
+
     # 全局限流（R1-3）。按用户主体计数；上传默认 240/min（4 并发万级批量
     # ≈4 文件/秒，留足余量），导出 20/min。0 不可取——validator 夹下限。
     UPLOAD_RATE_PER_MIN: int = 240

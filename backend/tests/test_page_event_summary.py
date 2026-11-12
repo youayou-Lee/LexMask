@@ -1,0 +1,101 @@
+"""A2.5：summary 全字段——注入已知事件断言字段值，防「抄 DB 三样交差」。"""
+import json
+from pathlib import Path
+
+from app.services.page_event_summary import compute_summary
+
+
+def _write_events(job_dir: Path, item_id: str, events: list[dict]) -> None:
+    d = job_dir
+    d.mkdir(parents=True, exist_ok=True)
+    with (d / f"{item_id}.jsonl").open("w", encoding="utf-8") as fh:
+        for e in events:
+            base = {"job_id": "j1", "item_id": item_id, "page": None, "event": "x", "ts": "2026-11-12T00:00:00Z"}
+            base.update(e)
+            fh.write(json.dumps(base, ensure_ascii=False) + "\n")
+
+
+def test_summary_full_fields_from_injected_events(tmp_path):
+    job = tmp_path / "j1"
+    _write_events(job, "item1", [
+        {"event": "route_decided", "source": "docline_gate", "gate": "coverage", "verdict": "accepted"},
+        {"event": "text_layer_extracted", "chars": 10, "blocks": 3, "pages": 2, "ms": 5},
+        {"event": "ner_done", "calls": 6, "ms": 100, "entities": 8},
+        {"event": "page_done", "page": 1, "ms": 500, "regions": 3, "source": "docline"},
+        {"event": "page_done", "page": 2, "ms": 1500, "regions": 5, "source": "docline"},
+        {"event": "page_failed", "page": 3, "stage": "ner", "error_type": "BudgetExceeded",
+         "message_sanitized": "m", "traceback_frames": [], "attempts": 1, "ms": 2000},
+    ])
+    _write_events(job, "item2", [
+        {"event": "route_decided", "source": "docline_gate", "gate": "no_text_layer", "verdict": "fallback:no_text_layer"},
+        {"event": "ocr_done", "page": 1, "ms": 300, "regions": 2, "source": "ocr"},
+        {"event": "page_done", "page": 1, "ms": 700, "regions": 2, "source": "page_pipeline"},
+        {"event": "retry_started", "page": 1, "attempt": 2, "trigger": "manual"},
+        {"event": "retry_done", "page": 1, "attempt": 2, "outcome": "success", "ms": 600},
+        {"event": "page_done", "page": 1, "ms": 600, "regions": 2, "source": "retry"},
+    ])
+    s = compute_summary(job)
+    assert s["page_count"] == 4
+    assert s["pages_by_source"] == {"docline": 2, "page_pipeline": 0, "retry": 1}
+    # 键 = "item_id:page"（跨卷同页号不坍缩，门⑥ I-1）；按 (page, item) 稳定排序
+    assert s["failed_pages"] == {"item1:3": "BudgetExceeded"}
+    assert s["slowest_page"] == {"item_id": "item1", "page": 3, "ms": 2000}
+    assert s["avg_page_ms"] == round((500 + 1500 + 2000 + 700) / 4)
+    assert s["ner_calls_total"] == 6 and s["ner_ms_total"] == 100 and s["ocr_ms_total"] == 300
+    assert s["retry_count"] == 1
+    assert s["saved_by_accelerator"] == 0 and s["upgraded_pages"] == 0 and s["arbitrated_pages"] == 0
+    assert "generated_at" in s
+
+
+def test_summary_pages_by_source_counts_latest_page_done(tmp_path):
+    """同一页多次 page_done（重试翻绿）按最后一条计 source。"""
+    job = tmp_path / "j2"
+    _write_events(job, "item1", [
+        {"event": "page_done", "page": 1, "ms": 100, "regions": 1, "source": "page_pipeline"},
+        {"event": "retry_started", "page": 1, "attempt": 2, "trigger": "manual"},
+        {"event": "retry_done", "page": 1, "attempt": 2, "outcome": "success", "ms": 50},
+        {"event": "page_done", "page": 1, "ms": 50, "regions": 1, "source": "retry"},
+    ])
+    s = compute_summary(job)
+    assert s["pages_by_source"] == {"docline": 0, "page_pipeline": 0, "retry": 1}
+    assert s["retry_count"] == 1
+
+
+def test_summary_failed_page_cleared_when_turned_green(tmp_path):
+    """翻绿除名：page_failed 后同页 page_done（重试翻绿）→ failed_pages 除名、该页进 source 桶。"""
+    job = tmp_path / "j3"
+    _write_events(job, "item1", [
+        {"event": "page_done", "page": 1, "ms": 100, "regions": 1, "source": "page_pipeline"},
+        {"event": "page_failed", "page": 1, "stage": "ner", "error_type": "BudgetExceeded",
+         "message_sanitized": "m", "traceback_frames": [], "attempts": 1, "ms": 200},
+        {"event": "retry_started", "page": 1, "attempt": 2, "trigger": "manual"},
+        {"event": "retry_done", "page": 1, "attempt": 2, "outcome": "success", "ms": 50},
+        {"event": "page_done", "page": 1, "ms": 50, "regions": 1, "source": "retry"},
+    ])
+    s = compute_summary(job)
+    assert s["failed_pages"] == {}
+    assert s["pages_by_source"] == {"docline": 0, "page_pipeline": 0, "retry": 1}
+    assert s["page_count"] == 1
+    assert s["retry_count"] == 1
+
+
+def test_summary_multi_volume_same_page_no_collapse(tmp_path):
+    """门⑥ I-1：跨卷同页号不坍缩——两卷同页失败各留一键（item:page）、slowest 带真最大卷的 item_id。"""
+    job = tmp_path / "j4"
+    _write_events(job, "volA", [
+        {"event": "page_failed", "page": 3, "stage": "ner", "error_type": "BudgetExceeded",
+         "message_sanitized": "m", "traceback_frames": [], "attempts": 1, "ms": 100},
+        {"event": "page_done", "page": 5, "ms": 120, "regions": 1, "source": "docline"},
+    ])
+    _write_events(job, "volB", [
+        {"event": "page_failed", "page": 3, "stage": "ocr", "error_type": "OcrTimeout",
+         "message_sanitized": "m", "traceback_frames": [], "attempts": 1, "ms": 250},
+        {"event": "page_done", "page": 5, "ms": 900, "regions": 1, "source": "page_pipeline"},
+    ])
+    s = compute_summary(job)
+    assert s["page_count"] == 4
+    # 两卷同页号 3 的失败都保留（键 = item:page，按 (page, item) 排序），不同 error_type 不互吞
+    assert s["failed_pages"] == {"volA:3": "BudgetExceeded", "volB:3": "OcrTimeout"}
+    # 同页号 5 不同 ms：slowest_page 带真最大值所属卷的 item_id
+    assert s["slowest_page"] == {"item_id": "volB", "page": 5, "ms": 900}
+    assert s["avg_page_ms"] == round((100 + 120 + 250 + 900) / 4)
