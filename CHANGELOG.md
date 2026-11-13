@@ -6,12 +6,12 @@
 ### 清扫（Issue#269）死代码四件：i18n 死 title 键 + settings barrel 死导出 + rec hook 公开面收缩 + preset 弹窗残留
 
 - **为什么**：PR#265 门⑥挂账 triage ④。方案 select 弹窗替代旧 preset 弹窗与页签化改版后，一批键/导出/hook 公开面只剩测试引用或彻底零消费，继续留着会误导后来者以为仍是活契约。
-- **清扫了什么**（净删 162 行，零行为变更）：
+- **清扫了什么**（删 162 行/净 161，零行为变更）：
   - i18n：`nav.redactionList` / `nav.wordPools` 裸 title 键（zh 三副本+en 三副本 / zh+en 各一；`.sub` 活键保留）；`preset.saveText.success` / `preset.saveVision.success`（随 hook 死代码失去唯一消费方；`preset.save.failed` 活键保留）。
   - `features/settings/index.tsx` barrel：`RedactionListSettings` / `WordPoolsSettings` 死导出移除（settings-hub 直引 `'./word-pools'`、测试 vi.mock 直指模块文件；barrel 其余四导出为 router 活消费保留）。
   - `use-playground-recognition` 公开面收缩：`typeTab`/`setTypeTab`（含 `use-playground.ts` 里为已消失消费者保留的 image 模式同步 effect）、preset 弹窗全套（`openTextPresetDialog`/`openVisionPresetDialog`/`saveTextPresetFromPlayground`/`saveVisionPresetFromPlayground`/`closePresetDialog`/`presetDialogKind`/`presetDialogName`/`setPresetDialogName`/`presetSaving`——识别范围弹窗自带保存）、`playgroundTextGroups`；三个组件测试的 mock 对象同步清理死字段。
-- **验证**：逐项 grep 证明零消费后才删（含 vi.mock 路径核对）；全量 69 文件/517 passed（=preview 基线，纯删除零新增）；tsc 双门 rc=0；build 绿且 bundle 实际瘦身（345.35→343.59 kB）。
-- **挂账**：无（③④的残留面复查结论已并入本次清扫）。
+- **验证**：逐项 grep 证明零消费后才删（含 vi.mock 路径核对）；全量 69 文件/517 passed（=preview 基线，纯删除零新增）；tsc 双门 rc=0；build 绿且 bundle 实际瘦身（345.35→343.59 kB）；验收复活变异 2/2 红（删假证伪闭环）。
+- **挂账**：本次清扫新产生的零消费孤儿导出 `buildPlaygroundTextGroups`（类型族）与仅测试引用的 `sortedEntityTypes`/`setPlaygroundTextTypeGroupSelection`——裁定留下一轮（扩面会使 517 基线+复活变异全部失效须重走三道门），跟踪 issue 另立；测试 mock `as unknown as` 双断言旁路为既有风格、可选另立。
 
 ## 2026-11-12
 
