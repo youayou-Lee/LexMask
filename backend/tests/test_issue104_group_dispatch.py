@@ -36,6 +36,7 @@ from app.core.config import settings
 from app.services.has_client import _NER_CONTEXT_RESERVE_TOKENS, HaSClient
 from app.services.ocr_has_vision_service import OCRTextBlock
 from app.services.vision.has_text_analysis import (
+    HasTextNerUnavailable,
     _run_has_text_ner_groups,
     plan_has_text_group_texts,
     run_has_text_analysis,
@@ -516,12 +517,12 @@ def test_d_cm_group_failure_fails_the_page_and_survives_repeat(monkeypatch):
     vision_types = [_VT("ID_CARD", "身份证号"), _VT("PHONE", "电话")]
 
     stage1: dict = {}
-    page1 = asyncio.run(run_has_text_analysis(blocks, client, vision_types, stage1))
-    # ① 页判失败：不给半结果（成功组的值必须被丢弃）
-    assert page1 == []
+    # Issue#263：组失败 ⇒ 页级失败升格（不再静默 []）——`D-cm` 的「页判失败」
+    # 语义从返回值口径迁到异常口径，指标断言原样保留。
+    with pytest.raises(HasTextNerUnavailable):
+        asyncio.run(run_has_text_analysis(blocks, client, vision_types, stage1))
     assert stage1["has_text_ner_failed_groups"] == 1
     assert stage1["has_text_cache_status"] == "group_failed"
-    assert page1 != [{"type": "ID_CARD", "text": _MARK_HEAD}]
 
     types_used = client.calls[0]["types"]
     # ② 成功组的缓存确实落盘，但**整页键不得被写成成功**
@@ -535,9 +536,9 @@ def test_d_cm_group_failure_fails_the_page_and_survives_repeat(monkeypatch):
     head_calls_before = client.calls_with(_MARK_HEAD)
 
     stage2: dict = {}
-    page2 = asyncio.run(run_has_text_analysis(blocks, client, vision_types, stage2))
     # ③ 重复调用仍判失败：半结果不得因成功组缓存而变成「成功页」
-    assert page2 == []
+    with pytest.raises(HasTextNerUnavailable):
+        asyncio.run(run_has_text_analysis(blocks, client, vision_types, stage2))
     assert stage2["has_text_ner_failed_groups"] == 1
     assert stage2["has_text_cache_status"] == "group_failed"
     # 成功组走缓存（不重发），失败组重试后再失败
@@ -553,6 +554,10 @@ def test_d_cm_concurrent_sibling_page_sharing_a_failed_group_also_fails(monkeypa
     owner 的组失败后，等待方必须同样计入失败——否则 `gather` 拿到的是
     `None`（非 BaseException）⇒ `failed_groups=0` ⇒ 该页被判成功并按**半
     结果**继续，正是本 Issue 要消灭的「静默少实体」。
+
+    Issue#263：页级口径从「返回 []」迁到「抛 HasTextNerUnavailable」——修复后
+    两个协程**都**抛，`asyncio.gather` 默认只传播第一个，故必须
+    ``return_exceptions=True`` 双收双断言（等待方的指标与状态一个都不能少）。
     """
     monkeypatch.setattr(settings, "HAS_NER_SELF_CONSIST_SAMPLES", 1)
     _group_texts, blocks, _head_group, _tail_group = _two_group_page()
@@ -563,17 +568,18 @@ def test_d_cm_concurrent_sibling_page_sharing_a_failed_group_also_fails(monkeypa
     async def _both():
         stage_a: dict = {}
         stage_b: dict = {}
-        page_a, page_b = await asyncio.gather(
+        results = await asyncio.gather(
             run_has_text_analysis(blocks, client, vision_types, stage_a),
             run_has_text_analysis(blocks, client, vision_types, stage_b),
+            return_exceptions=True,
         )
-        return page_a, page_b, stage_a, stage_b
+        return results, stage_a, stage_b
 
-    page_a, page_b, stage_a, stage_b = asyncio.run(_both())
+    (outcome_a, outcome_b), stage_a, stage_b = asyncio.run(_both())
 
-    # ① 两边都不给半结果（等待方最容易被漏掉）
-    assert page_a == []
-    assert page_b == []
+    # ① 两边都必须抛升格异常（等待方最容易被漏掉——None/[]/单边异常都算失败）
+    assert isinstance(outcome_a, HasTextNerUnavailable), outcome_a
+    assert isinstance(outcome_b, HasTextNerUnavailable), outcome_b
     # ② 两边都必须把「兄弟组失败」计入失败数
     assert stage_a["has_text_ner_failed_groups"] == 1
     assert stage_b["has_text_ner_failed_groups"] == 1

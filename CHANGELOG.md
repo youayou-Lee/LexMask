@@ -1,6 +1,20 @@
 # CHANGELOG
 
 
+## 2026-11-13
+
+### 修正（Issue#263）HaS NER 全量不可用时整卷静默「成功」零实体放行——组失败/负健康升格页级失败（fail-closed）
+
+- **为什么**：把 HaS NER 上游全量拒连后跑卷，识别流水线全部页记「成功」、`file_store` 零 NER 实体、`failed_pages` 为空——用户拿到「打码完成但没有一条人名/证件号」的产物且无失败页可重试（静默漏打码，绕过 #199 记账红线）。根因两处：`run_has_text_analysis` 组失败只记 `group_failed` 指标后 `return []`（注释写「该页判失败」、实现吞异常）；`is_page_fatal_stage_error` 只升格预算异常。核实另发现同族第二形态：负健康 TTL（5s）内头部提前跳过（`skipped_recent_unavailable`）同样静默 `[]`——RST 实测 10 页仅 5 条组失败日志，另一半页从此溜走。
+- **改了什么**：
+  - 新异常 `HasTextNerUnavailable`（`has_text_analysis.py`）：组失败（retry 耗尽后上抛，`RETRYABLE_HTTPX` 集合不动）在 kill-switch 开启时抛出替代 `return []`；消息首段为稳定机读 token `ner_unavailable`（`[:200]` 截断后仍存活）。
+  - 负健康检查点**从函数头部移到整页缓存查找的 miss 分支内**：缓存命中页（此前已成功、结果在本地）不检查不升格——reject→整卷重跑落在故障窗口时不得误杀；到得了 miss 分支的页必然已通过「无合格文本/too_short」两道闸，负健康即「该页没被扫」⇒ 升格。判据是「组真失败 / 有合格文本且 NER 已知不可用」，**零实体绝不判失败**（空白页/纯图片页/过短页的合法零实体不受影响）。
+  - 尾部宽 except 前加显式 re-raise 分支（照 #209 预算先例），**只补无损指标不覆写 `has_text_cache_status`**（状态最终值只由 raise 点决定：组失败=`group_failed`、负健康=`skipped_recent_unavailable`）。
+  - `vision_service.is_page_fatal_stage_error()` 增第三类升格（受 `HAS_NER_UNAVAILABLE_PAGE_FAIL` 门控，与 #209 strict 门同模式）——沿 #199 既有链落 `recognition.failed_pages`：交付闸 409、部分导出排除失败页、单页重试可用、#279 `page_failed` 事件 `error_type=HasTextNerUnavailable`，全部既有机制零新接线。
+  - 新设置 `HAS_NER_UNAVAILABLE_PAGE_FAIL`（默认 True=fail-closed；False=回落现状静默口径的运维阀），进 `config.py` 与仓根 `.env.example`。
+  - 不做什么：docline 链不动（`failed_chunks>0 → 整卷回落页级路径` 自愈，落点被本修复覆盖）；`skipped_no_client`/bridge NER/`budget_error`（D1⑩）维持现状并挂账（能力缺失≠运行时故障，预算/规划失败建议另立 issue）。
+- **测试**：新增 `tests/test_issue263_ner_fail_closed.py` 14 例（组失败升格 ×3 含 ConnectError 族与 reason token、负健康四形态含**缓存命中+负健康⇒走缓存不失败**反例钉与 too_short/无合格文本反例、合法零实体四形态反例钉、kill switch 回落 ×2、夹具前提自检）+ `tests/test_issue263_page_accounting.py` 4 例（failed_pages 落账与 reason 格式 + #279 page_failed 事件 error_type、阶段内升格接线钉（镜像 #209 I3——摘掉 is_page_fatal 判定必须红）、清账重跑、交付闸阻塞）；迁移 `test_issue104_group_dispatch.py` 2 例 4 断言（页级口径 `[]`→异常，兄弟页并发 `gather(return_exceptions=True)` 双收双断言）。红性先证两段留存：红-① ImportError、红-② 升格判据 DID NOT RAISE（AC2b/c/d 在 HEAD 同样为红——头部提前检查先短路，r2 I-1）；变异 M1-M6 全 KILLED（整文件跑）。后端全量 3231 passed / 0 failed（基线 3213 passed / 0 failed，Δ=+18 例新测试，failed 集合零差异）。
+
 ## 2026-11-12
 
 ### 增强（Issue#273）P0 页级路由：每页自决「文字从哪来」（文本层/OCR/双跑仲裁），`RECOGNITION_ROUTING_MODE=page|file` 开关可一键回滚

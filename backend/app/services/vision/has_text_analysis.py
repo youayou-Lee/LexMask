@@ -572,6 +572,18 @@ class HasTextNerPageBudgetExceeded(RuntimeError):
     """
 
 
+class HasTextNerUnavailable(RuntimeError):
+    """HaS NER **服务级失败**——组失败或负健康跳过（Issue#263）。
+
+    语气与「页超时」/「预算耗尽」同级：该页**没有被 NER 扫过**（而非"扫了没结果"），
+    不得伪装成「该页无实体」静默放行——那正是本 Issue 在修的静默漏打码。判据是
+    「组真失败 / 有合格文本且 NER 已知不可用」而**不是零实体**：空白页、纯图片页、
+    文本低于最短阈值的页零实体是合法结论，不经本类。由 HAS_NER_UNAVAILABLE_PAGE_FAIL
+    决定是否抛出——抛出后由页级 stage 捕获并记入 `recognition.failed_pages`
+    （页级隔离，不连坐整卷；交付闸/部分导出/单页重试随之生效）。
+    """
+
+
 async def run_has_text_analysis(
     ocr_blocks: list[OCRTextBlock],
     has_client: Any,
@@ -664,15 +676,11 @@ async def run_has_text_analysis(
             )
             return []
 
-    if _has_recent_negative_health(has_client):
-        logger.warning("HaS service recently reported unavailable, skipping NER")
-        _record_has_text_metric(stage_status, "has_text_cache_status", "skipped_recent_unavailable")
-        _record_has_text_metric(
-            stage_status,
-            "has_text_total_ms",
-            round((time.perf_counter() - total_start) * 1000),
-        )
-        return []
+    # Issue#263：负健康（TTL 内健康探测失败）的升格检查点**不在函数头部**——
+    # 头部检查会先于「无合格文本/too_short」两道闸与整页缓存查找短路，把
+    # （a）合法零实体页误判成失败、（b）缓存命中页（此前已成功、结果就在本地）
+    # 误杀。检查点钉死在下方整页缓存查找的 **miss 分支内**：到得了 miss 分支的页
+    # 必然有合格待扫文本，负健康即「该页没被扫」，升格页失败而非静默零实体。
 
     try:
         prepare_start = time.perf_counter()
@@ -778,6 +786,31 @@ async def run_has_text_analysis(
             logger.info("HaS NER cache hit before local slot wait")
         else:
             _record_has_text_metric(stage_status, "has_text_cache_status", "miss")
+            # Issue#263：负健康升格检查点——**必须在整页缓存 miss 分支内**。
+            # 命中（上方 hit_before_slot 分支）不检查不升格：缓存命中页此前已成功、
+            # 结果就在本地，NER 无需服务即可产出正确实体（reject→整卷重跑落在故障
+            # 窗口时不得误杀）。到得了 miss 分支的页已通过「无合格文本/too_short」
+            # 两道闸 ⇒ 有合格待扫文本，负健康即「该页没被扫」⇒ 升格页失败而非
+            # 静默零实体（HAS_NER_UNAVAILABLE_PAGE_FAIL=False 时回落现状）。
+            if _has_recent_negative_health(has_client):
+                logger.warning(
+                    "HaS service recently reported unavailable (negative health); "
+                    "page has eligible text"
+                )
+                _record_has_text_metric(
+                    stage_status, "has_text_cache_status", "skipped_recent_unavailable"
+                )
+                _record_has_text_metric(
+                    stage_status,
+                    "has_text_total_ms",
+                    round((time.perf_counter() - total_start) * 1000),
+                )
+                if bool(getattr(settings, "HAS_NER_UNAVAILABLE_PAGE_FAIL", True)):
+                    raise HasTextNerUnavailable(
+                        "ner_unavailable: health check negative within TTL; "
+                        "page has eligible text but NER was not scanned"
+                    )
+                return []
             # Issue#104 C1/C3：生效上下文取服务端自报值（探测失败回落安全小值），
             # 整页文本按 token 预算分成若干次主查。单组时组文本 == 整页文本，
             # 与现状逐字等价（C6：同一 payload、同一闸位数、同一 K 趟采样）。
@@ -831,6 +864,17 @@ async def run_has_text_analysis(
                     "has_text_total_ms",
                     round((time.perf_counter() - total_start) * 1000),
                 )
+                # Issue#263：组失败 ⇒ 该页**没被 NER 扫过**。升格页级失败（页级
+                # 调用方按 #199 语义记入 recognition.failed_pages：交付闸拦截 +
+                # 单页重试可用），不得静默 return []（那正是本 Issue 的病）。
+                # 消息首段是稳定机读 token `ner_unavailable`（[:200] 截断后仍存活）。
+                # 注意：预算突破检查在上方（_note_budget_exceeded）已先行——
+                # 预算语义（「只扫了一部分」）优先于组失败语义（「没扫成」）不变。
+                if bool(getattr(settings, "HAS_NER_UNAVAILABLE_PAGE_FAIL", True)):
+                    raise HasTextNerUnavailable(
+                        f"ner_unavailable: {groups_failed}/{len(group_texts)} group(s) failed; "
+                        "not merging partial results"
+                    )
                 return []
 
         if not ner_result or not isinstance(ner_result, dict):
@@ -1306,6 +1350,19 @@ async def run_has_text_analysis(
         # （与页超时同一条交付拦截链）。若被下面的宽 except 吞成 []，"只扫了一
         # 部分"就被洗成"该页无实体"——正是本件要防的静默半结果。
         _record_has_text_metric(stage_status, "has_text_cache_status", "page_budget_exceeded")
+        _record_has_text_metric(
+            stage_status,
+            "has_text_total_ms",
+            round((time.perf_counter() - total_start) * 1000),
+        )
+        raise
+    except HasTextNerUnavailable:
+        # Issue#263：服务级失败（组失败/负健康）必须冒到页级 stage ⇒ 记入
+        # recognition.failed_pages。若被下面的宽 except 洗成 []，"该页没被扫"
+        # 就被伪装成"该页无实体"——本 Issue 的静默漏打码。
+        # **只补无损指标，不覆写 has_text_cache_status**：raise 点已记
+        # group_failed / skipped_recent_unavailable，状态最终值只由 raise 点决定
+        # （照抄预算先例覆写会与 AC1/AC2 的状态断言打架，评审 F2）。
         _record_has_text_metric(
             stage_status,
             "has_text_total_ms",

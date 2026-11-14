@@ -560,6 +560,15 @@ class Settings(BaseSettings):
     # False = 用已聚合的部分结果收尾（仍记 metrics + WARNING），不判失败。
     HAS_NER_PAGE_BUDGET_STRICT_FAIL: bool = True
 
+    # NER **服务级失败**是否把该页判为失败（Issue#263）。True（默认，fail-closed）=
+    # 组失败（retry 耗尽后上抛）或负健康 TTL 内跳过 ⇒ 抛 HasTextNerUnavailable ⇒
+    # 页级 stage 记入 recognition.failed_pages（与 #209 同一条交付拦截链：失败页
+    # 不随交付出厂、单页重试可用）。判据是「该页没被 NER 扫过」而非零实体——空白页/
+    # 纯图片页/文本低于最短阈值的页零实体是合法结论，不经本闸。整页缓存命中页
+    # 同样不经本闸（缓存即正确实体，NER 无需服务）。False = 回落现状静默口径的
+    # 运维阀（组失败/负健康仍记 metrics，页照常 completed）。
+    HAS_NER_UNAVAILABLE_PAGE_FAIL: bool = True
+
     # HaS 提示词近似重复折叠（Issue#209 提示词侧止损）：页 133 的 HaS 提示词 323 行
     # 里 293 行（≈90%）是"只差数字"的近似重复行（水印碎片：映峰1450120 /
     # 映峰1450120141 / 术映峰1450120141…）——精确去重杀不掉（每段编号独立），
