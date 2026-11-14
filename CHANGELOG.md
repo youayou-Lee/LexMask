@@ -1,6 +1,16 @@
 # CHANGELOG
 
 
+## 2026-11-15
+
+### 修正（Issue#302）正则保证层与任务级识别项勾选求交：未勾选的日期不再被 DATE 正则打码
+
+- **为什么**：正则保证层（#43 引入）只看账号级启用集（`get_regex_types`），与任务级勾选完全无关——用户未勾选时间/日期，正文日期仍被 DATE 正则打码（实例：扫描型PDF误判为文本型-1.pdf 第 3 页）。与「勾什么识别什么」的既定语义（#78 账号三态、`_semantic_entity_type_ids` 注释）矛盾。docline 链保证层（#115）同族同病。
+- **改了什么**：`OcrHasVisionService._apply_regex_fallback` 增 `selected_type_ids` 参数（canonical id 集），`get_regex_types` 结果与其求交后再跑；`detect_and_draw`（OCR 图像线）与 `detect_from_text_blocks`（文本层线）两入口把本次任务勾选传下去；`text_layer_doc_source._regex_types` 同样与 `ocr_has_types` 求交（docline 缓存 knobs 含正则清单，随勾选自动变键）。**行为变更**：未勾选的类型不再享受正则兜底（含案号/车牌/出生日期等带正则内置类型）；勾选未传（None，内部调用方）保持旧行为；账号级停用仍是上限。
+- **测试**：新增 `test_issue302_regex_fallback_selection.py` 8 例（未勾选不跑/勾选照常/None 旧行为/求交非替换 + vision 两入口接线钉 + docline 单元与 boxes_for_page 接线钉）；`test_issue115` 接线桩随新契约更新；变异 2/2 红；全量 3258 passed 零回归。
+
+
+
 ## 2026-11-13
 
 ### 清扫（Issue#269）死代码四件：i18n 死 title 键 + settings barrel 死导出 + rec hook 公开面收缩 + preset 弹窗残留

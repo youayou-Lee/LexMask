@@ -73,21 +73,39 @@ def _labels(ocr_has_types) -> list[str]:
 _NEGATIVE_TTL_SEC = 120.0
 
 
-def _regex_types(owner_id) -> list[tuple[str, str]]:
+def _regex_types(owner_id, ocr_has_types=None) -> list[tuple[str, str]]:
     """租户启用的 regex 类型 (id, pattern) 清单（Issue#115 评审 I-3）。
 
     既有 OCR+HaS 链有 `_apply_regex_fallback` 保证层；文档级链必须在同一份流上
     补跑同一批正则，否则配置了正则类型的租户会在覆盖页上漏检这些类型。
+
+    Issue#302：与任务级勾选求交——`ocr_has_types` 非 None（orchestrator 已收口的
+    勾选清单）时只保留勾选集中的正则类型；None（未传勾选）保持旧行为跑全部启用
+    正则类型。账号级停用仍是上限（get_regex_types 已过滤 enabled=False）。
     """
     if owner_id is None:
         return []
     try:
+        from app.models.type_mapping import canonical_type_id
         from app.services import entity_type_service as ets
 
-        return [
-            (str(item.id), str(item.regex_pattern))
+        items = [
+            item
             for item in ets.get_regex_types(owner_id)
             if getattr(item, "id", None) and getattr(item, "regex_pattern", None)
+        ]
+        if ocr_has_types is not None:
+            requested = {
+                canonical_type_id(str(getattr(t, "id", "") or ""))
+                for t in ocr_has_types
+            }
+            items = [
+                item for item in items
+                if canonical_type_id(str(item.id)) in requested
+            ]
+        return [
+            (str(item.id), str(item.regex_pattern))
+            for item in items
         ]
     except Exception as exc:  # noqa: BLE001 - 探不到就当作没有（与旧链同口径）
         logger.warning("text_layer_docline regex-type probe failed: %s", exc)
@@ -512,7 +530,7 @@ async def boxes_for_page(
     labels = _labels(ocr_has_types)
     if not labels:
         return None, None
-    regex_types = _regex_types(owner_id)
+    regex_types = _regex_types(owner_id, ocr_has_types)
     knobs = (
         f"{settings.TEXT_LAYER_DOCLINE_CHUNK_CHARS}:{settings.TEXT_LAYER_DOCLINE_CHUNK_OVERLAP}:"
         f"{settings.TEXT_LAYER_DOCLINE_CONCURRENCY}:{settings.TEXT_LAYER_PAGE_MIN_CHARS}:"
