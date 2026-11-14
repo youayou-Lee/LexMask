@@ -1,6 +1,7 @@
 // Copyright 2026 LexMask Contributors
 
 import { get, post } from './api-client';
+import type { BatchWizardMode } from '@/constants/batch-wizard-modes';
 
 export async function batchGetFileRaw(fileId: string): Promise<Record<string, unknown>> {
   return get<Record<string, unknown>>(`/files/${fileId}`);
@@ -54,7 +55,9 @@ export function flattenBoundingBoxesFromStore(raw: unknown): Array<Record<string
   return [];
 }
 
-export type BatchWizardMode = 'text' | 'image' | 'smart' | 'agent';
+// Issue#264：BatchWizardMode 归源到 constants/batch-wizard-modes（类型由
+// BATCH_WIZARD_MODES 常量派生）；本模块保留 re-export，既有 type-only 消费点零改动。
+export type { BatchWizardMode };
 
 const LEGACY_BATCH_WIZARD_KEY = 'batchWizard:config:v1';
 
