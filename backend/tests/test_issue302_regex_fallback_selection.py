@@ -29,9 +29,7 @@ from app.services import ocr_has_vision_service as vision
 from app.services import text_layer_doc_source as source
 from app.services import text_layer_docline_service as docline
 
-_PRESET = json.loads(
-    (Path(__file__).resolve().parents[1] / "config" / "preset_entity_types.json").read_text("utf-8")
-)
+_PRESET = json.loads((Path(__file__).resolve().parents[1] / "config" / "preset_entity_types.json").read_text("utf-8"))
 
 
 class _Type:
@@ -74,7 +72,8 @@ def _stub_fallback_env(monkeypatch, regex_type_ids: list[str]):
     monkeypatch.setattr(vision, "safe_compile", counting_compile)
     monkeypatch.setattr(vision, "safe_finditer_many", counting_finditer)
     monkeypatch.setattr(
-        ets, "get_regex_types",
+        ets,
+        "get_regex_types",
         lambda owner_id=None: [_type(tid) for tid in regex_type_ids],
     )
     monkeypatch.setattr(
@@ -109,7 +108,8 @@ def test_regex_fallback_skips_unselected_types(monkeypatch):
 
     regions = svc._apply_regex_fallback(
         [_block_with_chars("2022年1月1日 京A12345号牌")],
-        120, 20,
+        120,
+        20,
         selected_type_ids={"GEN_NAME"},
     )
 
@@ -125,7 +125,8 @@ def test_regex_fallback_runs_selected_regex_type(monkeypatch):
 
     svc._apply_regex_fallback(
         [_block_with_chars("2022年1月1日")],
-        120, 20,
+        120,
+        20,
         selected_type_ids={"DATE", "GEN_NAME"},
     )
 
@@ -140,7 +141,8 @@ def test_regex_fallback_none_selection_keeps_all(monkeypatch):
 
     svc._apply_regex_fallback(
         [_block_with_chars("2022年1月1日 京A12345号牌")],
-        120, 20,
+        120,
+        20,
         selected_type_ids=None,
     )
 
@@ -156,7 +158,8 @@ def test_regex_fallback_selection_intersects_not_replaces(monkeypatch):
 
     svc._apply_regex_fallback(
         [_block_with_chars("2022年1月1日")],
-        120, 20,
+        120,
+        20,
         selected_type_ids={"GEN_NAME", "DATE", "NOT_A_REAL_TYPE"},
     )
 
@@ -203,8 +206,7 @@ def test_detect_and_draw_passes_selection_to_fallback(monkeypatch):
     async def fake_ner(self, blocks, types, duration_ms, **kwargs):
         return []
 
-    monkeypatch.setattr(vision.OcrHasVisionService, "_prepare_image",
-                        lambda self, image_bytes: (None, 100, 100))
+    monkeypatch.setattr(vision.OcrHasVisionService, "_prepare_image", lambda self, image_bytes: (None, 100, 100))
     monkeypatch.setattr(vision.OcrHasVisionService, "_run_paddle_ocr", fake_paddle)
     monkeypatch.setattr(vision.OcrHasVisionService, "_invoke_has_text_analysis", fake_ner)
 
@@ -229,7 +231,8 @@ def _page(no: int, words: list[str], width: float = 595.0, height: float = 842.0
 def test_docline_regex_types_intersects_with_selection(monkeypatch):
     """_regex_types 与 ocr_has_types 求交：未勾选 DATE ⇒ docline 保证层不含 DATE。"""
     monkeypatch.setattr(
-        ets, "get_regex_types",
+        ets,
+        "get_regex_types",
         lambda owner_id=None: [_type("DATE"), _type("LICENSE_PLATE")],
     )
 
@@ -263,29 +266,104 @@ def test_docline_boxes_for_page_passes_filtered_regex_types(monkeypatch, tmp_pat
     async def fake_run(page_list, labels, *, has_client, **kwargs):
         captured_kwargs.update(kwargs)
         return docline.DocLineResult(
-            pages=2, chunks=1, chunk_chars=2000, stream_chars=10, layer_chars=8, covered_chars=10,
+            pages=2,
+            chunks=1,
+            chunk_chars=2000,
+            stream_chars=10,
+            layer_chars=8,
+            covered_chars=10,
             entities=[docline.DocLineEntity(1, "PERSON", "李四", (0.1, 0.2, 0.3, 0.4))],
-            ner_calls=1, truncated_chunks=0, http_errors=0, residual_calls=0, seconds=0.01,
+            ner_calls=1,
+            truncated_chunks=0,
+            http_errors=0,
+            residual_calls=0,
+            seconds=0.01,
         )
 
     monkeypatch.setattr(source.docline, "extract_text_layer_pages", fake_extract)
     monkeypatch.setattr(source.docline, "sample_ink_alignment", lambda *a, **k: 0.18)
     monkeypatch.setattr(source.docline, "run_document_ner", fake_run)
     monkeypatch.setattr(
-        ets, "get_regex_types",
+        ets,
+        "get_regex_types",
         lambda owner_id=None: [_type("DATE"), _type("LICENSE_PLATE")],
     )
 
     selection = [_Type("GEN_NAME"), _Type("LICENSE_PLATE")]
-    asyncio.run(source.boxes_for_page(
-        file_id="b" * 8,
-        snapshot={"file_path": str(path), "file_type": "pdf_scanned"},
-        page=1,
-        ocr_has_types=selection,
-        owner_id="owner1",
-    ))
+    asyncio.run(
+        source.boxes_for_page(
+            file_id="b" * 8,
+            snapshot={"file_path": str(path), "file_type": "pdf_scanned"},
+            page=1,
+            ocr_has_types=selection,
+            owner_id="owner1",
+        )
+    )
 
     assert "regex_types" in captured_kwargs, "run_document_ner 必须收到 regex_types"
     assert [tid for tid, _ in captured_kwargs["regex_types"]] == ["LICENSE_PLATE"], (
         "docline 保证层必须只跑勾选过的正则类型"
     )
+
+
+# ── 拍板追加：事件日期在扫描线默认不勾选（2026-11-15 用户拍板）──────────
+#
+# 门⑤验收发现的产品错位：UI「语义识别」区的日期勾选（entity 库/文本链）对
+# 扫描件是假开关——扫描线读 ocr_has 管线勾选，而 DATE 曾 default_enabled=True。
+# 拍板：ocr_has.DATE 默认不勾（出生日期保持默认勾）；资格（enabled）与正则
+# 保证层资格不变——用户手动勾选仍完整可用。
+
+_PIPELINE_CONFIG = Path(__file__).resolve().parents[1] / "config" / "preset_pipeline_types.json"
+_ENTITY_CONFIG = Path(__file__).resolve().parents[1] / "config" / "preset_entity_types.json"
+
+
+def test_date_not_default_enabled_in_ocr_has_pipeline():
+    """扫描线默认勾选不含事件日期；出生日期保持默认勾；资格面不变。"""
+    pipeline = {t["id"]: t for t in json.loads(_PIPELINE_CONFIG.read_text("utf-8"))["ocr_has"]}
+    assert pipeline["DATE"]["default_enabled"] is False, "事件日期扫描线默认不勾（Issue#302 拍板）"
+    assert pipeline["DATE"]["enabled"] is True, "资格仍在：手动勾选可用"
+    assert pipeline["BIRTH_DATE"]["default_enabled"] is True, "出生日期保持默认勾选（律师口径）"
+
+    entity = json.loads(_ENTITY_CONFIG.read_text("utf-8"))
+    assert entity["DATE"]["enabled"] is True
+    assert entity["DATE"]["regex_pattern"], "DATE 正则保证层资格不变（勾选后仍由 regex 兜底）"
+    assert entity["BIRTH_DATE"]["default_enabled"] is True
+
+
+def test_persisted_pipeline_snapshot_merges_to_new_date_default():
+    """已持久化的旧 pipelines.json（DATE default_enabled=true）merge 后跟随新 preset。
+
+    reconcile_types 只保留持久化的 enabled 资格位，default_enabled 每次从
+    preset 取——改 JSON 对已有账号即时生效，这是本拍板的落地机制。
+    """
+    from app.services.pipeline_service import merge_pipeline_disk_snapshot
+
+    snapshot = {
+        "ocr_has": {
+            "mode": "ocr_has",
+            "enabled": True,
+            "types": [
+                {
+                    "id": "DATE",
+                    "name": "日期",
+                    "enabled": True,
+                    "default_enabled": True,
+                    "order": 200,
+                    "data_domain": "time_event",
+                },
+                {
+                    "id": "BIRTH_DATE",
+                    "name": "出生日期",
+                    "enabled": True,
+                    "default_enabled": True,
+                    "order": 210,
+                    "data_domain": "pii",
+                },
+            ],
+        }
+    }
+    merged = merge_pipeline_disk_snapshot(snapshot)
+    by_id = {t.id: t for t in merged["ocr_has"].types}
+    assert by_id["DATE"].default_enabled is False, "持久化旧值不得覆盖新拍板默认"
+    assert by_id["DATE"].enabled is True, "资格位从持久化快照保留"
+    assert by_id["BIRTH_DATE"].default_enabled is True
