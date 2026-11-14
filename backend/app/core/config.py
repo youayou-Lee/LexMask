@@ -575,6 +575,15 @@ class Settings(BaseSettings):
     # 运维阀（组失败/负健康仍记 metrics，页照常 completed）。
     HAS_NER_UNAVAILABLE_PAGE_FAIL: bool = True
 
+    # 视觉列失败是否把页判为失败（Issue#276 §3.4，默认关=本设计口径）。
+    # False（默认）：视觉列与文本列正交记账——LA 阶段异常只记
+    # `visual_column.failed_reason="visual_stage_error"`（页账机读码 + 投影琥珀
+    # chip），页照常 completed、不进 failed_pages（`is_page_fatal_stage_error`
+    # 既有语义）。True：用户显式勾选了视觉类型（勾选侧非空）且 LA 阶段异常时，
+    # 异常包成 `VisualStageError` 专类升级页级失败（参照 RoutingEvidenceTimeout
+    # 先例）；理由码不变。云门④可在隔离栈开 True 观察，不开不阻塞。
+    VISUAL_EXPLICIT_TYPE_PAGE_FAIL: bool = False
+
     # HaS 提示词近似重复折叠（Issue#209 提示词侧止损）：页 133 的 HaS 提示词 323 行
     # 里 293 行（≈90%）是"只差数字"的近似重复行（水印碎片：映峰1450120 /
     # 映峰1450120141 / 术映峰1450120141…）——精确去重杀不掉（每段编号独立），

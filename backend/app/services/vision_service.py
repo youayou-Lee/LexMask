@@ -75,6 +75,21 @@ class RoutingEvidenceTimeout(TimeoutError):
     """
 
 
+class VisualStageError(RuntimeError):
+    """Issue#276 §3.4：视觉列阶段异常的升级专类（``VISUAL_EXPLICIT_TYPE_PAGE_FAIL``
+    开关开启且用户显式勾选了视觉类型时才包装）。
+
+    默认 False ⇒ 本类在生产路径上永不出现，视觉列异常维持「stage failed +
+    页 completed」（``is_page_fatal_stage_error`` docstring 第 3 点，两列正交的
+    语义钉）。专类参照 ``RoutingEvidenceTimeout`` 先例：``is_page_fatal_stage_error``
+    末尾加一条 ``isinstance``。注意：本类的**唯一**产生形态即 gate-ON，而 gate-ON
+    ⇒ 页整体 fatal（`page_fatal_error` raise，#199 语义）⇒ 失败页页账 visual
+    字段按失败页口径恒零键（r2 F1，不回读）——不存在「页账
+    ``visual_failed_reason`` 携带本异常信息」的形态，页级可见的机读面只有
+    ``failed_pages`` 的异常类名与 #279 ``page_failed`` 事件的 ``error_type``。
+    """
+
+
 def is_page_fatal_stage_error(result) -> bool:
     """阶段异常是否应**升级为页级失败**（门⑥ F8 加固，2026-10-29）。
 
@@ -112,6 +127,11 @@ def is_page_fatal_stage_error(result) -> bool:
         # Issue#263：与 #209 同模式——kill switch 关闭时页级同样放行（双保险，
         # 正常路径下 False 档根本不会抛出）。
         return bool(getattr(settings, "HAS_NER_UNAVAILABLE_PAGE_FAIL", True))
+    # Issue#276 §3.4：视觉列显式类型升级（VISUAL_EXPLICIT_TYPE_PAGE_FAIL，默认关）。
+    # 专类只在开关开启且勾选侧非空时由 visual_features 任务包装产生——到达本函数
+    # 即代表用户显式要求过该类型。
+    if isinstance(result, VisualStageError):
+        return bool(getattr(settings, "VISUAL_EXPLICIT_TYPE_PAGE_FAIL", False))
     return isinstance(result, RoutingEvidenceTimeout)
 
 from PIL import Image, ImageOps
@@ -522,6 +542,10 @@ class VisionService:
                 # Issue#273：page 模式由编排层传入页级路由决策（PageDecision）；
                 # file 模式恒 None ⇒ 走今天原样路径（attempt → probe_lock → OCR
                 # 回落），行为零改变。
+                # Issue#276：page_routing 只管文本来源；视觉列跑不跑与记账见
+                # visual_column（P0 契约：判定链不新增任何视觉输入）。勾选侧
+                # seal_requested 对文本层的既有跳过（下方 attempt_pdf_text_layer
+                # 的 return None）是视觉语义对文本执行面的既存正交钩子，维持原样。
                 action = str(getattr(page_routing, "action", "") or "") if page_routing is not None else None
 
                 if action is None:
@@ -748,15 +772,25 @@ class VisionService:
 
         if effective_visual_feature_types:
             logger.info("Running visual features with %d types...", len(effective_visual_feature_types))
-            jobs.append(
-                (
-                    "visual_features",
-                    lambda: timed(
+
+            async def _visual_features_job():
+                try:
+                    return await timed(
                         "visual_features",
                         invoke_detector(self._detect_with_visual_features, page, effective_visual_feature_types),
-                    ),
-                )
-            )
+                    )
+                except Exception as exc:
+                    # Issue#276 §3.4：默认关（页照常 completed）；开关开启且勾选侧
+                    # 非空时把阶段异常包成专类升级页级失败（is_page_fatal_stage_error
+                    # 认；机读理由码不变，页账仍 visual_stage_error）。
+                    if (
+                        bool(getattr(settings, "VISUAL_EXPLICIT_TYPE_PAGE_FAIL", False))
+                        and visual_feature_items
+                    ):
+                        raise VisualStageError(f"visual_features: {exc}") from exc
+                    raise
+
+            jobs.append(("visual_features", _visual_features_job))
         else:
             logger.info("Visual features skipped (no types enabled)")
 
@@ -852,6 +886,31 @@ class VisionService:
                 getattr(getattr(self, "ocr_has_service", None), "last_duration_ms", {}) or {},
             )
             raise page_fatal_error
+
+        # Issue#276：视觉列记账块。与 page_routing["text_source"] 对称的第二列——
+        # 只在本函数能看到的范围内如实合成；「la_unavailable」这个原因本层不知道
+        # （队列预检剥离后 visual_feature_types=[] 与「用户没勾」同形），由
+        # task_queue_pipelines overlay。专用检测器（signature/fingerprint）与
+        # MinerU seal 通道不改变 source——它们是对 LA 的替换/补充，不是第二列的
+        # 失败（region_count 亦为 LA 口径，不含 seal/detector 命中）。
+        # page_fatal_error raise 的路径（文本列 fatal）走不到这里——失败页的
+        # 视觉列由 task_queue_pipelines 终态写入点恒零键处理（r2 F1，不回读）。
+        pipeline_status["visual_column"] = {
+            "source": "la" if pipeline_status["visual_features"]["ran"] else "none",
+            "types": [
+                str(getattr(item, "id", item))
+                for item in (effective_visual_feature_types or [])
+            ],
+            # requested = 勾选侧原表（含 fingerprint 等专用检测器通道 slug），审计用
+            "requested_types": [
+                str(getattr(item, "id", item)) for item in visual_feature_items
+            ],
+            "region_count": int(pipeline_status["visual_features"]["region_count"]),
+            "failed_reason": (
+                "visual_stage_error" if pipeline_status["visual_features"]["failed"] else None
+            ),
+        }
+        self.last_pipeline_status = pipeline_status
 
         # Specialized signature detector (conditional-detr) REPLACES the LA
         # signature grounding when configured — single-class, never fires on
