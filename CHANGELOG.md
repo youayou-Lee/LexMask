@@ -3,16 +3,16 @@
 
 ## 2026-11-13
 
-### 修正（Issue#267）目录加载失败/慢态 UX：settings hub 失败态统一 + 识别范围弹窗三态面板 + 法律 chip 门控 + 目录超时族对齐 25s
+### 增强（Issue#274）P1 首屏优先调度 + 三段式阶段进度——整卷识别「第一秒就知道在干什么、还要多久」（父 #272 架构 v2）
 
-- **为什么**：PR#265 门⑥挂账 triage ②。①hub 顶层 spinner 遮三页签、loadError 只在 types 页签提示（redaction/words 失败无提示）；②识别范围弹窗在目录加载失败/不可用/空时渲染空墙（旧 ConfigEmptyState 未迁移）；③目录未就绪时「法律卷宗」chip 可点（点法律 chip 会写空集）；④目录 fetch 1.2s 超时与远程隧道间歇性 abort 相撞（识别 hook 注释明载同现象），redaction 侧 3.5s 同族。
+- **为什么**：86 页真卷首屏 104.8s（file 模式下整卷文本层链在首个页请求里同步建链，#273 page 模式已结构性解除）期间 UI 恒显「0/86」，用户按 2s/页推断以为卡死（已发生）；进度只有「逐页」一个计数，没有阶段语义与 ETA。
 - **改了什么**：
-  - `EntityTypeSettingsPanel` 下沉进 types 页签（Radix inactive 卸载=天然按需）；三页签失败态统一「Alert+重试」（redaction-list / word-pools 各带 reload 重发）。
-  - 弹窗三态面板：目录失败/不可用区带重试按钮（`preserveSelection=true`——重试不重置已就绪维度的用户选择）；空目录态人话提示；方案 select 门控堵三条空写路径。
-  - 法律/全部 chip：目录未就绪 `disabled` + title 提示 + handler 守卫（不写空集）。
-  - 超时族：`use-entity-types` 两处 1.2s 与 `use-redaction-presets` 两处 3.5s 统一 `RECOGNITION_FETCH_TIMEOUT_MS=25s`（常量权威定义下沉服务层 `services/recognition-config.ts` 单一来源，settings 两 hook、playground 识别 hook、word-pools 类型名 effect 等 4 个消费方 7 处调用均改 import 使用；服务层默认参数 3_500 不动；taxonomy 走 authFetch 无超时为已知边界，scope out 挂账）。
-- **测试**：+15 例（advanced-hub 失败态、roundtrip 往返钉 renderHook、redaction/words error-retry、scope-dialog 三态 +100 行）；全量 72 文件/532 passed（基线 517 净增 15）；tsc 双门 + build 绿；变异 M1-M6 六条经独立验收复跑全 KILLED（删靶在消费侧：chip disabled/守卫、弹窗目录态分支、select disabled、hub 顶层 spinner、弹窗重试 onClick、redaction-list 重试按钮——删后指定判据红、还原绿）；E1-E3 真机门④挂账。
-- **挂账**：E1 断后端冷启走查 / E2 慢网间歇 abort 消失 / E3 页签往返走查——真机门④；taxonomy 无超时窄场景另案。
+  - 阶段状态机落账：`performance.recognition.stages=[{name,started_at,finished_at,state,detail}]`（`task_queue_pipelines.py` mixin 助手 `_read_stages/_write_stages/_stage_begin/_stage_end/_close_running_stages`，单写者=识别协程；全数组整替写 replace_paths=(("recognition","stages"),)，fail-open 双层绝不影响主链）。阶段① `preflight`（LA 预检/并发决策/sparse probe/detail 回填 la_probe·page_concurrency·sparse_probe·routing_mode）→ ② `page_loop`（页循环聚合，失败页不改 state——诚实记账走 `failed_pages`；②' `accelerator` 为 #275 预留扩展点，仅在加速器真实开跑时出现——配置≠显示）。stages 语义=最近一次**整卷识别**的阶段账：清账写点前移到 `_run_recognition` 识别 try 入口（parse 之前，重跑 parse 窗口不再带回旧阶段账）；单页重试不改写。
+  - 阶段切换事件接 #279：`stage_changed{to, from?}`（schema 已预留本期补生产者）；卷级事件显式 `page=None`（带页上下文也强制 None，变异 M6 钉）；并行段 begin 省略 `from`（F8）；异常路径 `_close_running_stages` 兜底落 failed。
+  - 首屏优先调度：`BATCH_RECOGNITION_FIRST_PAGE_PRIORITY`（默认 True）——item 首段第 1 页**独占首发**（其余页在页 1 终态后才创建，调度器结构保证「最先调度+最先落账」非并发巧合）；触发面=卷页数>2 且>并发槽位（#175 门①.5 教训：N=k 碰撞区、N≤2 不独占）；规范三句（方案 §2.2.1）：create_task 页源必须切片（M11/AC1「页 1 恰跑一次」钉）、stage_total 恒全段页数（防 x/85 off-by-one）、窗口置于 try/cancel 之外且取消/内存异常直接传播。页 1 失败不熔断（#199 页级隔离不变）。
+  - ETA 数据增量：completed 页账补写 `stage_duration_ms:{stage_label: ms}`（与失败分支同键对称，F2——两段式 pages.<p> 整替重写下只有段标签键能区分样本段属）。
+  - 前端：`playground/lib/task-stages.ts` 纯函数（stages 解析/乐观①门控/ETA 保守版=p75+剔除缓存命中页+严格单调 min）；`PlaygroundLoading` 阶段条**叠加**不替换（`playground-loading-stages`，①✓→②当前·一句话说明·约 Xs/约 N 秒/页；②' 附注「不影响逐页进度」）；乐观①门控四条（vision 段 && current===0 && 无 finished_at && 无 stages 账——parse/重跑窗口显示中性文案不误显①，F1+v3 注记 1）；批量行走既有 message 映射零回归替代（F3：`Vision recognition queued for N page(s)` → 文档预检段，后端零改动；前端 1 处 null 钉有意翻转）。
+- **测试**：后端新增 `test_issue274_first_screen_stages.py` 19 例（独占首发顺序/恰跑一次/total 口径/开关/触发面含 pages=2∧k=1 杀手测态/失败不熔断 + stages 形状/失败页语义/两段式/预检回填 + 事件/故障注入 + 加速器配置≠显示 + file 模式 + 重跑清账 + AC11 条件式注入 + F2 增键；M3 杀手由验收修复轮 `6dee09a` 补杀）；`test_issue199` u9 键集钉同步 F2 增量（留痕）；后端全量 **3232 passed / 48 skipped / 0 failed**（独立验收复跑口径 = 3213 基线 + 19 新测；failed 集合 comm -3 零差异）。前端 vitest 全量 **545 passed**（含 task-stages 20 + 组件 5 + taskflow 门⑥ I-1 接线判据 2）、tsc.test rc=0、build 绿；`task-progress.test` 一处 null 钉 + `taskflow (j)` 一处段名钉随 F3 有意翻转（留痕）。变异 13/13 KILLED（M1 独占守卫/M2 默认翻转/M3 触发面/M4' 清账写点/M5 事件接线/M6 page=None/M7a 剔缓存/M7b p75/M8a finished_at 守卫/M8b 乐观恒关/M9 并行段 from/M10 fail-open/M11 create_task 源；M3 首轮被 `>page_concurrency` 子句掩蔽 SURVIVED，验收修复轮补 pages=2∧concurrency=1 测态后 KILLED）。门⑥修复轮（I-1/M-4）：ETA 单调记忆按任务/段复位（preflight-only 账 + 段标签双复位点，防跨任务尾值钳死）；阶段条 done 只收 completed（failed/skipped 不渲染 ✓）。挂账：AC1b/AC9b（86 页真卷 ≤5s 与文案一致性）【云门④】、AC4b（加速器真开关语义）随 #275 落地回补。
 
 ## 2026-11-12
 

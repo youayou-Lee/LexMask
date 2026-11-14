@@ -10,8 +10,12 @@
 // - run_page 默认形参 stage_label="视觉识别"（pipeline.py:306）
 // - 编排器两段调用："OCR+HaS识别"（:488）、"视觉特征识别"（:497）
 // - 文本件 NER 段：message="text_recognition_running"（stage=ner current=total=1）
-// - 无段名消息（"Vision recognition queued for N page(s)"、"vision_recognition_complete"、
-//   parse 段）→ null，调用方回落既有「后台识别中 current/total」文案。
+// - Issue#274（F3 零回归替代）：preflight 期间的真实账 message
+//   "Vision recognition queued for N page(s)"（_run_vision 入口写、首个页终态前
+//   存续）映射为「文档预检」段——该 message 本就是 preflight 进行中语义，前端
+//   加映射即可让批量行获得阶段感，后端零改动零钉破（原 :48 null 钉有意翻转）。
+// - 其余无段名消息（"vision_recognition_complete"、parse 段）→ null，调用方
+//   回落既有「后台识别中 current/total」文案。
 
 export type RecognitionStage = {
   /** i18n 键（playground.taskStage.*，zh/en 同键） */
@@ -30,6 +34,18 @@ const PAGE_MESSAGE_PATTERNS: Array<[RegExp, string]> = [
   [/^打码 page (\d+)\/(\d+)$/, 'playground.taskStage.redaction'],
 ];
 
+/** 无页码对的消息特例（Issue#274 F3：排队消息 = preflight 段；页数在 total，current=0）。 */
+const NO_PAGE_MESSAGE_PATTERNS: Array<[RegExp, (m: RegExpExecArray) => RecognitionStage]> = [
+  [
+    /^Vision recognition queued for (\d+) page\(s\)$/,
+    (m) => ({
+      labelKey: 'playground.taskStage.preflight',
+      current: 0,
+      total: Number(m[1]),
+    }),
+  ],
+];
+
 /** 后端识别进度 message → 人话段名 + 页码；未知/无段名消息 → null。 */
 export function recognitionStageFromMessage(
   message: string | null | undefined,
@@ -41,6 +57,10 @@ export function recognitionStageFromMessage(
       return { labelKey, current: Number(match[1]), total: Number(match[2]) };
     }
   }
+  for (const [pattern, build] of NO_PAGE_MESSAGE_PATTERNS) {
+    const match = pattern.exec(message);
+    if (match) return build(match);
+  }
   if (message === 'text_recognition_running') {
     return { labelKey: 'playground.taskStage.text', current: 1, total: 1 };
   }
@@ -51,7 +71,7 @@ export function recognitionStageFromMessage(
 // Issue#238：进度卡诚实化取数纯函数——数据全部来自轮询已带回的 item performance。
 // ---------------------------------------------------------------------------
 
-type Perf = Record<string, unknown>;
+export type Perf = Record<string, unknown>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

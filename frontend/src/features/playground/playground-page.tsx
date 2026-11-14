@@ -62,6 +62,7 @@ const PlaygroundInner: FC = () => {
     taskInFlight,
     taskStartedAt,
     taskTextMode,
+    taskStages,
     redactProgress,
     recognitionIssue,
     visualSkippedNotice,
@@ -620,6 +621,7 @@ const PlaygroundInner: FC = () => {
           inFlight={taskRecognition ? taskInFlight : null}
           startedAt={taskRecognition ? taskStartedAt : null}
           textMode={taskRecognition ? taskTextMode : false}
+          stagesView={taskRecognition ? taskStages : null}
           overlay={overlayModeFor(progressiveRecognition)}
         >
           {/* Issue#257 需求重对齐：识别中就能看到逐页结果并选页导出（快照产物）。 */}

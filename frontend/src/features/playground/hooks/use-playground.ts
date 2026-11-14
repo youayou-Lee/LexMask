@@ -1184,6 +1184,8 @@ export function usePlayground() {
     taskInFlight: fileCtx.taskInFlight,
     taskStartedAt: fileCtx.taskStartedAt,
     taskTextMode: fileCtx.taskTextMode,
+    // Issue#274：三段式阶段条视图（stages 账 / 乐观①派生）
+    taskStages: fileCtx.taskStages,
     redactProgress,
     uploadIssue: fileCtx.uploadIssue,
     recognitionIssue: fileCtx.recognitionIssue,

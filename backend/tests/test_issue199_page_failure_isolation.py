@@ -290,13 +290,16 @@ def test_u9_success_path_only_addition_is_empty_failed_pages(monkeypatch: pytest
     _run(scenario)
     assert store.page_statuses() == {"1": "completed", "2": "completed"}
     assert _failed_pages_of(store) == {}
-    # 每页账目的键集合不变（新增信息只允许出现在 recognition.failed_pages 一处）
+    # 每页账目的键集合不变（新增信息只允许出现在 recognition.failed_pages 一处）。
+    # Issue#274 F2 有意增量：completed 页补 `stage_duration_ms`（段标签耗时，
+    # ETA 数据源；与失败分支同键对称，纯计时数据非失败标记）——钉同步修订留痕。
     for patch in _perf_patches(store):
         for entry in (patch.get("recognition", {}).get("pages") or {}).values():
             assert set(entry) <= {
                 "page", "started_at", "finished_at", "duration_ms", "status",
                 "active_pages_at_end", "active_pages_at_start", "page_concurrency",
                 "duration_breakdown_ms", "cache_status", "pipeline_status", "warnings",
+                "stage_duration_ms",  # Issue#274 F2
             }, set(entry)
 
 

@@ -25,6 +25,14 @@ import {
   recognitionStageFromMessage,
   stageStartedAtFromPerformance,
 } from '../lib/task-progress';
+import {
+  currentSegmentRuntime,
+  hasRecognitionFinishedAt,
+  optimisticPreflightEligible,
+  stagesFromPerformance,
+  stagesViewFromPerformance,
+  type StagesView,
+} from '../lib/task-stages';
 import { shouldEnterPreviewDuringRecognition } from '../lib/progressive-render';
 import type {
   FileInfo,
@@ -198,6 +206,12 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
   const [taskStartedAt, setTaskStartedAt] = useState<string | null>(null);
   /** 文本件（NER 段无页级计数）：数字行显示状态词、进度条不定态。 */
   const [taskTextMode, setTaskTextMode] = useState(false);
+  // --- Issue#274：三段式阶段条（stages 账派生；无账时按乐观①门控兜底） ---
+  const [taskStages, setTaskStages] = useState<StagesView | null>(null);
+  // ETA 严格单调（v2/F10）：跨拍保存上次显示值，新算值只许下调；
+  // 单调记忆带 key（jobId:段标签），任务/段切换即复位（门⑥ I-1，见识别分支内注释）。
+  const lastEtaSecRef = useRef<number | null>(null);
+  const lastEtaKeyRef = useRef<string | null>(null);
   /** 迁移处理守卫：每个 job 的 awaiting_review/终态处理只执行一次（防重复拉快照/重复报错）。 */
   const handledJobRef = useRef<string | null>(null);
   /** 用户主动取消过的 job：provider 报 failed 时静默（cancelProcessing 已收拾过 UI）。 */
@@ -730,6 +744,43 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       setTaskInFlight(inFlightPages(segment, task.current, task.total));
       setTaskStartedAt(stageStartedAtFromPerformance(task.performance ?? null, 'recognition'));
       setTaskTextMode(stage?.labelKey === 'playground.taskStage.text');
+      // Issue#274：阶段条取数——stages 账非空 ⇒ 以账为准（ETA 严格单调）；
+      // 无账 ⇒ 乐观①门控（progress_stage==='vision' && current===0 &&
+      // 无 finished_at；parse/重跑窗口落空 ⇒ null，不渲染阶段行）。
+      const perfNow = task.performance ?? null;
+      const stageRows = stagesFromPerformance(perfNow);
+      if (stageRows !== null && stageRows.length > 0) {
+        // Issue#274 门⑥ I-1：ETA 严格单调记忆按「任务/段」失效——
+        // (a) 账里还没有 page_loop（新任务/重跑的 ① preflight 阶段）⇒ 复位：
+        //     否则上一任务尾值成为本任务永久上界（86 页新卷大半程被钳死）；
+        // (b) 当前段标签变化（两段式段切换，方案 §2.3「段切换 ETA 重新起算」）⇒ 复位。
+        const hasPageLoopRow = stageRows.some((row) => row.name === 'page_loop');
+        const etaKey = `${task.jobId}:${currentSegmentRuntime(perfNow).label ?? ''}`;
+        if (!hasPageLoopRow || etaKey !== lastEtaKeyRef.current) {
+          lastEtaSecRef.current = null;
+        }
+        lastEtaKeyRef.current = etaKey;
+        const view = stagesViewFromPerformance(perfNow, {
+          completed: task.current,
+          total: task.total,
+          previousEtaSec: lastEtaSecRef.current,
+        });
+        if (view?.etaSec != null) lastEtaSecRef.current = view.etaSec;
+        setTaskStages(view);
+      } else {
+        const optimistic = optimisticPreflightEligible({
+          textMode: stage?.labelKey === 'playground.taskStage.text',
+          progressStage: task.progressStage ?? null,
+          progressCurrent: task.current,
+          hasRecognitionFinishedAt: hasRecognitionFinishedAt(perfNow),
+          hasStageRows: false,
+        });
+        setTaskStages(
+          optimistic
+            ? { current: 'preflight', done: [], acceleratorRunning: false, etaSec: null, perPageSec: null }
+            : null,
+        );
+      }
       if (task.total > 0) {
         setVisionStream({ completed: task.current, total: task.total });
         // 用户验收③④：段名（人话）单独透出给等待视图的段名行（第二段不像重新开始）；
@@ -755,6 +806,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         setTaskInFlight(null);
         setTaskStartedAt(null);
         setTaskTextMode(false);
+        setTaskStages(null);
         setLoadingMessage(t('playground.taskParsing'));
       }
       return;
@@ -803,6 +855,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
             setTaskInFlight(null);
             setTaskStartedAt(null);
             setTaskTextMode(false);
+            setTaskStages(null);
             setVisionStream(null);
             setIsLoading(false);
             setLoadingMessage('');
@@ -823,6 +876,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       setTaskInFlight(null);
       setTaskStartedAt(null);
       setTaskTextMode(false);
+      setTaskStages(null);
       setVisionStream(null);
       setIsLoading(false);
       setLoadingMessage('');
@@ -839,6 +893,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     setTaskInFlight(null);
     setTaskStartedAt(null);
     setTaskTextMode(false);
+    setTaskStages(null);
     setVisionStream(null);
     if (cancelledJobsRef.current.has(task.jobId)) return;
     setIsLoading(false);
@@ -876,6 +931,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         setTaskInFlight(null);
         setTaskStartedAt(null);
         setTaskTextMode(false);
+        setTaskStages(null);
         setVisionStream(null);
         setIsLoading(false);
         setLoadingMessage('');
@@ -970,6 +1026,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     taskInFlight,
     taskStartedAt,
     taskTextMode,
+    taskStages,
     reattachTask,
   };
 }

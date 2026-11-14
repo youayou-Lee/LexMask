@@ -6,6 +6,7 @@ import { Check, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { useT } from '@/i18n';
+import { cn } from '@/lib/utils';
 import { PLAYGROUND_LOADING_TICK_MS, PLAYGROUND_LONG_RUNNING_HINT_MS } from '@/constants/timing';
 import { useInteractionLock } from '@/hooks/use-interaction-lock';
 import {
@@ -14,6 +15,7 @@ import {
   type ProcessingRow,
   type ProcessingRowKey,
 } from '../lib/processing-details';
+import { STAGE_HINT_KEYS, STAGE_LABEL_KEYS, type StagesView } from '../lib/task-stages';
 
 export interface PlaygroundLoadingProps {
   loadingMessage: string;
@@ -62,6 +64,12 @@ export interface PlaygroundLoadingProps {
    * 槽位里（页格自带宽高限制，遮罩面板不会被撑爆）。
    */
   children?: ReactNode;
+  /**
+   * Issue#274 三段式阶段条视图（stages 账派生，或乐观①）。
+   * null/缺省 = 无阶段语义语境（parse 窗口/旧任务/文本件）——不渲染阶段行，
+   * 既有渲染逐字节不变（AC6 零回归面）。
+   */
+  stagesView?: StagesView | null;
 }
 
 /** ✓ 清单固定顺序（用户验收④ mockup）；排队/打码/失败回落等行不上等待页。 */
@@ -109,6 +117,7 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
     startedAt = null,
     textMode = false,
     variant = 'recognition',
+    stagesView = null,
     children,
   }) => {
     const t = useT();
@@ -228,6 +237,41 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
             : '')
         : null;
 
+    // Issue#274：阶段行（stagesView 非 null 才渲染；null ⇒ 不渲染、既有布局不变）。
+    // 形态 = `✓ 已完成段 → 当前段 · 一句话说明 · 约 Xs`；加速器并行段附在后段。
+    const stageBarRows: Array<{ key: string; label: string; hint: string | null; done: boolean }> = [];
+    if (stagesView) {
+      for (const name of stagesView.done) {
+        const labelKey = STAGE_LABEL_KEYS[name];
+        if (labelKey) {
+          stageBarRows.push({ key: name, label: t(labelKey), hint: null, done: true });
+        }
+      }
+      if (stagesView.current) {
+        const labelKey = STAGE_LABEL_KEYS[stagesView.current];
+        if (labelKey) {
+          const hintKey = STAGE_HINT_KEYS[stagesView.current];
+          stageBarRows.push({
+            key: stagesView.current,
+            label: t(labelKey),
+            hint: hintKey ? t(hintKey) : null,
+            done: false,
+          });
+        }
+      }
+    }
+    const etaSuffix = stagesView
+      ? stagesView.etaSec !== null
+        ? fillTemplate(t('playground.taskProgress.etaAbout'), {
+            time: formatDurationMs(stagesView.etaSec * 1000),
+          })
+        : stagesView.perPageSec !== null
+          ? fillTemplate(t('playground.taskProgress.perPage'), {
+              sec: String(stagesView.perPageSec),
+            })
+          : null
+      : null;
+
     // 段名行（AC3）：两段才编号；单段/缺段信息只显示段名。
     const stageLabel = stage ?? null;
     const segmentLabel =
@@ -301,6 +345,49 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
               aria-label={t('playground.loadingProgress')}
               data-testid="playground-loading-progress"
             />
+          )}
+
+          {/* Issue#274：阶段条（stagesView 存在才渲染；否则布局逐字节不变——AC6 零回归面） */}
+          {stageBarRows.length > 0 && (
+            <p className="mb-3 text-xs text-muted-foreground" data-testid="playground-loading-stages">
+              {stageBarRows.map((row, idx) => (
+                <span key={row.key}>
+                  {idx > 0 && <span aria-hidden="true"> → </span>}
+                  {row.done && (
+                    <Check aria-hidden="true" className="mr-1 inline size-3 text-emerald-600 dark:text-emerald-400" />
+                  )}
+                  <span
+                    data-testid={`playground-loading-stage-${row.key}`}
+                    className={cn(
+                      row.done ? 'text-muted-foreground/80' : 'font-medium text-foreground',
+                    )}
+                  >
+                    {row.label}
+                  </span>
+                  {!row.done && row.hint && (
+                    <span aria-hidden="true"> · </span>
+                  )}
+                  {!row.done && row.hint && <span>{row.hint}</span>}
+                </span>
+              ))}
+              {/* 并行加速器段（②'）：running 时附注「不影响逐页进度」 */}
+              {stagesView?.acceleratorRunning && (
+                <span>
+                  <span aria-hidden="true"> · </span>
+                  <span data-testid="playground-loading-stage-accelerator-running">
+                    {t('playground.taskStage.acceleratorHint')}
+                  </span>
+                </span>
+              )}
+              {etaSuffix && (
+                <span>
+                  <span aria-hidden="true"> · </span>
+                  <span data-testid="playground-loading-eta" className="tabular-nums">
+                    {etaSuffix}
+                  </span>
+                </span>
+              )}
+            </p>
           )}
 
           {/* 段名 + 已运行（AC3/AC4）：段编号只在两段式出现；时长以后端 started_at 起算 */}
