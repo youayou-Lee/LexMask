@@ -158,6 +158,22 @@ def test_exportable_is_recognized_union_manual(tmp_path):
     exportable2 = page_status_service.exportable_page_numbers(item_row, 10)
     assert exportable2 == {1, 2, 3, 5, 6, 7, 8, 9, 10}, "recognized ∪ manual，失败页永不入集"
 
+    # V3 杀手面：manual 账本与失败清单同时记到的页（人工兜底没成功仍记失败）
+    # 也不得进缺省集——#199 红线优先于人工兜底。
+    store3 = JobStore(str(tmp_path / "j3.sqlite3"))
+    _job3, item3 = _seed(
+        store3,
+        page_count=10,
+        failed={4: "boom", 9: "boom-9"},
+        manual={
+            "7": {"verified_at": "v", "operator": "o", "box_count": 1},
+            "9": {"verified_at": "v9", "operator": "o", "box_count": 2},
+        },
+    )
+    exportable3 = page_status_service.exportable_page_numbers(store3.get_item(item3), 10)
+    assert exportable3 == {1, 2, 3, 5, 6, 7, 8, 10}, "manual∧failed 页不入集"
+    assert 4 not in exportable3 and 9 not in exportable3
+
 
 @pytest.mark.parametrize(
     "raw",
