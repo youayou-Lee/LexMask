@@ -8,7 +8,7 @@
 - **为什么**：正则保证层（#43 引入）只看账号级启用集（`get_regex_types`），与任务级勾选完全无关——用户未勾选时间/日期，正文日期仍被 DATE 正则打码（实例：扫描型PDF误判为文本型-1.pdf 第 3 页）。与「勾什么识别什么」的既定语义（#78 账号三态、`_semantic_entity_type_ids` 注释）矛盾。docline 链保证层（#115）同族同病。
 - **改了什么**：`OcrHasVisionService._apply_regex_fallback` 增 `selected_type_ids` 参数（canonical id 集），`get_regex_types` 结果与其求交后再跑；`detect_and_draw`（OCR 图像线）与 `detect_from_text_blocks`（文本层线）两入口把本次任务勾选传下去；`text_layer_doc_source._regex_types` 同样与 `ocr_has_types` 求交（docline 缓存 knobs 含正则清单，随勾选自动变键）。**行为变更**：未勾选的类型不再享受正则兜底（含案号/车牌/出生日期等带正则内置类型）；勾选未传（None，内部调用方）保持旧行为；账号级停用仍是上限。
 - **拍板追加（2026-11-15）**：扫描线（ocr_has 管线）DATE `default_enabled` true→false——事件日期默认不再脱敏（出生日期保持默认勾；enabled/regex 资格不变，手动勾选仍完整可用）。`reconcile_types` 的 default_enabled 恒随 preset，已持久化旧 pipelines.json 的账号即时生效。验收中发现的产品错位（UI 语义识别区日期勾选对扫描件是假开关）由本默认变更收口。
-- **测试**：新增 `test_issue302_regex_fallback_selection.py` 10 例（未勾选不跑/勾选照常/None 旧行为/求交非替换 + vision 两入口接线钉 + docline 单元与 boxes_for_page 接线钉）；`test_issue115` 接线桩随新契约更新；变异 2/2 红；全量 3258 passed 零回归。
+- **测试**：新增 `test_issue302_regex_fallback_selection.py` 10 例（未勾选不跑/勾选照常/None 旧行为/求交非替换 + vision 两入口接线钉 + docline 单元与 boxes_for_page 接线钉 + 拍板配置钉与 merge 钉）；`test_issue115` 接线桩随新契约更新；变异 3/3 红（vision 求交/docline 求交/reconcile 保留持久化 default_enabled）；全量 3260 passed 零回归。
 
 
 ## 2026-11-13

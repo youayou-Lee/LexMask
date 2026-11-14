@@ -331,22 +331,28 @@ def test_date_not_default_enabled_in_ocr_has_pipeline():
 
 
 def test_persisted_pipeline_snapshot_merges_to_new_date_default():
-    """已持久化的旧 pipelines.json（DATE default_enabled=true）merge 后跟随新 preset。
+    """已持久化的旧 pipelines.json merge 后 default_enabled 跟随新 preset。
 
     reconcile_types 只保留持久化的 enabled 资格位，default_enabled 每次从
     preset 取——改 JSON 对已有账号即时生效，这是本拍板的落地机制。
+
+    判据设计（门⑥增量复核 Important#1）：快照 DATE.enabled=False 与 preset 的
+    True 相反——「enabled 保留 False」只有 reconcile 真执行才会成立；若 fixture
+    非法被 except 跳过、返回纯 preset 深拷贝，该断言即红（防假绿回归）。
     """
     from app.services.pipeline_service import merge_pipeline_disk_snapshot
 
     snapshot = {
         "ocr_has": {
             "mode": "ocr_has",
+            "name": "文本识别（PaddleOCR-VL + HaS Text）",
+            "description": "PaddleOCR-VL 1.6 提取文本、表格和版面信息，HaS Text 负责语义实体识别。",
             "enabled": True,
             "types": [
                 {
                     "id": "DATE",
                     "name": "日期",
-                    "enabled": True,
+                    "enabled": False,
                     "default_enabled": True,
                     "order": 200,
                     "data_domain": "time_event",
@@ -365,5 +371,9 @@ def test_persisted_pipeline_snapshot_merges_to_new_date_default():
     merged = merge_pipeline_disk_snapshot(snapshot)
     by_id = {t.id: t for t in merged["ocr_has"].types}
     assert by_id["DATE"].default_enabled is False, "持久化旧值不得覆盖新拍板默认"
-    assert by_id["DATE"].enabled is True, "资格位从持久化快照保留"
+    assert by_id["DATE"].enabled is False, (
+        "enabled 资格位从持久化快照保留（preset 为 True，快照为 False）——"
+        "本断言成立 ⇔ reconcile 真执行；fixture 非法被跳过时纯 preset 返回 True 即红"
+    )
+    assert by_id["BIRTH_DATE"].enabled is True, "出生日期资格位同样从快照保留"
     assert by_id["BIRTH_DATE"].default_enabled is True
