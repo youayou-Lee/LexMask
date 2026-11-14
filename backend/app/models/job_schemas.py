@@ -835,6 +835,20 @@ class ReviewCommitBody(ReviewDraftBody):
     pass
 
 
+class ItemExportRequest(BaseModel):
+    """Issue#278 统一 item 级导出请求体（完整导出与选页导出同一个端点）。
+
+    * ``kind="partial"``：切页重渲染快照包，``pages`` 必填非空（服务端 400）；
+    * ``kind="full"``：主产物直取成品包，``pages`` 被忽略（缺省 = 全部可导出页）；
+    * ``include_summary``：包内附带 ``说明.txt``（默认关——说明页已废除，说明与
+      正文分离，正文 PDF 不含任何插入页）。
+    """
+
+    kind: Literal["full", "partial"] = "partial"
+    pages: list[int] | None = None
+    include_summary: bool = False
+
+
 class BatchDetailsBody(BaseModel):
     """Request body for POST /jobs/batch-details — fetch multiple job details at once."""
     ids: list[str] = Field(..., min_length=0, max_length=50)

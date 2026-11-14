@@ -68,6 +68,16 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     # page_failed 的 attempts = 该页累计重试序号（含本次），与 DB page_retry_counts 同基。
     "retry_started": EventSchema(required=("attempt",), optional=("trigger",)),
     "retry_done": EventSchema(required=("attempt", "outcome"), optional=("ms",)),
+    # —— Issue#278 统一导出链（白名单只增不改；写入点在 export runner，无请求上下文，
+    # runner 显式 set_event_context/set_current_page；全部 fail-open 包裹）——
+    "export_started": EventSchema(
+        optional=("kind", "pages_count", "include_summary", "export_id"),
+    ),
+    "export_page_done": EventSchema(optional=("export_id", "ms")),
+    "export_packaged": EventSchema(optional=("export_id", "bytes_total", "volumes")),
+    "export_failed": EventSchema(
+        required=("error_type",), optional=("export_id", "message_sanitized")
+    ),
     # —— 以下四种为架构 v2（#272-#275）预留：writer 契约可验（A1.7），本期无生产者 ——
     "arbitration": EventSchema(
         required=("winner", "loser"), optional=("metric", "values"),

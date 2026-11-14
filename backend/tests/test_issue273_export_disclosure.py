@@ -82,7 +82,7 @@ def test_helper_tolerates_non_int_page_entries():
 # 说明页披露段
 # ---------------------------------------------------------------------------
 
-def _cover_lines(**overrides):
+def _summary_lines(**overrides):
     kwargs = dict(
         pages=[1, 2],
         page_count=2,
@@ -93,12 +93,12 @@ def _cover_lines(**overrides):
         recognized_pages_at_export=2,
     )
     kwargs.update(overrides)
-    return pes.build_cover_lines(**kwargs)
+    return pes.build_summary_lines(**kwargs)
 
 
-def test_cover_discloses_verify_incomplete_pages():
+def test_summary_discloses_verify_incomplete_pages():
     """① 两页卷页 2 verify_incomplete=true ⇒ 文本含「未完成对账页：2」。"""
-    lines = _cover_lines(verify_incomplete_pages=[2])
+    lines = _summary_lines(verify_incomplete_pages=[2])
     text = "\n".join(lines)
     assert "未完成对账页：2" in text
     assert "该页按文本层结果交付，建议复核" in text
@@ -106,28 +106,28 @@ def test_cover_discloses_verify_incomplete_pages():
     assert "未完成对账页：1-2" not in text
 
 
-def test_cover_lists_multiple_pages_individually():
-    lines = _cover_lines(verify_incomplete_pages=[3, 7, 12])
+def test_summary_lists_multiple_pages_individually():
+    lines = _summary_lines(verify_incomplete_pages=[3, 7, 12])
     text = "\n".join(lines)
     assert "未完成对账页：3、7、12" in text
 
 
-def test_cover_no_disclosure_when_all_pages_ok():
+def test_summary_no_disclosure_when_all_pages_ok():
     """② 全正常页 ⇒ 不含该段（零噪声）。"""
-    lines = _cover_lines(verify_incomplete_pages=[])
+    lines = _summary_lines(verify_incomplete_pages=[])
     assert "未完成对账页" not in "\n".join(lines)
 
 
-def test_cover_no_disclosure_when_param_absent():
+def test_summary_no_disclosure_when_param_absent():
     """不传参数（旧调用方）⇒ 同样零噪声，且不崩。"""
-    lines = _cover_lines()
+    lines = _summary_lines()
     assert "未完成对账页" not in "\n".join(lines)
 
 
-def test_cover_disclosure_lines_survive_long_page_list():
+def test_summary_disclosure_lines_survive_long_page_list():
     """页号很多时折行仍逐页列举（复用 _page_label_chunks 的宽度折行）。"""
     many = list(range(2, 41))  # 39 页
-    lines = _cover_lines(pages=[1, *many], page_count=41, verify_incomplete_pages=many)
+    lines = _summary_lines(pages=[1, *many], page_count=41, verify_incomplete_pages=many)
     joined = "".join(lines)
     for page in many:
         assert str(page) in joined
@@ -135,27 +135,9 @@ def test_cover_disclosure_lines_survive_long_page_list():
 
 
 # ---------------------------------------------------------------------------
-# 端到端：说明页落进 PDF 且可读回
 # ---------------------------------------------------------------------------
-
-def test_cover_page_renders_disclosure(tmp_path):
-    src = tmp_path / "src.pdf"
-    doc = fitz.open()
-    for _ in range(2):
-        doc.new_page(width=595.0, height=842.0)
-    doc.save(src)
-    doc.close()
-
-    lines = _cover_lines(verify_incomplete_pages=[2])
-    pes.insert_cover_page(str(src), lines)
-    with fitz.open(str(src)) as rendered:
-        assert rendered.page_count == 3
-        text = rendered[0].get_text().replace("\n", "")
-    assert "未完成对账页：2（该页按文本层结果交付，建议复核）" in text
-
-
-# ---------------------------------------------------------------------------
-# submit_partial_export 快照透传（真 manager 全链，沿用 #257 任务级打桩法）
+# submit_item_export 快照透传（真 manager 全链，沿用 #257 任务级打桩法；#278 后
+# 披露落 说明.txt + manifest.verify_incomplete_pages，PDF 正文不再有插页）
 # ---------------------------------------------------------------------------
 
 def _file_info_with_routing(src, entries) -> dict:
@@ -195,6 +177,16 @@ def _make_pdf(tmp_path, pages: int):
     return src
 
 
+def _item_row() -> dict:
+    pages = {str(p): {"status": "completed", "duration_ms": 100} for p in (1, 2, 3)}
+    return {
+        "job_id": "j1",
+        "id": "i1",
+        "file_id": "file-1",
+        "performance": {"recognition": {"page_count": 3, "pages": pages, "failed_pages": {}}},
+    }
+
+
 def _run_submit(tmp_path, monkeypatch, info, pages):
     from app.core.config import settings
     from app.services.export_service import ExportTaskManager
@@ -206,14 +198,16 @@ def _run_submit(tmp_path, monkeypatch, info, pages):
     monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path))
 
     async def _run():
-        task = await pes.submit_partial_export(
+        task = await pes.submit_item_export(
             owner_id="admin",
-            item_row={"job_id": "j1", "id": "i1", "file_id": "file-1"},
+            store=None,
+            job_row={"id": "j1"},
+            item_row=_item_row(),
             file_info=info,
             config=config_from_job_config({"watermark_delivery": "keep"}),
+            kind="partial",
             pages=pages,
-            excluded_failed_pages=[],
-            snapshot_at="2026-11-12T00:00:00+00:00",
+            include_summary=True,
             manager=ExportTaskManager(),
         )
         for _ in range(300):
@@ -225,8 +219,17 @@ def _run_submit(tmp_path, monkeypatch, info, pages):
     return asyncio.run(_run())
 
 
-def test_submit_partial_export_cover_contains_disclosure(tmp_path, monkeypatch):
-    """submit 链路：included 页（页 2）的对账未完成写进说明页与 manifest cover。"""
+def _summary_text_of(task, tmp_path) -> str:
+    import zipfile
+
+    zip_path = Path(task.out_dir) / "part001.zip"
+    with zipfile.ZipFile(zip_path) as zf:
+        assert "说明.txt" in zf.namelist()
+        return zf.read("说明.txt").decode("utf-8")
+
+
+def test_submit_item_export_summary_contains_disclosure(tmp_path, monkeypatch):
+    """submit 链路：included 页（页 2）的对账未完成写进说明.txt 与 manifest。"""
     src = _make_pdf(tmp_path, 3)
     info = _file_info_with_routing(src, [(1, False), (2, True), (3, True)])
 
@@ -236,8 +239,11 @@ def test_submit_partial_export_cover_contains_disclosure(tmp_path, monkeypatch):
     manifest = json.loads(
         (Path(task.out_dir) / "manifest.json").read_text(encoding="utf-8")
     )
-    cover_text = "\n".join(manifest["cover"])
-    assert "未完成对账页：2（该页按文本层结果交付，建议复核）" in cover_text
+    assert manifest["verify_incomplete_pages"] == [2]
+    summary_text = _summary_text_of(task, tmp_path)
+    assert "未完成对账页：2（该页按文本层结果交付，建议复核）" in summary_text
+
+    import zipfile
 
     zip_path = Path(task.out_dir) / "part001.zip"
     with zipfile.ZipFile(zip_path) as zf:
@@ -245,46 +251,20 @@ def test_submit_partial_export_cover_contains_disclosure(tmp_path, monkeypatch):
         pdf_path = tmp_path / "extracted.pdf"
         pdf_path.write_bytes(zf.read(pdf_name))
     with fitz.open(pdf_path) as rendered:
-        text = rendered[0].get_text().replace("\n", "")
-    assert "未完成对账页：2" in text
+        assert rendered.page_count == 2, "说明页废除：正文不再插页"
 
 
-def test_submit_partial_export_without_routing_stays_quiet(tmp_path, monkeypatch):
-    """③ page_routing 键整体缺失（file 模式旧数据）⇒ 说明页不含该段且任务照常完成。"""
-    from app.core.config import settings
-    from app.services.export_service import ExportTaskManager
-    from app.services.partial_export_service import config_from_job_config
-
+def test_submit_item_export_without_routing_stays_quiet(tmp_path, monkeypatch):
+    """③ page_routing 键整体缺失（file 模式旧数据）⇒ 披露为空且任务照常完成。"""
     src = _make_pdf(tmp_path, 2)
     info = _file_info_with_routing(src, [(1, False), (2, False)])
     info.pop("page_routing")
 
-    out_root = tmp_path / "out"
-    out_root.mkdir(exist_ok=True)
-    monkeypatch.setattr(settings, "OUTPUT_DIR", str(out_root))
-    monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path))
-
-    async def _run():
-        task = await pes.submit_partial_export(
-            owner_id="admin",
-            item_row={"job_id": "j1", "id": "i1", "file_id": "file-1"},
-            file_info=info,
-            config=config_from_job_config({"watermark_delivery": "keep"}),
-            pages=[1, 2],
-            excluded_failed_pages=[],
-            snapshot_at="2026-11-12T00:00:00+00:00",
-            manager=ExportTaskManager(),
-        )
-        for _ in range(300):
-            if task.status in {"completed", "failed"}:
-                break
-            await asyncio.sleep(0.02)
-        return task
-
-    task = asyncio.run(_run())
+    task = _run_submit(tmp_path, monkeypatch, info, pages=[1, 2])
     assert task.status == "completed", task.error
 
     manifest = json.loads(
         (Path(task.out_dir) / "manifest.json").read_text(encoding="utf-8")
     )
-    assert "未完成对账页" not in "\n".join(manifest["cover"])
+    assert manifest["verify_incomplete_pages"] == []
+    assert "未完成对账页" not in _summary_text_of(task, tmp_path)

@@ -721,6 +721,10 @@ def collect_batch_zip_entries(
                 })
 
     manifest = {
+        # Issue#278：多文件批量传输链与 item 级导出的 manifest 在「机器可辨识」层
+        # 对齐（kind 区分两类包；app_version 与 /health 同源）。行为零变化。
+        "kind": "batch_transport",
+        "app_version": settings.APP_VERSION,
         "generated_at": datetime.now(UTC).isoformat(),
         "redacted": bool(request.redacted),
         "requested_count": len(unique_ids),

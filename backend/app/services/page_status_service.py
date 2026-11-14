@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -294,3 +295,101 @@ def failed_page_reasons(item_row: dict[str, Any]) -> dict[int, str]:
         if page > 0:
             out[page] = reason
     return out
+
+
+# ---------------------------------------------------------------------------
+# Issue#278 统一导出链消费面（manual 账本防御性读取 + route 聚合）
+# ---------------------------------------------------------------------------
+
+def _manual_ledger_map(item_row: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """#280 §2.0 账本防御性读取：``recognition.manual_verified_pages``。
+
+    账本形状（#280 §2.0 契约）：键为 ``str(page)``、值为
+    ``{verified_at, operator, box_count, original_reason}``；撤销后键消失。
+
+    **防御性形状兜底**：键缺失（#280 未合入 preview 前的常态路径，r2 F9）、值非
+    dict、页号脏值一律按缺失处理返回空表——导出是交付动作，绝不能因诊断账本崩。
+    #280 合入 preview 后本副本收敛为引用其 helper（PR 描述与注释双向互链）。
+    """
+    recognition = _coerce_dict(_performance_of(item_row).get("recognition"))
+    raw = recognition.get("manual_verified_pages")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[int, dict[str, Any]] = {}
+    for key, value in raw.items():
+        page = _safe_int(key, -1)
+        if page <= 0 or not isinstance(value, dict):
+            continue
+        out[page] = value
+    return out
+
+
+def exportable_page_numbers(item_row: dict[str, Any], page_count: int) -> set[int]:
+    """#280 §2.3 投影：``exportable = recognized ∪ manual``（统一导出缺省集的唯一权威）。
+
+    manual 页入集的两个硬约束：页号在 1..page_count 内；**不在失败清单**——
+    失败页永不进包（#199 红线）优先于人工兜底（人工页仍记为失败说明人工兜底未成功）。
+    """
+    recognized = recognized_page_numbers(item_row, page_count)
+    failed = set(failed_page_numbers(item_row))
+    manual = {p for p in _manual_ledger_map(item_row) if 0 < p <= max(_safe_int(page_count, 0), 0)}
+    return (recognized | manual) - failed
+
+
+def manual_ledger_of(item_row: dict[str, Any]) -> list[dict[str, Any]]:
+    """#280 §4.2 契约投影：``[{page, box_count, verified_at, operator}]`` 升序。
+
+    缺省键按「未披露」给空串/零，不编造值；条目语义 = 曾人工补框且未撤销。
+    """
+    out: list[dict[str, Any]] = []
+    for page, value in sorted(_manual_ledger_map(item_row).items()):
+        out.append(
+            {
+                "page": page,
+                "box_count": _safe_int(value.get("box_count"), 0),
+                "verified_at": str(value.get("verified_at") or ""),
+                "operator": str(value.get("operator") or ""),
+            }
+        )
+    return out
+
+
+def route_counts_of(item_row: dict[str, Any], pages: Iterable[int]) -> dict[str, int]:
+    """按 included 页聚合路由桶（manifest ``route_summary`` 的唯一聚合点，#278 §2.4）。
+
+    口径（design §2.4）：docline 接管优先（``pipeline_status.text_layer_doc.ran``），
+    其次 ``text_source``（#273 路由字段 ∈ text_layer/ocr/both），accelerator 是
+    #274/#275 预留字段（现无生产者恒空）；页记录缺失（pending/旧任务/file 模式）
+    → unknown。返回五键齐全的 dict（缺桶显式 0，机读方按「键存在即读」）。
+    """
+    counts: dict[str, int] = {
+        "text_layer": 0,
+        "ocr": 0,
+        "accelerator": 0,
+        "both": 0,
+        "unknown": 0,
+    }
+    recognition = _coerce_dict(_performance_of(item_row).get("recognition"))
+    raw_pages = recognition.get("pages") if isinstance(recognition.get("pages"), dict) else {}
+    for raw_page in pages or []:
+        page = _safe_int(raw_page, 0)
+        if page <= 0:
+            continue
+        bucket = "unknown"
+        record = raw_pages.get(str(page))
+        if isinstance(record, dict):
+            ran, _code, _coverage = _text_layer_route_of(record)
+            if ran:
+                bucket = "text_layer"
+            else:
+                source = str(record.get("text_source") or "").strip().lower()
+                if source == "text_layer":
+                    bucket = "text_layer"
+                elif source == "ocr":
+                    bucket = "ocr"
+                elif source == "both":
+                    bucket = "both"
+                elif record.get("accelerator") is True:
+                    bucket = "accelerator"
+        counts[bucket] += 1
+    return counts
