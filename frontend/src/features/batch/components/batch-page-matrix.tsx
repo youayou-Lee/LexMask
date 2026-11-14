@@ -49,6 +49,8 @@ const STATE_STYLES: Record<PageCellState, string> = {
   success: 'border-[var(--success-border)] bg-[var(--success-surface)] text-[var(--success-foreground)]',
   failed: 'border-destructive/40 bg-destructive/10 text-destructive',
   pending: 'border-border bg-muted text-muted-foreground',
+  // #280 manual_verified：本支只做防御性展示兜底（样式沿用成功格），不实现 #280 功能。
+  manual_verified: 'border-[var(--success-border)] bg-[var(--success-surface)] text-[var(--success-foreground)]',
 };
 
 /** 已知 docline fallback 原因码的 i18n 键空间；未知码直显原文（同 retryError 的处理）。 */
@@ -95,19 +97,31 @@ export function BatchPageMatrix({
   );
   const hiddenCount = status.pages.length - visiblePages.length;
   const counts = useMemo(() => {
-    const tally = { success: 0, failed: 0, pending: 0 };
+    const tally = { success: 0, failed: 0, pending: 0, manual_verified: 0 };
     status.pages.forEach((cell) => {
       tally[cell.state] += 1;
     });
     return tally;
   }, [status.pages]);
 
+  // r2 F4：可导出谓词 = success ∪ manual_verified（#280 人工页；本支防御性接受，
+  // 选择/剪枝用 exportable 集——success-only 会把 manual 页静默摘出选择集）。
   const allSuccess = useMemo(
-    () => new Set(status.pages.filter((cell) => cell.state === 'success').map((cell) => cell.page)),
+    () =>
+      new Set(
+        status.pages
+          .filter((cell) => cell.state === 'success' || cell.state === 'manual_verified')
+          .map((cell) => cell.page),
+      ),
     [status.pages],
   );
   const selectablePages = useMemo(
-    () => new Set(status.pages.filter((cell) => cell.state === 'success').map((cell) => cell.page)),
+    () =>
+      new Set(
+        status.pages
+          .filter((cell) => cell.state === 'success' || cell.state === 'manual_verified')
+          .map((cell) => cell.page),
+      ),
     [status.pages],
   );
   const isSelectable = (page: number) => !disabled && selectablePages.has(page);
@@ -161,7 +175,9 @@ export function BatchPageMatrix({
   };
 
   const toggle = (page: number, state: PageCellState, shiftKey = false) => {
-    if (disabled || state !== 'success') return;
+    // manual_verified 页可勾选/可排除（§1 缺省语义裁定 ④「用户可手动排除」由页格
+    // 可选中性承担；#280 合入前由本支防御性放行，勾选语义与成功页一致）。
+    if (disabled || (state !== 'success' && state !== 'manual_verified')) return;
     const anchor = anchorRef.current;
     if (shiftKey && anchor !== null && anchor !== page) {
       onChange(extendSelection(selected, anchor, page, isSelectable));

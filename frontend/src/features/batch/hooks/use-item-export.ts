@@ -1,25 +1,28 @@
 // Copyright 2026 LexMask Contributors
 
-// Issue#257 需求重对齐（2026-11-11）：部分导出的选择/提交/记录逻辑。
+// Issue#278 统一导出（原 Issue#257 use-partial-export-selection 改名+改造）：
+// 完整导出与选页导出共用这一份选择/提交/记录逻辑。
 //
-// 两个入口共用这一份逻辑：
-//  - 批量识别步：文件行展开的页格 / 部分导出对话框；
-//  - 单文件任务（/single）：识别中浮层与结果页的「逐页结果与选页导出」块。
-// 语义要点（用户口径）：
-//  - **不再有「我已了解失败页」勾选**：区间内的失败页由后端自动排除，说明页如实列出；
+// 语义要点：
+//  - kind='partial' 发 orderedSelected；kind='full' 不发 pages（缺省=全部可导出页）；
 //  - 失败页/未跑页在页格上不可选，且已选页一旦变成失败会立刻从选择集里摘掉；
-//  - 识别进行中也允许导出，产物是那一刻的快照（说明页带 snapshot_at）。
+//  - 「回到编辑保留选择集」：弹窗关闭不清空选择，写入模块级 cache（键
+//    `${jobId}:${itemId}`），重开时读 cache 预填再与最新页状态交集剪枝——
+//    会话内存活、刷新即失（issue 只要求「改完回来保留」）；
+//  - 剪枝谓词 = success ∪ manual_verified（r2 F4：success-only 会把 manual 页
+//    静默摘出选择集，与「manual 页默认包含」裁定冲突；#280 合入后由其四态
+//    normalizer 生产 manual_verified，本支防御性接受）。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useT } from '@/i18n';
 import { ApiError } from '@/services/api-client';
 import {
-  getPartialExport,
+  getItemExport,
   listItemExports,
-  startPartialExport,
+  startItemExport,
+  type ItemExportTask,
   type ItemPageStatus,
-  type PartialExportTask,
 } from '@/services/jobsApi';
 
 import { useBatchPageStatus } from './use-batch-page-status';
@@ -27,58 +30,76 @@ import { useBatchPageStatus } from './use-batch-page-status';
 const TASK_POLL_MS = 1500;
 const RUNNING_STATUSES: ReadonlySet<string> = new Set(['queued', 'running']);
 
-interface UsePartialExportSelectionArgs {
+/** 「回到编辑保留选择集」的存储层：模块级 Map，会话内存活（§3.3）。 */
+const selectionCache = new Map<string, Set<number>>();
+
+/** exportable 谓词（r2 F4）：success ∪ manual_verified。 */
+function isExportableState(state: string): boolean {
+  return state === 'success' || state === 'manual_verified';
+}
+
+export type ItemExportKind = 'full' | 'partial';
+
+interface UseItemExportArgs {
   jobId: string | null;
   itemId: string | null;
   enabled?: boolean;
-  /** 上游带下来的预选页号；与「当前成功页」取交集，空则默认全选成功页。 */
+  kind?: ItemExportKind;
+  /** 上游带下来的预选页号；与「当前可导出页」取交集，空则默认全选可导出页。 */
   initialSelected?: readonly number[] | null;
 }
 
-export interface PartialExportSelection {
+export interface ItemExportSelection {
   status: ItemPageStatus | null;
   statusError: string | null;
   refreshStatus: () => void;
+  kind: ItemExportKind;
+  setKind: (kind: ItemExportKind) => void;
+  includeSummary: boolean;
+  setIncludeSummary: (value: boolean) => void;
   selected: ReadonlySet<number>;
   setSelected: (next: Set<number>) => void;
   orderedSelected: number[];
   failedPages: number[];
   excludedInSpan: number[];
-  records: PartialExportTask[];
+  records: ItemExportTask[];
   recordsError: string | null;
-  activeTask: PartialExportTask | null;
+  activeTask: ItemExportTask | null;
   submitting: boolean;
   actionError: string | null;
   submit: () => Promise<void>;
 }
 
-export function usePartialExportSelection({
+export function useItemExport({
   jobId,
   itemId,
   enabled = true,
+  kind: initialKind = 'partial',
   initialSelected = null,
-}: UsePartialExportSelectionArgs): PartialExportSelection {
+}: UseItemExportArgs): ItemExportSelection {
   const t = useT();
   const { status, error: statusError, refresh: refreshStatus } = useBatchPageStatus({
     jobId,
     itemId,
     enabled,
   });
+  const [kind, setKind] = useState<ItemExportKind>(initialKind);
+  const [includeSummary, setIncludeSummary] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
   const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [activeTask, setActiveTask] = useState<PartialExportTask | null>(null);
-  const [records, setRecords] = useState<PartialExportTask[]>([]);
+  const [activeTask, setActiveTask] = useState<ItemExportTask | null>(null);
+  const [records, setRecords] = useState<ItemExportTask[]>([]);
   const [recordsError, setRecordsError] = useState<string | null>(null);
   // 每个 (job,item) 只初始化一次选择；轮询回来不覆盖用户的选择。
   const initializedForRef = useRef<string | null>(null);
   const key = jobId && itemId ? `${jobId}:${itemId}` : null;
 
   const pages = useMemo(() => status?.pages ?? [], [status]);
-  const successKey = useMemo(
+  const exportableKey = useMemo(
     () =>
       pages
-        .filter((cell) => cell.state === 'success')
+        .filter((cell) => isExportableState(cell.state))
         .map((cell) => cell.page)
         .join(','),
     [pages],
@@ -86,25 +107,33 @@ export function usePartialExportSelection({
 
   useEffect(() => {
     if (!enabled) {
+      // 关弹窗不清空选择：写 cache 供「回到编辑 → 回到导出」恢复（§3.3）。
+      if (key) selectionCache.set(key, selected);
       initializedForRef.current = null;
-      setSelected(new Set());
       setActionError(null);
       setActiveTask(null);
       return;
     }
     if (!status || initializedForRef.current === key) return;
     initializedForRef.current = key;
-    const successPages = pages
-      .filter((cell) => cell.state === 'success')
+    const exportablePages = pages
+      .filter((cell) => isExportableState(cell.state))
       .map((cell) => cell.page);
-    const successSet = new Set(successPages);
-    const prefill = (initialSelected ?? []).filter((page) => successSet.has(page));
-    setSelected(new Set(prefill.length > 0 ? prefill : successPages));
-  }, [enabled, initialSelected, key, pages, status]);
+    const exportableSet = new Set(exportablePages);
+    // 重开时读 cache 预填，再与最新页状态交集剪枝；cache 无条目 → 缺省全选 exportable。
+    const cached = key ? selectionCache.get(key) : undefined;
+    const prefillFromCache = cached
+      ? [...cached].filter((page) => exportableSet.has(page))
+      : [];
+    const prefillFromProps = (initialSelected ?? []).filter((page) => exportableSet.has(page));
+    const prefill = prefillFromCache.length > 0 ? prefillFromCache : prefillFromProps;
+    setSelected(new Set(prefill.length > 0 ? prefill : exportablePages));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 初始化只跑一次（key 变化重置）
+  }, [enabled, key, pages, status]);
 
-  // 选择集随页状态剪枝（运行中某页转 failed 后不得留在选择里）。
+  // 选择集随页状态剪枝（运行中某页转 failed 后不得留在选择里；谓词 r2 F4）。
   useEffect(() => {
-    const allowed = new Set(successKey ? successKey.split(',').map(Number) : []);
+    const allowed = new Set(exportableKey ? exportableKey.split(',').map(Number) : []);
     setSelected((prev) => {
       if (prev.size === 0) return prev;
       let changed = false;
@@ -115,7 +144,7 @@ export function usePartialExportSelection({
       });
       return changed ? next : prev;
     });
-  }, [successKey]);
+  }, [exportableKey]);
 
   const loadRecords = useCallback(async () => {
     if (!jobId || !itemId) return;
@@ -124,7 +153,7 @@ export function usePartialExportSelection({
       setRecords(payload.exports);
       setRecordsError(
         payload.unavailable.length > 0
-          ? t('batchWizard.partialExport.recordsUnavailable').replace(
+          ? t('batchWizard.export.recordsUnavailable').replace(
               '{count}',
               String(payload.unavailable.length),
             )
@@ -143,7 +172,7 @@ export function usePartialExportSelection({
   useEffect(() => {
     if (!activeTask || !RUNNING_STATUSES.has(activeTask.status)) return;
     const timer = setTimeout(() => {
-      void getPartialExport(activeTask.export_id)
+      void getItemExport(activeTask.export_id)
         .then((next) => {
           setActiveTask(next);
           if (!RUNNING_STATUSES.has(next.status)) void loadRecords();
@@ -168,35 +197,52 @@ export function usePartialExportSelection({
   }, [failedPages, orderedSelected]);
 
   const submit = useCallback(async () => {
-    if (!jobId || !itemId || orderedSelected.length === 0 || submitting) return;
+    if (!jobId || !itemId || submitting || (kind === 'partial' && orderedSelected.length === 0)) {
+      return;
+    }
     setSubmitting(true);
     setActionError(null);
     try {
-      const task = await startPartialExport(jobId, itemId, orderedSelected);
+      const task = await startItemExport(jobId, itemId, {
+        kind,
+        pages: kind === 'partial' ? orderedSelected : undefined,
+        includeSummary,
+      });
       setActiveTask(task);
       void loadRecords();
     } catch (err) {
       if (err instanceof ApiError) {
+        // 已知错误码走专门文案；未知码回落通用（retryErrorMessage 同款模式）。
         const code = err.errorCode ?? '';
-        setActionError(
-          code
-            ? t('batchWizard.partialExport.errorWithCode')
-                .replace('{code}', code)
-                .replace('{message}', err.message)
-            : err.message,
-        );
+        const specificKey = `batchWizard.export.error.${code || 'unknown'}`;
+        const specific = code ? t(specificKey) : '';
+        if (code && specific !== specificKey) {
+          setActionError(specific.replace('{message}', err.message));
+        } else {
+          setActionError(
+            code
+              ? t('batchWizard.export.errorWithCode')
+                  .replace('{code}', code)
+                  .replace('{message}', err.message)
+              : err.message,
+          );
+        }
       } else {
         setActionError(err instanceof Error ? err.message : String(err));
       }
     } finally {
       setSubmitting(false);
     }
-  }, [itemId, jobId, loadRecords, orderedSelected, submitting, t]);
+  }, [itemId, jobId, loadRecords, orderedSelected, submitting, t, kind, includeSummary]);
 
   return {
     status,
     statusError,
     refreshStatus,
+    kind,
+    setKind,
+    includeSummary,
+    setIncludeSummary,
     selected,
     setSelected,
     orderedSelected,

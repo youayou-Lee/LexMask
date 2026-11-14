@@ -714,7 +714,7 @@ export function commitAllReviews(jobId: string): Promise<CommitAllReviewsResult>
 // 投影成每页一条 {page,state,reason}，失败清单（failed_pages）是 reason 的权威来源。
 // 缺页记录 = 还没跑到（pending），不区分「识别中」与「未开始」——那是文件名行的事。
 
-export type PageCellState = 'success' | 'failed' | 'pending';
+export type PageCellState = 'success' | 'failed' | 'pending' | 'manual_verified';
 export type ItemRecognitionState = 'not_started' | 'running' | 'done' | 'failed' | 'cancelled';
 
 /** 该页走的识别路由（Issue#279）：docline=文本层链接管，page_pipeline=逐页识别。 */
@@ -773,8 +773,18 @@ export type BatchExportVolume = {
   file_count?: number;
 };
 
-export type PartialExportTask = {
+/** Issue#278 统一导出任务记录（legacy 值 "partial_redaction" 原样透传，读侧双形状兼容）。 */
+export type ItemExportFileEntry = {
+  name: string;
+  bytes: number;
+  sha256: string;
+};
+
+export type ExcludedFailedPage = { page: number; reason_code: string };
+
+export type ItemExportTask = {
   export_id: string;
+  /** "full" | "partial"；legacy 记录是 "partial_redaction"（前端按 legacy 口径渲染）。 */
   kind: string;
   title: string;
   status: string;
@@ -787,13 +797,21 @@ export type PartialExportTask = {
   finished_at?: string | null;
   job_id?: string;
   item_id?: string;
+  /** 包内页清单（r2 F1：full 结构级切页后语义为真）。 */
   pages?: number[];
+  /** 包内页数（#278 改口径；legacy 记录里是原卷总页数，渲染侧按 kind 分流）。 */
   page_count?: number;
-  excluded_failed_pages?: number[];
+  /** 对象式（新记录）；legacy int[] 由 normalizer 就地升格（r2 F7）。 */
+  excluded_failed_pages?: ExcludedFailedPage[];
   snapshot_at?: string;
+  manual_verified_pages_count?: number;
+  files?: ItemExportFileEntry[];
+  include_summary?: boolean;
 };
 
-const PAGE_CELL_STATES: ReadonlySet<string> = new Set(['success', 'failed', 'pending']);
+// manual_verified 是 #280 的页终态：本支只做防御性接受（选择谓词 success ∪ manual_verified），
+// 不实现 #280 功能本身。
+const PAGE_CELL_STATES: ReadonlySet<string> = new Set(['success', 'failed', 'pending', 'manual_verified']);
 
 const PAGE_ROUTE_VERDICTS: ReadonlySet<string> = new Set(['docline', 'page_pipeline']);
 
@@ -865,7 +883,7 @@ export function normalizeItemPageStatus(raw: unknown): ItemPageStatus {
   };
 }
 
-export function normalizePartialExportTask(raw: unknown): PartialExportTask {
+export function normalizeItemExportTask(raw: unknown): ItemExportTask {
   const task = asRecord(raw);
   const progress = asRecord(task.progress);
   const volumes = Array.isArray(task.volumes)
@@ -881,8 +899,28 @@ export function normalizePartialExportTask(raw: unknown): PartialExportTask {
   const pages = Array.isArray(task.pages)
     ? task.pages.map((value) => asNumber(value)).filter((value) => value > 0)
     : [];
-  const excluded = Array.isArray(task.excluded_failed_pages)
-    ? task.excluded_failed_pages.map((value) => asNumber(value)).filter((value) => value > 0)
+  // r2 F7 双形状兼容：legacy 记录是 number[] → 就地升格为对象式（reason_code 空）；
+  // 新记录已是对象式，原样透传。
+  const excluded: ExcludedFailedPage[] = Array.isArray(task.excluded_failed_pages)
+    ? task.excluded_failed_pages
+        .map((value) => {
+          if (isRecord(value)) {
+            return { page: asNumber(value.page), reason_code: asString(value.reason_code) };
+          }
+          const page = asNumber(value);
+          return page > 0 ? { page, reason_code: '' } : null;
+        })
+        .filter((value): value is ExcludedFailedPage => value !== null && value.page > 0)
+    : [];
+  const files: ItemExportFileEntry[] = Array.isArray(task.files)
+    ? task.files.map((entry) => {
+        const record = asRecord(entry);
+        return {
+          name: asString(record.name),
+          bytes: asNumber(record.bytes),
+          sha256: asString(record.sha256),
+        };
+      })
     : [];
   return {
     export_id: asString(task.export_id),
@@ -906,6 +944,9 @@ export function normalizePartialExportTask(raw: unknown): PartialExportTask {
     page_count: asNumber(task.page_count),
     excluded_failed_pages: excluded,
     snapshot_at: asString(task.snapshot_at),
+    manual_verified_pages_count: asNumber(task.manual_verified_pages_count, 0),
+    files,
+    include_summary: task.include_summary === true,
   };
 }
 
@@ -916,13 +957,6 @@ export function getItemPageStatus(jobId: string, itemId: string): Promise<ItemPa
   ).then(normalizeItemPageStatus);
 }
 
-/**
- * 部分导出：只导出选中页（原卷页号）+ 一张说明页。
- *
- * 2026-11-11 需求重对齐：不再有「我已了解失败页」勾选——区间内的失败页由后端
- * **自动排除**并在产物说明页逐条列出，本函数不再传 `acknowledge_failed_excluded`
- * （后端仍接受该字段以兼容历史客户端，但不影响判定）。
- */
 export interface ItemRef {
   job_id: string;
   item_id: string;
@@ -946,30 +980,41 @@ export function getItemRefByFile(fileId: string): Promise<ItemRef> {
   });
 }
 
-export function startPartialExport(
-  jobId: string,
-  itemId: string,
-  pages: number[],
-): Promise<PartialExportTask> {
-  return post(
-    `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/partial-export`,
-    { pages },
-  ).then(normalizePartialExportTask);
+/** Issue#278 统一导出：full（缺省=全部可导出页，不传 pages）| partial（pages 必填）。 */
+export interface ItemExportRequest {
+  kind: 'full' | 'partial';
+  pages?: number[];
+  includeSummary?: boolean;
 }
 
-export function getPartialExport(exportId: string): Promise<PartialExportTask> {
-  return get(`/files/batch/export/${encodeURIComponent(exportId)}`).then(normalizePartialExportTask);
+export function startItemExport(
+  jobId: string,
+  itemId: string,
+  request: ItemExportRequest,
+): Promise<ItemExportTask> {
+  return post(
+    `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/export`,
+    {
+      kind: request.kind,
+      ...(request.kind === 'partial' ? { pages: request.pages ?? [] } : {}),
+      include_summary: request.includeSummary === true,
+    },
+  ).then(normalizeItemExportTask);
+}
+
+export function getItemExport(exportId: string): Promise<ItemExportTask> {
+  return get(`/files/batch/export/${encodeURIComponent(exportId)}`).then(normalizeItemExportTask);
 }
 
 export async function listItemExports(
   jobId: string,
   itemId: string,
-): Promise<{ exports: PartialExportTask[]; unavailable: string[] }> {
+): Promise<{ exports: ItemExportTask[]; unavailable: string[] }> {
   const payload = asRecord(
     await get(`/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/exports`),
   );
   const exports = Array.isArray(payload.exports)
-    ? payload.exports.map(normalizePartialExportTask)
+    ? payload.exports.map(normalizeItemExportTask)
     : [];
   return { exports, unavailable: asStringArray(payload.unavailable) };
 }

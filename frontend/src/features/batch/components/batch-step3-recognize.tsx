@@ -32,6 +32,10 @@ interface BatchStep3RecognizeProps {
   goStep: (s: Step) => void;
   submitQueueToWorker: () => Promise<void>;
   requeueFailedItems: () => Promise<void>;
+  /** Issue#278「回到编辑」：wizard 已持有的导航（按 fileId 定位 reviewIndex + setStep(4)）。 */
+  resolveExportIssue?: (fileId?: string) => void;
+  /** Issue#278：开弹窗 / 回到编辑前先落盘未保存的审阅编辑（草稿快照的真源）。 */
+  flushCurrentReviewDraft?: () => Promise<boolean>;
 }
 
 type StatusFilter = 'all' | 'active' | 'ready' | 'failed' | 'pending';
@@ -54,6 +58,8 @@ function BatchStep3RecognizeInner({
   goStep,
   submitQueueToWorker,
   requeueFailedItems,
+  resolveExportIssue,
+  flushCurrentReviewDraft,
 }: BatchStep3RecognizeProps) {
   const t = useT();
   const { health } = useServiceHealth();
@@ -78,8 +84,15 @@ function BatchStep3RecognizeInner({
   const [exportTarget, setExportTarget] = useState<{
     itemId: string | null;
     filename: string;
+    fileId: string;
     pages: number[];
   } | null>(null);
+
+  // Issue#278：开导出弹窗（「回到导出」）前先 flush——未落盘的编辑不在草稿快照里（§2.6）。
+  const openExportDialog = (target: { itemId: string | null; filename: string; fileId: string; pages: number[] }) => {
+    setExportTarget(target);
+    if (flushCurrentReviewDraft) void flushCurrentReviewDraft();
+  };
 
   const isProcessing =
     (everSubmitted || workingCount > 0) &&
@@ -417,9 +430,10 @@ function BatchStep3RecognizeInner({
                       itemId={r.item_id ?? null}
                       exportable={canExportPages(r)}
                       onExportPages={(pages) =>
-                        setExportTarget({
+                        openExportDialog({
                           itemId: r.item_id ?? null,
                           filename: r.original_filename,
+                          fileId: r.file_id,
                           pages,
                         })
                       }
@@ -438,6 +452,11 @@ function BatchStep3RecognizeInner({
         itemId={exportTarget?.itemId ?? null}
         filename={exportTarget?.filename ?? ''}
         initialSelected={exportTarget?.pages ?? null}
+        onBackToEdit={() => {
+          if (flushCurrentReviewDraft) void flushCurrentReviewDraft();
+          resolveExportIssue?.(exportTarget?.fileId);
+          setExportTarget(null);
+        }}
         onClose={() => setExportTarget(null)}
       />
     </Card>
