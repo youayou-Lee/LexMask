@@ -261,11 +261,6 @@ export function usePlayground() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [textPdfVisualMode, fileCtx.fileInfo?.file_id, entityCtx.entities]);
 
-  const { setTypeTab } = recognition;
-  useEffect(() => {
-    setTypeTab(fileCtx.isImageMode ? 'vision' : 'text');
-  }, [fileCtx.isImageMode, setTypeTab]);
-
   // 文件切换：在途异步结果一律失效（epoch 前进）。只随 file_id 变化——终审 C 后
   // pendingRedact 不再并入本 effect（提交打码/收尾清守门都会变它，若并入会把
   // done 分支刚登记的 epoch 顶掉，结果页快照回填全被丢弃）。

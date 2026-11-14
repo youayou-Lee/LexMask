@@ -17,7 +17,6 @@ const enBase: Record<string, string> = {
   'nav.structured.delivery.sub': 'Jobs and exports',
   'nav.jobs': 'Task Progress',
   'nav.jobs.sub': 'Progress · Review · Download',
-  'nav.redactionList': 'Recognition List Settings',
   'nav.redactionList.sub': 'Item combinations',
   'nav.systemSettings': 'System Settings',
   'nav.systemSettings.sub': 'Runtime and access',
@@ -336,8 +335,6 @@ const enBase: Record<string, string> = {
   'page.visionModel.title': 'Vision Service',
   'page.visionModel.sub': 'OCR and image recognition service connection',
 
-  'preset.saveText.success': 'Text recognition list saved.',
-  'preset.saveVision.success': 'Image recognition list saved.',
   'preset.save.failed': 'Save failed',
 
   // start-page removed (Issue#262 D6): the whole start.* group is dead keys;
@@ -1007,7 +1004,6 @@ const enBase: Record<string, string> = {
   'error.visionDetectionFailed': 'Vision detection failed',
   'error.reRecognizeFailed': 'Re-recognition failed',
 
-  'nav.wordPools': 'Word Pools',
   'nav.wordPools.sub': 'Pools for pseudonym mode',
 
   'batchWizard.step1.textMethodPseudonym': 'Pseudonym',
@@ -1061,7 +1057,6 @@ const enOverrides: Record<string, string> = {
   'nav.batch.sub': 'Mixed files by default',
   'nav.jobs': 'Task Progress',
   'nav.jobs.sub': 'Progress · Review · Download',
-  'nav.redactionList': 'Recognition List Settings',
   'nav.redactionList.sub': 'Item combinations',
   'nav.textModel': 'Text Service',
   'nav.visionModel': 'Image Service',
@@ -1840,7 +1835,6 @@ Object.assign(enOverrides, {
   'nav.batch.sub': 'Mixed-file queue',
   'nav.jobs': 'Task Center',
   'nav.jobs.sub': 'Progress · Review · Download',
-  'nav.redactionList': 'Recognition List Settings',
   'nav.redactionList.sub': 'Item combinations',
   // Issue#262: legal default profile — recognition items / redaction list / word pools
   // collapse into a single "Advanced Settings" entry.
