@@ -1216,6 +1216,11 @@ const enOverrides: Record<string, string> = {
     '80+ general types such as medical and financial entities stay on by default. Use "Advanced · fine-tune types" to adjust anytime.',
   'playground.upload.visualOfflineHint':
     'Visual feature service offline: {count} selected visual types (e.g. seals, signatures) are not recognized for now. They take effect automatically once the service is back; everything else is unaffected.',
+  // Issue#270: combined outage (visual + other recognition services blocked at once) —
+  // no "everything else is unaffected" claim (false under combined outage); "not
+  // fully running" covers both offline and degraded.
+  'playground.upload.visualOfflineCombinedHint':
+    'Visual and other recognition services are not fully running: {count} selected visual types (e.g. seals, signatures) and the other affected capabilities will only resume once the services recover.',
   'playground.upload.detailsToggle': 'Details',
   'playground.upload.offlineHint':
     'The backend is offline. Preview data is shown here so you can keep checking text items, image items, and the overall layout.',

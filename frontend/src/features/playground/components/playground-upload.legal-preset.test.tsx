@@ -145,6 +145,10 @@ describe('Issue#262 终审：法律卷宗默认选中 effect（组件钉）', ()
     expect(rec.clearPlaygroundTextPresetTracking).toHaveBeenCalledTimes(1);
   });
 
+  // Issue#270 存照（产品已裁定可接受）：本用例即「显式选回默认清单后遇 refetch 被
+  // 法律默认覆盖」的现状钉——触发条件 = tracking=null（哨兵）且 selectedTypes 恰等
+  // 后端 default_enabled 集（法律集≠默认集，两条 refetch 路径均 preserve selection，
+  // 不会先把选择重置回默认集）。产品裁定不改；本钉变红 = 有意行为变更，需重审。
   it('C：新 entityTypes 数组引用（重取换目录）+ selection 重置回后端默认集 → 恰再调用一次（re-arm）', () => {
     const rec = makeRec({
       entityTypes: CATALOG_A,

@@ -1188,6 +1188,10 @@ const zhOverrides: Record<string, string> = {
   'playground.upload.summaryNote': '医疗、金融等 80+ 通用类型全部保留，点「高级 · 按类型微调」随时增减。',
   'playground.upload.visualOfflineHint':
     '视觉特征服务离线：已选的「印章、签名」{count} 类视觉要素暂不识别，服务恢复后自动生效。其余识别不受影响。',
+  // Issue#270：组合故障（视觉 + 其他识别服务同时 blocked）主文案——不再出现「其余
+  // 识别不受影响」（该陈述在组合故障下为假）；「均未正常运行」同时涵盖 offline 与 degraded。
+  'playground.upload.visualOfflineCombinedHint':
+    '视觉特征与其他识别服务均未正常运行：已选的「印章、签名」{count} 类视觉要素与其余受影响的识别能力，均要等服务恢复后才会继续识别。',
   'playground.upload.detailsToggle': '详情',
   'playground.upload.offlineHint':
     '当前后端未连接，这里展示的是界面预览数据，方便继续检查文本、图像配置和整体排版。',
