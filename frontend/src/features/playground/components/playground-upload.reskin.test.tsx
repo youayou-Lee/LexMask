@@ -323,6 +323,25 @@ describe('Task 9b：告警人话化（playground-offline-hint 沿用）', () => 
     fireEvent.click(container.querySelector('[data-testid="playground-offline-hint-details"]') as Element);
     expect(hint?.textContent).toContain('start_local');
   });
+
+  it('告警「详情」折叠 aria-controls 指向面板 id 且详情面板长在告警卡内（动态读值 + 身份断言）', () => {
+    // Issue#266 ③：aria-controls 动态读值防配对断裂（M4）；身份断言（M4b）
+    // 锁「详情面板是告警卡的后代」防配错容器；收起态条件挂载不在 DOM。
+    const rec = makeRec({ entityTypes: CATALOG_A, selectedTypes: [...LEGAL_IDS] });
+    const { container } = render(<PlaygroundUpload ctx={makeCtx(rec)} />);
+    const details = container.querySelector(
+      '[data-testid="playground-offline-hint-details"]',
+    ) as Element;
+    expect(details).not.toBeNull();
+    const controlsId = details.getAttribute('aria-controls');
+    expect(controlsId).not.toBeNull();
+    expect(document.getElementById(controlsId as string)).toBeNull();
+    fireEvent.click(details);
+    const panel = document.getElementById(controlsId as string);
+    expect(panel).not.toBeNull();
+    const hint = container.querySelector('[data-testid="playground-offline-hint"]');
+    expect(hint?.contains(panel as Node)).toBe(true);
+  });
 });
 
 describe('Task 9b：紧凑页头源码钉（旧 kicker / 装饰性格式行移除）', () => {
