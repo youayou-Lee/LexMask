@@ -8,9 +8,11 @@
 //  - pending = 还没有该页的终态记录（未跑到或正在跑）
 // 失败页**不可选**：#199 红线规定失败页不进交付，这里从选择层面就挡住。
 //
-// Issue#279：点页格在既有交互（选择/重试）之外再展开「这页发生了什么」详情面板
-// （路由 / 各阶段耗时 / 机读失败类型 / 尝试次数），并在卷头渲染路由摘要 chip。
-// 数据全部来自既有 page-status 响应扩展字段（A4.3：不新增 JSONL 读取接口）。
+// Issue#279：点页格展开「这页发生了什么」详情面板（路由 / 各阶段耗时 / 机读失败
+// 类型 / 尝试次数），并在卷头渲染路由摘要 chip。数据全部来自既有 page-status 响应
+// 扩展字段（A4.3：不新增 JSONL 读取接口）。
+// Issue#289：「看」与「重试」拆分——点击任何格子（含失败页）只展开/收起详情；
+// 重试收敛到失败页详情面板内的显式按钮（page-detail-retry），格子不再触发重试。
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -28,7 +30,7 @@ interface BatchPageMatrixProps {
   onChange: (next: Set<number>) => void;
   /** 只读（例如导出任务已提交、或识别进行中禁用勾选）。 */
   disabled?: boolean;
-  /** 单页重试（能力 2）：点击红叉页触发，仅识别完成且未被占用时可用。 */
+  /** 单页重试（能力 2）：由失败页详情面板内的显式按钮触发（Issue#289 拆分），仅识别完成且未被占用时可用。 */
   onRetryPage?: (page: number) => void;
   /** 整批重试失败页；与 onRetryPage 同时给出时渲染工具栏按钮。 */
   onRetryFailed?: (pages: number[]) => void;
@@ -126,6 +128,10 @@ export function BatchPageMatrix({
   // 页级重试只认「识别完成、待审阅」：「已完成/已确认」的条目状态机没有回边，
   // 后端会 409 retry_requires_awaiting_review —— 前端不能给一个点了必错的按钮。
   const retryable = status.item_status === 'awaiting_review' && !retrying;
+  // Issue#289：「忙」= 识别在跑或条目被重试占用（后端此态 409 item_busy）；其余
+  // !retryable 即终态（completed/confirmed 等，状态机没有回边）。两者都禁用重试，
+  // 区分只为提示文案准确——面板按钮旁的提示与底部 hint 同口径（方案 1.2(b)/(d)）。
+  const busy = status.recognition_state === 'running' || status.item_status === 'processing';
   const failedPages = useMemo(
     () => status.pages.filter((cell) => cell.state === 'failed').map((cell) => cell.page),
     [status.pages],
@@ -146,12 +152,11 @@ export function BatchPageMatrix({
   };
 
   const activate = (page: number, state: PageCellState, shiftKey = false) => {
-    // 详情展开与选择/重试是并行的两件事：Shift 连选是批量操作，不顺手换展开页。
+    // 详情展开与选择是并行的两件事：Shift 连选是批量操作，不顺手换展开页。
+    // Issue#289：点击（含失败页）只负责展开/收起详情——「看」与「重试」拆分，
+    // 重试由详情面板内的显式按钮（page-detail-retry）触发，格子不再调 onRetryPage。
     if (!shiftKey) setExpandedPage((prev) => (prev === page ? null : page));
-    if (state === 'failed') {
-      if (retryable && onRetryPage) onRetryPage(page);
-      return;
-    }
+    if (state === 'failed') return; // #199 红线：失败页永不进选择集（与 toggle 的守卫互为冗余）
     toggle(page, state, shiftKey);
   };
 
@@ -332,12 +337,9 @@ export function BatchPageMatrix({
                   'flex h-8 items-center justify-center rounded-md border text-[11px] font-medium tabular-nums transition-colors',
                   STATE_STYLES[cell.state],
                   isSelected && 'ring-2 ring-primary ring-offset-1 ring-offset-background',
-                  cell.state === 'failed' && retryable
-                    ? 'cursor-pointer'
-                    : cell.state === 'failed'
-                      ? 'cursor-not-allowed'
-                      : 'cursor-pointer',
-                  disabled && 'cursor-not-allowed opacity-60',
+                  // Issue#289：三种格子都可点（展开详情）——光标只区分「可用/禁用」，
+                  // 不再对失败页谎报不可点；禁用时唯一 cursor 语义，双类不并存。
+                  disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
                 )}
                 title={t('batchWizard.pages.cellLabel')
                   .replace('{page}', String(cell.page))
@@ -348,9 +350,8 @@ export function BatchPageMatrix({
                   .replace('{state}', stateLabel(cell.state))
                   .replace('{reason}', reasonLabel)}
                 aria-pressed={isSelected}
-                aria-disabled={
-                  cell.state === 'success' ? disabled : !(cell.state === 'failed' && retryable)
-                }
+                // Issue#289：点击展开对三种状态都有意义，aria-disabled 只跟随 matrix 禁用位。
+                aria-disabled={disabled}
                 data-testid={`page-cell-${cell.page}`}
                 data-state={cell.state}
                 data-selected={isSelected ? 'true' : 'false'}
@@ -442,6 +443,32 @@ export function BatchPageMatrix({
                 : t('pageDetail.noRetry')}
             </span>
           </div>
+          {/* Issue#289：重试只走这里的显式按钮（四态=可重试/重试中/识别中忙/已终态），格子点击不触发。 */}
+          {expandedCell.state === 'failed' && onRetryPage && (
+            <div className="mt-1.5 flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-6 px-2 text-xs"
+                disabled={!retryable}
+                onClick={() => onRetryPage(expandedCell.page)}
+                data-testid="page-detail-retry"
+              >
+                {retrying ? t('batchWizard.pages.retrying') : t('pageDetail.retryThisPage')}
+              </Button>
+              {!retryable && !retrying && (
+                <span
+                  className="text-muted-foreground"
+                  data-testid="page-detail-retry-unavailable"
+                >
+                  {busy
+                    ? t('batchWizard.pages.retryUnavailable')
+                    : t('pageDetail.retryUnavailableTerminal')}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -455,9 +482,14 @@ export function BatchPageMatrix({
               .join('、'),
           )}
           {' · '}
+          {/* Issue#289 F4：与面板按钮同口径——忙态/重试在飞与终态的禁用原因文案不混用。
+              门⑥ M2：重试在飞 + 快照仍 awaiting_review 的残窗里落「等待当前重试结束」
+              措辞，不与同屏按钮「重试中…」矛盾。 */}
           {retryable
             ? t('batchWizard.pages.retryHint')
-            : t('batchWizard.pages.retryUnavailable')}
+            : retrying || busy
+              ? t('batchWizard.pages.retryUnavailable')
+              : t('pageDetail.retryUnavailableTerminal')}
         </p>
       )}
     </div>

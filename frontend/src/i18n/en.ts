@@ -759,7 +759,7 @@ const enBase: Record<string, string> = {
   'batchWizard.pages.loading': 'Loading per-page status…',
   'batchWizard.pages.retryFailed': 'Retry failed pages ({count})',
   'batchWizard.pages.retrying': 'Retrying…',
-  'batchWizard.pages.retryHint': 'Click a red page to retry just that page',
+  'batchWizard.pages.retryHint': 'Click a red page to expand details; retry it from the details panel',
   'batchWizard.pages.retryUnavailable':
     'Recognition must finish (and no retry may be running) before failed pages can be retried',
   'batchWizard.pages.retryFailedError': 'The retry was not accepted: {message}',
@@ -788,6 +788,12 @@ const enBase: Record<string, string> = {
   'pageDetail.errorType': 'Error type',
   'pageDetail.attempts': 'Retried {count} time(s)',
   'pageDetail.noRetry': 'No retry',
+  // Issue#289: retry moved to an explicit button inside the failed-page detail panel;
+  // busy state reuses batchWizard.pages.retryUnavailable, finalized items get a dedicated key
+  // (same wording for the panel button hint and the bottom hint).
+  'pageDetail.retryThisPage': 'Retry this page',
+  'pageDetail.retryUnavailableTerminal':
+    'This item is finalized (review confirmed/completed); single-page retry is unavailable',
   'pageDetail.chipDocline': 'Text-layer pipeline took over',
   'pageDetail.chipFallback': 'Text-layer pipeline not taken over ({reason}) · page-by-page recognition',
   'pageDetail.fallbackReason.watermark_overlay_hit': 'Watermark overlay detected',

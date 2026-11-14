@@ -726,7 +726,7 @@ const zhBase: Record<string, string> = {
   'batchWizard.pages.loading': '正在读取逐页状态…',
   'batchWizard.pages.retryFailed': '重试失败页 ({count})',
   'batchWizard.pages.retrying': '重试中…',
-  'batchWizard.pages.retryHint': '点击红叉页可只重跑该页',
+  'batchWizard.pages.retryHint': '点击红叉页展开详情；在详情面板内可重试该页',
   'batchWizard.pages.retryUnavailable': '需先完成识别（或等待当前重试结束）才能重试失败页',
   'batchWizard.pages.retryFailedError': '重试没有提交成功：{message}',
   'batchWizard.pages.retryError.item_busy': '该文件正在识别或重试中，请稍后再试',
@@ -752,6 +752,10 @@ const zhBase: Record<string, string> = {
   'pageDetail.errorType': '异常类型',
   'pageDetail.attempts': '重试 {count} 次',
   'pageDetail.noRetry': '未重试',
+  // Issue#289：重试收敛到详情面板内显式按钮（page-detail-retry）；忙态复用
+  // batchWizard.pages.retryUnavailable，终态单独成键（面板按钮旁 + 底部 hint 同口径）。
+  'pageDetail.retryThisPage': '重试这一页',
+  'pageDetail.retryUnavailableTerminal': '任务已进入终态（审阅已确认/完成），不能单独重试这一页',
   'pageDetail.chipDocline': '文本层链已接管',
   'pageDetail.chipFallback': '文本层链未接管（{reason}）·走逐页识别',
   'pageDetail.fallbackReason.watermark_overlay_hit': '水印命中',

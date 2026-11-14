@@ -1,13 +1,16 @@
 // Copyright 2026 LexMask Contributors
 // @vitest-environment jsdom
 
-// Issue#257 一期 · 单页重试的 UI 契约（AC2.3 / AC7）。
+// Issue#257 一期 · 单页重试的 UI 契约（AC2.3 / AC7）；
+// Issue#289 拆分修订：红叉页点击只展开详情、不发重试——重试入口收敛到
+// 详情面板内的显式按钮（page-detail-retry），格子本身不再触发 retry-pages。
 //
 // 钉四件事：
-//  1) 红叉页在「识别完成」态可以点，点它就把**那一页**交给 retry-pages；
-//  2) 识别进行中（running）时不许点、批量重试按钮也禁用；
-//  3) 「重试失败页」一次性提交全部失败页；
-//  4) 后端 409（item_busy 等）翻成人话而不是裸错误码。
+//  1) 点红叉页只展开详情面板（不触发重试、不进选择集），重试走面板内显式按钮；
+//  2) 识别进行中（running）时面板可开但重试按钮禁用、批量重试按钮也禁用；
+//  3) 「重试失败页」一次性提交全部失败页（批量按钮路径不变）；
+//  4) 后端 409（item_busy 等）翻成人话而不是裸错误码；终态条目不给重试入口，
+//     面板按钮与底部 hint 同口径写明终态原因（Issue#289 F4）。
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -70,8 +73,8 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('单页重试', () => {
-  it('点红叉页只提交那一页', async () => {
+describe('单页重试（Issue#289 拆分后：格子只展开，重试在面板内按钮）', () => {
+  it('点红叉页只展开详情面板，不触发重试', async () => {
     renderRows(pageStatus());
 
     const cell = screen.getByTestId('page-cell-4');
@@ -80,6 +83,28 @@ describe('单页重试', () => {
 
     await act(async () => {
       fireEvent.click(cell);
+    });
+
+    // Issue#289：「看」与「重试」拆分——点击失败页不发重试请求。
+    expect(retryItemPages).not.toHaveBeenCalled();
+    // #199 红线（集成层代理）：失败页不进选择集（mock 级 onChange 断言在 issue289/issue279 文件）。
+    expect(screen.getByTestId('page-cell-4').getAttribute('data-selected')).toBe('false');
+    // 详情面板照常展开。
+    const panel = screen.getByTestId('page-detail-panel');
+    expect(panel.getAttribute('data-page')).toBe('4');
+  });
+
+  it('重试走详情面板内的显式按钮：提交该页并刷新', async () => {
+    renderRows(pageStatus());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('page-cell-4'));
+    });
+    const button = screen.getByTestId('page-detail-retry');
+    expect(button.hasAttribute('disabled')).toBe(false);
+
+    await act(async () => {
+      fireEvent.click(button);
     });
 
     await waitFor(() => expect(retryItemPages).toHaveBeenCalledWith('job-1', 'item-1', [4]));
@@ -97,7 +122,7 @@ describe('单页重试', () => {
     expect(screen.getByTestId('page-cell-1').getAttribute('data-selected')).toBe('false');
   });
 
-  it('识别进行中时红叉页不可点、批量按钮禁用', async () => {
+  it('识别进行中时红叉页面板可开但重试按钮禁用、批量按钮禁用', async () => {
     renderRows(pageStatus({ recognition_state: 'running', item_status: 'processing' }));
 
     const cell = screen.getByTestId('page-cell-4');
@@ -105,6 +130,10 @@ describe('单页重试', () => {
     await act(async () => {
       fireEvent.click(cell);
     });
+    // 看原因永远合法：面板照常展开；重试按钮禁用并写明忙态原因。
+    expect(screen.getByTestId('page-detail-panel').getAttribute('data-page')).toBe('4');
+    expect(screen.getByTestId('page-detail-retry').hasAttribute('disabled')).toBe(true);
+    expect(screen.getByTestId('page-detail-retry-unavailable').textContent).toContain('需先完成识别');
     expect(retryItemPages).not.toHaveBeenCalled();
 
     expect(screen.getByTestId('page-matrix-retry-failed').hasAttribute('disabled')).toBe(true);
@@ -154,11 +183,20 @@ describe('单页重试', () => {
 
     const cell = screen.getByTestId('page-cell-4');
     expect(cell.getAttribute('data-retryable')).toBe('false');
+    await act(async () => {
+      fireEvent.click(cell);
+    });
+    // 面板内按钮禁用，且终态原因与「识别中」的忙态提示区分（Issue#289 F4：底部 hint 同口径）。
+    expect(screen.getByTestId('page-detail-retry').hasAttribute('disabled')).toBe(true);
+    expect(screen.getByTestId('page-detail-retry-unavailable').textContent).toContain('终态');
+    const hint = screen.getByTestId('page-matrix-failed-hint');
+    expect(hint.textContent).toContain('终态');
+    expect(hint.textContent).not.toContain('需先完成识别');
     const bulk = screen.getByTestId('page-matrix-retry-failed') as HTMLButtonElement;
     expect(bulk.disabled).toBe(true);
 
     await act(async () => {
-      fireEvent.click(cell);
+      fireEvent.click(screen.getByTestId('page-detail-retry'));
       fireEvent.click(bulk);
     });
     expect(retryItemPages).not.toHaveBeenCalled();
