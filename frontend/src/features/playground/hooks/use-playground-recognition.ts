@@ -11,6 +11,8 @@ import { usePresets, useInvalidatePresets } from '@/services/hooks/use-presets';
 import {
   fetchRecognitionEntityTypes,
   fetchRecognitionPipelines,
+  // Issue#267：目录超时族单一来源（权威定义在服务层；原本地 25s 定义并入，门⑥ M-2）
+  RECOGNITION_FETCH_TIMEOUT_MS,
 } from '@/services/recognition-config';
 import {
   buildDefaultPipelineTypeIds,
@@ -43,9 +45,8 @@ import {
 } from '../lib/recognition-config';
 import type { EntityTypeConfig, VisionTypeConfig, PipelineConfig } from '../types';
 
-// 与批量向导(use-batch-config 25s)对齐：目录接口经远程隧道单程可达数百毫秒，
-// 1.2s 会间歇性 abort → 单文件页"暂时无法加载识别项"。快在缓存，不靠掐超时。
-const RECOGNITION_FETCH_TIMEOUT_MS = 25_000;
+// Issue#267：目录接口超时族单一来源在服务层（recognition-config.ts，本文件 import）。
+// 原本地 25s 裁决注释（与批量向导对齐、1.2s 隧道间歇 abort）随定义一并下沉。
 
 function uniqueIds(ids: string[]): string[] {
   return Array.from(new Set(ids));
@@ -651,6 +652,10 @@ export function usePlaygroundRecognition() {
   return {
     entityTypes,
     textConfigState,
+    // Issue#267：弹窗 unavailable 区重试按钮的目标——重取两目录；调用方必须传
+    // preserveSelection=true（已就绪维度过滤保留，未就绪维度走默认集），传 false 会
+    // 把已就绪维度的用户选择重置为默认集。与 window focus 自动重取同口径。
+    loadRecognitionConfig,
     selectedTypes,
     selectedTypesRef,
     setSelectedTypes,

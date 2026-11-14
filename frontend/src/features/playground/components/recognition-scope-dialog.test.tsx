@@ -136,6 +136,9 @@ interface RecOverrides {
   textPresetsPg?: RecognitionPreset[];
   visionPresetsPg?: RecognitionPreset[];
   replacementMode?: 'structured' | 'smart' | 'mask' | 'pseudonym';
+  /** Issue#267：目录态变体（loading/empty/unavailable）须显式覆盖；缺省 'ready' */
+  textConfigState?: 'loading' | 'ready' | 'empty' | 'unavailable';
+  visionConfigState?: 'loading' | 'ready' | 'empty' | 'unavailable';
 }
 
 function makeRec(overrides: RecOverrides = {}): RecognitionCtx {
@@ -143,12 +146,14 @@ function makeRec(overrides: RecOverrides = {}): RecognitionCtx {
   const pipelines = overrides.pipelines ?? PIPELINES;
   return {
     entityTypes,
-    textConfigState: 'ready',
+    textConfigState: overrides.textConfigState ?? 'ready',
     selectedTypes: overrides.selectedTypes ?? [...LEGAL_IDS],
     selectedTypesRef: { current: overrides.selectedTypes ?? [...LEGAL_IDS] },
     setSelectedTypes: vi.fn(),
     visionTypes: pipelines.flatMap((pipeline) => pipeline.types),
-    visionConfigState: 'ready',
+    visionConfigState: overrides.visionConfigState ?? 'ready',
+    // Issue#267：unavailable 区重试按钮的目标——弹窗内重取目录（preserveSelection=true）。
+    loadRecognitionConfig: vi.fn(),
     selectedOcrHasTypes: overrides.selectedOcrHasTypes ?? [...OCR_DEFAULT_IDS],
     selectedVisualFeatureTypes: overrides.selectedVisualFeatureTypes ?? [...VISUAL_DEFAULT_IDS],
     selectedOcrHasTypesRef: { current: overrides.selectedOcrHasTypes ?? [...OCR_DEFAULT_IDS] },
@@ -884,5 +889,96 @@ describe('Task 10b：保存为方案（createPreset + 列表失效 + 自动套�
       expect(showToast).toHaveBeenCalledWith(expect.any(String), 'error');
     });
     expect(rec.selectPlaygroundTextPresetById).not.toHaveBeenCalled();
+  });
+});
+
+// Issue#267：目录三态面板（loading/empty/unavailable）与方案 select 门控。
+// ner 区目录态取 rec.textConfigState，ocr/la 区取 rec.visionConfigState——两状态源独立。
+// unavailable 面板带重试按钮（loadRecognitionConfig(true)，preserveSelection 防重置已就绪维度）；
+// 文本目录未就绪时方案 select 与「保存为方案」按钮 disabled——legal/all/user preset 三条
+// applyScheme 路径在空目录下都会写空集，单点门控堵住（方案 v2 §2.2）。
+describe('Issue#267：目录三态面板与方案门控', () => {
+  const zonePanel = (id: 'ner' | 'ocr' | 'la', state: string) =>
+    screen.queryByTestId(`playground-scope-zone-${id}-${state}`);
+  const retryButton = (id: 'ner' | 'ocr' | 'la') =>
+    screen.queryByTestId(`playground-scope-zone-${id}-retry`) as HTMLButtonElement | null;
+
+  it('B1：textConfigState=unavailable → ner 区 unavailable 面板+重试、无 chip 墙；ocr/la 照常 chip 墙', () => {
+    const rec = makeRec({ textConfigState: 'unavailable' });
+    renderDialog(rec);
+
+    expect(zonePanel('ner', 'unavailable')).not.toBeNull();
+    expect(retryButton('ner')).not.toBeNull();
+    expect(screen.queryByTestId('playground-scope-chip-PERSON')).toBeNull();
+    // 目录态面板把「为什么没有 chip」讲清楚（zh：识别项目录加载失败）
+    expect(zonePanel('ner', 'unavailable')?.textContent).toContain('加载失败');
+    // 两状态源独立：vision ready → ocr/la 照常
+    expect(chip('OCR_ID')).not.toBeNull();
+    expect(zonePanel('ocr', 'unavailable')).toBeNull();
+    expect(zonePanel('la', 'unavailable')).toBeNull();
+  });
+
+  it('B2：visionConfigState=unavailable → ocr/la 两区 unavailable 面板，ner 区照常 chip 墙', () => {
+    const rec = makeRec({ visionConfigState: 'unavailable' });
+    renderDialog(rec);
+
+    expect(zonePanel('ocr', 'unavailable')).not.toBeNull();
+    expect(zonePanel('la', 'unavailable')).not.toBeNull();
+    expect(retryButton('ocr')).not.toBeNull();
+    expect(retryButton('la')).not.toBeNull();
+    expect(chip('PERSON')).not.toBeNull();
+    expect(zonePanel('ner', 'unavailable')).toBeNull();
+  });
+
+  it('B3：loading → -loading 面板；empty → -empty 面板（text/vision 各验证一组）', () => {
+    const loadingRec = makeRec({ textConfigState: 'loading', visionConfigState: 'loading' });
+    renderDialog(loadingRec);
+    expect(zonePanel('ner', 'loading')).not.toBeNull();
+    expect(zonePanel('ocr', 'loading')).not.toBeNull();
+    // loading 态无重试按钮（重试是 unavailable 专属）
+    expect(retryButton('ner')).toBeNull();
+    cleanup();
+
+    const emptyRec = makeRec({
+      entityTypes: [],
+      pipelines: [],
+      textConfigState: 'empty',
+      visionConfigState: 'empty',
+    });
+    renderDialog(emptyRec);
+    expect(zonePanel('ner', 'empty')).not.toBeNull();
+    expect(zonePanel('la', 'empty')).not.toBeNull();
+    expect(zonePanel('ner', 'loading')).toBeNull();
+  });
+
+  it('B4：unavailable 区点重试 → rec.loadRecognitionConfig 以 preserveSelection=true 被调恰一次', () => {
+    const rec = makeRec({ textConfigState: 'unavailable', visionConfigState: 'unavailable' });
+    renderDialog(rec);
+
+    fireEvent.click(retryButton('ner') as HTMLButtonElement);
+    expect(rec.loadRecognitionConfig).toHaveBeenCalledTimes(1);
+    expect(rec.loadRecognitionConfig).toHaveBeenCalledWith(true);
+    // ocr 区重试同样指向同一重取入口（loadRecognitionConfig 内部并行两目录）
+    fireEvent.click(retryButton('ocr') as HTMLButtonElement);
+    expect(rec.loadRecognitionConfig).toHaveBeenCalledTimes(2);
+  });
+
+  it('B5：textConfigState!==ready → 方案 select 与保存按钮 disabled；ready 时恢复可用', () => {
+    const blocked = makeRec({ textConfigState: 'unavailable' });
+    renderDialog(blocked);
+    const select = screen.getByTestId('playground-scheme-select') as HTMLSelectElement;
+    const save = screen.getByTestId('playground-scheme-save') as HTMLButtonElement;
+    expect(select.disabled).toBe(true);
+    expect(save.disabled).toBe(true);
+    cleanup();
+
+    const ready = makeRec();
+    renderDialog(ready);
+    expect((screen.getByTestId('playground-scheme-select') as HTMLSelectElement).disabled).toBe(
+      false,
+    );
+    expect((screen.getByTestId('playground-scheme-save') as HTMLButtonElement).disabled).toBe(
+      false,
+    );
   });
 });

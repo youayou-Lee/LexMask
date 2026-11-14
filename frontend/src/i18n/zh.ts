@@ -2799,6 +2799,10 @@ Object.assign(zhOverrides, {
   'playground.scope.zoneLaDesc': '定位印章、签名、手写批注等页面视觉要素。',
   'playground.scope.zoneOffline': '本区暂不参与识别，恢复后自动回来',
   'playground.scope.zoneNa': '本文件是纯文本，不走此区',
+  // Issue#267：识别项目录三态（加载中 / 为空 / 加载失败）——弹窗区级面板与上传页 chip title 共用。
+  'playground.scope.catalogLoading': '识别项目录加载中…',
+  'playground.scope.catalogEmpty': '识别项目录为空：后端没有返回任何识别项',
+  'playground.scope.catalogUnavailable': '识别项目录加载失败，请检查后端服务',
   'playground.scope.pageLabel': '第{page}/{total}页 · 共{count}类',
   'playground.scope.prevPage': '上一页',
   'playground.scope.nextPage': '下一页',

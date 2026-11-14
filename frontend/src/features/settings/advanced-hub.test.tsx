@@ -14,6 +14,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { SettingsHub } from './settings-hub';
 
+// Issue#267：mock 工厂改可变 holder——loading/loadError 可按用例注入，
+// fetch spy 可断言重试调用（原静态 mock 无法覆盖失败态）。
+const mockHubState = vi.hoisted(() => ({
+  loading: false,
+  loadError: null as string | null,
+  fetchEntityTypes: vi.fn(),
+  fetchPipelines: vi.fn(),
+}));
+
 vi.mock('./hooks/use-entity-types', () => {
   const noop = () => undefined;
   return {
@@ -21,11 +30,11 @@ vi.mock('./hooks/use-entity-types', () => {
       entityTypes: [],
       textTaxonomy: [],
       pipelines: [],
-      loading: false,
+      loading: mockHubState.loading,
       pipelinesLoading: false,
       regexTypes: [],
       textRuleTypes: [],
-      loadError: null,
+      loadError: mockHubState.loadError,
       importFileRef: { current: null },
       createType: noop,
       updateType: noop,
@@ -38,8 +47,8 @@ vi.mock('./hooks/use-entity-types', () => {
       resetPipelines: noop,
       handleExportPresets: noop,
       handleImportPresets: noop,
-      fetchEntityTypes: noop,
-      fetchPipelines: noop,
+      fetchEntityTypes: mockHubState.fetchEntityTypes,
+      fetchPipelines: mockHubState.fetchPipelines,
     }),
   };
 });
@@ -88,6 +97,10 @@ function activateTab(testId: string) {
 
 afterEach(() => {
   cleanup();
+  mockHubState.loading = false;
+  mockHubState.loadError = null;
+  mockHubState.fetchEntityTypes.mockClear();
+  mockHubState.fetchPipelines.mockClear();
 });
 
 describe('Issue#262：高级设置单入口三页签', () => {
@@ -152,5 +165,48 @@ describe('Issue#262：高级设置单入口三页签', () => {
     expect(screen.queryByTestId('tab-vision')).toBeTruthy();
     expect(screen.queryByTestId('export-presets')).toBeTruthy();
     expect(screen.queryByTestId('import-presets')).toBeTruthy();
+  });
+});
+
+// Issue#267：hub 首帧与页签失败态——types 目录 hook 下沉进 types 页签面板后：
+// ① loading 不再遮页签栏（页签栏常驻、深链首帧不被 types fetch 阻塞）；
+// ② loadError Alert 只属于 types 页签（redaction/words 深链看不到）；
+// ③ Alert 重试按钮重发两目录请求；
+// ④ 再进入 types = 重取 + 面板内 spinner（F1 拍板，A7 renderHook 钉）。
+describe('Issue#267：hub 首帧与页签失败态', () => {
+  it('A1：loading=true 时页签栏仍渲染且可切往 redaction；types 区处于面板内 spinner 态', () => {
+    mockHubState.loading = true;
+    renderHub('/settings');
+    // 页签栏不被 types 目录加载遮住（HEAD 现状：整 hub spinner，此断言红）
+    expect(screen.getByTestId('settings-hub-tabs')).toBeTruthy();
+    expect(screen.queryByTestId('mock-entity-type-list')).toBeNull();
+    activateTab('settings-tab-redaction');
+    expect(screen.queryByTestId('mock-redaction-list')).toBeTruthy();
+    expect(screen.queryByTestId('mock-entity-type-list')).toBeNull();
+  });
+
+  it('A2：loadError + ?tab=redaction 深链 → types 失败 Alert 不在文档、redaction 内容可见', () => {
+    mockHubState.loadError = '设置加载失败，请检查后端服务或稍后重试。';
+    renderHub('/settings?tab=redaction');
+    expect(screen.queryByTestId('settings-load-error')).toBeNull();
+    expect(screen.queryByTestId('mock-redaction-list')).toBeTruthy();
+  });
+
+  it('A3：loadError + 默认页签 → Alert 可见含重试按钮；点击重试调两 fetch 各恰一次', () => {
+    mockHubState.loadError = '设置加载失败，请检查后端服务或稍后重试。';
+    renderHub('/settings');
+    const alert = screen.getByTestId('settings-load-error');
+    expect(alert.textContent).toContain('设置加载失败');
+    fireEvent.click(screen.getByTestId('settings-load-error-retry'));
+    expect(mockHubState.fetchEntityTypes).toHaveBeenCalledTimes(1);
+    expect(mockHubState.fetchPipelines).toHaveBeenCalledTimes(1);
+  });
+
+  it('A6：?tab=words 深链在 loading=true 下 words 内容直接可达（首帧不被 types fetch 阻塞）', () => {
+    mockHubState.loading = true;
+    renderHub('/settings?tab=words');
+    expect(screen.queryByTestId('mock-word-pools')).toBeTruthy();
+    expect(screen.queryByTestId('mock-entity-type-list')).toBeNull();
+    expect(screen.queryByTestId('settings-load-error')).toBeNull();
   });
 });

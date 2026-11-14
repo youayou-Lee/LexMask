@@ -21,7 +21,7 @@ import { useInvalidatePresets, usePresets } from '@/services/hooks/use-presets';
 import { localizeRecognitionTypeName } from '@/features/settings/lib/redaction-display';
 import { localizeErrorMessage } from '@/utils/localizeError';
 import { showToast } from '@/components/Toast';
-import { dedupeRecognitionTypes, resolveTextTypeName } from './playground-upload-config';
+import { ConfigEmptyState, dedupeRecognitionTypes, resolveTextTypeName } from './playground-upload-config';
 import type { usePlayground } from '../hooks/use-playground';
 import type { EntityTypeConfig, VisionTypeConfig } from '../types';
 
@@ -116,6 +116,25 @@ export const RecognitionScopeDialog: FC<{
     ocr: ocrTypes,
     la: laTypes,
   };
+
+  // ── Issue#267：区级目录三态（loading/empty/unavailable）。
+  // ner 区目录态取文本目录状态机，ocr/la 区取视觉管线状态机——两状态源独立。
+  // 目录态 ≠ ready 时以占位面板替代 chip 墙（ConfigEmptyState 等价复用，原 55002ec
+  // 视觉），排在搜索无命中之前：目录不可用时 types 必为空、搜索必然 0 命中，
+  // 「目录加载失败」比「无匹配」信息量大。unavailable 面板带重试按钮
+  // （loadRecognitionConfig(true)，preserveSelection 防重置已就绪维度的用户选择）。
+  const zoneCatalogState = (zone: ZoneDef): Exclude<RecognitionCtx['textConfigState'], 'ready'> | 'ready' =>
+    zone.id === 'ner' ? rec.textConfigState : rec.visionConfigState;
+  const catalogHintKey = (state: RecognitionCtx['textConfigState']) =>
+    state === 'loading'
+      ? 'playground.scope.catalogLoading'
+      : state === 'empty'
+        ? 'playground.scope.catalogEmpty'
+        : 'playground.scope.catalogUnavailable';
+  // Issue#267：文本目录未就绪时方案 select 与「保存为方案」一并禁用——
+  // applyScheme 的 legal/all/user preset 三条路径在空目录下都会写空集（视觉侧已有
+  // hasPipelines 对称守卫），单点门控上游堵住，不在 applyScheme 内加第二层守卫。
+  const textCatalogReady = rec.textConfigState === 'ready';
 
   // ── 分页（每区独立；页号超出时渲染侧收敛） ──
   const [zonePages, setZonePages] = useState<Record<ZoneId, number>>({ ner: 1, ocr: 1, la: 1 });
@@ -361,8 +380,10 @@ export const RecognitionScopeDialog: FC<{
               id="playground-scheme-select"
               data-testid="playground-scheme-select"
               value={schemeValue}
+              disabled={!textCatalogReady}
+              title={!textCatalogReady ? t(catalogHintKey(rec.textConfigState)) : undefined}
               onChange={(event) => applyScheme(event.currentTarget.value)}
-              className="h-8 min-w-0 max-w-[16rem] flex-1 rounded-xl border border-input bg-[var(--surface-control)] px-2.5 text-xs shadow-[var(--shadow-control)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] sm:flex-none"
+              className="h-8 min-w-0 max-w-[16rem] flex-1 rounded-xl border border-input bg-[var(--surface-control)] px-2.5 text-xs shadow-[var(--shadow-control)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none"
             >
               <option value={SCHEME_LEGAL}>{t('playground.presetLegal')}</option>
               <option value={SCHEME_ALL}>{t('playground.presetAll')}</option>
@@ -385,6 +406,8 @@ export const RecognitionScopeDialog: FC<{
               size="sm"
               className="h-8 shrink-0 rounded-xl px-3 text-xs"
               data-testid="playground-scheme-save"
+              disabled={schemeSaving || !textCatalogReady}
+              title={!textCatalogReady ? t(catalogHintKey(rec.textConfigState)) : undefined}
               onClick={() => setSaveFormOpen((current) => !current)}
             >
               {t('playground.scope.schemeSave')}
@@ -449,6 +472,7 @@ export const RecognitionScopeDialog: FC<{
             const offline = status === 'offline';
             const na = isZoneNa(zone);
             const active = isZoneActive(zone);
+            const catalogState = zoneCatalogState(zone);
             const types = zoneTypes[zone.id];
             const ids = types.map((type) => type.id);
             const searching = scopeQuery.length > 0;
@@ -534,6 +558,26 @@ export const RecognitionScopeDialog: FC<{
                   >
                     {t('playground.scope.zoneOffline')}
                   </div>
+                ) : catalogState !== 'ready' ? (
+                  // Issue#267：目录三态面板——恢复旧 ConfigEmptyState 视觉（55002ec 等价复用），
+                  // 排在搜索无命中之前（目录不可用时搜索必然 0 命中，失败态信息量更大）。
+                  <ConfigEmptyState
+                    title={t(catalogHintKey(catalogState))}
+                    testId={`playground-scope-zone-${zone.id}-${catalogState}`}
+                  >
+                    {catalogState === 'unavailable' && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="mt-3 h-7 shrink-0 rounded-xl px-3 text-xs"
+                        data-testid={`playground-scope-zone-${zone.id}-retry`}
+                        onClick={() => void rec.loadRecognitionConfig(true)}
+                      >
+                        {t('common.retry')}
+                      </Button>
+                    )}
+                  </ConfigEmptyState>
                 ) : zoneNoMatch ? (
                   // 搜索态 0 命中：区框结构不变，chip 墙换成空态文案
                   <div
@@ -599,7 +643,7 @@ export const RecognitionScopeDialog: FC<{
                   >
                     {t('playground.scope.zoneNone')}
                   </Button>
-                  {!na && !offline && (
+                  {!na && !offline && catalogState === 'ready' && (
                     <span
                       className="ml-auto flex shrink-0 items-center gap-0.5 text-[10px] tabular-nums text-muted-foreground"
                       data-testid={`playground-scope-zone-${zone.id}-pager`}

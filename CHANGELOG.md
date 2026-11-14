@@ -3,15 +3,16 @@
 
 ## 2026-11-13
 
-### 修正（Issue#266）a11y 三处：高级抽屉/告警详情 aria-controls 配对 + 高级抽屉 toggle focus-visible 焦点环
+### 修正（Issue#267）目录加载失败/慢态 UX：settings hub 失败态统一 + 识别范围弹窗三态面板 + 法律 chip 门控 + 目录超时族对齐 25s
 
-- **为什么**：PR#265 门⑥挂账 triage ①。复核态右栏「高级」抽屉开关与上传页告警「详情」折叠均为裸 button disclosure，无 `aria-controls` 程序化关联；高级抽屉开关无 `focus-visible` 焦点环，键盘 Tab 到达时无可见指示（对比 ui Button 内建 ring 弱一档）。
-- **改了什么**（纯属性/样式追加，零逻辑、零 i18n、零依赖）：
-  - `playground-entity-panel.tsx`：高级抽屉开关 +`aria-controls="playground-advanced-panel"` 与面板 div `id` 配对（条件挂载，ARIA disclosure 允许指向暂缺元素，注释在案）；className 追加 `focus-visible:outline-none ring-2 ring-ring ring-offset-2` 四件套（对齐 tabs/switch 等裸控件规格）。
-  - `playground-upload.tsx`：告警「详情」折叠 +`aria-controls="playground-offline-hint-details-panel"` 与详情 div `id` 配对。
-  - 不动 `playground-scope-entry`（dialog 语义已对）、不改条件挂载为永久挂载+hidden（渲染行为变更出界，挂账）。
-- **测试**：+3 例（aria-controls 动态读值配对断言防改名断裂 + 身份断言防配错容器 + focus-visible 类名形态钉，口径注释注明视觉行为由门④真机验）；全量 69 文件/520 passed（基线 517 净增 3）；tsc 双门 + build 绿；变异 M1-M4b 全 KILLED（每个变异恰被指定杀手红）。
-- **挂账**：A8 真机键盘焦点环 / A9 DevTools Accessibility 抽检随门④；仓内其他裸 button disclosure 同族排查另立。
+- **为什么**：PR#265 门⑥挂账 triage ②。①hub 顶层 spinner 遮三页签、loadError 只在 types 页签提示（redaction/words 失败无提示）；②识别范围弹窗在目录加载失败/不可用/空时渲染空墙（旧 ConfigEmptyState 未迁移）；③目录未就绪时「法律卷宗」chip 可点（点法律 chip 会写空集）；④目录 fetch 1.2s 超时与远程隧道间歇性 abort 相撞（识别 hook 注释明载同现象），redaction 侧 3.5s 同族。
+- **改了什么**：
+  - `EntityTypeSettingsPanel` 下沉进 types 页签（Radix inactive 卸载=天然按需）；三页签失败态统一「Alert+重试」（redaction-list / word-pools 各带 reload 重发）。
+  - 弹窗三态面板：目录失败/不可用区带重试按钮（`preserveSelection=true`——重试不重置已就绪维度的用户选择）；空目录态人话提示；方案 select 门控堵三条空写路径。
+  - 法律/全部 chip：目录未就绪 `disabled` + title 提示 + handler 守卫（不写空集）。
+  - 超时族：`use-entity-types` 两处 1.2s 与 `use-redaction-presets` 两处 3.5s 统一 `RECOGNITION_FETCH_TIMEOUT_MS=25s`（常量权威定义下沉服务层 `services/recognition-config.ts` 单一来源，settings 两 hook、playground 识别 hook、word-pools 类型名 effect 等 4 个消费方 7 处调用均改 import 使用；服务层默认参数 3_500 不动；taxonomy 走 authFetch 无超时为已知边界，scope out 挂账）。
+- **测试**：+15 例（advanced-hub 失败态、roundtrip 往返钉 renderHook、redaction/words error-retry、scope-dialog 三态 +100 行）；全量 72 文件/532 passed（基线 517 净增 15）；tsc 双门 + build 绿；变异 M1-M6 六条经独立验收复跑全 KILLED（删靶在消费侧：chip disabled/守卫、弹窗目录态分支、select disabled、hub 顶层 spinner、弹窗重试 onClick、redaction-list 重试按钮——删后指定判据红、还原绿）；E1-E3 真机门④挂账。
+- **挂账**：E1 断后端冷启走查 / E2 慢网间歇 abort 消失 / E3 页签往返走查——真机门④；taxonomy 无超时窄场景另案。
 
 ## 2026-11-12
 

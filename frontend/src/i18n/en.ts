@@ -2855,6 +2855,10 @@ Object.assign(enOverrides, {
   'playground.scope.zoneLaDesc': 'Locates seals, signatures and handwritten marks on the page.',
   'playground.scope.zoneOffline': 'This zone is not taking part in recognition; it returns automatically once the service recovers.',
   'playground.scope.zoneNa': 'This file is plain text; this zone does not apply.',
+  // Issue#267: recognition catalog tri-state (loading / empty / unavailable) — shared by scope-dialog zone panels and upload-page chip titles.
+  'playground.scope.catalogLoading': 'Loading recognition catalog…',
+  'playground.scope.catalogEmpty': 'Recognition catalog is empty: the backend returned no types.',
+  'playground.scope.catalogUnavailable': 'Failed to load the recognition catalog. Check the backend service.',
   'playground.scope.pageLabel': 'Page {page}/{total} - {count} types',
   'playground.scope.prevPage': 'Previous page',
   'playground.scope.nextPage': 'Next page',

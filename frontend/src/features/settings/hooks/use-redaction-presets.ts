@@ -28,6 +28,8 @@ import {
   fetchRecognitionEntityTypes,
   fetchRecognitionPipelines,
   fetchRecognitionPresets,
+  // Issue#267：目录超时族单一来源（权威定义在服务层，见 recognition-config.ts）
+  RECOGNITION_FETCH_TIMEOUT_MS,
 } from '@/services/recognition-config';
 import { localizePipelineConfig, localizePresetName } from '../lib/redaction-display';
 import type { EntityTypeConfig, PipelineConfig } from './use-entity-types';
@@ -105,7 +107,7 @@ export function useRedactionPresets() {
     try {
       setLoading(true);
       setLoadError(null);
-      setEntityTypes((await fetchRecognitionEntityTypes(false, 3_500)) as EntityTypeConfig[]);
+      setEntityTypes((await fetchRecognitionEntityTypes(false, RECOGNITION_FETCH_TIMEOUT_MS)) as EntityTypeConfig[]);
     } catch {
       setEntityTypes([]);
       setLoadError(t('settings.loadFailed'));
@@ -118,7 +120,7 @@ export function useRedactionPresets() {
     try {
       setLoadError(null);
       setPipelines(
-        ((await fetchRecognitionPipelines(3_500)) as PipelineConfig[]).map((pipeline) =>
+        ((await fetchRecognitionPipelines(RECOGNITION_FETCH_TIMEOUT_MS)) as PipelineConfig[]).map((pipeline) =>
           localizePipelineConfig(pipeline, t),
         ),
       );
@@ -132,6 +134,14 @@ export function useRedactionPresets() {
     void fetchEntityTypes();
     void fetchPipelinesData();
     void reloadPresets();
+  }, [fetchEntityTypes, fetchPipelinesData, reloadPresets]);
+
+  // Issue#267：页签失败态重试入口——三个目录/预设加载并行重发。
+  // 开头 setLoadError(null) 为防御性冗余（fetchEntityTypes/fetchPipelinesData 开头本就
+  // 自清），保留以对抗三调用并发时 reloadPresets 粘滞 catch（current ?? …）的乱序窗口。
+  const reload = useCallback(async () => {
+    setLoadError(null);
+    await Promise.allSettled([fetchEntityTypes(), fetchPipelinesData(), reloadPresets()]);
   }, [fetchEntityTypes, fetchPipelinesData, reloadPresets]);
 
   // Refresh when entity types are changed in the settings entity-type editor
@@ -377,6 +387,8 @@ export function useRedactionPresets() {
     // Data
     loading,
     loadError,
+    // Issue#267：页签失败态重试入口（redaction-list Alert 重试按钮消费）
+    reload,
     effectiveEntityTypes,
     effectivePipelines,
     textPresets,
