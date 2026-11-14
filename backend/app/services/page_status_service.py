@@ -42,6 +42,10 @@ _RECOGNITION_STATE_BY_ITEM_STATUS: dict[str, str] = {
 _PAGE_STATE_COMPLETED = "success"
 _PAGE_STATE_FAILED = "failed"
 _PAGE_STATE_PENDING = "pending"
+# Issue#280：第四态——自动识别失败、人工拉框补齐并由人确认。离开本态的唯一
+# 通道是用户显式撤销（revoke），整卷重跑自动成功也**不**系统翻绿（人工条目与
+# 人工框保留并存，页格维持琥珀徽标，由用户在审阅画布裁决）。
+_PAGE_STATE_MANUAL = "manual_verified"
 
 
 def is_paged_file_type(file_type: Any) -> bool:
@@ -100,6 +104,44 @@ def _failed_page_map(item_row: dict[str, Any]) -> dict[str, str]:
         if page <= 0:
             continue
         out[str(page)] = str(value or "")
+    return out
+
+
+def _manual_page_map(item_row: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Issue#280：读 ``recognition.manual_verified_pages``（谁/何时/框数/原失败原因）。
+
+    形状异常（list / 条目非 dict）一律按空账处理——投影绝不因账本脏数据崩。
+    """
+    recognition = _coerce_dict(_performance_of(item_row).get("recognition"))
+    raw = recognition.get("manual_verified_pages")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for key, value in raw.items():
+        page = _safe_int(key, -1)
+        if page <= 0 or not isinstance(value, dict):
+            continue
+        out[str(page)] = value
+    return out
+
+
+def manual_verified_pages_of(item_row: dict[str, Any]) -> list[dict[str, Any]]:
+    """卷级人工补框页清单（页号升序）。导出报告 / page-status / 部分导出共用。"""
+    manual_map = _manual_page_map(item_row)
+    out: list[dict[str, Any]] = []
+    for key, entry in manual_map.items():
+        page = _safe_int(key, -1)
+        if page <= 0:
+            continue
+        out.append(
+            {
+                "page": page,
+                "box_count": _safe_int(entry.get("box_count"), 0),
+                "verified_at": str(entry.get("verified_at") or ""),
+                "operator": str(entry.get("operator") or ""),
+            }
+        )
+    out.sort(key=lambda entry: entry["page"])
     return out
 
 
@@ -199,6 +241,7 @@ def build_page_status(
     recognition = _coerce_dict(_performance_of(item_row).get("recognition"))
     raw_pages = recognition.get("pages") if isinstance(recognition.get("pages"), dict) else {}
     failed_map = _failed_page_map(item_row)
+    manual_map = _manual_page_map(item_row)
     retry_counts = recognition.get("page_retry_counts")
     retry_counts = retry_counts if isinstance(retry_counts, dict) else {}
 
@@ -210,23 +253,47 @@ def build_page_status(
         # 失败清单是权威（#199/#257）：只要页号在 failed_pages 里就是失败，即便页记录
         # 写着 completed。两套账本若因任何路径分叉（旧数据、并发写、手工修库）不一致，
         # 页格必须以"交付闸会拒收的那一侧"为准，否则会出现"页格全绿但导出被拒"的死局。
-        if str(page_no) in failed_map:
+        in_failed = str(page_no) in failed_map
+        in_manual = str(page_no) in manual_map
+        if in_failed:
+            # Issue#280：failed_pages 权威优先——即使 ledger 有条目（整卷重跑再失败）
+            # 也回 failed（红叉），manual 条目让位（用户可重验或撤销）。
             state = _PAGE_STATE_FAILED
+        elif in_manual:
+            # Issue#280：第四态。离开 manual_verified 的唯一通道是用户显式撤销；
+            # 整卷重跑自动成功页 ledger 条目与人工框保留 ⇒ 页维持琥珀徽标
+            # （ledger 优先于页账 completed，共存待用户在审阅画布裁决）。
+            state = _PAGE_STATE_MANUAL
         reason: str | None = None
         if state == _PAGE_STATE_FAILED:
             reason = failed_map.get(str(page_no)) or str(record.get("error") or "") or None
-        pages.append(
-            {
-                "page": page_no,
-                "state": state,
-                "reason": reason,
-                "duration_ms": _safe_int(record.get("duration_ms"), 0) or None,
-                "cache_hit": bool(str(record.get("cache_status") or "").startswith("hit")),
-                # Issue#279：这页发生了什么（路由/分段耗时/失败类型/尝试次数）——
-                # 纯只读扩展，state/reason 判定不动。
-                "detail": _page_detail_of(record, retry_counts, page_no),
+        cell: dict[str, Any] = {
+            "page": page_no,
+            "state": state,
+            "reason": reason,
+            "duration_ms": _safe_int(record.get("duration_ms"), 0) or None,
+            "cache_hit": bool(str(record.get("cache_status") or "").startswith("hit")),
+            # Issue#279：这页发生了什么（路由/分段耗时/失败类型/尝试次数）——
+            # 纯只读扩展，state/reason 判定不动。
+            "detail": _page_detail_of(record, retry_counts, page_no),
+        }
+        if state == _PAGE_STATE_MANUAL:
+            entry = manual_map[str(page_no)]
+            manual_detail: dict[str, Any] = {
+                # box_count 是 verify 时刻口径（审计快照），画布删框不回写（§4.3 边角 1）。
+                "box_count": _safe_int(entry.get("box_count"), 0),
+                "verified_at": str(entry.get("verified_at") or ""),
+                "operator": str(entry.get("operator") or ""),
+                # 自动成功重跑后的并存提示输入：页账 completed 但 ledger 有条目。
+                "auto_completed": str(record.get("status") or "") == "completed",
             }
-        )
+            for missing_key in ("verified_at", "operator"):
+                if not manual_detail[missing_key]:
+                    manual_detail.pop(missing_key)
+            if entry.get("original_reason"):
+                manual_detail["original_reason"] = str(entry["original_reason"])
+            cell["manual"] = manual_detail
+        pages.append(cell)
 
     failed_pages: list[int] = []
     for key in failed_map:
@@ -247,6 +314,8 @@ def build_page_status(
         "snapshot_at": snapshot_at or datetime.now(UTC).isoformat(),
         "pages": pages,
         "failed_pages": sorted(set(failed_pages)),
+        # Issue#280：卷级人工补框页清单（升序，含 page/box_count/verified_at/operator）。
+        "manual_verified_pages": manual_verified_pages_of(item_row),
         # Issue#279：卷头路由摘要（docline 接管 / 逐页 + 首个 fallback 码 / 证据全无 → None）。
         "route_summary": _route_summary_of(raw_pages, page_count),
     }
@@ -269,6 +338,21 @@ def recognized_page_numbers(item_row: dict[str, Any], page_count: int) -> set[in
 
 def recognized_page_count(item_row: dict[str, Any], page_count: int) -> int:
     return len(recognized_page_numbers(item_row, page_count))
+
+
+def exportable_page_numbers(item_row: dict[str, Any], page_count: int) -> set[int]:
+    """可进包页号集合（Issue#280）＝自动识别成功 ∪ 人工补框（manual_verified）。
+
+    部分导出准入与说明页「已识别 N 页」口径都用它；失败页仍由 ``failed_pages``
+    在上游排除（manual 页已物理移出失败清单才会出现在这里）。
+    """
+    exportable = recognized_page_numbers(item_row, page_count)
+    manual_map = _manual_page_map(item_row)
+    for key in manual_map:
+        page = _safe_int(key, -1)
+        if 0 < page <= page_count:
+            exportable.add(page)
+    return exportable
 
 
 def page_count_of(item_row: dict[str, Any], file_info: dict[str, Any] | None = None) -> int:

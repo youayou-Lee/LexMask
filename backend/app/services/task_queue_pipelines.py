@@ -848,6 +848,16 @@ class RecognitionPipelineMixin:
 
         深合并语义下"空 dict 不删键"，重跑全成功后旧失败键会永久留着——页格全绿、
         交付闸却锁死、界面没有重试入口（完整评审 Critical-3）。
+
+        Issue#280 注释性不变式（r2 冷审裁定：人工框永远保留并存，无 supersede）：
+        本写点只动 ``failed_pages``，**不新增对账代码、不碰
+        ``recognition.manual_verified_pages``**——
+        * ledger ∩ 新 failed_map（重跑再失败）：ledger 条目与人工框（detect_vision
+          写回点守卫已保）保留 ⇒ 投影以 failed_pages 为准回红叉，用户可重验或撤销；
+        * ledger − 新 failed_map（自动成功）：什么都不做——ledger 条目与人工框保留，
+          自动框与人工框并存，投影维持 manual_verified（琥珀徽标），由用户在审阅
+          画布裁决。离开 manual_verified 的唯一通道 = 用户显式撤销。
+        若未来有人在此私加「自动成功清 ledger」代码，C2 判据（ledger 条目原样）判红。
         """
         self._record_item_performance(
             store,

@@ -76,6 +76,8 @@ export function PartialExportDialog({
 
   const paged = status?.paged ?? false;
   const recognitionState = status?.recognition_state ?? 'not_started';
+  // Issue#280：选中件的人工补框页（提示条数据源）。
+  const manualPages = status?.manual_verified_pages ?? [];
   // 识别进行中也允许导出（Issue#257 的核心诉求：跑到 100 页就能先导前 100 页）；
   // 导出侧另取一次快照，产物带 snapshot_at 说明它只是那一刻的结果。
   const canPick = paged; // 文本类型由后端 400 兜底，前端只在 paged 上放开入口
@@ -133,6 +135,18 @@ export function PartialExportDialog({
                     {t('batchWizard.partialExport.excludedHint')
                       .replace('{pages}', excludedInSpan.join('、'))
                       .replace('{count}', String(excludedInSpan.length))}
+                  </p>
+                )}
+
+                {/* Issue#280：选中件含人工补框页时显式提示（随包交付并在说明中标注）。 */}
+                {manualPages.length > 0 && (
+                  <p
+                    className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+                    data-testid="manual-pages-hint"
+                  >
+                    {t('batchWizard.export.manualHint')
+                      .replace('{count}', String(manualPages.length))
+                      .replace('{pages}', manualPages.map((entry) => entry.page).join('、'))}
                   </p>
                 )}
 

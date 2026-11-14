@@ -714,7 +714,10 @@ export function commitAllReviews(jobId: string): Promise<CommitAllReviewsResult>
 // 投影成每页一条 {page,state,reason}，失败清单（failed_pages）是 reason 的权威来源。
 // 缺页记录 = 还没跑到（pending），不区分「识别中」与「未开始」——那是文件名行的事。
 
-export type PageCellState = 'success' | 'failed' | 'pending';
+// Issue#280：第四态 manual_verified —— 自动识别失败、人工拉框补齐并由人确认。
+// 离开本态的唯一通道是用户显式撤销（revokeManualVerify）；整卷重跑自动成功也
+// 不系统翻绿（人工条目与人工框保留并存，琥珀徽标由用户在审阅画布裁决）。
+export type PageCellState = 'success' | 'failed' | 'manual_verified' | 'pending';
 export type ItemRecognitionState = 'not_started' | 'running' | 'done' | 'failed' | 'cancelled';
 
 /** 该页走的识别路由（Issue#279）：docline=文本层链接管，page_pipeline=逐页识别。 */
@@ -740,6 +743,16 @@ export type ItemPageRouteSummary = {
   fallback_reason_code?: string | null;
 };
 
+/** Issue#280：manual 页的 verify 时刻快照（审计口径；画布删框不回写）。 */
+export type ItemPageManualMeta = {
+  box_count: number;
+  verified_at: string;
+  operator?: string | null;
+  /** 整卷重跑自动成功后人工框与自动框并存（琥珀徽标的共存提示输入）。 */
+  auto_completed: boolean;
+  original_reason?: string | null;
+};
+
 export type ItemPageCell = {
   page: number;
   state: PageCellState;
@@ -748,6 +761,8 @@ export type ItemPageCell = {
   cache_hit?: boolean;
   /** Issue#279：页详情（旧后端无此键 → null）。 */
   detail?: ItemPageDetail | null;
+  /** Issue#280：manual 页元信息（其余状态缺省）。 */
+  manual?: ItemPageManualMeta | null;
 };
 
 export type ItemPageStatus = {
@@ -763,6 +778,13 @@ export type ItemPageStatus = {
   snapshot_at: string;
   pages: ItemPageCell[];
   failed_pages: number[];
+  /** Issue#280：卷级人工补框页清单（升序，#278 manifest 契约同形；旧后端无键 → []）。 */
+  manual_verified_pages?: Array<{
+    page: number;
+    box_count: number;
+    verified_at: string;
+    operator: string;
+  }>;
   /** Issue#279：卷头路由摘要（旧后端无此键 → null）。 */
   route_summary?: ItemPageRouteSummary | null;
 };
@@ -793,7 +815,7 @@ export type PartialExportTask = {
   snapshot_at?: string;
 };
 
-const PAGE_CELL_STATES: ReadonlySet<string> = new Set(['success', 'failed', 'pending']);
+const PAGE_CELL_STATES: ReadonlySet<string> = new Set(['success', 'failed', 'manual_verified', 'pending']);
 
 const PAGE_ROUTE_VERDICTS: ReadonlySet<string> = new Set(['docline', 'page_pipeline']);
 
@@ -827,6 +849,21 @@ function normalizeRouteSummary(raw: unknown): ItemPageRouteSummary | null {
   };
 }
 
+/** Issue#280：manual 页元信息投影（后端缺键/形状异常一律回落 null）。 */
+function normalizeManualMeta(raw: unknown): ItemPageManualMeta | null {
+  if (raw == null || !isRecord(raw)) return null;
+  const meta = raw as Record<string, unknown>;
+  const verifiedAt = asNullableString(meta.verified_at);
+  const operator = asNullableString(meta.operator);
+  return {
+    box_count: asNumber(meta.box_count, 0),
+    verified_at: verifiedAt ?? '',
+    operator,
+    auto_completed: meta.auto_completed === true,
+    original_reason: asNullableString(meta.original_reason),
+  };
+}
+
 function normalizePageCell(raw: unknown, fallbackPage: number): ItemPageCell {
   const cell = asRecord(raw);
   const state = asString(cell.state, 'pending');
@@ -837,6 +874,7 @@ function normalizePageCell(raw: unknown, fallbackPage: number): ItemPageCell {
     duration_ms: cell.duration_ms == null ? null : asNumber(cell.duration_ms),
     cache_hit: cell.cache_hit === true,
     detail: normalizePageDetail(cell.detail),
+    manual: normalizeManualMeta(cell.manual),
   };
 }
 
@@ -860,6 +898,18 @@ export function normalizeItemPageStatus(raw: unknown): ItemPageStatus {
     pages,
     failed_pages: Array.isArray(payload.failed_pages)
       ? payload.failed_pages.map((value) => asNumber(value)).filter((value) => value > 0)
+      : [],
+    // Issue#280：卷级人工补框页清单（旧后端无键 → []）。
+    manual_verified_pages: Array.isArray(payload.manual_verified_pages)
+      ? payload.manual_verified_pages.map((entry) => {
+          const record = asRecord(entry);
+          return {
+            page: asNumber(record.page, 0),
+            box_count: asNumber(record.box_count, 0),
+            verified_at: asString(record.verified_at),
+            operator: asString(record.operator),
+          };
+        })
       : [],
     route_summary: normalizeRouteSummary(payload.route_summary),
   };
@@ -995,4 +1045,80 @@ export function retryItemPages(
         : [],
     };
   });
+}
+
+// ─── Issue#280：失败页人工拉框兜底（manual_verified） ─────────────────────────
+
+/** 人工补框请求的单框（归一化 0..1，与后端 BoundingBox 同坐标系；文本可选）。 */
+export interface ManualBoxPayload {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  type: string;
+  text?: string | null;
+}
+
+/** POST manual-verify 的 202 受理结果。 */
+export interface ManualVerifyResult {
+  page: number;
+  state: string;
+  box_count: number;
+  verified_at: string;
+  operator: string;
+  item_status: string;
+}
+
+/** DELETE manual-verify 的 202 受理结果。 */
+export interface ManualRevokeResult {
+  page: number;
+  state: string;
+  revoked_at: string;
+  operator: string;
+}
+
+function normalizeManualVerifyResult(payload: unknown): ManualVerifyResult {
+  const record = asRecord(payload);
+  return {
+    page: asNumber(record.page, 0),
+    state: asString(record.state, 'manual_verified'),
+    box_count: asNumber(record.box_count, 0),
+    verified_at: asString(record.verified_at),
+    operator: asString(record.operator),
+    item_status: asString(record.item_status),
+  };
+}
+
+function normalizeManualRevokeResult(payload: unknown): ManualRevokeResult {
+  const record = asRecord(payload);
+  return {
+    page: asNumber(record.page, 0),
+    state: asString(record.state, 'failed'),
+    revoked_at: asString(record.revoked_at),
+    operator: asString(record.operator),
+  };
+}
+
+/** 失败页人工补框（框必填、文本可选；服务端强制 source=manual）。 */
+export function manualVerifyPage(
+  jobId: string,
+  itemId: string,
+  page: number,
+  boxes: ManualBoxPayload[],
+): Promise<ManualVerifyResult> {
+  return post(
+    `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/pages/${page}/manual-verify`,
+    { boxes },
+  ).then(normalizeManualVerifyResult);
+}
+
+/** 撤销人工补框：页回 failed、重新阻断交付（#199 红线由账本维护承载）。 */
+export function revokeManualVerify(
+  jobId: string,
+  itemId: string,
+  page: number,
+): Promise<ManualRevokeResult> {
+  return del(
+    `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/pages/${page}/manual-verify`,
+  ).then(normalizeManualRevokeResult);
 }
