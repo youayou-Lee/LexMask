@@ -16,9 +16,10 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 
 import { TasksPage } from './tasks-page';
 
-const { mockedJobs } = vi.hoisted(() => ({
-  mockedJobs: {
-    // use-jobs.ts:686-727 返回形状——JobsLedgerView / TasksPage 实际消费的键。
+const { mockedJobs, mockedUseJobs, resetMockedJobsState } = vi.hoisted(() => {
+  const mockState = { tab: 'all', initialized: false };
+  const mockedJobs = {
+    // use-jobs.ts 返回形状——JobsLedgerView / TasksPage 实际消费的键。
     tab: 'all',
     rows: [],
     total: 0,
@@ -63,8 +64,29 @@ const { mockedJobs } = vi.hoisted(() => ({
     onRequeueFailed: vi.fn(),
     onCleanup: vi.fn(),
     setCleanupConfirmOpen: vi.fn(),
-  },
-}));
+  };
+  // Issue#268：参数化 + 有状态 mock——initialTab 只在首次实例化生效（模拟真 hook 的
+  // useState 初值语义），此后 tab 由 changeTab 驱动。纯回显（每次渲染都回显 initialTab）
+  // 会让「挂载后点击外层页签仍调 changeTab」断言失效，无法同时钉住预置 effect 的两个职责。
+  mockedJobs.changeTab = vi.fn((next: string) => {
+    mockState.tab = next;
+  });
+  const mockedUseJobs = vi.fn((opts?: { initialTab?: string; pollingEnabled?: boolean }) => {
+    if (!mockState.initialized) {
+      mockState.tab = opts?.initialTab ?? 'all';
+      mockState.initialized = true;
+    }
+    return { ...mockedJobs, tab: mockState.tab };
+  });
+  return {
+    mockedJobs,
+    mockedUseJobs,
+    resetMockedJobsState: () => {
+      mockState.tab = 'all';
+      mockState.initialized = false;
+    },
+  };
+});
 
 const { mockedAgentTasks } = vi.hoisted(() => ({
   mockedAgentTasks: {
@@ -95,7 +117,7 @@ vi.mock('./hooks/use-jobs', async (importOriginal) => {
   // 只换 useJobs；PAGE_SIZE_OPTIONS / canDeleteJob 等运行时导出保留原实现
   // （jobs-pagination / jobs-table 仍从本模块消费）。
   const actual = await importOriginal<typeof import('./hooks/use-jobs')>();
-  return { ...actual, useJobs: () => mockedJobs };
+  return { ...actual, useJobs: mockedUseJobs };
 });
 vi.mock('@/features/history', () => ({
   // History 视图整体 mock，断言惰性挂载（仅 view=done 渲染，避免双列表请求）。
@@ -132,6 +154,7 @@ function activateTab(testId: string) {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  resetMockedJobsState();
   mockedAgentTasks.items = [];
   mockedAgentTasks.counts = { active: 0, awaiting_review: 0 };
   mockedAgentTasks.err = null;
@@ -149,8 +172,12 @@ describe('Issue#262：任务中心合并页', () => {
     // 页签计数取 pageMetrics（active=7 / review=3）
     expect(screen.getByTestId('tasks-tab-active').textContent).toContain('7');
     expect(screen.getByTestId('tasks-tab-review').textContent).toContain('3');
-    // view=active 预置 jobs 内层 tab（useJobs 初始 'all' → 'active'）
-    expect(mockedJobs.changeTab).toHaveBeenCalledWith('active');
+    // Issue#268：initialTab 由 URL ?view= 注入——挂载即 'active'（不再「初始 'all' →
+    // changeTab 自纠」的双 GET），预置 effect 挂载时 no-op
+    expect(mockedUseJobs).toHaveBeenCalledWith(
+      expect.objectContaining({ initialTab: 'active', pollingEnabled: true }),
+    );
+    expect(mockedJobs.changeTab).not.toHaveBeenCalled();
     // 缺省视图不污染 URL
     expect(screen.getByTestId('location-probe').getAttribute('data-search')).toBe('');
   });
@@ -160,8 +187,12 @@ describe('Issue#262：任务中心合并页', () => {
     expect(screen.getByTestId('history-page')).toBeTruthy();
     expect(screen.queryByTestId('jobs-page')).toBeNull();
     expect(screen.getByTestId('tasks-tab-done').getAttribute('aria-selected')).toBe('true');
-    // done 视图不预置 jobs 内层 tab（工单 hook 不因深链切表）
+    // done 视图不预置 jobs 内层 tab（工单 hook 不因深链切表）；
+    // Issue#268：轮询关闭（pollingEnabled=false），initialTab 保持 'all' 供页签徽标首挂供数
     expect(mockedJobs.changeTab).not.toHaveBeenCalled();
+    expect(mockedUseJobs).toHaveBeenCalledWith(
+      expect.objectContaining({ initialTab: 'all', pollingEnabled: false }),
+    );
     // done 页签无计数 pill 元素（收紧：不再依赖文案 not.toContain 的巧合，
     // 直接断言计数 span（tabular-nums）不存在——history hook 惰性挂载，无计数来源）
     expect(screen.getByTestId('tasks-tab-done').querySelector('span.tabular-nums')).toBeNull();
@@ -172,7 +203,12 @@ describe('Issue#262：任务中心合并页', () => {
     expect(screen.getByTestId('jobs-page')).toBeTruthy();
     expect(screen.queryByTestId('history-page')).toBeNull();
     expect(screen.getByTestId('tasks-tab-review').getAttribute('aria-selected')).toBe('true');
-    expect(mockedJobs.changeTab).toHaveBeenCalledWith('awaiting_review');
+    // Issue#268：review 深链 initialTab='awaiting_review' 注入，挂载时预置 no-op
+    //（挂载后页签切换仍调 changeTab 的职责由下方「点击页签回写 URL」用例覆盖）
+    expect(mockedUseJobs).toHaveBeenCalledWith(
+      expect.objectContaining({ initialTab: 'awaiting_review', pollingEnabled: true }),
+    );
+    expect(mockedJobs.changeTab).not.toHaveBeenCalled();
   });
 
   it('非法 ?view= 值回落工单视图（缺省 active）', () => {
@@ -180,6 +216,10 @@ describe('Issue#262：任务中心合并页', () => {
     expect(screen.getByTestId('jobs-page')).toBeTruthy();
     expect(screen.queryByTestId('history-page')).toBeNull();
     expect(screen.getByTestId('tasks-tab-active').getAttribute('aria-selected')).toBe('true');
+    // Issue#268：非法 view 经 readTasksView 归一后注入 initialTab='active'（杀 M6）
+    expect(mockedUseJobs).toHaveBeenCalledWith(
+      expect.objectContaining({ initialTab: 'active' }),
+    );
   });
 
   it('点击页签回写 URL：缺省 view 移除参数（tab→URL，与 D3 同步惯例一致）', () => {

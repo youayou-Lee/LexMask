@@ -224,10 +224,23 @@ function jobsPollSignature(jobs: JobSummary[]): string {
     .join('\x1f');
 }
 
-export function useJobs() {
+export type UseJobsOptions = {
+  /** 初始内层 tab（Issue#268：由 TasksPage 从 URL ?view= 注入；缺省 'all'）。
+   * 挂载即正确 tab，消除「首挂 'all' + 预置 effect changeTab 自纠」的双 GET /jobs。 */
+  initialTab?: JobsStatusFilter;
+  /** 轮询开关（Issue#268，缺省 true 向后兼容）。done 视图传 false：只停 900ms 轮询，
+   * 不砍首挂 GET——done 视图页签徽标仍消费首挂 GET 的 pageMetrics（tasks-page L196-208）。 */
+  pollingEnabled?: boolean;
+};
+
+export function useJobs(options?: UseJobsOptions) {
+  const initialTab = options?.initialTab ?? 'all';
+  const pollingEnabled = options?.pollingEnabled !== false;
   // Lazy init: avoid a synchronous localStorage read + JSON.parse on every render.
-  const [initialJobsCache] = useState(() => readJobsListCache('all', 1, 10, { allowStale: true }));
-  const [tab, setTab] = useState<JobsStatusFilter>('all');
+  const [initialJobsCache] = useState(() =>
+    readJobsListCache(initialTab, 1, 10, { allowStale: true }),
+  );
+  const [tab, setTab] = useState<JobsStatusFilter>(initialTab);
   const [rows, setRows] = useState<JobSummary[]>(() => initialJobsCache?.jobs ?? []);
   const [total, setTotal] = useState(() => initialJobsCache?.total ?? 0);
   const [listStats, setListStats] = useState<JobListStats>(
@@ -425,7 +438,7 @@ export function useJobs() {
   }, [load]);
 
   useEffect(() => {
-    if (!hasActiveJobs) return;
+    if (!hasActiveJobs || !pollingEnabled) return;
     let cancelled = false;
     let inFlight = false;
     let timer: ReturnType<typeof window.setTimeout> | null = null;
@@ -483,7 +496,7 @@ export function useJobs() {
         document.removeEventListener('visibilitychange', handleVisibilityChange);
       }
     };
-  }, [hasActiveJobs, load]);
+  }, [hasActiveJobs, load, pollingEnabled]);
 
   const refreshList = useCallback(async () => {
     const result = await load({ targetPage: page, silent: false });

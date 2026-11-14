@@ -152,8 +152,15 @@ export function TasksPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const view = readTasksView(searchParams.get('view'));
 
-  // 工单 hook 在页面级实例化（done 视图也不停轮询属于合并页既有预期，见任务计划）。
-  const jobs = useJobs();
+  // 工单 hook 在页面级实例化。Issue#268：
+  // - initialTab 由 URL ?view= 注入（active→'active'、review→'awaiting_review'、
+  //   done→'all'）——挂载即正确 tab，消除「首挂 'all' + 预置 changeTab 自纠」的双 GET；
+  // - pollingEnabled：done 视图停 900ms 轮询（结果视图无需工单列表刷新），
+  //   但保留首挂 GET 喂页签徽标（L196-208 消费 pageMetrics）。
+  const jobs = useJobs({
+    initialTab: view === 'done' ? 'all' : VIEW_TAB_MAP[view],
+    pollingEnabled: view !== 'done',
+  });
   const agentTasks = useAgentMdTasks();
 
   // 仅随 view 变化把外层视图预置进内层 tab 一次（done 不预置；用户仍可改内层 tab）。
