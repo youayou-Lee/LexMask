@@ -1,6 +1,16 @@
 # CHANGELOG
 
 
+## 2026-11-15
+
+### 修正（Issue#302）正则保证层与任务级识别项勾选求交：未勾选的日期不再被 DATE 正则打码
+
+- **为什么**：正则保证层（#43 引入）只看账号级启用集（`get_regex_types`），与任务级勾选完全无关——用户未勾选时间/日期，正文日期仍被 DATE 正则打码（实例：扫描型PDF误判为文本型-1.pdf 第 3 页）。与「勾什么识别什么」的既定语义（#78 账号三态、`_semantic_entity_type_ids` 注释）矛盾。docline 链保证层（#115）同族同病。
+- **改了什么**：`OcrHasVisionService._apply_regex_fallback` 增 `selected_type_ids` 参数（canonical id 集），`get_regex_types` 结果与其求交后再跑；`detect_and_draw`（OCR 图像线）与 `detect_from_text_blocks`（文本层线）两入口把本次任务勾选传下去；`text_layer_doc_source._regex_types` 同样与 `ocr_has_types` 求交（docline 缓存 knobs 含正则清单，随勾选自动变键）。**行为变更**：未勾选的类型不再享受正则兜底（含案号/车牌/出生日期等带正则内置类型）；勾选未传（None，内部调用方）保持旧行为；账号级停用仍是上限。
+- **拍板追加（2026-11-15）**：扫描线（ocr_has 管线）DATE `default_enabled` true→false——事件日期默认不再脱敏（出生日期保持默认勾；enabled/regex 资格不变，手动勾选仍完整可用）。`reconcile_types` 的 default_enabled 恒随 preset，已持久化旧 pipelines.json 的账号即时生效。验收中发现的产品错位（UI 语义识别区日期勾选对扫描件是假开关）由本默认变更收口。
+- **测试**：新增 `test_issue302_regex_fallback_selection.py` 10 例（未勾选不跑/勾选照常/None 旧行为/求交非替换 + vision 两入口接线钉 + docline 单元与 boxes_for_page 接线钉 + 拍板配置钉与 merge 钉）；`test_issue115` 接线桩随新契约更新；变异 3/3 红（vision 求交/docline 求交/reconcile 保留持久化 default_enabled）；全量 3260 passed 零回归。
+
+
 ## 2026-11-13
 
 ### 清扫（Issue#269）死代码四件：i18n 死 title 键 + settings barrel 死导出 + rec hook 公开面收缩 + preset 弹窗残留
@@ -288,7 +298,6 @@
 - **改了什么**：`backend/Dockerfile` 直接 `apt-get install libreoffice-writer-nogui` 烘焙进镜像（**2026-11-03 实测整装 dpkg/apt 峰值 RSS ≈73MB，推翻 12.4GB 旧记录**——旧值系当时基镜像版本的环境产物，Record 已在注释中留痕）；`docker-compose.yml` 删宿主三挂载；`start_local.sh` 删宿主 LibreOffice 预检警告（不再依赖宿主）。
 - **测试**：镜像内 `soffice --version` 通过；本地栈端到端——.doc 真卷走 agent_batch 供料线，映射表 8 条（修前 0 条）、三产物齐全、映射原文值零残留；CI docker-build 即构建验证。
 - **边界**：镜像体积增大（LO nogui ≈+500MB）；云端部署同镜像受益，无需宿主预装。
-
 
 
 - **为什么**：两处「失败/取消后不换策略」的同族健壮性缺陷。①#200：解析失败分批递归把外层温度原样传给子批——若不可解析的根因是复读产生的垃圾输出，同温度重发=同贪心轨迹复发（#198 同源家族，工单处置条件即「评估换采样」）；②#204 缺陷 B 取消侧：文档级建链被取消（页超时/用户取消等一切取消原因）时 `CancelledError`（BaseException）穿透 `except _TransientIneligible`/`except Exception` 两个 handler ⇒ memo/负缓存零写入 ⇒ 重试从零再放 O(整卷) 建链，#203 两次真实复现的放大机制。
