@@ -253,3 +253,35 @@ def test_restart_preserves_kind_via_public_keys(export_env, tmp_path):
         assert "kind" not in (resurrected.meta or {}), "meta 不带 kind（无双写）"
     listed = fresh.get(task_full.export_id, "admin")
     assert listed.public()["kind"] == "full"
+
+
+def test_export_task_manager_runs_runner_exactly_once():
+    """manager 级直接判据（评审疑虑③）：submit 后 runner 恰执行一次、队列排干。
+
+    历史缺陷（本支 A4 验证期实测暴露并修复）：_ensure_worker 预入队 + put_nowait
+    双投 ⇒ 同一导出 runner 跑两遍（zip 双写、事件翻倍）。worker 循环终态闸是
+    唯一守卫，此处给一条不绕 export 链的直接判据。
+    """
+    import asyncio
+
+    from app.services.export_service import ExportTaskManager
+
+    manager = ExportTaskManager()
+    calls = {"n": 0}
+
+    async def _runner(_task, _progress):
+        calls["n"] += 1
+        return [{"name": "part001.zip", "size_bytes": 1, "file_count": 1}]
+
+    async def _flow():
+        task = manager.submit(owner_id="admin", kind="partial", runner=_runner, title="t")
+        for _ in range(600):
+            if task.status in {"completed", "failed"}:
+                break
+            await asyncio.sleep(0.02)
+        return task
+
+    task = asyncio.run(_flow())
+    assert task.status == "completed", task.error
+    assert calls["n"] == 1, f"runner 被执行了 {calls['n']} 次（双重入队复发）"
+    assert manager._queue.qsize() == 0, "队列排干后不得残留任务条目"

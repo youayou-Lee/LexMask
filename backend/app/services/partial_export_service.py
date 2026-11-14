@@ -57,12 +57,12 @@ from typing import Any
 import fitz
 
 from app.core.config import settings
+from app.core.file_validation import safe_path_in_dir
 from app.models.common import FileType, ReplacementMode
 from app.models.entity_schemas import BoundingBox
 from app.models.schemas import RedactionConfig
 from app.services import page_event_log, page_status_service
 from app.services.export_service import ExportTask, export_task_manager, write_export_volumes
-from app.core.file_validation import safe_path_in_dir
 
 #: 页级部分导出只对"有页且能栅格化"的类型成立（文本型 PDF 走替换链路会丢文本层，
 #: 一期明确不支持——方案 R1；docx/txt/md 无页概念）。**仅约束 partial**（切页重渲染）
@@ -869,7 +869,6 @@ async def submit_item_export(
     route_summary = page_status_service.route_counts_of(item_row, pages_snapshot)
     recognized_pages_at_export = len(exportable)
     snapshot_at = datetime.now(UTC).isoformat()
-    generated_at = snapshot_at
 
     # —— full 准入前置：主产物必须已存在（完整导出 = 成品包，选页导出 = 快照包）——
     output_path = str((file_info or {}).get("output_path") or "")

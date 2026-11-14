@@ -745,11 +745,9 @@ const enBase: Record<string, string> = {
   'batchWizard.export.summaryFileNote':
     'Summary lives in the optional summary.txt; the redacted PDF body contains no inserted pages.',
   'batchWizard.export.backToEdit': 'Back to edit',
-  'batchWizard.export.backToEditHint': 'Adjust boxes/entities in the review canvas; your selection is kept.',
   'batchWizard.export.progressRendering': 'Rendering pages {current}/{total}',
   'batchWizard.export.progressPackaging': 'Packaging…',
   'batchWizard.export.progressDone': 'Package ready',
-  'batchWizard.export.manualPagesHint': '{count} manually-verified page(s) ship with the package and are noted in the summary',
   'batchWizard.export.error.export_not_ready':
     'The main product is not ready yet (recognition/redaction unfinished). Finish it first, or use page selection export for a snapshot.',
   'batchWizard.export.error.export_no_pages': 'No exportable pages in this file (all failed or not recognized).',
