@@ -1213,8 +1213,6 @@ const zhOverrides: Record<string, string> = {
   'playground.presetAll': '全部类型',
   'playground.advancedTypes': '高级 · 按类型微调',
   'playground.advancedReview': '高级 · 逐类型 / 逐框勾选',
-  'playground.group.regex': '固定格式',
-  'playground.group.semantic': '语义识别',
   'playground.popout': '独立窗口',
   'playground.reRecognize': '重新识别',
   'playground.reconfigTypes': '调整识别项',
@@ -1831,8 +1829,6 @@ Object.assign(zhOverrides, {
     'OCR 提取文字和坐标，HaS 负责语义识别；图像管道不使用兜底表达式。',
   'settings.pipelineDisplayName.image': '视觉特征',
   'settings.pipelineDescription.image': 'GLM-4.6V 识别固定视觉特征。',
-  'playground.group.regex': '自定义兜底',
-  'playground.group.semantic': 'HaS 文本识别',
 });
 
 Object.assign(zhOverrides, {
@@ -1929,7 +1925,6 @@ Object.assign(zhOverrides, {
   'settings.redaction.presetName.industry_medical_record_release': '医疗行业',
   'settings.redaction.presetName.industry_finance_audit_sharing': '金融行业',
   'settings.redaction.presetName.industry_gov_document_release': '政务行业',
-  'playground.group.semantic': '文本语义识别',
   'settings.redaction.regexEmptyInline': '默认无需配置。新增自定义兜底项后，会立即显示在这里。',
   'settings.redaction.pipelineEmptyInline': '当前管道暂无可选识别项。新增配置后会显示在这里。',
   'settings.redaction.selectAll': '全选',

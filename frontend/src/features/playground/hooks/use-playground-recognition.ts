@@ -511,23 +511,6 @@ export function usePlaygroundRecognition() {
     [visionTypes],
   );
 
-  const sortedEntityTypes = useMemo(() => sortEntityTypes(entityTypes), [entityTypes]);
-
-  const setPlaygroundTextTypeGroupSelection = useCallback(
-    (ids: string[], turnOn: boolean) => {
-      clearPlaygroundTextPresetTracking();
-      setSelectedTypes((previous) => {
-        if (turnOn) {
-          const next = new Set(previous);
-          ids.forEach((id) => next.add(id));
-          return [...next];
-        }
-        return previous.filter((id) => !ids.includes(id));
-      });
-    },
-    [clearPlaygroundTextPresetTracking, setSelectedTypes],
-  );
-
   const toggleVisionType = useCallback(
     (typeId: string, pipelineMode: 'ocr_has' | 'visual_features') => {
       clearPlaygroundVisionPresetTracking();
@@ -588,8 +571,6 @@ export function usePlaygroundRecognition() {
     selectPlaygroundVisionPresetById,
     clearPlaygroundTextPresetTracking,
     clearPlaygroundVisionPresetTracking,
-    sortedEntityTypes,
-    setPlaygroundTextTypeGroupSelection,
     toggleVisionType,
     updateOcrHasTypes,
     updateVisualFeatureTypes,

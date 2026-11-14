@@ -89,8 +89,6 @@ function makeRec(overrides: {
     selectPlaygroundVisionPresetById: vi.fn(),
     clearPlaygroundTextPresetTracking: vi.fn(),
     clearPlaygroundVisionPresetTracking: vi.fn(),
-    sortedEntityTypes: overrides.entityTypes,
-    setPlaygroundTextTypeGroupSelection: vi.fn(),
     toggleVisionType: vi.fn(),
     updateOcrHasTypes: vi.fn(),
     updateVisualFeatureTypes: vi.fn(),
