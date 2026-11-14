@@ -1,6 +1,21 @@
 # CHANGELOG
 
 
+## 2026-11-15
+
+### 增强（Issue#276）文本列与视觉列正交：页账双列记账（visual_source/visual_types/visual_region_count/visual_failed_reason）+ 页格「本页视觉列」四态呈现
+
+- **为什么**：印章、签名、手写批注在文本层和 OCR 里都不存在，只能靠视觉列（LA）。此前文本列与视觉列在记账与展示上完全耦合——LA 不可用时 #256 只在**条目级**落一句 `visual_detection_skipped`，逐页打开「这页发生了什么」看不到视觉列跳过；视觉阶段运行中异常只有 `pipeline_status.visual_features.error` 与 warning，页账无机读码；「文本列命中即认为处理完」让绿格被误读成「完整完成」。父 #272（架构 v2）P3：把视觉列做成与 #273 `text_source` 对称的**页账第二列**，分别记账、分别可失败。
+- **改了什么**：
+  - `vision_service.detect_with_dual_pipeline`：jobs 循环结束后合成 `pipeline_status["visual_column"]`（唯一合成点）——`source`（la/none，LA 口径不含 MinerU seal/专用检测器通道）、`types`（走 LA 的 slug）、`requested_types`（勾选侧原表，审计用）、`region_count`、`failed_reason`（`visual_stage_error`，来自 `record_pipeline_result` 已落的 failed 态，不发明新状态）。`is_page_fatal_stage_error` 既有语义零改动——视觉列失败不把整页判失败（#263 文本列升级语义原样，两列互不传导）。
+  - `task_queue_pipelines`：四终态写入点——completed 分支 `**_visual_fields_from_quality(quality)`（quality 派生在前）+ `**page_visual_ledger` overlay（r2 F6 收窄为只含 `visual_failed_reason="la_unavailable"`，由队列层的 #256 预检剥离事实补账）；timeout/异常分支 visual 字段**恒零键**（r2 F1：写回仅在检测整体成功后发生，失败页无新账，不回读、不编造、不残留旧账）；重试翻绿写点补 `**_visual_fields_from_file_store`（r2 F2：fresh 回读，防翻绿页被整记录替换清零静默退化 absent）。completed 分支 `page_done` 事件增传 `visual_source`/`visual_failed_reason`（#279 `EVENT_SCHEMAS["page_done"]` 白名单扩容，`visual_types` 是 list 不入 JSONL）。
+  - `page_status_service`：只读派生 `_visual_state_of` 四态（done/skipped/failed/absent；`failed_reason` 判定先于 `source=="la"`——行 5 正常形态防吞；零命中=done 的 zero_hit 严禁折成 skipped）进 `detail.visual`；卷级 `visual_summary` 五计数（任一页有视觉证据才出键，旧数据 None）。三态判定、`failed_pages` 权威、部分导出选页白名单零改动（#257 契约）——「完整完成」新口径=绿格 + `visual_state ∈ {absent, done}`，skipped/failed 页绿格带琥珀标记。
+  - 前端：`jobsApi.ts` 页视觉列类型 + `PAGE_VISUAL_STATES` 白名单 fail-null + `normalizePageDetail` 透传 `visual`（r2 F7：唯一闸口只加类型不透传等于没做）+ `visual_summary`；`batch-page-matrix.tsx` 详情面板新增「本页视觉列」行（skipped/failed 琥珀）+ 卷头 `page-matrix-visual-hint` 琥珀提示（不改 failed 计数与重试逻辑）；i18n zh/en 7 键成对（命中数文案明写 LA 口径，r2 F8 防门⑤争议）。step3 行级提示裁剪给 #276-followup（行数据走 item 摘要管道，出界）。
+  - 预留（默认关）：`VISUAL_EXPLICIT_TYPE_PAGE_FAIL`（§3.4）——开 True 且用户显式勾选视觉类型时阶段异常包成 `VisualStageError` 专类升级页级失败（参照 `RoutingEvidenceTimeout` 先例），机读理由码不变。
+  - `scripts/audit_page_event_log.py --self-test` 补 page_done 白名单双向钉：携带 `visual_source` 落盘、携带 `visual_types` 拒写（dropped_unknown_field）。
+- **测试**：新增后端 3 文件 38 例（`test_issue276_page_visual_ledger.py` 四终态写入点 + overlay + 事件 + helper 契约；`test_issue276_dual_column.py` 双列框合流 + 合成块四形态 + P0 契约钉（routing/visual 提取互不引用）+ 升级开关两态；`test_issue276_page_status_visual.py` 四态投影 × 旧数据 None + visual_summary + 三态零改动负向钉）；前端 `issue276-page-detail-visual.test.tsx` 13 例（五文案 zh/en、琥珀 class、卷头 hint、normalize 透传、未知 state fail-null）。变异 M1-M7 全 KILLED（删合成块/删 overlay/三态投毒/撤白名单键/派生序翻转/零命中折 skipped/漏 retry 回读各判红后还原）；后端全量 3288 passed / 48 skipped（基线 3250+38，零回归）；前端 80 文件 620 passed、tsc 双门、build 绿；既有 #256/#273/#279/#257/#199/#263 回归面零改动全绿。
+- **挂账**：验收 4（云 DCU 印章召回对比）挂云门④；step3 终局行级提示另立 `#276-followup`。
+
 ## 2026-11-13
 
 ### 清扫（Issue#269）死代码四件：i18n 死 title 键 + settings barrel 死导出 + rec hook 公开面收缩 + preset 弹窗残留

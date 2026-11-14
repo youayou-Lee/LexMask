@@ -7,7 +7,6 @@
 """
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -23,6 +22,44 @@ _SELF_TEST_FIXTURES: tuple[tuple[str, str], ...] = (
 )
 
 
+def _schema_self_test() -> bool:
+    """Issue#276：page_done 白名单双向钉——visual_source 落盘 / visual_types 拒写。
+
+    白名单铁律（#279）：未声明字段 = 拒写**整事件** + dropped_unknown_field 计数
+    （不是静默丢字段）；走真实写入口 log_event（临时目录落盘），不用内部校验函数。
+    """
+    import tempfile
+
+    from app.services import page_event_log
+
+    ok = True
+    page_event_log.reset_for_tests()
+    with tempfile.TemporaryDirectory() as tmp:
+        page_event_log.set_log_root(tmp)
+        page_event_log.set_event_context("self-test-job", "self-test-item", "self-test-file")
+        page_event_log.set_current_page(1)
+        if not page_event_log.log_event("page_done", visual_source="la"):
+            print(
+                "self-test MISS: page_done+visual_source rejected "
+                "(EVENT_SCHEMAS whitelist not extended?)",
+                file=sys.stderr,
+            )
+            ok = False
+        before = page_event_log.stats()["dropped_unknown_field"]
+        if page_event_log.log_event("page_done", visual_types=["official_seal"]):
+            print(
+                "self-test FALSE-POSITIVE: page_done+visual_types accepted "
+                "(list field must not enter JSONL)",
+                file=sys.stderr,
+            )
+            ok = False
+        elif page_event_log.stats()["dropped_unknown_field"] != before + 1:
+            print("self-test MISS: visual_types rejection not counted", file=sys.stderr)
+            ok = False
+    page_event_log.reset_for_tests()
+    return ok
+
+
 def self_test() -> bool:
     ok = True
     for expected, fixture in _SELF_TEST_FIXTURES:
@@ -34,7 +71,10 @@ def self_test() -> bool:
     if probe_hits("本页完成 用时12ms"):
         print("self-test FALSE-POSITIVE: clean text flagged", file=sys.stderr)
         ok = False
-    print("self-test passed: all fixtures detected, clean text clean")
+    if not _schema_self_test():
+        ok = False
+    if ok:
+        print("self-test passed: all fixtures detected, clean text clean, page_done schema双向钉通过")
     return ok
 
 

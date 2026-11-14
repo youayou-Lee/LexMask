@@ -146,12 +146,42 @@ def _route_summary_of(raw_pages: dict[str, Any], page_count: int) -> dict[str, A
     return None
 
 
+def _visual_state_of(record: dict[str, Any]) -> dict[str, Any] | None:
+    """Issue#276：页记录 visual 字段 → 投影四态。旧数据/无字段 → None（省键）。
+
+    派生顺序契约：``failed_reason`` 判定**先于** ``source == "la"``——
+    ``source="la"`` + ``failed_reason="visual_stage_error"`` 是真值表行 5 的
+    **正常形态**（failed ⇒ ran=True ⇒ source 恒 "la"），顺序翻转会把它吞成 done。
+    零命中（ran=True, region_count=0）= done 的 zero_hit，严禁折成 skipped。
+    """
+    source = record.get("visual_source")
+    if source is None and not record.get("visual_failed_reason"):
+        return None
+    reason = record.get("visual_failed_reason") or None
+    if reason == "la_unavailable":
+        state = "skipped"
+    elif reason == "visual_stage_error":
+        state = "failed"
+    elif source == "la":
+        state = "done"
+    else:
+        state = "absent"
+    out: dict[str, Any] = {"state": state, "source": source or "none"}
+    if reason:
+        out["failed_reason"] = reason
+    if state == "done":
+        out["region_count"] = _safe_int(record.get("visual_region_count"), 0)
+        out["zero_hit"] = out["region_count"] == 0
+    return out
+
+
 def _page_detail_of(record: dict[str, Any], retry_counts: dict[str, Any], page_no: int) -> dict[str, Any]:
     """per-page「这页发生了什么」（Issue#279）：路由 / 分段耗时 / 失败类型 / 尝试次数。
 
     只读页账既有字段做投影，不改变三态判定（state/reason 逻辑零改动）；
     ``fallback_reason_code``/``coverage``/``stage_ms`` 缺省时省键（None-safe 透传），
     ``error_type``/``attempts`` 恒在（成功页 error_type=None、无账 attempts=1）。
+    Issue#276：视觉列四态投影 ``visual`` 只在有视觉字段时出现（旧数据省键）。
     """
     ran, fallback_code, coverage = _text_layer_route_of(record)
     detail: dict[str, Any] = {
@@ -169,6 +199,9 @@ def _page_detail_of(record: dict[str, Any], retry_counts: dict[str, Any], page_n
         detail["stage_ms"] = dict(breakdown)
     if record.get("duration_ms") is not None:
         detail["duration_ms"] = _safe_int(record.get("duration_ms"), 0) or None
+    visual = _visual_state_of(record)
+    if visual is not None:
+        detail["visual"] = visual
     return detail
 
 
@@ -234,6 +267,24 @@ def build_page_status(
         if 0 < page <= page_count:
             failed_pages.append(page)
 
+    # Issue#276：卷级视觉列汇总。任一页有视觉证据才出键（旧数据兼容 → None）；
+    # pending_visual = 已起跑但未到终态的页（视觉列未记账）。只读派生，
+    # 不动 _page_state / failed_map / 选页白名单（#257 契约）。
+    visual_summary: dict[str, int] | None = None
+    counter = {"done": 0, "skipped": 0, "failed": 0, "absent": 0, "pending_visual": 0}
+    for page_no in range(1, page_count + 1):
+        record = raw_pages.get(str(page_no))
+        if not isinstance(record, dict):
+            continue
+        if not record.get("status"):
+            counter["pending_visual"] += 1
+            continue
+        visual = _visual_state_of(record)
+        if visual is not None:
+            counter[visual["state"]] += 1
+    if counter["done"] or counter["skipped"] or counter["failed"] or counter["absent"]:
+        visual_summary = counter
+
     return {
         "item_id": item_row.get("id"),
         "job_id": item_row.get("job_id"),
@@ -249,6 +300,8 @@ def build_page_status(
         "failed_pages": sorted(set(failed_pages)),
         # Issue#279：卷头路由摘要（docline 接管 / 逐页 + 首个 fallback 码 / 证据全无 → None）。
         "route_summary": _route_summary_of(raw_pages, page_count),
+        # Issue#276：卷级视觉列汇总（无视觉证据 → None，旧数据兼容）。
+        "visual_summary": visual_summary,
     }
 
 

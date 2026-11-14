@@ -760,6 +760,15 @@ const zhBase: Record<string, string> = {
   'pageDetail.fallbackReason.build_budget': '建流超预算',
   'pageDetail.fallbackReason.verdict_unusable': '文本层质量不合格',
   'pageDetail.fallbackReason.repeated_fragment_coverage': '重复片段覆盖越界',
+  // Issue#276：视觉列四态（页详情行）。命中数为 LA 口径（不含 MinerU seal/专用检测器）。
+  'pageDetail.visual': '本页视觉列',
+  'pageDetail.visualDone': '已跑（LA 命中 {count} 处）',
+  'pageDetail.visualDoneZeroHit': '已跑（LA 0 命中）',
+  'pageDetail.visualSkippedLaUnavailable': '跳过（视觉服务不可用）',
+  'pageDetail.visualFailedStage': '失败（视觉阶段异常，文本列不受影响）',
+  'pageDetail.visualAbsent': '未勾选视觉项',
+  // Issue#276：卷头视觉列缺失提示（skipped/failed 页绿格但非「完整完成」）。
+  'batchWizard.pages.visualSkipHint': '视觉列缺失：第 {pages} 页跳过（LA 不可用）或失败，文本识别成果不受影响',
   'batchWizard.partialExport.title': '部分导出（只导出选中页）',
   'batchWizard.partialExport.loading': '正在读取逐页状态…',
   'batchWizard.partialExport.unsupportedType':
