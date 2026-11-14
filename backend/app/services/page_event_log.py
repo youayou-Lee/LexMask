@@ -57,7 +57,14 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
         # 块号直接用必填的 chunk_index，不另设 chunk_no 冗余字段）。
         optional=("traceback_frames", "message_sanitized", "kind"),
     ),
-    "ner_done": EventSchema(optional=("calls", "ms", "entities", "regions", "supplemented")),
+    # Issue#275 B3：text_context ∈ {neighbor, none, off}（页级链；docline 卷级
+    # 不带，缺省=旧形态向后兼容）、context_chars = 实附邻居字符总数（prev+next）。
+    "ner_done": EventSchema(
+        optional=(
+            "calls", "ms", "entities", "regions", "supplemented",
+            "text_context", "context_chars",
+        )
+    ),
     "ocr_done": EventSchema(optional=("ms", "regions", "source")),
     "page_done": EventSchema(optional=("ms", "stage_ms", "regions", "source")),
     "page_failed": EventSchema(

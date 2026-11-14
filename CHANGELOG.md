@@ -1,6 +1,23 @@
 # CHANGELOG
 
 
+## 2026-11-15
+
+### 增强（Issue#275）P2：整卷链默认关（B 定稿态钉住）+ 页级邻居上下文（B2/B3），A 只留接入缝
+
+- **为什么**：架构 v2（#272）裁定——整卷链（docline）不再是默认路径，改为默认关闭的可选压力阀（A 后置）；跨页实体连续性改由**页级邻居上下文**承担（B）。11-12 实测：NER 耗时由单请求固定开销（~0.75s）主导，整卷链省请求数 30% 的代价是首屏 2s→105s、整卷 30s→97s；页级路由（#273）已把「首个请求同步跑全卷块 NER」旁路掉，本支把旁路钉住、改写成显式 A 接入缝，净新增工作在邻居上下文。
+- **改了什么**：
+  - 新模块 `backend/app/services/page_neighbor_context.py`：进程内页文本登记表（per-卷 LRU ≤8 卷、每卷 ≤`TEXT_LAYER_DOCLINE_MAX_PAGES` 页、同页双源 text_layer 优先）+ `resolve_neighbors`（registry miss 且邻页为 PDF ⇒ `file_parser.get_pdf_page_text_blocks` 直取兜底、memo 化；任何异常 fail-open 返回空侧 + `{"error": 类型名}`，绝不 raise）+ contextvar 页间隔离（`activate/clear/resolve_neighbors_for_current`，读动作在 async 段一次性完成）。`_vol_key = realpath:size:mtime_ns` 加强变体（同路径同尺寸换内容可判异）。全部 fail-open：登记/取文失败只损失邻居召回，绝不影响识别主链。
+  - 注入点（`has_text_analysis.run_has_text_analysis`）：too_short 闸**之后**、组规划**之前**——邻居进 `plan_has_text_group_texts` 输入让预算闭包自动计入（规划后拼接会突破 context_tokens 上限），不进 `has_payload.texts` 本体；**上下文只进主查**（残差/bridge pass 不吃邻居，回映仍只对本页块 `_match_entities_to_ocr`——只辅助召回不参与判定）。缓存探测对称性（F-1）：整页探针改探 `probe_text = "\n".join(group_input_texts)`，与单组实发形态逐字同源；chars=0 时 `probe_text == text_content` 逐字相等（现状快路径回归钉）。metrics 五键落 stage_status（随 `stage_duration_ms` 入 DB 页账）：`has_text_neighbor_context`（neighbor|none|off 三值，error 有意不扩值集）/`has_text_neighbor_chars`/`has_text_neighbor_prev_source`/`next_source`/`has_text_neighbor_error`（M-3：取文出错单独计数）。
+  - 激活与登记（`vision_service`）：`detect_with_dual_pipeline` 的识别执行段包进 `_neighbor_context` 激活窗口（仅 PDF；IMAGE 无页邻接自然空）；登记点两处——`_detect_with_pdf_text_layer` 在**扫描闸之前**登记 text_layer（扫描页碎片段对邻居仍是真实墨迹，M-6 成本显式承认不另设闸）、`_detect_with_ocr_has` 在 `detect_and_draw` 后登记 ocr（路径取激活窗口落的 `_neighbor_registry_path`）；`_blocks_text` 单源复用（layer_text 与登记同一拼接式）。
+  - 签名键（`redaction_orchestrator._vision_signature`）：page 模式且 `RECOGNITION_NEIGHBOR_CONTEXT_CHARS>0` 才加 `neighbor_context_chars` 键——开↔关两方向签名都变（ner_governance 指纹先例），**off 态签名与 #273 逐键相等（零缓存失效）**；file 模式零新键（v6 键集逐字节，回滚开关语义不破）。
+  - A 接入缝：`detect_vision` page 分支的硬编码旁路改写为 `if accelerator_should_fill(file_id)`——新 `backend/app/services/accelerator.py` stub 恒 False，`RECOGNITION_ACCELERATOR_ENABLED=off|auto|on`（默认 off）本期无消费者，auto/on 记 warning 留痕防「配了没生效」静默；缝契约四条（结果让位页级/块级降级/负缓存 #204/签名加键）写进模块注释。file 分支一字不动。
+  - 配置两键（`config.py`）：`RECOGNITION_NEIGHBOR_CONTEXT_CHARS`（默认 200，[0,2000] 校验，0=关闭）+ `RECOGNITION_ACCELERATOR_ENABLED`（off|auto|on 校验）。
+  - 账本（B3）：`page_event_log.EVENT_SCHEMAS["ner_done"]` optional 扩容 `+(text_context, context_chars)`（白名单制，旧 producer 事件向后兼容）；`task_queue_pipelines` 页级 `ner_done` 透传两字段（docline 卷级链不带，不与页级混淆）。`page_event_summary` 不消费新字段（向后兼容）。
+- **开关矩阵**：默认（page+200）= B 定稿态；`RECOGNITION_NEIGHBOR_CONTEXT_CHARS=0` = B 关邻居（签名键消失、缓存回 #273 键集）；`RECOGNITION_ROUTING_MODE=file` = 一键回滚 #273 合并前现状（邻居完全不生效、签名逐字节）。两个开关正交。
+- **测试**：新增 4 文件 49 例——neighbor_context 单元（指纹/拒空/双源优先/LRU/边界 1-8/contextvar 隔离/裁剪粒度）、注入点（首组含 prev_tail/末组含 next_head、too_short 先于注入、metrics 五键、负健康仍抛 `HasTextNerUnavailable` #263 钉、残差文本不含邻居）、接线（签名三态键集钉、page 分支 docline 零调用、seam 通断、stub 三态 warning、ner_done schema 白名单扩容/拒写/旧形态兼容、两登记点+扫描页预闸登记）、缓存隔离（probe sha==实发组 sha、chars=0 逐字相等、同页同邻居 hit_before_slot、同页/跨页异邻居不串键）。设计稿 §5 变异判据 1-7 逐条「突变红→还原绿」验证 PASS。后端全量 3299 passed/48 skipped（=基线 3250+49，零失败零新增 skip，node-id 级 comm -3 除新增 275 测试外零差异）；前端零改动。
+- **挂账**：86 页真卷 spike 三态对比（file / B neighbor=0 / B neighbor=200，三轮各自清缓存）挂云门④执行（§4.2 判据先定）；水印卷旁验（M-6 观测项：对比 neighbor=0/200 的 failed_pages 与逐页 region_count）；默认 200 部署即 page 模式页缓存全量 miss 重建（与 #273 同性质，非回归）。
+
 ## 2026-11-13
 
 ### 清扫（Issue#269）死代码四件：i18n 死 title 键 + settings barrel 死导出 + rec hook 公开面收缩 + preset 弹窗残留

@@ -741,6 +741,46 @@ async def run_has_text_analysis(
             )
             return []
 
+        # ----- Issue#275 B2：页级邻居上下文（只辅助召回、不参与判定）-----
+        # 注入点选在 too_short 闸**之后**（空/过短页不因肥邻居文本顶过闸，§5 变异 6）、
+        # 组规划**之前**（邻居进 plan_has_text_group_texts 输入 ⇒ 预算算术自动把
+        # 邻居计入，§3.4——规划后拼接会突破 context_tokens 上限、触发模型端截断）。
+        # 读动作在本 async 段一次性完成（§3.5），不依赖 to_thread 线程内读取。
+        from app.services import page_neighbor_context
+
+        nb_chars = max(0, int(getattr(settings, "RECOGNITION_NEIGHBOR_CONTEXT_CHARS", 0) or 0))
+        nb_prev, nb_next, nb_meta = page_neighbor_context.resolve_neighbors_for_current(nb_chars)
+        _record_has_text_metric(
+            stage_status,
+            "has_text_neighbor_context",
+            "neighbor" if (nb_prev or nb_next) else ("off" if nb_meta.get("off") else "none"),
+        )
+        _record_has_text_metric(stage_status, "has_text_neighbor_chars", len(nb_prev) + len(nb_next))
+        if nb_meta.get("error"):
+            # M-3：fail-open 落 none 是有意选择（不把 error 加进 text_context 值集，
+            # 避免 summary/对比口径分裂），但单独计数——复盘时「取不到」与「取文
+            # 出错」可分（§3.3-⑦）。
+            _record_has_text_metric(stage_status, "has_text_neighbor_error", 1)
+        _record_has_text_metric(
+            stage_status, "has_text_neighbor_prev_source", str(nb_meta.get("prev_source") or "")
+        )
+        _record_has_text_metric(
+            stage_status, "has_text_neighbor_next_source", str(nb_meta.get("next_source") or "")
+        )
+        # 邻居附着进组输入（不进 has_payload.texts 本体）：残差 pass（own-page
+        # blocks）与 bridge pass 不吃邻居——**上下文只进主查**；consumed_values
+        # 吃到邻居独有值只是解释不了本页墨迹、无害（残差多问一次，召回只增不减）。
+        group_input_texts = ([nb_prev] if nb_prev else []) + list(has_payload.texts) + (
+            [nb_next] if nb_next else []
+        )
+        # F-1（缓存探测对称性）：探测文本与 plan_has_text_group_texts 的单组 join
+        # （"\n".join(group)，:145）**逐字同源**——裸拼接缺两个 "\n" 分隔符 ⇒
+        # sha256 必然不同 ⇒ 单组快路径 hit_before_slot 永远 miss（§3.2 不变式）。
+        # chars=0 时 group_input_texts == has_payload.texts ⇒ probe_text ==
+        # text_content 逐字相等（现状快路径回归钉）。键 = 实发文本的 sha256
+        # （has_client._ner_cache_key_for 单点公式自动覆盖）。
+        probe_text = "\n".join(group_input_texts)
+
         logger.info(
             (
                 "HaS analyzing unique_blocks=%d/%d, source_blocks=%d, "
@@ -780,7 +820,9 @@ async def run_has_text_analysis(
 
         # 生效上下文（C1）：主查分支里取；residual 在缓存命中路径惰性取。
         context_tokens: int | None = None
-        ner_result = _get_cached_has_text_ner(has_client, text_content, chinese_types)
+        # Issue#275 F-1：整页缓存探针探 probe_text（= 组输入 join，与单组实发
+        # 形态逐字同源）；chars=0 时 probe_text == text_content（现状不变）。
+        ner_result = _get_cached_has_text_ner(has_client, probe_text, chinese_types)
         if ner_result is not None:
             _record_has_text_metric(stage_status, "has_text_cache_status", "hit_before_slot")
             logger.info("HaS NER cache hit before local slot wait")
@@ -816,8 +858,11 @@ async def run_has_text_analysis(
             # 与现状逐字等价（C6：同一 payload、同一闸位数、同一 K 趟采样）。
             context_tokens = await _resolve_effective_context(has_client)
             try:
+                # Issue#275：组输入含邻居附着段（首组头 prev_tail / 末组尾
+                # next_head）——预算闭包自动把邻居计入（§3.4）；chars=0 时
+                # group_input_texts == has_payload.texts，与现状逐字等价。
                 group_texts = plan_has_text_group_texts(
-                    has_payload.texts, chinese_types, context_tokens=context_tokens
+                    group_input_texts, chinese_types, context_tokens=context_tokens
                 )
             except ValueError as exc:
                 # D1⑩：上下文小到连一个字符都放不下时规划器**显式**报错。这里
