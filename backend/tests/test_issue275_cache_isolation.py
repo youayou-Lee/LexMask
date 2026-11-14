@@ -71,7 +71,10 @@ def _activate(path: str, page: int = 2, *, prev: str = _PREV_A, nxt: str = _NEXT
     return pnc.activate(path, page)
 
 
-def _run(client, blocks=None, path: str = "/tmp/nonexistent-issue275-cache.pdf", page: int = 2, prev=_PREV_A, nxt=_NEXT_A):
+def _run(client, tmp_path, blocks=None, path: str | None = None, page: int = 2, prev=_PREV_A, nxt=_NEXT_A):
+    # G4：路径一律 tmp_path 拼接（本机绝对路径字面量不得进公开树）；
+    # 「nonexistent」语义 = tmp_path 下不创建该文件（registry 键 realpath:unknown 稳定）。
+    path = path or str(tmp_path / "nonexistent-issue275-cache.pdf")
     token = _activate(path, page, prev=prev, nxt=nxt)
     stage: dict = {}
     try:
@@ -88,58 +91,58 @@ def _run(client, blocks=None, path: str = "/tmp/nonexistent-issue275-cache.pdf",
     return entities, stage
 
 
-def test_single_group_probe_text_sha_equals_sent_group_text_sha():
+def test_single_group_probe_text_sha_equals_sent_group_text_sha(tmp_path):
     """变异 3 主判据：组数==1 时 probe sha256 == 实发组文本 sha256。"""
     client = _CachingHaS()
-    _run(client)
+    _run(client, tmp_path)
     assert len(client.ner_texts) == 1
     probe, sent = client.probe_texts[0], client.ner_texts[0]
     assert _sha(probe) == _sha(sent), "缓存探测文本与实发组文本必须逐字同源（F-1）"
     assert probe.startswith(_PREV_A) and probe.endswith(_NEXT_A)
 
 
-def test_chars_zero_probe_equals_own_text_content(monkeypatch):
+def test_chars_zero_probe_equals_own_text_content(tmp_path, monkeypatch):
     """chars=0 ⇒ probe_text == text_content 逐字相等（现状快路径回归钉）。"""
     monkeypatch.setattr(settings, "RECOGNITION_NEIGHBOR_CONTEXT_CHARS", 0, raising=False)
     client = _CachingHaS()
-    _run(client)
+    _run(client, tmp_path)
     assert client.probe_texts[0] == _OWN_TEXT
     assert client.probe_texts[0] == client.ner_texts[0]
 
 
-def test_same_page_same_neighbor_second_run_hits_before_slot():
+def test_same_page_same_neighbor_second_run_hits_before_slot(tmp_path):
     client = _CachingHaS()
-    _run(client)
+    _run(client, tmp_path)
     assert len(client.ner_texts) == 1
     # 第二跑：同页同邻居 ⇒ probe 命中 ⇒ hit_before_slot、不再发请求
-    _entities, stage = _run(client)
+    _entities, stage = _run(client, tmp_path)
     assert stage["has_text_cache_status"] == "hit_before_slot"
     assert len(client.ner_texts) == 1, "同页同邻居二次调用必须命中缓存"
 
 
-def test_same_page_different_neighbor_misses():
+def test_same_page_different_neighbor_misses(tmp_path):
     client = _CachingHaS()
-    _run(client)
-    _entities, stage = _run(client, prev=_PREV_B)
+    _run(client, tmp_path)
+    _entities, stage = _run(client, tmp_path, prev=_PREV_B)
     # 终态 status 会被实发后的收尾覆盖成 model_call——钉「没有 hit」+ 两次实发。
     assert stage.get("has_text_cache_status") != "hit_before_slot"
     assert len(client.ner_texts) == 2, "邻居不同 ⇒ 组键不同 ⇒ 必然两次独立请求"
 
 
-def test_cross_page_same_own_text_different_neighbors_do_not_share_key():
+def test_cross_page_same_own_text_different_neighbors_do_not_share_key(tmp_path):
     """A 页文本 + X 邻居 与 B 页同文本 + Y 邻居：两组键不同，不串（§3.2）。"""
     client = _CachingHaS()
-    _run(client, path="/tmp/issue275-pageA.pdf", page=2, prev=_PREV_A, nxt=_NEXT_A)
-    _entities, stage = _run(client, path="/tmp/issue275-pageB.pdf", page=2, prev=_PREV_B, nxt=_NEXT_A)
+    _run(client, tmp_path, path=str(tmp_path / "issue275-pageA.pdf"), page=2, prev=_PREV_A, nxt=_NEXT_A)
+    _entities, stage = _run(client, tmp_path, path=str(tmp_path / "issue275-pageB.pdf"), page=2, prev=_PREV_B, nxt=_NEXT_A)
     assert stage.get("has_text_cache_status") != "hit_before_slot"
     assert len(client.ner_texts) == 2, "跨页同文本异邻居不得假命中"
 
 
-def test_neighbor_text_changes_key_even_when_own_text_identical():
+def test_neighbor_text_changes_key_even_when_own_text_identical(tmp_path):
     """「同页文本 + 不同邻居」必然两个键——B 页结果物理上进不了 A 页的键。"""
     client = _CachingHaS()
-    _run(client, prev=_PREV_A)
-    _run(client, prev=_PREV_B)
+    _run(client, tmp_path, prev=_PREV_A)
+    _run(client, tmp_path, prev=_PREV_B)
     # probe_texts 每次 get_cached_ner（整页探针 + 组探针 + 槽位复检）都会追加；
     # 按邻居标记分组比对，避免依赖调用次序。
     probes_a = [t for t in client.probe_texts if "前页邻居A" in t]

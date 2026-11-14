@@ -57,14 +57,16 @@ _NEIGHBOR_PREV = "前页末尾当事人李四于二〇二四年五月签名"
 _NEIGHBOR_NEXT = "后页开头案号（2024）京01民终1234号续页"
 
 
-def _activate_with_neighbors(page: int = 2, path: str = "/tmp/nonexistent-issue275.pdf"):
+def _activate_with_neighbors(page: int, path: str):
+    # G4：路径由调用方用 tmp_path 拼接（本机绝对路径字面量不得进公开树）；
+    # 「nonexistent」语义 = tmp_path 下不创建该文件（registry/probe 不依赖真实文件）。
     pnc.store_page_text(path, page - 1, _NEIGHBOR_PREV, source="text_layer")
     pnc.store_page_text(path, page + 1, _NEIGHBOR_NEXT, source="text_layer")
     return pnc.activate(path, page)
 
 
-def test_neighbor_injected_into_single_group_text():
-    token = _activate_with_neighbors()
+def test_neighbor_injected_into_single_group_text(tmp_path):
+    token = _activate_with_neighbors(2, str(tmp_path / "nonexistent-issue275.pdf"))
     try:
         client = _RecordingHaS()
         stage: dict = {}
@@ -82,8 +84,8 @@ def test_neighbor_injected_into_single_group_text():
     assert {e["text"] for e in entities} == {"张三"}
 
 
-def test_neighbor_not_in_payload_texts_but_in_probe():
-    token = _activate_with_neighbors()
+def test_neighbor_not_in_payload_texts_but_in_probe(tmp_path):
+    token = _activate_with_neighbors(2, str(tmp_path / "nonexistent-issue275.pdf"))
     try:
         client = _RecordingHaS()
         stage: dict = {}
@@ -101,9 +103,9 @@ def test_neighbor_not_in_payload_texts_but_in_probe():
     assert "has_text_neighbor_error" not in stage
 
 
-def test_chars_zero_makes_off_and_no_injection(monkeypatch):
+def test_chars_zero_makes_off_and_no_injection(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "RECOGNITION_NEIGHBOR_CONTEXT_CHARS", 0, raising=False)
-    token = _activate_with_neighbors()
+    token = _activate_with_neighbors(2, str(tmp_path / "nonexistent-issue275.pdf"))
     try:
         client = _RecordingHaS()
         stage: dict = {}
@@ -126,10 +128,10 @@ def test_inactive_yields_none_status():
     assert _NEIGHBOR_PREV not in client.ner_texts[0]
 
 
-def test_too_short_gate_precedes_injection(monkeypatch):
+def test_too_short_gate_precedes_injection(tmp_path, monkeypatch):
     """变异 6 正向钉：空/过短页 + 肥邻居 ⇒ 仍判 skipped_too_short、不发请求。"""
     monkeypatch.setattr(settings, "HAS_VISION_MIN_TEXT_CHARS_FOR_NER", 50, raising=False)
-    token = _activate_with_neighbors()
+    token = _activate_with_neighbors(2, str(tmp_path / "nonexistent-issue275.pdf"))
     try:
         client = _RecordingHaS()
         stage: dict = {}
@@ -145,9 +147,9 @@ def test_too_short_gate_precedes_injection(monkeypatch):
     assert "has_text_neighbor_context" not in stage, "注入点在 too_short 闸之后"
 
 
-def test_no_eligible_text_page_skips_before_injection(monkeypatch):
+def test_no_eligible_text_page_skips_before_injection(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "HAS_VISION_MIN_TEXT_CHARS_FOR_NER", 50, raising=False)
-    token = _activate_with_neighbors()
+    token = _activate_with_neighbors(2, str(tmp_path / "nonexistent-issue275.pdf"))
     try:
         client = _RecordingHaS()
         stage: dict = {}
@@ -162,9 +164,9 @@ def test_no_eligible_text_page_skips_before_injection(monkeypatch):
     assert client.ner_texts == []
 
 
-def test_negative_health_still_raises_with_neighbor_attached():
+def test_negative_health_still_raises_with_neighbor_attached(tmp_path):
     """#263 钉：邻居附着页的负健康升格不降级——仍抛 HasTextNerUnavailable。"""
-    token = _activate_with_neighbors()
+    token = _activate_with_neighbors(2, str(tmp_path / "nonexistent-issue275.pdf"))
     try:
         client = _RecordingHaS()
         client._health_checked_at = time.monotonic()
@@ -204,9 +206,9 @@ def _small_residual_page_blocks() -> list[OCRTextBlock]:
     ]
 
 
-def test_residual_pass_text_excludes_neighbor():
+def test_residual_pass_text_excludes_neighbor(tmp_path):
     """上下文只进主查：残差 pass 重问的文本不含邻居（捕获全部 client 文本断言）。"""
-    path = "/tmp/nonexistent-issue275-residual.pdf"
+    path = str(tmp_path / "nonexistent-issue275-residual.pdf")
     marker_prev = "NEIGHBOR_MARK_前页" + "邻" * 180
     pnc.store_page_text(path, 1, marker_prev, source="text_layer")
     token = pnc.activate(path, 2)
