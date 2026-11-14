@@ -746,6 +746,10 @@ async def run_has_text_analysis(
         # 组规划**之前**（邻居进 plan_has_text_group_texts 输入 ⇒ 预算算术自动把
         # 邻居计入，§3.4——规划后拼接会突破 context_tokens 上限、触发模型端截断）。
         # 读动作在本 async 段一次性完成（§3.5），不依赖 to_thread 线程内读取。
+        # 路由门在 ``_neighbor_context`` 单点（F-C1）：file 模式 / IMAGE 不激活
+        # ⇒ 此处恒 ``{"inactive": True}`` ⇒ 空串路径（text_context 落 none），
+        # group_input_texts == has_payload.texts、probe_text == text_content——
+        # 行为与 #273 合并前逐字节等价（§2.7 一键回滚语义）。本函数不判路由模式。
         from app.services import page_neighbor_context
 
         nb_chars = max(0, int(getattr(settings, "RECOGNITION_NEIGHBOR_CONTEXT_CHARS", 0) or 0))

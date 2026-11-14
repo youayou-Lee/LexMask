@@ -354,11 +354,22 @@ class VisionService:
 
         放这一层（而非 ``run_has_text_analysis``）因为只有这里同时知道
         ``recognition_path + page``；contextvar 随 await 传播，读动作发生在
-        注入点的 async 段（§3.5），不依赖 to_thread 线程内读取。仅 PDF 激活：
-        IMAGE 无页邻接，``resolve_neighbors`` 因 contextvar 未激活自然返回空。
+        注入点的 async 段（§3.5），不依赖 to_thread 线程内读取。
+
+        **激活门（Issue#275 F-C1，设计 §2.7）**：仅 ``PDF/PDF_SCANNED`` **且**
+        ``RECOGNITION_ROUTING_MODE == "page"`` 才激活。file 模式（回滚开关）
+        邻居上下文必须完全不生效——contextvar 恒未激活 ⇒ 注入点
+        ``resolve_neighbors_for_current`` 恒 ``{"inactive": True}`` ⇒ 组输入/
+        缓存探针与本页文本逐字节相同 ⇒ 行为与 #273 合并前逐字节等价（连同
+        签名 file 零新键，页缓存无混合回放）。IMAGE 无页邻接同理不激活。
+        这是 activate 的**唯一**调用点 ⇒ 路由门单点生效，注入端无须重复判模式。
         """
         token = None
-        if file_type in (FileType.PDF, FileType.PDF_SCANNED):
+        routing_mode = str(getattr(settings, "RECOGNITION_ROUTING_MODE", "file") or "file")
+        if (
+            file_type in (FileType.PDF, FileType.PDF_SCANNED)
+            and routing_mode == "page"
+        ):
             self._neighbor_registry_path = recognition_path
             token = page_neighbor_context.activate(recognition_path, page)
         try:
@@ -2156,9 +2167,16 @@ class VisionService:
         # 字段错位），字符数再多也不能用于识别，必须回退图像 OCR。
         # Issue#275：登记点在扫描闸**之前**是故意的——扫描页的碎片段即使被本页
         # 判定不可用，其文字对邻居仍是真实墨迹（登记的是原文不是结论，§3.3-④⑧）。
-        page_neighbor_context.store_page_text(
-            file_path, page, self._blocks_text(blocks), source="text_layer"
-        )
+        # 登记只在激活窗口内发生（``_neighbor_registry_path`` 由
+        # ``_neighbor_context`` 单点落位：file 模式 / IMAGE / 窗口外零登记——
+        # F-C1：回滚模式下邻居面零副作用），与 OCR 登记点同构。
+        if getattr(self, "_neighbor_registry_path", None):
+            page_neighbor_context.store_page_text(
+                self._neighbor_registry_path,
+                page,
+                self._blocks_text(blocks),
+                source="text_layer",
+            )
         layer_text = self._blocks_text(blocks)
         if await self.file_parser.is_pdf_page_scanned(file_path, page) or (
             self.file_parser.has_fragmented_text_layer(layer_text)

@@ -222,7 +222,7 @@ def test_residual_pass_text_excludes_neighbor():
     with_neighbor = [t for t in client.calls if "NEIGHBOR_MARK_前页" in t]
     assert len(with_neighbor) == 1, (
         f"邻居文本只准进主查一处（实际 {len(with_neighbor)} 处）；"
-        f"各调用长度={ [len(t) for t in client.calls] }"
+        f"各调用长度={[len(t) for t in client.calls]}"
     )
     assert client.calls[0] == with_neighbor[0]
     # 残差 pass（第二次起的调用）不含邻居

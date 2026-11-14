@@ -196,6 +196,13 @@ def _probe_text_layer(file_path: str, page: int) -> str:
         return asyncio.run(_run())
 
     try:
+        # F-M1（fix round 1 诚实化）：``_PROBE_TIMEOUT_SEC`` 是「放弃结果」的
+        # **软墙不是硬墙**——``future.result(timeout=...)`` 超时抛
+        # TimeoutError 后，``with`` 退出仍会 ``shutdown(wait=True)`` 等线程真正
+        # 跑完。接受此口径不引入 daemon 线程+泄漏的硬墙机制：fitz 打开单页是
+        # 毫秒级、加密/损坏文件立即抛错、结果 memo 化使重复取文零成本，超时
+        # 场景只剩 OS 级 I/O 卡死（罕见）且即使发生也只是该页注入点多等一次，
+        # fail-open 语义不受影响。
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="pnc-probe") as pool:
             future = pool.submit(_extract)
             text = future.result(timeout=_PROBE_TIMEOUT_SEC)

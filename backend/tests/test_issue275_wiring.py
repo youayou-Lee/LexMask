@@ -16,10 +16,12 @@ import fitz
 import pytest
 
 from app.core.config import settings
+from app.models.schemas import FileType
 from app.services import page_event_log as pel
 from app.services import page_neighbor_context as pnc
 from app.services import redaction_orchestrator as orch
 from app.services.ocr_has_vision_service import OCRTextBlock
+from app.services.vision.has_text_analysis import run_has_text_analysis
 from app.services.vision_service import VisionService
 
 _LINES_CLEAR = [
@@ -326,13 +328,16 @@ class _StubOcrHasTextOnly:
 
 
 @pytest.mark.asyncio
-async def test_text_layer_path_registers_page_text(tmp_path):
+async def test_text_layer_path_registers_page_text(tmp_path, monkeypatch):
+    """登记点只在激活窗口内发生（窗口 = `_neighbor_context`，page 模式门后）。"""
+    monkeypatch.setattr(settings, "RECOGNITION_ROUTING_MODE", "page")
     vs = VisionService()
     vs.file_parser = _StubParserTextLayer("第二页文本层内容" + "补" * 80)  # ≥ PDF_TEXT_LAYER_MIN_CHARS
     vs.ocr_has_service = _StubOcrHasTextOnly()
     path = str(tmp_path / "doc.pdf")
 
-    await vs._detect_with_pdf_text_layer(path, 2, [])
+    async with vs._neighbor_context(path, 2, FileType.PDF):
+        await vs._detect_with_pdf_text_layer(path, 2, [])
 
     prev, _nxt, meta = pnc.resolve_neighbors(path, 3, 200)
     assert prev == "第二页文本层内容" + "补" * 80
@@ -340,15 +345,17 @@ async def test_text_layer_path_registers_page_text(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_scanned_page_registers_before_gate(tmp_path):
+async def test_scanned_page_registers_before_gate(tmp_path, monkeypatch):
     """§2.3 有意为之：扫描页在扫描闸之前登记（碎片串对邻居仍是真实墨迹）。"""
+    monkeypatch.setattr(settings, "RECOGNITION_ROUTING_MODE", "page")
     vs = VisionService()
     vs.file_parser = _StubParserTextLayer("扫描页碎片文本", scanned=True)
     vs.ocr_has_service = _StubOcrHasTextOnly()
     path = str(tmp_path / "scan.pdf")
 
-    with pytest.raises(ValueError, match="scanned page"):
-        await vs._detect_with_pdf_text_layer(path, 2, [])
+    async with vs._neighbor_context(path, 2, FileType.PDF):
+        with pytest.raises(ValueError, match="scanned page"):
+            await vs._detect_with_pdf_text_layer(path, 2, [])
 
     prev, _nxt, meta = pnc.resolve_neighbors(path, 3, 200)
     assert prev == "扫描页碎片文本"
@@ -357,6 +364,7 @@ async def test_scanned_page_registers_before_gate(tmp_path):
 
 @pytest.mark.asyncio
 async def test_ocr_path_registers_page_text(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "RECOGNITION_ROUTING_MODE", "page")
     vs = VisionService()
 
     class _StubOcrHasDraw:
@@ -368,18 +376,77 @@ async def test_ocr_path_registers_page_text(tmp_path, monkeypatch):
 
     vs.ocr_has_service = _StubOcrHasDraw()
     path = str(tmp_path / "doc.pdf")
-    vs._neighbor_registry_path = path  # detect_with_dual_pipeline activate 时落位
 
     from PIL import Image
 
     buf = io.BytesIO()
     Image.new("RGB", (16, 16), "white").save(buf, format="PNG")
 
-    await vs._detect_with_ocr_has(buf.getvalue(), 2, None)
+    async with vs._neighbor_context(path, 2, FileType.PDF):
+        await vs._detect_with_ocr_has(buf.getvalue(), 2, None)
 
     prev, _nxt, meta = pnc.resolve_neighbors(path, 3, 200)
     assert prev == "OCR第二页内容"
     assert meta["prev_source"] == "registry:ocr"
+
+
+# ----------------------------------------------------- F-C1 file 模式关断钉
+
+
+@pytest.mark.asyncio
+async def test_file_mode_neighbor_context_fully_inert(tmp_path, monkeypatch):
+    """F-C1 行为钉：file 模式（回滚开关）邻居上下文**完全不生效**。
+
+    激活门在 `_neighbor_context` 单点（RECOGNITION_ROUTING_MODE=="page" 才
+    activate）⇒ file 模式下：窗口内 contextvar 恒 inactive、登记点零发生；
+    注入端（inactive ⇒ 空串路径）probe 文本 == 本页文本、组文本无邻居——
+    与 #273 合并前逐字节等价（§2.7「邻居完全不生效」）。签名 file 零新键由
+    test_file_mode_signature_never_has_neighbor_key 独立钉住。
+    """
+    monkeypatch.setattr(settings, "RECOGNITION_ROUTING_MODE", "file")
+    vs = VisionService()
+    path = str(tmp_path / "doc.pdf")
+    # registry 预置（模拟 page 模式同期别的卷留下的表）：file 模式不得读到。
+    pnc.store_page_text(path, 1, "前页遗留文本", source="text_layer")
+
+    async with vs._neighbor_context(path, 2, FileType.PDF):
+        # ① 门把激活短路：窗口内 contextvar 未激活、登记点门未开。
+        assert vs._neighbor_registry_path is None
+        prev, nxt, meta = pnc.resolve_neighbors_for_current(200)
+        assert (prev, nxt) == ("", "")
+        assert meta == {"inactive": True}
+
+        # ② 注入端逐字节等价：probe == 本页文本、组文本无邻居、text_context=none。
+        client = _RecordingHaS()
+        stage: dict = {}
+        blocks = [OCRTextBlock(text="张三", polygon=[[0, 0], [1, 0], [1, 1], [0, 1]], confidence=0.98)]
+        entities = await run_has_text_analysis(blocks, client, vision_types=None, stage_status=stage)
+        assert client.probe_texts[0] == "张三"
+        assert client.ner_texts[0] == "张三"
+        assert "前页遗留文本" not in client.ner_texts[0]
+        assert stage["has_text_neighbor_context"] == "none"
+        assert stage["has_text_neighbor_chars"] == 0
+        assert {e["text"] for e in entities} == {"张三"}
+
+    # ③ 窗口外登记零发生：预置的页 1 文本仍在表且未被窗口内覆盖/驱逐
+    # （页 2 的 prev = 页 1 ⇒ registry 预置可命中；窗口内零 store 不改表）。
+    assert pnc.resolve_neighbors(path, 2, 200)[0] == "前页遗留文本"
+
+
+class _RecordingHaS:
+    """与 test_issue275_cache_isolation 同形的最小缓存桩（探测恒 miss）。"""
+
+    def __init__(self):
+        self.ner_texts: list[str] = []
+        self.probe_texts: list[str] = []
+
+    def get_cached_ner(self, text, types):
+        self.probe_texts.append(text)
+        return None
+
+    def ner(self, text, labels=None, **_kwargs):
+        self.ner_texts.append(text)
+        return {"姓名": ["张三"]}
 
 
 @pytest.fixture()
