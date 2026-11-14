@@ -1,6 +1,18 @@
 # CHANGELOG
 
 
+## 2026-11-15
+
+### 清扫（Issue#296）死代码第二轮：recognition-config 孤儿导出族 + rec hook 仅测试引用字段
+
+- **为什么**：#269（PR#298）挂账面。`buildPlaygroundTextGroups` 及其类型族的唯一消费者（`use-playground-recognition.ts`）已在 #269 删除，成为零消费孤儿导出；`sortedEntityTypes`/`setPlaygroundTextTypeGroupSelection` 仅测试 mock 引用、UI 零消费。
+- **清扫了什么**：
+  - `features/playground/lib/recognition-config.ts`：删 `buildPlaygroundTextGroups`、`PlaygroundTextGroup`、`PlaygroundTextGroupKey` 类型族及随之失去唯一消费方的 `SelectionTone` import。
+  - i18n 死键：`playground.group.regex` / `playground.group.semantic`（唯一消费方即被删函数；en 两副本 + zh 三副本；zh/en 键位奇偶测试两侧同步删保持 parity）。
+  - `use-playground-recognition.ts` 公开面收缩：`sortedEntityTypes`（memo）与 `setPlaygroundTextTypeGroupSelection`（callback）及 return 条目；`sortEntityTypes` 服务函数仍有 2 处活消费（缓存载入/目录重取）保留。
+  - 三个组件测试（legal-preset / scope-dialog / reskin）mock 对象同步清理两死字段。
+- **验证**：逐项 grep 证明零消费后才删（含测试、e2e、i18n、类型引用、动态键模板串）；全量 vitest 与基线 comm -3 零差异；tsc 双门 rc=0；build 绿；复活变异抽查：临时加回被删导出，607 用例零变红且类型门通过，证实所删为零消费真死代码。
+
 ## 2026-11-13
 
 ### 清扫（Issue#269）死代码四件：i18n 死 title 键 + settings barrel 死导出 + rec hook 公开面收缩 + preset 弹窗残留
