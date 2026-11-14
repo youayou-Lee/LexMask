@@ -82,8 +82,11 @@ class VisualStageError(RuntimeError):
     默认 False ⇒ 本类在生产路径上永不出现，视觉列异常维持「stage failed +
     页 completed」（``is_page_fatal_stage_error`` docstring 第 3 点，两列正交的
     语义钉）。专类参照 ``RoutingEvidenceTimeout`` 先例：``is_page_fatal_stage_error``
-    末尾加一条 ``isinstance``；机读理由码不变（页账 ``visual_failed_reason``
-    恒 ``visual_stage_error``）。
+    末尾加一条 ``isinstance``。注意：本类的**唯一**产生形态即 gate-ON，而 gate-ON
+    ⇒ 页整体 fatal（`page_fatal_error` raise，#199 语义）⇒ 失败页页账 visual
+    字段按失败页口径恒零键（r2 F1，不回读）——不存在「页账
+    ``visual_failed_reason`` 携带本异常信息」的形态，页级可见的机读面只有
+    ``failed_pages`` 的异常类名与 #279 ``page_failed`` 事件的 ``error_type``。
     """
 
 
