@@ -10,7 +10,6 @@
 - **测试**：新增 `test_issue302_regex_fallback_selection.py` 8 例（未勾选不跑/勾选照常/None 旧行为/求交非替换 + vision 两入口接线钉 + docline 单元与 boxes_for_page 接线钉）；`test_issue115` 接线桩随新契约更新；变异 2/2 红；全量 3258 passed 零回归。
 
 
-
 ## 2026-11-13
 
 ### 清扫（Issue#269）死代码四件：i18n 死 title 键 + settings barrel 死导出 + rec hook 公开面收缩 + preset 弹窗残留
@@ -298,7 +297,6 @@
 - **改了什么**：`backend/Dockerfile` 直接 `apt-get install libreoffice-writer-nogui` 烘焙进镜像（**2026-11-03 实测整装 dpkg/apt 峰值 RSS ≈73MB，推翻 12.4GB 旧记录**——旧值系当时基镜像版本的环境产物，Record 已在注释中留痕）；`docker-compose.yml` 删宿主三挂载；`start_local.sh` 删宿主 LibreOffice 预检警告（不再依赖宿主）。
 - **测试**：镜像内 `soffice --version` 通过；本地栈端到端——.doc 真卷走 agent_batch 供料线，映射表 8 条（修前 0 条）、三产物齐全、映射原文值零残留；CI docker-build 即构建验证。
 - **边界**：镜像体积增大（LO nogui ≈+500MB）；云端部署同镜像受益，无需宿主预装。
-
 
 
 - **为什么**：两处「失败/取消后不换策略」的同族健壮性缺陷。①#200：解析失败分批递归把外层温度原样传给子批——若不可解析的根因是复读产生的垃圾输出，同温度重发=同贪心轨迹复发（#198 同源家族，工单处置条件即「评估换采样」）；②#204 缺陷 B 取消侧：文档级建链被取消（页超时/用户取消等一切取消原因）时 `CancelledError`（BaseException）穿透 `except _TransientIneligible`/`except Exception` 两个 handler ⇒ memo/负缓存零写入 ⇒ 重试从零再放 O(整卷) 建链，#203 两次真实复现的放大机制。
