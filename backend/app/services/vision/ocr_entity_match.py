@@ -371,6 +371,44 @@ _NON_MONEY_UNITS = frozenset("亩顷㎡平方米里人位名户岁天次件套�
 _CJK_NUMERALS = frozenset("零〇一二三四五六七八九十百千万亿两壹贰叁肆伍陆柒捌玖拾佰仟萬億兆")
 
 
+def _crop_amount_block_region(block, block_text: str, entity_text: str, document_line_height: int):
+    """Issue#308：同签名块内金额字形跨度的可证明紧裁（收不出则 None=整块回退）。
+
+    前提：`_is_same_amount_value_block` 已判定块内数字内容与实体同签名。这里
+    找块内与实体同签名的数字游程（含紧随币值单位），用字符框裁出紧框——
+    单行可证明才收（跨行/无 chars/找不到同签名游程一律 None，保持整块
+    over-mask，never-uncover 不变）。
+    """
+    import re as _re
+
+    if not getattr(block, "chars", None):
+        return None
+    signature = _amount_value_signature(entity_text)
+    if not signature:
+        return None
+    for run in _re.finditer(r"(?:￥|¥)?[0-9０-９][0-9０-９,，.．]*(?:[元圆块钱]整?)?", block_text):
+        if _amount_value_signature(run.group(0)) != signature:
+            continue
+        rects = _entity_char_box_line_rects(
+            block, block_text, run.start(), run.end(), document_line_height
+        )
+        if len(rects) != 1:
+            return None  # 跨行或多段：无法单框紧裁，保持整块
+        x1, y1, x2, y2 = rects[0]
+        return SensitiveRegion(
+            text=run.group(0),
+            entity_type="AMOUNT",
+            left=x1,
+            top=y1,
+            width=x2 - x1,
+            height=y2 - y1,
+            confidence=getattr(block, "confidence", None),
+            source="text_match",
+        )
+    return None
+
+
+
 def _is_same_amount_value_block(entity_text: str, block_text: str) -> bool:
     """Same amount value in a different display form (￥1431400.00元 vs 1431400，00).
 
@@ -1157,8 +1195,17 @@ def match_entities_to_ocr(
                 and not getattr(block, "recovered", False)
                 and _is_same_amount_value_block(entity_text, block_text)
             ):
-                entity_regions.append((
-                    SensitiveRegion(
+                # Issue#308 最小覆盖收缩：块内数字签名与实体一致时，用字符框把
+                # 框收到金额自身的字形跨度（含紧随的币值单位）——「吞整句」是
+                # 本 Issue 点名的 P1 危害。收不出可证明跨度（无 chars/跨行/无
+                # 同签名数字游程）时保持整块 over-mask，never-uncover 底线不变。
+                cropped = _crop_amount_block_region(
+                    block, block_text, entity_text, document_line_height
+                )
+                if cropped is not None:
+                    amount_region = cropped
+                else:
+                    amount_region = SensitiveRegion(
                         text=block_text.strip() or entity_text,
                         entity_type=normalized_type,
                         left=block.left,
@@ -1174,7 +1221,9 @@ def match_entities_to_ocr(
                             if is_table_virtual
                             else "text_match"
                         ),
-                    ),
+                    )
+                entity_regions.append((
+                    amount_region,
                     # Reviewer-mandated: this whole-block recall is NOT position
                     # evidence — an evidenced flag would let it kill overlapping
                     # positionless claims (a missed-redaction path).

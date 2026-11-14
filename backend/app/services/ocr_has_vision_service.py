@@ -446,6 +446,11 @@ class OcrHasVisionService:
                 duration_ms,
                 page_deadline=has_text_page_deadline(),
             )
+            # Issue#308 L1 值级净化：编号/金额核心提取（叙述前缀不入框）
+            # + 碎片值过滤（数字全空的家族值不落框）。
+            from app.services.vision import box_quality_pass
+            entities = box_quality_pass.normalize_number_shaped_entities(entities)
+            entities = box_quality_pass.drop_fragment_entities(entities)
             duration_ms["has_ner"] = round((time.perf_counter() - ner_start) * 1000)
             logger.info(
                 "PDF text layer HaS NER finished in %.2fs, entities=%d",
@@ -469,6 +474,11 @@ class OcrHasVisionService:
         if ocr_blocks:
             regions.extend(self._apply_regex_fallback(ocr_blocks, 0, 0, selected_type_ids=regex_selected_type_ids))
             regions = self._suppress_dates_inside_number_codes(regions)
+        # Issue#308 L2 框级净化：同值跨类型消解 → 断行拆分并值 → 幂等收敛。
+        from app.services.vision import box_quality_pass
+        regions = box_quality_pass.dedupe_same_value_regions(regions)
+        regions = box_quality_pass.merge_wrapped_number_regions(regions)
+        regions = box_quality_pass.dedupe_same_value_regions(regions)
 
         duration_ms["draw"] = 0
         duration_ms["total"] = round((time.perf_counter() - perf_start) * 1000)
@@ -602,6 +612,11 @@ class OcrHasVisionService:
                     duration_ms,
                     page_deadline=has_text_page_deadline(),
                 )
+                # Issue#308 L1 值级净化：编号/金额核心提取 + 碎片值过滤
+                # （与 PDF 文本层线同一处理，两处 _invoke 出口对称）。
+                from app.services.vision import box_quality_pass
+                entities = box_quality_pass.normalize_number_shaped_entities(entities)
+                entities = box_quality_pass.drop_fragment_entities(entities)
                 duration_ms["has_ner"] = round((time.perf_counter() - ner_start) * 1000)
                 logger.info("HaS NER finished in %.2fs, entities=%d", duration_ms["has_ner"] / 1000, len(entities))
             else:
@@ -628,6 +643,13 @@ class OcrHasVisionService:
         if ocr_blocks:
             all_regions.extend(self._apply_regex_fallback(ocr_blocks, width, height, selected_type_ids=regex_selected_type_ids))
             all_regions = self._suppress_dates_inside_number_codes(all_regions)
+
+        # Issue#308 L2 框级净化：同值跨类型消解 → 断行拆分并值 → 幂等收敛
+        # （顺序固定；消解只对同值重叠对，多行值逐行矩形互不重叠不受影响）。
+        from app.services.vision import box_quality_pass
+        all_regions = box_quality_pass.dedupe_same_value_regions(all_regions)
+        all_regions = box_quality_pass.merge_wrapped_number_regions(all_regions)
+        all_regions = box_quality_pass.dedupe_same_value_regions(all_regions)
 
         logger.info("Final detected %d sensitive regions", len(all_regions))
 
