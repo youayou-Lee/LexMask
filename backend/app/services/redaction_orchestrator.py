@@ -295,6 +295,13 @@ async def execute_redaction(
             info["redacted_count"] = int(result.get("redacted_count", 0))
             info["bounding_boxes"] = _group_boxes_by_page(request.bounding_boxes)
             info["entities"] = to_jsonable(request.entities)
+            # Issue#325：全卷打码成功后清掉子集预览记录（顶层），full 守卫随之解除。
+            info["preview_output_path"] = None
+            info["processed_pages"] = []
+            info["page_map"] = {}
+            info["preview_entity_map"] = {}
+            info["preview_redacted_count"] = 0
+            info["preview_page_count"] = 0
             # 版本历史追踪
             version_entry = {
                 "version": len(info.get("redaction_history", [])) + 1,
@@ -302,14 +309,7 @@ async def execute_redaction(
                 "output_path": result.get("output_path"),
                 "redacted_count": selected_item_count,
                 "replacement_count": result["redacted_count"],
-                # Issue#325：全卷打码成功后清掉子集预览记录，full 导出的「缺主产物」守卫随之解除。
-            "preview_output_path": None,
-            "processed_pages": [],
-            "page_map": {},
-            "preview_entity_map": {},
-            "preview_redacted_count": 0,
-            "preview_page_count": 0,
-            "entity_map": result.get("entity_map", {}),
+                "entity_map": result.get("entity_map", {}),
                 "mode": request.config.replacement_mode.value if hasattr(request.config.replacement_mode, 'value') else str(request.config.replacement_mode),
                 "created_at": datetime.now(UTC).isoformat(),
             }

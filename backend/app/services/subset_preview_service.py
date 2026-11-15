@@ -38,13 +38,16 @@ def _remove_quietly(path: str | None) -> None:
         pass
 
 
-def _has_selected_regions(boxes: Sequence[Any], entities: Sequence[Any]) -> bool:
-    """存在至少一个选中的框/实体才算「会打码」；零命中不得静默返回 200。"""
+def _has_selected_regions(
+    boxes: Sequence[Any], entities: Sequence[Any], pages: Sequence[int]
+) -> bool:
+    """所选页上至少有一个选中的框/实体才算「会打码」；零命中不得静默返回 200。"""
+    wanted = {int(p) for p in pages}
     for box in boxes:
         if getattr(box, "selected", True) is not False:
             return True
     for ent in entities:
-        if getattr(ent, "selected", True) is not False:
+        if getattr(ent, "selected", True) is not False and int(getattr(ent, "page", 1) or 1) in wanted:
             return True
     return False
 
@@ -129,9 +132,15 @@ async def create_subset_preview(
     # 识别完成（AWAITING_REVIEW/COMPLETED）即视为全卷可用。
     text_pdf_finished = file_type == "pdf" and str(item_row.get("status") or "") in {
         "awaiting_review",
+        "review_approved",
+        "redacting",
         "completed",
     }
-    if text_pdf_finished and not exportable:
+    if (
+        text_pdf_finished
+        and not exportable
+        and not page_status_service.failed_page_numbers(item_row)
+    ):
         exportable = set(range(1, page_count + 1))
     not_ready = [p for p in normalized if int(p) not in {int(x) for x in exportable}]
     if not_ready:
@@ -171,7 +180,7 @@ async def create_subset_preview(
     try:
         await asyncio.to_thread(slice_pdf_pages, source_path, normalized, tmp_subset)
         remapped = remap_boxes_to_subset(boxes, normalized)
-        if not _has_selected_regions(remapped, ents):
+        if not _has_selected_regions(remapped, ents, normalized):
             raise PartialExportError(
                 "subset_no_regions",
                 "所选页没有任何选中框或实体，预览不会产生打码；请先补框或确认实体",
@@ -187,6 +196,11 @@ async def create_subset_preview(
         }
         config_copy = _config_copy_keep(config)
         result = await Redactor().redact(effective_info, ents, remapped, config_copy)
+        if int(result.get("redacted_count") or 0) == 0:
+            raise PartialExportError(
+                "subset_no_regions",
+                "所选页没有任何实际打码命中，预览不会产生打码；请先补框或确认实体",
+            )
         redacted_output = str(result.get("output_path") or "")
         if not redacted_output or not os.path.isfile(redacted_output):
             raise PartialExportError("subset_preview_failed", "子集预览打码未产出文件")

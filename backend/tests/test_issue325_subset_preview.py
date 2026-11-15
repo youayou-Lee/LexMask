@@ -11,6 +11,8 @@ import pytest
 
 from app.core.config import settings
 from app.models.entity_schemas import BoundingBox, Entity
+from app.models.redaction_schemas import RedactionRequest
+from app.services import partial_export_service
 from app.services.job_store import JobItemStatus, JobStore, JobType
 from app.services.partial_export_service import (
     PartialExportError,
@@ -324,3 +326,77 @@ def test_full_export_after_full_redaction_is_not_blocked(env, tmp_path):
             assert exc.code != "subset_preview_incomplete"
 
     asyncio.run(_run())
+
+
+def test_zero_hit_on_selected_page_is_rejected(env, tmp_path):
+    """B-2：所选页没有实际命中（实体在别的页）不得 200 静默返回。"""
+    store, job_id, item_id = _seed(tmp_path, 2)
+    src = _text_pdf(tmp_path / "t2.pdf", 2)
+    info = _file_info(tmp_path, src, 2, file_type="pdf")
+    info["bounding_boxes"] = {}
+    info["entities"] = [
+        {"id": "e1", "text": "ALICE", "type": "PERSON", "start": 0, "end": 5,
+         "page": 2, "selected": True, "source": "manual"}
+    ]
+    env["file-1"] = info
+    with pytest.raises(partial_export_service.PartialExportError) as exc:
+        _call(env, store, job_id, item_id, info, pages=[1], boxes=[])
+    assert exc.value.code == "subset_no_regions"
+
+
+def test_full_redaction_clears_preview_fields(env, tmp_path, monkeypatch):
+    """B-1/B-3：真跑 execute_redaction → info 顶层清 preview_*，history 条目不得混入。"""
+    from app.services import redaction_orchestrator as orch
+
+    fid = "file-1"
+    store_dict = {
+        fid: {
+            "id": fid,
+            "page_count": 3,
+            "file_path": str(tmp_path / "src.pdf"),
+            "file_type": "pdf_scanned",
+            "is_scanned": True,
+            "preview_output_path": str(tmp_path / "old-preview.pdf"),
+            "processed_pages": [1],
+            "page_map": {1: 1},
+            "preview_entity_map": {"A": "已打码"},
+            "preview_redacted_count": 1,
+            "preview_page_count": 1,
+            "redaction_history": [],
+        }
+    }
+
+    class _Store(dict):
+        def __init__(self):
+            super().__init__(store_dict)
+
+        def get(self, key):
+            return store_dict.get(key)
+
+        def set(self, key, value):
+            store_dict[key] = value
+
+    output = tmp_path / "out.pdf"
+    output.write_bytes(b"%PDF-1.4\n")
+
+    class _Redactor:
+        async def redact(self, *_a, **_k):
+            return {
+                "output_path": str(output),
+                "output_file_id": "o1",
+                "redacted_count": 2,
+                "entity_map": {"A": "已打码"},
+            }
+
+    monkeypatch.setattr(orch, "_get_file_store", lambda: _Store())
+    monkeypatch.setattr(orch, "_get_file_store_lock", lambda: asyncio.Lock())
+    monkeypatch.setattr(orch, "Redactor", lambda: _Redactor())
+
+    req = RedactionRequest(file_id=fid, entities=[], bounding_boxes=[], config=_config())
+    asyncio.run(orch.execute_redaction(req))
+
+    info = store_dict[fid]
+    assert info["preview_output_path"] is None
+    assert info["processed_pages"] == []
+    assert info["page_map"] == {}
+    assert not any(str(k).startswith("preview_") for k in info["redaction_history"][-1])

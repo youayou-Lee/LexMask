@@ -296,6 +296,13 @@ _OUTPUT_ARTIFACT_FIELDS = (
     "output_file_id",
     "entity_map",
     "redacted_count",
+    # Issue#325：清产/拒绝/重跑同时失效子集预览（否则 preview=true 会读到上一轮旧遮罩）。
+    "preview_output_path",
+    "processed_pages",
+    "page_map",
+    "preview_entity_map",
+    "preview_redacted_count",
+    "preview_page_count",
 )
 
 
@@ -311,6 +318,7 @@ def clear_file_output(file_id: str, *, delete_disk: bool = True) -> bool:
 
     next_info = dict(info)
     output_path = next_info.get("output_path")
+    preview_path = next_info.get("preview_output_path")
     changed = False
     for key in _OUTPUT_ARTIFACT_FIELDS:
         if key in next_info:
@@ -320,12 +328,15 @@ def clear_file_output(file_id: str, *, delete_disk: bool = True) -> bool:
     if changed:
         file_store.set(file_id, next_info)
 
-    if delete_disk and isinstance(output_path, str) and output_path.strip():
-        try:
-            if safe_path_in_dir(output_path, settings.OUTPUT_DIR) and os.path.isfile(output_path):
-                os.remove(output_path)
-        except OSError:
-            logger.warning("Failed to delete stale redacted output for %s: %s", file_id, output_path, exc_info=True)
+    if delete_disk:
+        for stale in (output_path, preview_path):
+            if not (isinstance(stale, str) and stale.strip()):
+                continue
+            try:
+                if safe_path_in_dir(stale, settings.OUTPUT_DIR) and os.path.isfile(stale):
+                    os.remove(stale)
+            except OSError:
+                logger.warning("Failed to delete stale redacted output for %s: %s", file_id, stale, exc_info=True)
 
     return changed
 

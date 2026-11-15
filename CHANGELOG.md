@@ -6,7 +6,8 @@
 
 - **为什么**：#321 的 PR#324 被门⑥ 阻断——识别期提交 400（C-1）、强制 pdf_scanned 丢失文本型 PDF 实体定位（C-2）、子集 COMPLETED 后不能重跑且被 full 导出当整卷（C-3）。
 - **改了什么**：新增 `POST /jobs/{job}/items/{item}/subset-preview` 与 `subset_preview_service`：校验页集合 ⊆ success ∪ manual_verified、切片（`slice_pdf_pages`）+ 框重映射（`remap_boxes_to_subset`）+ 打码；文本型 PDF 保留 `FileType.PDF` 让实体在**切片卷**上定位；产物写 `preview_output_path/processed_pages/page_map/preview_entity_map/preview_redacted_count`，**不改 item/job 状态、不覆盖主产物**；`page-image`/`download` 增 `preview` 参数；`submit_item_export(kind=full)` 对“子集预览未覆盖全卷”返回 400 `subset_preview_incomplete`。
-- **测试**：`tests/test_issue325_subset_preview.py` 8 例（扫描件子集页数/页映射/独立产物/状态不变、文本型 PDF 仅实体像素真变化、空集/越界/未识别页/非 PDF 400、full 守卫、路由透传）；导出/清单相关 28 例、ruff 绿。
+- **门⑥ 复审修复**：全卷打码清 preview_* 挪到 info 顶层（不再混入 history）；零命中按「所选页」判（实体在别的页也 400 `subset_no_regions`）；文本 PDF 准入补 review_approved/redacting 且失败页不放行；`clear_file_output` 纳入 preview_* 并删预览文件；新增「真跑 execute_redaction 清 preview_*」与「页错配零命中」判据。
+- **测试**：`tests/test_issue325_subset_preview.py` 13 例（扫描件子集页数/页映射/独立产物/状态不变、文本型 PDF 仅实体像素真变化、空集/越界/未识别页/非 PDF 400、full 守卫、路由透传）；导出/清单相关 28 例、ruff 绿。
 - **边界**：仅 PDF；预览产物独立存放不自动清理；每页准入依赖 item performance 投影。
 
 ### 修正（Issue#322）选页直接导出丢失手动拉框：导出请求携带画布框快照，权威次序「请求框 > 草稿 > file_store」
