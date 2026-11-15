@@ -2,7 +2,7 @@
 
 ## 2026-11-16
 
-- **Issue#332：重复生成子集预览不再漏下上一份 PDF**——`subset_preview_service.create_subset_preview` 覆写 `preview_output_path` 前先读出旧路径，写完后删旧文件（路径须在 `OUTPUT_DIR` 内，best-effort）。复现路径＝识别中「开始匿名化」→ 返回编辑改页 → 再点一次；本仓 OUTPUT_DIR 无清扫器，旧实现每点一次就多留一份孤儿（本地实测单份 7.7 MB）。新增判据 1 例（两份预览只存一份、新产物在、旧产物失）+ 变异 2 条（删清理调用 / 删错对象）均 KILLED。
+- **Issue#332：重复生成子集预览不再漏下上一份 PDF**——`subset_preview_service.create_subset_preview` 覆写 `preview_output_path` 前先读出旧路径，写完后删旧文件（路径须在 `OUTPUT_DIR` 内，best-effort）。复现路径＝识别中「开始匿名化」→ 返回编辑改页 → 再点一次；本仓 OUTPUT_DIR 无清扫器，旧实现每点一次就多留一份孤儿（本地实测单份 7.7 MB）。新增判据 3 例（两份预览只存一份、旧路径落在 OUTPUT_DIR 之外必须存活、写元数据失败必须保留旧预览）+ 变异 4 条（删清理调用 / 删错对象 / 去掉 OUTPUT_DIR 守卫 / 先删后写）均 KILLED；删旧文件失败改留 warning（与 `redaction_orchestrator` 同口径），路径比较改 `os.path.realpath`。
 
 - **Issue#330：子集预览产物在识别收尾（item → `awaiting_review`）时被误清**——`clear_file_output` 拆分全卷产物字段与预览字段（新增 `include_preview` 开关），`job_store.update_item_status` 在目标状态为 `AWAITING_REVIEW`（识别收尾）时只清全卷产物、保留子集预览；重跑（PENDING 等）/打码开始（PROCESSING）/失败/取消仍连预览一起清。
   - **根因**：`job_models._OUTPUT_STALE_ITEM_STATUSES` 含 `AWAITING_REVIEW`（全卷产物失效集合），`update_item_status` 命中即 `clear_file_output(file_id)`；Issue#325 把 `preview_*` 纳入 `_OUTPUT_ARTIFACT_FIELDS` 后，「识别收尾」这条本该保留子集预览的迁移把本轮识别期的预览产物一起清了。

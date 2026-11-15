@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 from collections.abc import Iterable, Sequence
@@ -28,6 +29,8 @@ from app.services.partial_export_service import (
     slice_pdf_pages,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _remove_quietly(path: str | None) -> None:
     if not path:
@@ -38,16 +41,21 @@ def _remove_quietly(path: str | None) -> None:
         pass
 
 
-def _remove_stale_preview(path: str) -> None:
-    """Issue#332：删上一份子集预览（路径必须在 OUTPUT_DIR 内，best-effort）。"""
+def _remove_stale_preview(path: str, file_id: str = "") -> None:
+    """Issue#332：删上一份子集预览（路径必须在 OUTPUT_DIR 内，best-effort）。
+
+    删失败只留 warning（与 ``redaction_orchestrator._discard_subset_preview_file`` 同口径）——
+    新预览已经可用，静默会让孤儿文件无声堆积。
+    """
     try:
         from app.core.file_validation import safe_path_in_dir
 
         if not safe_path_in_dir(path, settings.OUTPUT_DIR):
+            logger.warning("Refuse to delete subset preview outside OUTPUT_DIR: %s", path)
             return
         _remove_quietly(path)
-    except Exception:
-        pass
+    except OSError:
+        logger.warning("Failed to delete stale subset preview for %s: %s", file_id, path, exc_info=True)
 
 
 def _has_selected_regions(
@@ -258,8 +266,11 @@ async def create_subset_preview(
                 previous.get("preview_output_path") if isinstance(previous, dict) else None
             )
             file_store.update_fields(fid, payload)
-        if isinstance(stale_preview, str) and stale_preview.strip() and stale_preview != preview_path:
-            _remove_stale_preview(stale_preview)
+        if isinstance(stale_preview, str) and stale_preview.strip():
+            # Issue#332：按 realpath 比较——OUTPUT_DIR 可能是符号链接/历史拼写，
+            # 字符串比较相等即跳过删除（绝不误删刚写好的新产物）。
+            if os.path.realpath(stale_preview) != os.path.realpath(preview_path):
+                _remove_stale_preview(stale_preview, fid)
     return {
         "file_id": file_info.get("file_id") or file_info.get("id"),
         "processed_pages": normalized,

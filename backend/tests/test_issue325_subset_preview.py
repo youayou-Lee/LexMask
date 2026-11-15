@@ -487,3 +487,52 @@ def test_regenerate_subset_preview_removes_previous_file(env, tmp_path):
     assert env["file-1"]["preview_output_path"] == second_path
     leftovers = sorted(p.name for p in Path(settings.OUTPUT_DIR).glob("subset-preview-*.pdf"))
     assert leftovers == [Path(second_path).name]
+
+
+def test_regenerate_keeps_preview_outside_output_dir(env, tmp_path):
+    """Issue#332 门⑥ I-1①：旧 preview_output_path 落在 OUTPUT_DIR 之外 ⇒ 不得删。"""
+    store, job_id, item_id = _seed(tmp_path, 3)
+    src = _scanned_pdf(tmp_path / "src.pdf", 3)
+    info = _file_info(tmp_path, src, 3)
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"%PDF-1.4\noutside\n")
+    info["preview_output_path"] = str(outside)
+    env["file-1"] = info
+
+    result = _call(env, store, job_id, item_id, info, pages=[1])
+
+    assert Path(result["preview_output_path"]).is_file()
+    assert outside.is_file(), "OUTPUT_DIR 之外的旧文件必须存活（防越界删除）"
+
+
+def test_regenerate_keeps_old_preview_when_store_write_fails(env, tmp_path):
+    """Issue#332 门⑥ I-1②：写元数据失败 ⇒ 旧预览必须仍在（失败偏向漏删，不偏向悬空）。"""
+
+    class _Boom(_FileStore):
+        def update_fields(self, file_id: str, updates: dict) -> None:
+            raise RuntimeError("db down")
+
+    store, job_id, item_id = _seed(tmp_path, 3)
+    src = _scanned_pdf(tmp_path / "src.pdf", 3)
+    info = _file_info(tmp_path, src, 3)
+    env["file-1"] = info
+
+    first = _call(env, store, job_id, item_id, info, pages=[1])
+    old_path = first["preview_output_path"]
+    assert Path(old_path).is_file()
+
+    boom = _Boom(env)
+    with pytest.raises(RuntimeError):
+        asyncio.run(
+            create_subset_preview(
+                file_store=boom,
+                store=store,
+                job_row=store.get_job(job_id),
+                item_row=store.get_item(item_id),
+                file_info=info,
+                config=_config(),
+                pages=[2],
+            )
+        )
+
+    assert Path(old_path).is_file(), "写元数据失败时不得删旧预览（先写后删的顺序）"
