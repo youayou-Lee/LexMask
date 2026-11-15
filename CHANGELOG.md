@@ -3,6 +3,15 @@
 
 ## 2026-11-15
 
+### 清扫（Issue#296）死代码第二轮：recognition-config 孤儿导出族 + rec hook 仅测试引用字段
+
+- **为什么**：#269（PR#298）挂账面。`buildPlaygroundTextGroups` 及其类型族的唯一消费者（`use-playground-recognition.ts`）已在 #269 删除，成为零消费孤儿导出；`sortedEntityTypes`/`setPlaygroundTextTypeGroupSelection` 仅测试 mock 引用、UI 零消费。
+- **清扫了什么**：
+  - `features/playground/lib/recognition-config.ts`：删 `buildPlaygroundTextGroups`、`PlaygroundTextGroup`、`PlaygroundTextGroupKey` 类型族及随之失去唯一消费方的 `SelectionTone` import。
+  - i18n 死键：`playground.group.regex` / `playground.group.semantic`（唯一消费方即被删函数；en 两副本 + zh 三副本；zh/en 键位奇偶测试两侧同步删保持 parity）。
+  - `use-playground-recognition.ts` 公开面收缩：`sortedEntityTypes`（memo）与 `setPlaygroundTextTypeGroupSelection`（callback）及 return 条目；`sortEntityTypes` 服务函数仍有 2 处活消费（缓存载入/目录重取）保留。
+  - 三个组件测试（legal-preset / scope-dialog / reskin）mock 对象同步清理两死字段。
+- **验证**：逐项 grep 证明零消费后才删（含测试、e2e、i18n、类型引用、动态键模板串）；全量 vitest 与基线 comm -3 零差异；tsc 双门 rc=0；build 绿；复活变异抽查：临时加回被删导出，607 用例零变红且类型门通过，证实所删为零消费真死代码。
 ### 修正（Issue#302）正则保证层与任务级识别项勾选求交：未勾选的日期不再被 DATE 正则打码
 
 - **为什么**：正则保证层（#43 引入）只看账号级启用集（`get_regex_types`），与任务级勾选完全无关——用户未勾选时间/日期，正文日期仍被 DATE 正则打码（实例：扫描型PDF误判为文本型-1.pdf 第 3 页）。与「勾什么识别什么」的既定语义（#78 账号三态、`_semantic_entity_type_ids` 注释）矛盾。docline 链保证层（#115）同族同病。

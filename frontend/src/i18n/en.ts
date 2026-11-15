@@ -1246,8 +1246,6 @@ const enOverrides: Record<string, string> = {
   'playground.presetAll': 'All types',
   'playground.advancedTypes': 'Advanced · fine-tune types',
   'playground.advancedReview': 'Advanced · per-type / per-box selection',
-  'playground.group.regex': 'Fixed format',
-  'playground.group.semantic': 'Semantic recognition',
   'playground.popout': 'Pop out',
   'playground.reRecognize': 'Run recognition again',
   'playground.reconfigTypes': 'Adjust recognition items',
@@ -1932,8 +1930,6 @@ Object.assign(enOverrides, {
     'OCR extracts text and coordinates; HaS handles semantic recognition. The image pipeline does not use fallback expressions.',
   'settings.pipelineDisplayName.image': 'Visual elements',
   'settings.pipelineDescription.image': 'GLM-4.6V detects fixed visual elements.',
-  'playground.group.regex': 'Custom fallback',
-  'playground.group.semantic': 'HaS text recognition',
   'settings.redaction.regexEmptyInline':
     'No default setup is needed. Custom fallback items will appear here as soon as you add them.',
   'settings.redaction.pipelineEmptyInline':
