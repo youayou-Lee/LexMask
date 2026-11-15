@@ -160,7 +160,9 @@ class JobStore(RepairMixin):
             conn.commit()
         return iid
 
-    def _clear_outputs_for_file_ids(self, file_ids: list[str] | set[str]) -> None:
+    def _clear_outputs_for_file_ids(
+        self, file_ids: list[str] | set[str], *, include_preview: bool = True
+    ) -> None:
         if not file_ids:
             return
         try:
@@ -170,7 +172,7 @@ class JobStore(RepairMixin):
             return
         for file_id in dict.fromkeys(str(fid) for fid in file_ids if fid):
             try:
-                clear_file_output(file_id)
+                clear_file_output(file_id, include_preview=include_preview)
             except Exception:
                 logging.getLogger(__name__).warning(
                     "Failed to clear stale output for file %s", file_id, exc_info=True
@@ -524,7 +526,13 @@ class JobStore(RepairMixin):
                 )
                 conn.commit()
         if file_id_to_clean:
-            self._clear_outputs_for_file_ids([file_id_to_clean])
+            # 识别收尾（→ AWAITING_REVIEW）不清子集预览：子集预览是本轮识别期的产物，
+            # 识别跑完就清会让进行中的子集结果页瞬间 400（门④ 2026-11-16 实弹验收发现）。
+            # 重跑识别（PENDING 等）/ 打码开始（PROCESSING）/ 失败 / 取消 仍连预览一起清。
+            self._clear_outputs_for_file_ids(
+                [file_id_to_clean],
+                include_preview=status.value != JobItemStatus.AWAITING_REVIEW.value,
+            )
 
     def set_item_error_message(self, item_id: str, error_message: str | None) -> None:
         """只改 error_message，不动状态（Issue#199 页级隔离）。

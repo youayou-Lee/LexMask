@@ -291,12 +291,20 @@ def repair_file_store_paths() -> int:
     return repaired
 
 
+# 全卷产物字段（清产/重跑/打码覆盖时一律失效）。
 _OUTPUT_ARTIFACT_FIELDS = (
     "output_path",
     "output_file_id",
     "entity_map",
     "redacted_count",
-    # Issue#325：清产/拒绝/重跑同时失效子集预览（否则 preview=true 会读到上一轮旧遮罩）。
+)
+
+# Issue#325：子集预览产物字段（**独立生命周期**——只在「重跑/打码开始/清产」时失效）。
+# 2026-11-16 门④ 实弹验收发现：识别收尾（item → AWAITING_REVIEW）走的是同一个
+# 「产物失效」迁移集合，若把 preview_* 一并清掉，用户在 54/86 时点出的子集结果页会在
+# 后台识别跑完的瞬间变成「子集预览尚未生成」（翻页/下载全 400）——而识别收尾并不是
+# 「上一轮旧产物」，恰恰是这批预览页的来源。
+_PREVIEW_ARTIFACT_FIELDS = (
     "preview_output_path",
     "processed_pages",
     "page_map",
@@ -307,11 +315,17 @@ _OUTPUT_ARTIFACT_FIELDS = (
 )
 
 
-def clear_file_output(file_id: str, *, delete_disk: bool = True) -> bool:
+def clear_file_output(
+    file_id: str, *, delete_disk: bool = True, include_preview: bool = True
+) -> bool:
     """Remove stale redacted-output signals for a file.
 
     Returns True when file_store metadata changed. Disk deletion is best-effort
     and limited to OUTPUT_DIR so a bad legacy path cannot remove unrelated data.
+
+    ``include_preview=False``：只清全卷产物，保留子集预览（识别收尾专用——识别完成
+    不是「旧产物失效」，清掉会让进行中的子集结果页立刻 400）。默认 True 保持清产/
+    驳回/删除/重跑路径的既有语义。
     """
     info = file_store.get(file_id)
     if not isinstance(info, dict):
@@ -320,8 +334,11 @@ def clear_file_output(file_id: str, *, delete_disk: bool = True) -> bool:
     next_info = dict(info)
     output_path = next_info.get("output_path")
     preview_path = next_info.get("preview_output_path")
+    keys = _OUTPUT_ARTIFACT_FIELDS
+    if include_preview:
+        keys = keys + _PREVIEW_ARTIFACT_FIELDS
     changed = False
-    for key in _OUTPUT_ARTIFACT_FIELDS:
+    for key in keys:
         if key in next_info:
             next_info.pop(key, None)
             changed = True
@@ -330,7 +347,10 @@ def clear_file_output(file_id: str, *, delete_disk: bool = True) -> bool:
         file_store.set(file_id, next_info)
 
     if delete_disk:
-        for stale in (output_path, preview_path):
+        stale_paths = [output_path]
+        if include_preview:
+            stale_paths.append(preview_path)
+        for stale in stale_paths:
             if not (isinstance(stale, str) and stale.strip()):
                 continue
             try:
