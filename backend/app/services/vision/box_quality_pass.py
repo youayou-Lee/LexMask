@@ -54,14 +54,11 @@ _AMOUNT_TRAILING_RUN_RE = re.compile(r"[0-9０-９][0-9０-９,，.．]*$")
 _CHINESE_NUMERIC_CHARS = frozenset("〇零一二两三四五六七八九十百千万亿壹贰叁肆伍陆柒捌玖拾佰仟兆")
 
 # ① 消解时的主类型优先级。法律文书编号形态值存活为 LEGAL_CASE_ID/
-# DOCUMENT_NUMBER（产品语义：业务编号 CASE_NUMBER 留给合同号等非法律形态）；
-# 非编号形态值回退业务类型优先。
+# DOCUMENT_NUMBER（产品语义：法律编号归法律类型）；非编号形态值
+# （纯数字业务编号等）回退业务类型优先——CASE_NUMBER 在前（门⑥ I-1）。
 _PREFERRED_CODE_TYPES = ("LEGAL_CASE_ID", "DOCUMENT_NUMBER")
-_MASTER_TYPE_PRIORITY = (
-    "LEGAL_CASE_ID",
-    "DOCUMENT_NUMBER",
-    "CASE_NUMBER",
-)
+_CODE_SHAPED_MASTER_PRIORITY = _PREFERRED_CODE_TYPES + ("CASE_NUMBER",)
+_NON_CODE_MASTER_PRIORITY = ("CASE_NUMBER",) + _PREFERRED_CODE_TYPES
 # ① 重叠判据：交集面积 / 较小框面积（同值 + 明显重叠才算同一处出现）。
 _SAME_VALUE_OVERLAP_RATIO = 0.3
 # ③ 页脚带：页底 8%；宽度 ≤ 5% 页宽（孤立短数字的几何侧证据）。
@@ -143,17 +140,16 @@ def _overlap_ratio(a: SensitiveRegion, b: SensitiveRegion) -> float:
 
 
 def _master_rank(region: SensitiveRegion, value: str) -> tuple:
-    """连通分量的存活排序键：编号形态优先法律编号类型，其余业务类型优先；
+    """连通分量的存活排序键：编号形态值法律编号类型优先；非编号形态值
+    业务类型（CASE_NUMBER）优先（门⑥ I-1：与设计稿 §L2① 一致）；
     同优先级取面积更大者（遮盖面永不收缩），最后按几何键定全序。"""
     etype = region.entity_type
     code_shaped = bool(CASE_ID_CORE_RE.search(value)) or value.rstrip().endswith("号")
-    if code_shaped and etype in _PREFERRED_CODE_TYPES:
-        pri = _PREFERRED_CODE_TYPES.index(etype)
-    else:
-        try:
-            pri = len(_PREFERRED_CODE_TYPES) + _MASTER_TYPE_PRIORITY.index(etype)
-        except ValueError:
-            pri = len(_PREFERRED_CODE_TYPES) + len(_MASTER_TYPE_PRIORITY)
+    priority = _CODE_SHAPED_MASTER_PRIORITY if code_shaped else _NON_CODE_MASTER_PRIORITY
+    try:
+        pri = priority.index(etype)
+    except ValueError:
+        pri = len(priority)
     return (pri, -(region.width * region.height), region.top, region.left)
 
 
@@ -173,8 +169,8 @@ def dedupe_same_value_regions(regions: list[SensitiveRegion]) -> list[SensitiveR
     # 分组键只含值（去空白）——跨类型同值双份正是要消解的对象。
     groups: dict[str, list[int]] = {}
     for idx, r in enumerate(regions):
-        if r.source == "visual_features":
-            continue  # 值判据对视觉特征框无意义（指纹/手写同像素双实体判例）
+        if r.source in ("visual_features", "manual"):
+            continue  # 值判据对视觉特征框无意义（指纹/手写双实体判例）；人工框永存（#280）
         if r.entity_type not in _QUALITY_PASS_TYPES:
             continue  # 家族外类型不参与（0710 判例 + 预览栈越界实证）
         groups.setdefault(_strip_ws(r.text), []).append(idx)
@@ -245,6 +241,10 @@ def merge_wrapped_number_regions(regions: list[SensitiveRegion]) -> list[Sensiti
         if not head or len(head) < 2:
             continue
         if not _CASE_ID_HEAD_PREFIX_RE.search(head) or head.rstrip().endswith("号"):
+            continue
+        if CASE_ID_CORE_RE.search(head):
+            # 头半已含完整编号核心（核心+叙述后缀形态）——它是完整值而非
+            # 断裂头半，拿去拼接会产出垃圾并值（门⑥ M-3）
             continue
         # 向后扫描（y 序）首个未消费同类型候选——两半之间允许夹其他区域
         for q in range(pos + 1, len(order)):

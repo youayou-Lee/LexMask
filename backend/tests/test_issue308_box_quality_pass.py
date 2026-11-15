@@ -355,16 +355,21 @@ class TestWiringNails:
     def _source(self, relpath: str) -> str:
         return (Path(__file__).resolve().parents[1] / "app" / "services" / relpath).read_text()
 
-    def test_ocr_has_image_line_wires_value_passes(self) -> None:
+    def test_ocr_has_wires_both_lines_symmetrically(self) -> None:
+        # I-2（MUT-1 变异实证）：存在性断言判不出「删一半接线」——按调用
+        # 点计数：两线（图像/PDF 文本层）各 L1×2 + L2 dedupe×2 + merge×1。
         src = self._source("ocr_has_vision_service.py")
-        assert "normalize_number_shaped_entities" in src
-        assert "drop_fragment_entities" in src
-        assert "dedupe_same_value_regions" in src
-        assert "merge_wrapped_number_regions" in src
+        assert src.count("box_quality_pass.normalize_number_shaped_entities(") == 2
+        assert src.count("box_quality_pass.drop_fragment_entities(") == 2
+        assert src.count("box_quality_pass.dedupe_same_value_regions(") == 4
+        assert src.count("box_quality_pass.merge_wrapped_number_regions(") == 2
+        # 懒 import 与调用点同数（删一线即少一处 import，同步红）
+        assert src.count("from app.services.vision import box_quality_pass") == 4
 
     def test_vision_service_wires_footer_pass(self) -> None:
+        # 页脚闸两处：_filter_ocr_has_regions（图像线）+ _detect_with_pdf_text_layer
         src = self._source("vision_service.py")
-        assert "drop_footer_pagenumber_regions" in src
+        assert src.count("box_quality_pass.drop_footer_pagenumber_regions(") == 2
 
     def test_passes_registered_in_module(self) -> None:
         # 五个 pass 都在 box_quality_pass 公开面（防实现被静默改名悬空接线）
@@ -423,3 +428,84 @@ class TestAmountBlockCrop:
         text = "合同总金额￥20,1280元相关费用另行计算"
         regions = self._amount_regions(self._block(text, recovered=True), "201280元")
         assert regions == []
+
+
+# ---------------------------------------------------------------------------
+# 门⑥修复波钉（2026-11-15 评审 APPROVE with fixes：I-1/I-2/M-1/M-2/M-4/M-5）
+# ---------------------------------------------------------------------------
+
+class TestGate6FixWave:
+    def test_non_code_shaped_pair_keeps_case_number(self) -> None:
+        # I-1：非编号形态值（无（YYYY）、不以号收尾）的业务类型优先——
+        # CASE_NUMBER 存活、LEGAL_CASE_ID 侧消解（设计稿 §L2① 原口径）
+        regions = [
+            _region("A4418271500002023060027", "LEGAL_CASE_ID", 100, 100, 300, 20),
+            _region("A4418271500002023060027", "CASE_NUMBER", 100, 100, 298, 19),
+        ]
+        got = bqp.dedupe_same_value_regions(regions)
+        assert len(got) == 1
+        assert got[0].entity_type == "CASE_NUMBER"
+
+    def test_manual_source_never_deduped(self) -> None:
+        # M-2：人工框永存（#280 铁律语义）——识别期结构上不出现，防御性豁免
+        regions = [
+            _region("（2026）桂06执155号", "LEGAL_CASE_ID", 350, 791, 270, 18),
+            _region("（2026）桂06执155号", "CASE_NUMBER", 350, 791, 268, 17, source="manual"),
+        ]
+        assert len(bqp.dedupe_same_value_regions(regions)) == 2
+
+    def test_merge_rejects_head_containing_complete_core(self) -> None:
+        # M-3：头半含完整编号核心+叙述后缀 → 是完整值不是断裂头半，禁拼接
+        left = _region("（2021）桂0603民初2237号确认", "LEGAL_CASE_ID", 689, 208, 260, 18)
+        right = _region("57号", "LEGAL_CASE_ID", 139, 245, 60, 17)
+        got = bqp.merge_wrapped_number_regions([left, right])
+        assert [r.text for r in got] == ["（2021）桂0603民初2237号确认", "57号"]
+
+    def test_merge_rejects_tail_with_residue(self) -> None:
+        # M-4（MUT-2 变异存活证据）：尾半「号后带残渣」拼接不构成完整编号 → 不并
+        left = _region("（2021）桂0603民", "LEGAL_CASE_ID", 689, 208, 181, 18)
+        right = _region("初2237号文书", "LEGAL_CASE_ID", 139, 245, 130, 17)
+        got = bqp.merge_wrapped_number_regions([left, right])
+        assert [r.text for r in got] == ["（2021）桂0603民", "初2237号文书"]
+
+    def test_amount_multi_same_signature_runs_no_region(self) -> None:
+        # M-1 修复波实证修订：块内同签名游程 >1 时 `_is_same_amount_value_block`
+        # 的全块签名前置（compact 总数字内容==实体签名）结构性不成立 → 块路径
+        # 根本不触发 → 既不整块 over-mask 也不裁一半（0 区域；评审描述的
+        # 「改前双覆盖」不成立，守卫保留为纵深防御）。钉当前真实行为。
+        text = "款项￥20,1280元与备用金20,1280元分别核算"
+        regions = self_block_regions(text, "201280元")
+        assert regions == []
+
+    def test_projection_nail_trimmed_case_id_covers_core_only(self) -> None:
+        # M-5（A2′e 适配）：未并值框的投影净度——紧裁框的覆盖 ⊇ 核心且
+        # 不越过核心±一字宽。并值双紧框在 A4′ 另有几何钉（合同内在张力
+        # 的适配口径：投影钉只对未并值框生效）。
+        text = "经审理查明：双方确认（2021）桂0603民初2237号调解书有效"
+        blocks = [_block_with_chars_for(text)]
+        regions = match_regions(blocks, [{"type": "LEGAL_CASE_ID", "text": "（2021）桂0603民初2237号"}])
+        assert len(regions) == 1
+        r = regions[0]
+        core_start = text.index("（2021）")
+        core_end = core_start + len("（2021）桂0603民初2237号")
+        # 字符框每字 10px：核心起止像素
+        assert r.left >= core_start * 10 - 2
+        assert r.left + r.width <= core_end * 10 + 2
+
+
+def self_block_regions(text: str, entity_text: str):
+    """有 chars 的块经 match_entities_to_ocr 的 AMOUNT 区域（块路径用例）。"""
+    block = _block_with_chars_for(text)
+    return match_regions([block], [{"type": "AMOUNT", "text": entity_text}])
+
+
+def _block_with_chars_for(text: str):
+    from test_issue43_case_number_floor import _block_with_chars
+
+    return _block_with_chars(text)
+
+
+def match_regions(blocks, entities):
+    from app.services.vision.ocr_entity_match import match_entities_to_ocr
+
+    return match_entities_to_ocr(blocks, entities)

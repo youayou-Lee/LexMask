@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from difflib import SequenceMatcher
 
 from app.services.ocr_has_vision_service import OCRTextBlock, SensitiveRegion
@@ -377,36 +378,39 @@ def _crop_amount_block_region(block, block_text: str, entity_text: str, document
     前提：`_is_same_amount_value_block` 已判定块内数字内容与实体同签名。这里
     找块内与实体同签名的数字游程（含紧随币值单位），用字符框裁出紧框——
     单行可证明才收（跨行/无 chars/找不到同签名游程一律 None，保持整块
-    over-mask，never-uncover 不变）。
+    over-mask，never-uncover 不变）。块内同签名游程多于一个时不裁
+    （门⑥ M-1：只裁首个会把第二次显示裸露在外，宁可保持整块）。
     """
-    import re as _re
-
     if not getattr(block, "chars", None):
         return None
     signature = _amount_value_signature(entity_text)
     if not signature:
         return None
-    for run in _re.finditer(r"(?:￥|¥)?[0-9０-９][0-9０-９,，.．]*(?:[元圆块钱]整?)?", block_text):
-        if _amount_value_signature(run.group(0)) != signature:
-            continue
-        rects = _entity_char_box_line_rects(
-            block, block_text, run.start(), run.end(), document_line_height
+    runs = [
+        run for run in re.finditer(
+            r"(?:￥|¥)?[0-9０-９][0-9０-９,，.．]*(?:[元圆块钱]整?)?", block_text
         )
-        if len(rects) != 1:
-            return None  # 跨行或多段：无法单框紧裁，保持整块
-        x1, y1, x2, y2 = rects[0]
-        return SensitiveRegion(
-            text=run.group(0),
-            entity_type="AMOUNT",
-            left=x1,
-            top=y1,
-            width=x2 - x1,
-            height=y2 - y1,
-            confidence=getattr(block, "confidence", None),
-            source="text_match",
-        )
-    return None
-
+        if _amount_value_signature(run.group(0)) == signature
+    ]
+    if len(runs) != 1:
+        return None  # 零个或多个同签名游程：无法唯一指认，保持整块
+    run = runs[0]
+    rects = _entity_char_box_line_rects(
+        block, block_text, run.start(), run.end(), document_line_height
+    )
+    if len(rects) != 1:
+        return None  # 跨行或多段：无法单框紧裁，保持整块
+    x1, y1, x2, y2 = rects[0]
+    return SensitiveRegion(
+        text=run.group(0),
+        entity_type="AMOUNT",
+        left=x1,
+        top=y1,
+        width=x2 - x1,
+        height=y2 - y1,
+        confidence=getattr(block, "confidence", None),
+        source="text_match",
+    )
 
 
 def _is_same_amount_value_block(entity_text: str, block_text: str) -> bool:
