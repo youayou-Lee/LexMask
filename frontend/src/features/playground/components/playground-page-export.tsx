@@ -52,9 +52,11 @@ export function PlaygroundPageExport({
   const [open, setOpen] = useState(!compact);
 
   const counts = useMemo(() => {
+    // Issue#280 × #278：manual_verified 并入 success 桶展示（exportable 谓词，该页已可导出）。
     const tally = { success: 0, failed: 0, pending: 0, manual_verified: 0 };
     status?.pages.forEach((cell) => {
-      tally[cell.state] += 1;
+      if (cell.state === 'manual_verified') tally.success += 1;
+      else tally[cell.state] += 1;
     });
     return tally;
   }, [status]);

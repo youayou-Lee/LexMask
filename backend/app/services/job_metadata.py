@@ -319,5 +319,10 @@ def item_to_out(row: dict[str, Any], *, owner_id: str | None = None, job_id: str
         "recognition_success_pages": page_status_service.recognized_page_count(row, page_count)
         if paged
         else 0,
+        # Issue#280：人工补框页数（保持 recognition_success_pages 纯自动口径，
+        # 前端拼「148 自动 + 1 人工 / 149」用两键相加）。
+        "manual_verified_pages_count": len(page_status_service.manual_verified_pages_of(row))
+        if paged
+        else 0,
         "recognition_failed_pages": page_status_service.failed_page_numbers(row),
     }

@@ -789,7 +789,7 @@ const enBase: Record<string, string> = {
   'batchWizard.pages.stateSuccess': 'success',
   'batchWizard.pages.stateFailed': 'failed',
   'batchWizard.pages.statePending': 'not run',
-  'batchWizard.pages.summary': 'Success {success} · Failed {failed} · Not run {pending}',
+  'batchWizard.pages.summary': 'OK {success} · Manual {manual} · Failed {failed} · Pending {pending}',
   'batchWizard.pages.selectedCount': '{count} page(s) selected',
   'batchWizard.pages.selectAll': 'Select succeeded',
   'batchWizard.pages.selectNone': 'Clear',
@@ -814,6 +814,37 @@ const enBase: Record<string, string> = {
   'batchWizard.pages.unsupported': 'This file type has no per-page view (PDF / scanned only).',
   'batchWizard.pages.finalWithFailures': 'Done ({done}/{total}, page {pages} failed)',
   // Issue#279: per-page "what happened here" panel + volume-header route chip (DB only, no JSONL).
+  // Issue#280: manual annotation fallback for failed pages (manual_verified 4th state).
+  'batchWizard.pages.stateManual': 'Manual',
+  'batchWizard.pages.manualAnnotate': 'Annotate manually',
+  'batchWizard.pages.manualRevoke': 'Revoke manual annotation',
+  'batchWizard.pages.manualBadge': 'Manual',
+  'batchWizard.pages.manualDialogTitle': 'Page {page} · Manual annotation',
+  'batchWizard.pages.manualDialogHint': 'Draw boxes on the page image and pick a type; text is optional (graphical masking still applies).',
+  'batchWizard.pages.manualTextPlaceholder': 'Box text (optional)',
+  'batchWizard.pages.manualDialogLoadError': 'Failed to load the page image; close and reopen this dialog.',
+  'batchWizard.pages.manualBoxCount': '{count} box(es)',
+  'batchWizard.pages.manualSave': 'Save annotation',
+  'batchWizard.pages.manualSaving': 'Saving…',
+  'batchWizard.pages.manualError.manual_boxes_required': 'At least one box is required (text is optional)',
+  'batchWizard.pages.manualError.page_not_failed': 'This page is not in the failed list; no manual annotation needed',
+  'batchWizard.pages.manualError.page_already_manual_verified': 'This page is already manually annotated; revoke it first to redo',
+  'batchWizard.pages.manualError.item_busy': 'This file is being recognized or retried; try again later',
+  'batchWizard.pages.manualError.manual_verify_requires_awaiting_review': 'Manual annotation is only available while the item awaits review',
+  'batchWizard.pages.manualError.page_out_of_range': 'Page number is outside this file’s page range',
+  'batchWizard.pages.manualError.manual_boxes_invalid': 'Invalid box coordinates (must be within 0-1 and carry a type)',
+  'batchWizard.pages.manualError.manual_boxes_conflict': 'This page has boxes drawn in the review canvas; clear them there (or revoke the manual annotation) before annotating',
+  'batchWizard.pages.manualError.manual_verify_unsupported_type': 'This file type does not support manual annotation (PDF / scanned / image only)',
+  'batchWizard.pages.manualError.unknown': 'Manual annotation was not submitted: {message}',
+  // Issue#280: export-side manual-annotation disclosure (step5 + partial export dialog).
+  'batchWizard.export.manualHint': 'This volume contains {count} manually annotated page(s) (page {pages}); they ship with the package and are flagged in the cover sheet as “manually annotated, NOT verified by the automated pipeline”',
+  'pageDetail.manual.title': 'Manual annotation · {operator}',
+  'pageDetail.manual.operator': 'Operator',
+  'pageDetail.manual.verifiedAt': 'Annotated at',
+  'pageDetail.manual.boxCount': 'Boxes',
+  'pageDetail.manual.coexistHint': 'Automatic recognition succeeded on rerun; manual and automatic boxes coexist — you can revoke the manual annotation and decide in the review canvas',
+  'pageDetail.manualRevokeConfirm': 'Revoking returns this page to “failed” and blocks delivery again. Revoke this annotation?',
+
   'pageDetail.title': 'What happened on page {page}',
   'pageDetail.close': 'Collapse',
   'pageDetail.route': 'Route',
@@ -841,6 +872,19 @@ const enBase: Record<string, string> = {
   'pageDetail.fallbackReason.build_budget': 'Build exceeded budget',
   'pageDetail.fallbackReason.verdict_unusable': 'Text layer unusable',
   'pageDetail.fallbackReason.repeated_fragment_coverage': 'Repeated fragment coverage out of range',
+  // Issue#276: visual column states (page detail row). Hit counts are LA-scope
+  // (MinerU seal / dedicated detector channels not included).
+  'pageDetail.visual': 'Visual column',
+  'pageDetail.visualDone': 'Ran ({count} LA hits)',
+  'pageDetail.visualDoneZeroHit': 'Ran (0 LA hits)',
+  'pageDetail.visualSkippedLaUnavailable': 'Skipped (vision service unavailable)',
+  'pageDetail.visualFailedStage': 'Failed (visual stage error; text column unaffected)',
+  'pageDetail.visualAbsent': 'No visual types selected',
+  // Issue#276: volume-level visual gap hint (skipped/failed pages are green but
+  // not "fully complete").
+  'batchWizard.pages.visualSkipHint':
+    'Visual column gaps: pages {pages} skipped (LA unavailable) or failed; text results unaffected',
+  // Legacy batchWizard.partialExport.* keys migrated to batchWizard.export.* by #278.
   'batchWizard.step4.originalText': 'Original',
   'batchWizard.step4.redactedPreview': 'Redacted Preview',
   'batchWizard.step4.entityList': 'Entity List',
@@ -1267,8 +1311,6 @@ const enOverrides: Record<string, string> = {
   'playground.presetAll': 'All types',
   'playground.advancedTypes': 'Advanced · fine-tune types',
   'playground.advancedReview': 'Advanced · per-type / per-box selection',
-  'playground.group.regex': 'Fixed format',
-  'playground.group.semantic': 'Semantic recognition',
   'playground.popout': 'Pop out',
   'playground.reRecognize': 'Run recognition again',
   'playground.reconfigTypes': 'Adjust recognition items',
@@ -1953,8 +1995,6 @@ Object.assign(enOverrides, {
     'OCR extracts text and coordinates; HaS handles semantic recognition. The image pipeline does not use fallback expressions.',
   'settings.pipelineDisplayName.image': 'Visual elements',
   'settings.pipelineDescription.image': 'GLM-4.6V detects fixed visual elements.',
-  'playground.group.regex': 'Custom fallback',
-  'playground.group.semantic': 'HaS text recognition',
   'settings.redaction.regexEmptyInline':
     'No default setup is needed. Custom fallback items will appear here as soon as you add them.',
   'settings.redaction.pipelineEmptyInline':

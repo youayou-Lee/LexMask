@@ -20,7 +20,7 @@ import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
-import type { ItemPageStatus, PageCellState } from '@/services/jobsApi';
+import type { ItemPageStatus, ItemPageVisual, PageCellState } from '@/services/jobsApi';
 
 import { extendSelection, parsePageRangeInput, pruneSelection } from '../lib/page-range';
 
@@ -34,6 +34,10 @@ interface BatchPageMatrixProps {
   onRetryPage?: (page: number) => void;
   /** 整批重试失败页；与 onRetryPage 同时给出时渲染工具栏按钮。 */
   onRetryFailed?: (pages: number[]) => void;
+  /** Issue#280：人工补框入口——失败页详情面板内的显式按钮触发。 */
+  onManualAnnotate?: (page: number) => void;
+  /** Issue#280：撤销补框——manual 页详情面板内的显式按钮（两段确认）触发。 */
+  onManualRevoke?: (page: number) => void;
   retrying?: boolean;
   /**
    * 识别进行中（仅单文件入口会用）：状态每 3 秒刷新，某页可能从成功变失败，
@@ -48,9 +52,10 @@ const PAGE_CHUNK = 50;
 const STATE_STYLES: Record<PageCellState, string> = {
   success: 'border-[var(--success-border)] bg-[var(--success-surface)] text-[var(--success-foreground)]',
   failed: 'border-destructive/40 bg-destructive/10 text-destructive',
+  // Issue#280：琥珀色系——与 success 绿（自动识别成功）、failed 红（未处理）区分。
+  // （#278 曾在此留防御性成功格兜底；#280 真身合入后按其琥珀样式收敛为单条。）
+  manual_verified: 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400',
   pending: 'border-border bg-muted text-muted-foreground',
-  // #280 manual_verified：本支只做防御性展示兜底（样式沿用成功格），不实现 #280 功能。
-  manual_verified: 'border-[var(--success-border)] bg-[var(--success-surface)] text-[var(--success-foreground)]',
 };
 
 /** 已知 docline fallback 原因码的 i18n 键空间；未知码直显原文（同 retryError 的处理）。 */
@@ -77,6 +82,8 @@ export function BatchPageMatrix({
   disabled = false,
   onRetryPage,
   onRetryFailed,
+  onManualAnnotate,
+  onManualRevoke,
   retrying = false,
   pruneOnChange = true,
 }: BatchPageMatrixProps) {
@@ -85,11 +92,14 @@ export function BatchPageMatrix({
   const [rangeText, setRangeText] = useState('');
   // Issue#279：当前展开详情的页（单槽——点另一页即换页展开，再点同页收起）。
   const [expandedPage, setExpandedPage] = useState<number | null>(null);
+  // Issue#280：撤销补框的两段确认（true = 已点过「撤销补框」，展示确认按钮）。
+  const [revokeConfirming, setRevokeConfirming] = useState(false);
   // Shift 连选的锚点：点过的上一页（只在可选页上更新）。
   const anchorRef = useRef<number | null>(null);
   useEffect(() => {
     setVisibleCount(PAGE_CHUNK);
     setExpandedPage(null);
+    setRevokeConfirming(false);
   }, [status.item_id, status.page_count]);
   const visiblePages = useMemo(
     () => status.pages.slice(0, visibleCount),
@@ -97,30 +107,28 @@ export function BatchPageMatrix({
   );
   const hiddenCount = status.pages.length - visiblePages.length;
   const counts = useMemo(() => {
-    const tally = { success: 0, failed: 0, pending: 0, manual_verified: 0 };
+    const tally = { success: 0, manual_verified: 0, failed: 0, pending: 0 };
     status.pages.forEach((cell) => {
       tally[cell.state] += 1;
     });
     return tally;
   }, [status.pages]);
 
-  // r2 F4：可导出谓词 = success ∪ manual_verified（#280 人工页；本支防御性接受，
-  // 选择/剪枝用 exportable 集——success-only 会把 manual 页静默摘出选择集）。
+  // Issue#280 × #278 r2 F4：可导出谓词 = success ∪ manual_verified（#199 红线只挡
+  // failed——manual 页已由后端物理移出失败清单；success-only 会把 manual 页静默
+  // 摘出选择集，与「manual 页默认包含」裁定冲突）。
+  const selectableState = (state: PageCellState) => state === 'success' || state === 'manual_verified';
   const allSuccess = useMemo(
     () =>
       new Set(
-        status.pages
-          .filter((cell) => cell.state === 'success' || cell.state === 'manual_verified')
-          .map((cell) => cell.page),
+        status.pages.filter((cell) => selectableState(cell.state)).map((cell) => cell.page),
       ),
     [status.pages],
   );
   const selectablePages = useMemo(
     () =>
       new Set(
-        status.pages
-          .filter((cell) => cell.state === 'success' || cell.state === 'manual_verified')
-          .map((cell) => cell.page),
+        status.pages.filter((cell) => selectableState(cell.state)).map((cell) => cell.page),
       ),
     [status.pages],
   );
@@ -165,6 +173,17 @@ export function BatchPageMatrix({
     return text === key ? stage : text;
   };
 
+  // Issue#276：视觉列四态人话（done 命中数为 LA 口径——不含 MinerU seal/专用检测器）。
+  const visualStateText = (visual: ItemPageVisual) => {
+    if (visual.state === 'done') {
+      return (visual.zero_hit ? t('pageDetail.visualDoneZeroHit') : t('pageDetail.visualDone'))
+        .replace('{count}', String(visual.region_count ?? 0));
+    }
+    if (visual.state === 'skipped') return t('pageDetail.visualSkippedLaUnavailable');
+    if (visual.state === 'failed') return t('pageDetail.visualFailedStage');
+    return t('pageDetail.visualAbsent');
+  };
+
   const activate = (page: number, state: PageCellState, shiftKey = false) => {
     // 详情展开与选择是并行的两件事：Shift 连选是批量操作，不顺手换展开页。
     // Issue#289：点击（含失败页）只负责展开/收起详情——「看」与「重试」拆分，
@@ -175,9 +194,9 @@ export function BatchPageMatrix({
   };
 
   const toggle = (page: number, state: PageCellState, shiftKey = false) => {
-    // manual_verified 页可勾选/可排除（§1 缺省语义裁定 ④「用户可手动排除」由页格
-    // 可选中性承担；#280 合入前由本支防御性放行，勾选语义与成功页一致）。
-    if (disabled || (state !== 'success' && state !== 'manual_verified')) return;
+    // manual_verified 页可勾选/可排除（#278 §1 缺省语义裁定 ④「用户可手动排除」由
+    // 页格可选中性承担；勾选语义与成功页一致）。
+    if (disabled || !selectableState(state)) return;
     const anchor = anchorRef.current;
     if (shiftKey && anchor !== null && anchor !== page) {
       onChange(extendSelection(selected, anchor, page, isSelectable));
@@ -200,6 +219,7 @@ export function BatchPageMatrix({
   const stateLabel = (state: PageCellState) => {
     if (state === 'success') return t('batchWizard.pages.stateSuccess');
     if (state === 'failed') return t('batchWizard.pages.stateFailed');
+    if (state === 'manual_verified') return t('batchWizard.pages.stateManual');
     return t('batchWizard.pages.statePending');
   };
 
@@ -276,6 +296,7 @@ export function BatchPageMatrix({
         <span className="tabular-nums" data-testid="page-matrix-summary">
           {t('batchWizard.pages.summary')
             .replace('{success}', String(counts.success))
+            .replace('{manual}', String(counts.manual_verified))
             .replace('{failed}', String(counts.failed))
             .replace('{pending}', String(counts.pending))}
         </span>
@@ -350,7 +371,7 @@ export function BatchPageMatrix({
                 key={cell.page}
                 type="button"
                 className={cn(
-                  'flex h-8 items-center justify-center rounded-md border text-[11px] font-medium tabular-nums transition-colors',
+                  'relative flex h-8 items-center justify-center rounded-md border text-[11px] font-medium tabular-nums transition-colors',
                   STATE_STYLES[cell.state],
                   isSelected && 'ring-2 ring-primary ring-offset-1 ring-offset-background',
                   // Issue#289：三种格子都可点（展开详情）——光标只区分「可用/禁用」，
@@ -377,6 +398,16 @@ export function BatchPageMatrix({
                 onClick={(event) => activate(cell.page, cell.state, event.shiftKey)}
               >
                 {cell.page}
+                {/* Issue#280：「人工」角标（非绿勾——诚实提示「曾人工补框」，撤销按钮在详情面板）。 */}
+                {cell.state === 'manual_verified' && (
+                  <span
+                    className="absolute -right-1.5 -top-1.5 rounded-full bg-amber-500 px-1 text-[9px] font-semibold leading-4 text-white"
+                    data-testid={`page-badge-manual-${cell.page}`}
+                    aria-label={t('batchWizard.pages.manualBadge')}
+                  >
+                    {t('batchWizard.pages.manualBadge')}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -429,6 +460,21 @@ export function BatchPageMatrix({
                 ? `（${humanizeFallback(expandedCell.detail.fallback_reason_code)}）`
                 : ''}
             </span>
+            {expandedCell.detail?.visual && (
+              <span
+                data-testid="page-detail-visual"
+                className={
+                  expandedCell.detail.visual.state === 'failed'
+                    || expandedCell.detail.visual.state === 'skipped'
+                    ? 'text-amber-600'
+                    : undefined
+                }
+              >
+                {t('pageDetail.visual')}
+                {'：'}
+                {visualStateText(expandedCell.detail.visual)}
+              </span>
+            )}
             {(expandedCell.duration_ms != null || expandedCell.detail?.duration_ms != null) && (
               <span data-testid="page-detail-duration">
                 {t('pageDetail.duration').replace(
@@ -459,6 +505,107 @@ export function BatchPageMatrix({
                 : t('pageDetail.noRetry')}
             </span>
           </div>
+          {/* Issue#280：manual 页详情——verify 时刻快照（审计口径）+ 共存提示 + 撤销（两段确认）。 */}
+          {expandedCell.state === 'manual_verified' && expandedCell.manual && (
+            <div className="mt-1 flex flex-col gap-1">
+              <span data-testid="page-detail-manual-meta">
+                {t('pageDetail.manual.title').replace(
+                  '{operator}',
+                  expandedCell.manual.operator || '—',
+                )}
+                {' · '}
+                {t('pageDetail.manual.boxCount')}
+                {'：'}
+                {expandedCell.manual.box_count}
+                {' · '}
+                {t('pageDetail.manual.verifiedAt')}
+                {'：'}
+                {expandedCell.manual.verified_at || '—'}
+              </span>
+              {/* r2 裁定：整卷重跑自动成功后 ledger 与人工框保留并存——诚实提示，撤销是唯一出口。 */}
+              {expandedCell.manual.auto_completed && (
+                <span
+                  className="text-muted-foreground"
+                  data-testid="page-detail-manual-coexist"
+                >
+                  {t('pageDetail.manual.coexistHint')}
+                </span>
+              )}
+              {onManualRevoke && (
+                <div className="flex items-center gap-2">
+                  {!revokeConfirming ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-6 px-2 text-xs"
+                      disabled={!retryable}
+                      onClick={() => setRevokeConfirming(true)}
+                      data-testid="page-detail-manual-revoke"
+                    >
+                      {t('batchWizard.pages.manualRevoke')}
+                    </Button>
+                  ) : (
+                    <>
+                      <span className="text-destructive">
+                        {t('pageDetail.manualRevokeConfirm')}
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="destructive"
+                        className="h-6 px-2 text-xs"
+                        disabled={!retryable}
+                        onClick={() => {
+                          setRevokeConfirming(false);
+                          onManualRevoke(expandedCell.page);
+                        }}
+                        data-testid="page-detail-manual-revoke-confirm"
+                      >
+                        {t('batchWizard.pages.manualRevoke')}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-1.5 text-xs"
+                        onClick={() => setRevokeConfirming(false)}
+                        data-testid="page-detail-manual-revoke-cancel"
+                      >
+                        {t('pageDetail.close')}
+                      </Button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {/* Issue#280：失败页详情的主按钮「人工补框」——disabled 跟随 retryable 同一准入
+              （后端只认 awaiting_review；completed/cancelled 无出边一律 409）。 */}
+          {expandedCell.state === 'failed' && onManualAnnotate && (
+            <div className="mt-1.5 flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                disabled={!retryable}
+                onClick={() => onManualAnnotate(expandedCell.page)}
+                data-testid="page-detail-manual-annotate"
+              >
+                {t('batchWizard.pages.manualAnnotate')}
+              </Button>
+              {!retryable && !retrying && (
+                <span
+                  className="text-muted-foreground"
+                  data-testid="page-detail-manual-unavailable"
+                >
+                  {busy
+                    ? t('batchWizard.pages.retryUnavailable')
+                    : t('pageDetail.retryUnavailableTerminal')}
+                </span>
+              )}
+            </div>
+          )}
           {/* Issue#289：重试只走这里的显式按钮（四态=可重试/重试中/识别中忙/已终态），格子点击不触发。 */}
           {expandedCell.state === 'failed' && onRetryPage && (
             <div className="mt-1.5 flex items-center gap-2">
@@ -487,6 +634,25 @@ export function BatchPageMatrix({
           )}
         </div>
       )}
+
+      {/* Issue#276：卷头视觉列缺失提示（琥珀）——skipped（LA 不可用）/ failed 页绿格
+          但非「完整完成」；不改变 failed 计数与重试逻辑。 */}
+      {(() => {
+        const summary = status.visual_summary;
+        if (!summary || (summary.skipped === 0 && summary.failed === 0)) return null;
+        const gapPages = status.pages
+          .filter(
+            (cell) =>
+              cell.detail?.visual?.state === 'skipped' || cell.detail?.visual?.state === 'failed',
+          )
+          .map((cell) => String(cell.page))
+          .join('、');
+        return (
+          <p className="text-xs text-amber-600" data-testid="page-matrix-visual-hint">
+            {t('batchWizard.pages.visualSkipHint').replace('{pages}', gapPages)}
+          </p>
+        );
+      })()}
 
       {counts.failed > 0 && (
         <p className="text-xs text-destructive" data-testid="page-matrix-failed-hint">

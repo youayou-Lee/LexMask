@@ -422,6 +422,8 @@ def build_summary_lines(
     export_id: str,
     recognized_pages_at_export: int,
     verify_incomplete_pages: Sequence[int] = (),
+    # 人工补框页（#280 §2.5）：调用方从 manual 账本投影取页号（partial=included ∩ 账本，
+    # full=全部账本条目），本函数只负责逐页披露。
     manual_pages: Sequence[int] = (),
 ) -> list[str]:
     """说明.txt 文本。**逐页列举**（不得写成「第 1-5 页」——那会在跳页时撒谎）。
@@ -431,6 +433,10 @@ def build_summary_lines(
     ``verify_incomplete_pages`` 非空 ⇒ 追加「未完成对账页」段（Issue#273 拍板 b）：
     这些页对账未实际发生、按文本层结果交付，须如实点名建议复核；空/缺省 ⇒ 不加段
     （零噪声，file 模式与旧任务不受影响）。
+
+    ``manual_verified_pages`` 非空 ⇒ 逐页追加人工补框披露行（Issue#280，#199 红线的
+    显式标注义务）：「第 X 页为人工补框结果，未经自动识别校验」。缺标注即 §6 变异
+    3 判红。
     """
     page_list = sorted({_safe_int(p, 0) for p in pages})
     labels = _page_label_chunks(page_list, max_width=_COVER_TEXT_WIDTH)
@@ -447,6 +453,7 @@ def build_summary_lines(
         lines.append(f"本次排除的失败页：第 {page} 页{reason_text}")
     if len(excluded_list) > _COVER_PAGES_PER_LINE:
         lines.append(f"（另有 {len(excluded_list) - _COVER_PAGES_PER_LINE} 页失败页已排除）")
+    # Issue#280：人工补框页逐页点名（included 页里的人工页；快照语义与 manifest 同拍）。
     manual_list = sorted({_safe_int(p, 0) for p in manual_pages})
     manual_list = [p for p in manual_list if p > 0]
     for page in manual_list[:_COVER_PAGES_PER_LINE]:
@@ -818,6 +825,9 @@ async def submit_item_export(
 
     page_count = page_status_service.page_count_of(item_row, file_info)
     paged = page_status_service.is_paged_file_type(file_info.get("file_type"))
+    # Issue#280（r2 F-I3）：「可导出页」与说明页「已识别 N 页」都走 exportable 口径
+    # （auto ∪ manual，见 page_status_service）。两处消费（API 准入闸 jobs.py export
+    # 端点 + 本处 validate/recognized_pages_at_export）必须同源，只改一处即口径分裂。
     exportable = page_status_service.exportable_page_numbers(item_row, page_count)
     failed_map = page_status_service.failed_page_reasons(item_row)
 
@@ -1007,6 +1017,8 @@ async def submit_item_export(
                 {"page": page, "reason_code": _safe_reason(reason)}
                 for page, reason in excluded_with_reason
             ],
+            # Issue#280 §4.2 机读契约：partial 只列 included 页的人工页，
+            # full 列全部账本条目；空数组显式存在（键不省）。
             "manual_verified_pages": manual_entries,
             "manual_verified_pages_count": len(manual_entries),
             "route_summary": route_summary,
@@ -1056,6 +1068,7 @@ async def submit_item_export(
                 {"page": page, "reason_code": _safe_reason(reason)}
                 for page, reason in excluded_with_reason
             ],
+            # Issue#280：记录面同拍快照（清单本体在 manifest；此处带 count 供任务卡）。
             "manual_verified_pages_count": len(manual_entries),
             "files_sha256": [],  # runner 完成后回填（见 _runner_body），随 export-status.json 落盘
             "include_summary": bool(include_summary),

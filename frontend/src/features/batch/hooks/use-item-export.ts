@@ -96,6 +96,8 @@ export function useItemExport({
   const key = jobId && itemId ? `${jobId}:${itemId}` : null;
 
   const pages = useMemo(() => status?.pages ?? [], [status]);
+  // Issue#280 × #278 r2 F4：manual_verified 页与 success 页同口径进选择集
+  // （exportable 谓词；后端只挡 failed——manual 页已物理移出失败清单）。
   const exportableKey = useMemo(
     () =>
       pages
