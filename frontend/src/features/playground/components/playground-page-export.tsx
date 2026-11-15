@@ -147,7 +147,13 @@ export function PlaygroundPageExport({
           )}
 
           <div className={compact ? 'max-h-44 overflow-y-auto' : undefined}>
-            <BatchPageMatrix status={status} selected={selected} onChange={setSelected} />
+            {/* Issue#314：单文件选页导出点页只切换选择，不弹技术详情。 */}
+            <BatchPageMatrix
+              status={status}
+              selected={selected}
+              onChange={setSelected}
+              detailPolicy="none"
+            />
           </div>
 
           {excludedInSpan.length > 0 && (
