@@ -123,9 +123,22 @@ describe('页格展开「这页发生了什么」（Issue#279）', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it('无 onRetryPage 的挂载点不渲染面板重试按钮（单文件/导出弹窗保持只读，Issue#289）', () => {
-    render(<BatchPageMatrix status={makeStatus()} selected={new Set()} onChange={vi.fn()} />);
+  it('导出挂载点（detailPolicy="none"）不渲染详情面板；always 只读挂载点无重试按钮（Issue#289/#314）', () => {
+    const { rerender } = render(
+      <BatchPageMatrix
+        status={makeStatus()}
+        selected={new Set()}
+        onChange={vi.fn()}
+        detailPolicy="none"
+      />,
+    );
 
+    // Issue#314：导出场景点失败页也不展开技术面板（错误状态仍在格子上可见）。
+    fireEvent.click(screen.getByTestId('page-cell-2'));
+    expect(screen.queryByTestId('page-detail-panel')).toBeNull();
+
+    // 未迁移的只读挂载点仍走缺省 always：面板可开，但因未传 onRetryPage 无重试按钮。
+    rerender(<BatchPageMatrix status={makeStatus()} selected={new Set()} onChange={vi.fn()} />);
     fireEvent.click(screen.getByTestId('page-cell-2'));
     expect(screen.getByTestId('page-detail-panel').getAttribute('data-page')).toBe('2');
     // 不传 prop 两种渲染条件下都无按钮 ⇒ 对 AC8/M3 不敏感，只钉挂载点只读。

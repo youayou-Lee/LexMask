@@ -27,12 +27,27 @@ interface PlaygroundPageExportProps {
   compact?: boolean;
   /** 弹窗/卡片里已经自带容器：不再套外框与折叠头。 */
   bare?: boolean;
+  /**
+   * Issue#313：bare 形态下「回到编辑」无法靠 setOpen(false) 收起宿主弹窗，
+   * 由宿主传入关闭回调（关闭 Dialog）。
+   */
+  onRequestClose?: () => void;
+}
+
+/** 等宿主弹窗卸载、滚动锁释放后再回到画布（jsdom 兜底 setTimeout）。 */
+function scheduleAfterDialogClose(task: () => void): void {
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => task());
+    return;
+  }
+  setTimeout(task, 0);
 }
 
 export function PlaygroundPageExport({
   fileId,
   compact = false,
   bare = false,
+  onRequestClose,
 }: PlaygroundPageExportProps) {
   const t = useT();
   const { jobId, itemId } = useFileJobItem(fileId);
@@ -132,7 +147,13 @@ export function PlaygroundPageExport({
           )}
 
           <div className={compact ? 'max-h-44 overflow-y-auto' : undefined}>
-            <BatchPageMatrix status={status} selected={selected} onChange={setSelected} />
+            {/* Issue#314：单文件选页导出点页只切换选择，不弹技术详情。 */}
+            <BatchPageMatrix
+              status={status}
+              selected={selected}
+              onChange={setSelected}
+              detailPolicy="none"
+            />
           </div>
 
           {excludedInSpan.length > 0 && (
@@ -161,9 +182,22 @@ export function PlaygroundPageExport({
               variant="outline"
               className="h-8"
               onClick={() => {
+                // Issue#313：inline 形态靠 setOpen(false) 收起导出块；bare（弹窗）形态
+                // 恒展开，必须由宿主关闭 Dialog，否则按钮看起来完全没反应。
                 setOpen(false);
-                const editor = document.getElementById('playground-bbox-editor');
-                editor?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                onRequestClose?.();
+                scheduleAfterDialogClose(() => {
+                  const editor = document.getElementById('playground-bbox-editor');
+                  if (!editor) return;
+                  editor.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  // 画布容器是 ImageBBoxEditor 的 div[role=application][tabIndex=0]
+                  // （门⑥ M-4）；兼容旧 canvas 形态，找不到就退化为不做焦点转移。
+                  editor
+                    .querySelector<HTMLElement>(
+                      '[role="application"][tabindex], canvas[tabindex], [tabindex="0"]',
+                    )
+                    ?.focus({ preventScroll: true });
+                });
               }}
               data-testid="export-back-to-edit"
             >

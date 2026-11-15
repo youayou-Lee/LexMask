@@ -10,6 +10,23 @@
 - **测试**：新增 `tests/test_issue312_mask_entity_map.py` 12 例——扫描件与单图「非空 + 去重 + 值恒哨兵 + count 不变」、空文本（None/空串/半角空白/全角空白）过滤、未选中框排除、文本型 PDF 的 MASK 栅格化、文本链路 map 与 `build_preview_entity_map` 逐键相等（哨兵不泄漏）、编排层快照与 `redaction_history` 同一 map、mask map 不含化名/占位符形态且 restore 只消费请求体 `mapping`、化名路径反向对照；门⑥ I2 补 R10 零面积框不入表/不计处数、R11 monkeypatch `apply_redaction` 抓实际框集断言 map 键集与上像素框集同源（改回 `selected_boxes` 必红）；前端新增 `playground-result-mapping.test.tsx` 2 例（双口径/未提供时保持原样）。后端受影响 140 例、全量零回归；前端 87 文件 651 例、build/tsc 绿。
 - **行为边界**：只新增映射行——遮挡像素、`redacted_count`、文本链路产物逐字节不变；化名 CSV 门控源不受污染（值恒「已打码」，非化名/占位符形态）；存量记录不回填（重跑才补）；空文本框仍遮挡、只是不入表；门⑥ M7/M8/M3/M4/M5 挂账（越界页框、视觉 label 入表、restore 反向哨兵、图片行不可点、逐行处数缺失）已在 Issue#312 留 follow-up 评论。
 
+### 增强（Issue#314）页格点击语义：选择与诊断分离——导出点页只选页，审阅只在问题页展开技术详情
+
+- **为什么**：#279 给页格加了「第 N 页发生了什么」技术面板与卷头 route chip，#289 又把点击收敛为「点格子 = 展开详情」。三个宿主共用一份页格，导出场景（批量选页导出、单文件选页导出）因此每次点页码都被技术面板打断——成功页的 `route_verdict`/`stage_ms` 对导出没有价值，面板还把选页操作顶走。
+- **改了什么**：`BatchPageMatrix` 新增 `detailPolicy?: 'always' | 'issues' | 'none'`（缺省 `always` 兼容未迁移宿主）。`none`：点击只切换选择（Shift 连选/范围输入/全选/反选/清空不变），不渲染详情面板与 route chip，不可选格 cursor 据实改 `cursor-not-allowed`（不加 `disabled` 属性，读屏仍可读 title 失败原因）；`issues`：成功/pending 页点击只选择，仅 failed 与 manual_verified 页展开详情，重试/撤销人工框/人工补框入口保留可用；`always`：现行为。根节点新增 `data-detail-policy` 便于测试与排障；失败页仍不可进选择集（#199 红线不动）。
+- **门⑥ 评审修复**：`interactive = 展开 || 可选` 统一驱动 cursor/aria-disabled（issues 下 pending 页不再「死点击」却显示 pointer，读屏不再报可按下）；非 Shift 点击不展开的页会收起旧面板，且详情渲染前二次校验页状态仍应展开（面板内重试成功后旧面板不残留）；matrix `disabled` 时整格只读、详情不再展开，使 #289 的 not-allowed 光标判据与真实行为一致。
+- **宿主接线**：`partial-export-dialog.tsx`（批量导出）与 `playground-page-export.tsx`（单文件导出）传 `none`；`batch-row-pages.tsx`（批量审阅）传 `issues`。
+- **测试**：新增 `issue314-page-detail-policy.test.tsx` 16 例（none 只选择/无面板/无 chip/全选口径、失败页不可选、Shift 连选与范围输入、issues 成功页不展开+失败页展开且重试可达+人工页撤销可达+pending 不可交互+展开残留两条+disabled 只读、缺省 always 兼容）；`issue278-export-dialog` +2 例、`playground-page-export` +2 例、`issue257-page-retry` 成功页补「不展开」判据、`issue279-page-detail` 导出挂载点改为 none 语义并保留 always 只读判据、`issue276-page-detail-visual` +1 例（none 下视觉行不泄漏、卷头提示保留）。前端全量 `vitest` 668 passed（batch+playground 域 439），build/lint/tsc 见报告。
+- **行为变更**：导出弹窗点页码不再弹出技术面板与 route chip（诊断去批量审阅页、记录/页事件日志看）。
+
+### 修正（Issue#313）单文件导出弹窗「回到编辑」失效 + 产物文案回归 zip 口径
+
+- **为什么**：`PlaygroundPageExport` 在 bare（弹窗内）形态下 `expanded = bare || open` 恒真，`setOpen(false)` 收不起自己；宿主 Dialog 又没有关闭回调，点「回到编辑」只把背后的画布 scrollIntoView 一下，弹窗纹丝不动（用户实测无反应，只能去点「导出选中页」）。同时底栏仍写「产物 = 说明页 1 页 + N 页」，与 #278 已删除说明页插页、改 zip 的口径冲突。
+- **改了什么**：`PlaygroundPageExport` 新增 `onRequestClose`，bare 形态把关闭动作交给宿主；宿主抽成 `PlaygroundExportDialog`（playground-page.tsx 使用），回到编辑 → 关闭父 Dialog → 下一帧滚动画布并聚焦 `div[role=application][tabindex]`；`playground-result.tsx` 的导出块也接 `onRequestClose={onBackToEdit}`。Radix `onCloseAutoFocus` 仅在回到编辑路径 preventDefault，X/ESC 保持默认焦点归还。zh/en 的 `singleExportHint` / `exportSummary` 改为 zip 口径（脱敏 PDF + 映射清单 + 可选说明.txt）。
+- **选择集保持（门⑥ I-1）**：playground 宿主 `enabled` 恒 true、弹窗关闭是整棵子树卸载，原 cache 写入分支永不触发 → 重开回落全选。`use-item-export` 增加 `selectedRef` + `(job,item)` 卸载 cleanup 写 cache，重开按上次选择恢复。
+- **测试**：`issue278-back-to-edit.test.tsx` 新增 bare 契约用例（onRequestClose + 下一帧 scroll/focus，夹具改 `div[role=application][tabindex=0]`，rAF 等待替代 setTimeout）；新增 `playground-export-dialog.test.tsx` 钉住「点回到编辑 → 弹窗关闭」宿主接线；`playground-page-export.test.tsx` 钉 zip 文案与卸载/重挂选择集恢复；新增 `playground-result-export-wiring.test.tsx` 真渲染结果页，钉住 result 阶段导出块 `onRequestClose={onBackToEdit}`（删该 prop 用例必红）。
+
+
 ### 修正（Issue#308）实体框质量打磨：标签双份/过度捕获/页脚页码误报/断行拆分框
 
 - **为什么**：#301 验收发现的实体框质量四类问题——①同案号值落 LEGAL_CASE_ID+CASE_NUMBER 双框（实体表重复、按类型停用语义混乱）；②NER/正则框吞叙述前缀（`防城区法院作出（2021）…` 整句成框，打码误伤旁文字）+ 碎片框（`事调解书》`）+ 金额框吞整句；③页脚页码 `3` 被误标 LEGAL_CASE_ID（打码涂掉页码）；④OCR 断行把同一案号拆两个残缺框。

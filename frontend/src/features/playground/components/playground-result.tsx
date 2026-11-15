@@ -318,7 +318,7 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
       />
 
       {/* Issue#257 需求重对齐：单文件任务也要能看逐页结果、选页导出（运行中/结果页同一块）。 */}
-      <PlaygroundPageExport fileId={fileInfo?.file_id ?? null} />
+      <PlaygroundPageExport fileId={fileInfo?.file_id ?? null} onRequestClose={onBackToEdit} />
 
       {outputPreviewAvailable && (
         <div

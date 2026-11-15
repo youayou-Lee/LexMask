@@ -153,6 +153,8 @@ export function BatchRowPages({
         onManualAnnotate={(page) => setAnnotatingPage(page)}
         onManualRevoke={(page) => void revokeManual(page)}
         retrying={retrying}
+        // Issue#314：批量审阅只在问题页展开诊断；成功页点击只勾选。
+        detailPolicy="issues"
       />
       {retryError && (
         <p className="text-xs text-destructive" data-testid="page-retry-error">
