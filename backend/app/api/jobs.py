@@ -24,6 +24,7 @@ from app.core.audit import audit_log
 from app.core.auth import require_auth, require_bulk_confirm
 from app.core.errors import AppError
 from app.models.errors import ConflictError, NotFoundError, ValidationError
+from app.models.job_schemas import ManualVerifyRequest
 from app.models.schemas import (
     BatchDetailsBody,
     BatchDetailsResponse,
@@ -42,6 +43,7 @@ from app.models.schemas import (
 from app.models.single_task_schemas import SingleRedactBody, SingleRedactResult
 from app.services import (
     file_operations,
+    page_manual_service,
     page_retry_service,
     page_status_service,
     partial_export_service,
@@ -461,7 +463,10 @@ async def export_item_pages(
             pages,
             page_count=page_count,
             failed_pages=set(page_status_service.failed_page_numbers(item)),
-            recognized_pages=page_status_service.recognized_page_numbers(item, page_count),
+            # Issue#280（r2 F-I3）：准入白名单用 exportable 口径（auto ∪ manual）——
+            # 与提交侧 submit_partial_export 的 recognized 同源（只改一处即口径分裂）。
+            # 失败页仍由 failed_pages 排除（#199 红线不动）。
+            recognized_pages=page_status_service.exportable_page_numbers(item, page_count),
             acknowledge_failed_excluded=acknowledge_failed_excluded,
             file_type=file_info.get("file_type"),
             boxes_pages=_boxes_pages_of(file_info),
@@ -565,6 +570,99 @@ async def retry_item_pages(
         detail={"job_id": job_id, "item_id": item_id, "pages": selection},
     )
     return result
+
+
+# Issue#280 端点级错误映射：忙/状态不允许/冲突 = 409（可重试、需要用户动作）；
+# 参数错 = 400。与 retry_item_pages 的映射方式逐字同款。
+_MANUAL_VERIFY_409_CODES = frozenset(
+    {
+        "item_busy",
+        "manual_verify_requires_awaiting_review",
+        "page_not_failed",
+        "page_already_manual_verified",
+        "manual_boxes_conflict",
+        "page_not_manual_verified",
+    }
+)
+
+
+@router.post(
+    "/{job_id}/items/{item_id}/pages/{page}/manual-verify",
+    status_code=202,
+)
+async def manual_verify_page(
+    job_id: str,
+    item_id: str,
+    page: int,
+    request: ManualVerifyRequest,
+    store: JobStore = Depends(get_job_store),
+    owner_id: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """失败页人工拉框兜底（Issue#280 能力 4）：框必填、文本可选。
+
+    保存后该页从 ``recognition.failed_pages`` 移出、写入
+    ``recognition.manual_verified_pages``，人工框以 ``source=manual`` 落
+    file_store 与审阅草稿；交付闸随之放行（#199 红线由账本维护承载，见
+    ``_is_ready_for_delivery`` docstring）。撤销走同路径 DELETE。
+    """
+    job, item = _require_item(store, job_id, item_id, owner_id)
+    file_info = _load_file_info(item.get("file_id"))
+    if file_info is None:
+        raise HTTPException(status_code=404, detail="file not found")
+
+    page_count = page_status_service.page_count_of(item, file_info)
+    try:
+        page_manual_service.validate_manual_verify(
+            item,
+            page,
+            [box.model_dump() for box in request.boxes],
+            page_count=page_count,
+            file_type=file_info.get("file_type"),
+            page_boxes=file_info.get("bounding_boxes"),
+        )
+    except page_manual_service.PageManualError as exc:
+        raise AppError(
+            status_code=409 if exc.code in _MANUAL_VERIFY_409_CODES else 400,
+            error_code=exc.code,
+            message=exc.message or exc.code,
+            detail=exc.detail,
+        )
+
+    return await page_manual_service.submit_manual_verify(
+        store=store,
+        job=job,
+        item=item,
+        page=page,
+        boxes=[box.model_dump() for box in request.boxes],
+        operator=owner_id,
+        file_info=file_info,
+    )
+
+
+@router.delete(
+    "/{job_id}/items/{item_id}/pages/{page}/manual-verify",
+    status_code=202,
+)
+async def revoke_manual_verify_page(
+    job_id: str,
+    item_id: str,
+    page: int,
+    store: JobStore = Depends(get_job_store),
+    owner_id: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """撤销人工补框（Issue#280）：页回 failed（写回原失败原因码）并重新阻断交付。"""
+    job, item = _require_item(store, job_id, item_id, owner_id)
+    try:
+        return await page_manual_service.revoke_manual_verify(
+            store=store, job=job, item=item, page=page, operator=owner_id
+        )
+    except page_manual_service.PageManualError as exc:
+        raise AppError(
+            status_code=409 if exc.code in _MANUAL_VERIFY_409_CODES else 400,
+            error_code=exc.code,
+            message=exc.message or exc.code,
+            detail=exc.detail,
+        )
 
 
 @router.post("/{job_id}/submit", response_model=JobResponse)

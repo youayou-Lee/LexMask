@@ -75,10 +75,13 @@ export function usePartialExportSelection({
   const key = jobId && itemId ? `${jobId}:${itemId}` : null;
 
   const pages = useMemo(() => status?.pages ?? [], [status]);
+  // Issue#280：manual_verified 页与 success 页同口径可进部分导出选择集
+  // （后端只挡 failed——manual 页已物理移出失败清单）。
+  const selectableState = (state: string) => state === 'success' || state === 'manual_verified';
   const successKey = useMemo(
     () =>
       pages
-        .filter((cell) => cell.state === 'success')
+        .filter((cell) => selectableState(cell.state))
         .map((cell) => cell.page)
         .join(','),
     [pages],
@@ -95,11 +98,12 @@ export function usePartialExportSelection({
     if (!status || initializedForRef.current === key) return;
     initializedForRef.current = key;
     const successPages = pages
-      .filter((cell) => cell.state === 'success')
+      .filter((cell) => selectableState(cell.state))
       .map((cell) => cell.page);
     const successSet = new Set(successPages);
     const prefill = (initialSelected ?? []).filter((page) => successSet.has(page));
     setSelected(new Set(prefill.length > 0 ? prefill : successPages));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, initialSelected, key, pages, status]);
 
   // 选择集随页状态剪枝（运行中某页转 failed 后不得留在选择里）。

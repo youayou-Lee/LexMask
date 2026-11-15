@@ -649,7 +649,7 @@ def test_boxes_for_page_passes_tenant_regex_types_into_build(monkeypatch, tmp_pa
     source.reset_memo()
     seen: list = []
 
-    monkeypatch.setattr(source, "_regex_types", lambda owner: [("CASE_NUMBER", r"X\d+")])
+    monkeypatch.setattr(source, "_regex_types", lambda owner, types=None: [("CASE_NUMBER", r"X\d+")])
 
     async def fake_run(page_list, labels, *, has_client, regex_types=None, **kwargs):
         seen.append(regex_types)

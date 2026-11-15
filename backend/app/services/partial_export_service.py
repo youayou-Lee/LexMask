@@ -305,12 +305,17 @@ def build_cover_lines(
     export_id: str,
     recognized_pages_at_export: int,
     verify_incomplete_pages: Sequence[int] = (),
+    manual_verified_pages: Sequence[dict[str, Any]] = (),
 ) -> list[str]:
     """说明页文本。**逐页列举**（不得写成「第 1-5 页」——那会在跳页时撒谎）。
 
     ``verify_incomplete_pages`` 非空 ⇒ 追加「未完成对账页」段（Issue#273 拍板 b）：
     这些页对账未实际发生、按文本层结果交付，须如实点名建议复核；空/缺省 ⇒ 不加段
     （零噪声，file 模式与旧任务不受影响）。
+
+    ``manual_verified_pages`` 非空 ⇒ 逐页追加人工补框披露行（Issue#280，#199 红线的
+    显式标注义务）：「第 X 页为人工补框结果，未经自动识别校验」。缺标注即 §6 变异
+    3 判红。
     """
     page_list = sorted({_safe_int(p, 0) for p in pages})
     labels = _page_label_chunks(page_list, max_width=_COVER_TEXT_WIDTH)
@@ -327,6 +332,11 @@ def build_cover_lines(
         lines.append(f"本次排除的失败页：第 {page} 页{reason_text}")
     if len(excluded_list) > _COVER_PAGES_PER_LINE:
         lines.append(f"（另有 {len(excluded_list) - _COVER_PAGES_PER_LINE} 页失败页已排除）")
+    # Issue#280：人工补框页逐页点名（included 页里的人工页；快照语义与 manifest 同拍）。
+    manual_list = sorted({_safe_int(entry.get("page"), 0) for entry in manual_verified_pages if isinstance(entry, dict)})
+    manual_list = [p for p in manual_list if p > 0]
+    for page in manual_list:
+        lines.append(f"第 {page} 页为人工补框结果，未经自动识别校验")
     verify_list = sorted({_safe_int(p, 0) for p in verify_incomplete_pages})
     verify_list = [p for p in verify_list if p > 0]
     if verify_list:
@@ -609,7 +619,17 @@ async def submit_partial_export(
     """提交一个部分导出任务（走 export_task_manager 的独立 IO worker，不阻塞识别）。"""
     manager = manager or export_task_manager
     page_count = page_status_service.page_count_of(item_row, file_info)
-    recognized = page_status_service.recognized_page_numbers(item_row, page_count)
+    # Issue#280（r2 F-I3）：说明页「已识别 N 页」改用 exportable 口径（auto ∪ manual），
+    # 对齐 Ruling「已处理」。两处消费（API 准入闸 jobs.py export_item_pages + 本处）
+    # 必须同源，只改一处即口径分裂。
+    recognized = page_status_service.exportable_page_numbers(item_row, page_count)
+    # 人工补框页快照（与 boxes_snapshot 同拍）：只列 included 页里的人工页。
+    included = {_safe_int(p, 0) for p in pages}
+    manual_verified_snapshot = [
+        entry
+        for entry in page_status_service.manual_verified_pages_of(item_row)
+        if entry["page"] in included
+    ]
     # 原因码来自 failed_pages 清单（权威），丢进说明页。
     reasons = page_status_service.failed_page_reasons(item_row)
     excluded_with_reason = [
@@ -637,6 +657,7 @@ async def submit_partial_export(
             export_id=task.export_id,
             recognized_pages_at_export=len(recognized),
             verify_incomplete_pages=verify_incomplete_snapshot,
+            manual_verified_pages=manual_verified_snapshot,
         )
         work_dir = os.path.join(task.out_dir, "work")
         arcname = f"{_safe_name(title)}.pdf"
@@ -665,6 +686,9 @@ async def submit_partial_export(
             "excluded_failed_pages": [p for p, _ in excluded_with_reason],
             "snapshot_at": snapshot,
             "recognized_pages_at_export": len(recognized),
+            # Issue#280：只列 included 页的人工补框页（机读契约，空数组显式存在）。
+            "manual_verified_pages": manual_verified_snapshot,
+            "manual_verified_pages_count": len(manual_verified_snapshot),
             "cover": list(cover_lines),
         }
         entries = [(product["pdf_path"], arcname, product["bytes"])]
@@ -699,6 +723,9 @@ async def submit_partial_export(
             "excluded_failed_pages": [p for p, _ in excluded_with_reason],
             "snapshot_at": snapshot,
             "recognized_pages_at_export": len(recognized),
+            # Issue#280：任务卡/记录面同拍快照（与 manifest 同字段）。
+            "manual_verified_pages": manual_verified_snapshot,
+            "manual_verified_pages_count": len(manual_verified_snapshot),
         },
     )
     return task

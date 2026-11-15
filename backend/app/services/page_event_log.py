@@ -66,7 +66,15 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
         )
     ),
     "ocr_done": EventSchema(optional=("ms", "regions", "source")),
-    "page_done": EventSchema(optional=("ms", "stage_ms", "regions", "source")),
+    "page_done": EventSchema(
+        optional=(
+            "ms", "stage_ms", "regions", "source",
+            # Issue#276：视觉列终态。source ∈ {la, none}；failed_reason 仅
+            # la_unavailable / visual_stage_error，无值省键（visual_types 是 list
+            # 不入事件，事件层只留标量位——visual_types 在页账里，不复制进 JSONL）。
+            "visual_source", "visual_failed_reason",
+        ),
+    ),
     "page_failed": EventSchema(
         required=("stage", "error_type"),
         optional=("message_sanitized", "traceback_frames", "attempts", "ms"),
@@ -75,6 +83,11 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     # page_failed 的 attempts = 该页累计重试序号（含本次），与 DB page_retry_counts 同基。
     "retry_started": EventSchema(required=("attempt",), optional=("trigger",)),
     "retry_done": EventSchema(required=("attempt", "outcome"), optional=("ms",)),
+    # Issue#280：人工补框/撤销。box_count 是该次动作的框数（撤销取 ledger 快照口径）。
+    # operator 有意不入事件日志（本日志是诊断面、白名单不声明该字段，误传即整事件
+    # 拒写）——人名走审计面 audit_log.user 与 ledger；此为本设计唯一口径出处。
+    "manual_verified": EventSchema(required=("box_count",), optional=()),
+    "manual_revoked": EventSchema(optional=("box_count",)),
     # —— 以下四种为架构 v2（#272-#275）预留：writer 契约可验（A1.7），本期无生产者 ——
     "arbitration": EventSchema(
         required=("winner", "loser"), optional=("metric", "values"),

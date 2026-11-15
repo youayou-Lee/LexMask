@@ -134,6 +134,19 @@ function BatchStep5ExportInner({
     () => new Map(report.files.map((file) => [file.file_id, file])),
     [report.files],
   );
+  // Issue#280：选中件的人工补框页（提示条数据源；后端 report 才有此键，本地报告缺省为空）。
+  const selectedManualPages = useMemo(
+    () =>
+      selectedRows.flatMap(
+        (row) => reportFilesById.get(row.file_id)?.manual_verified_pages ?? [],
+      ),
+    [reportFilesById, selectedRows],
+  );
+  const manualPagesTotal = selectedManualPages.length;
+  const manualPageIds = useMemo(
+    () => [...new Set(selectedManualPages.map((entry) => entry.page))].sort((a, b) => a - b),
+    [selectedManualPages],
+  );
   const deliveryGroups = useMemo(() => {
     const groups: Record<DeliveryGroup, BatchRow[]> = {
       ready: [],
@@ -407,6 +420,18 @@ function BatchStep5ExportInner({
               .replace('{files}', String(exportEstimate.file_count))
               .replace('{volumes}', String(exportEstimate.estimated_volume_count))}
           </div>
+        )}
+
+        {/* Issue#280：选中件含人工补框页时显式提示（随包交付并在说明中标注）。 */}
+        {manualPagesTotal > 0 && (
+          <p
+            className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+            data-testid="manual-pages-hint"
+          >
+            {t('batchWizard.export.manualHint')
+              .replace('{count}', String(manualPagesTotal))
+              .replace('{pages}', manualPageIds.join('、'))}
+          </p>
         )}
 
         {exportTask && (

@@ -527,6 +527,60 @@ def _recognition_failed_page_ids(item: dict[str, Any]) -> list[int]:
         return []
 
 
+def _manual_verified_pages_of(item: dict[str, Any]) -> list[dict[str, Any]]:
+    """人工补框页清单（Issue#280，页号升序）。
+
+    来源 = performance_json.recognition.manual_verified_pages。条目语义（r2 裁定）：
+    只代表「该页曾人工补框且未撤销」，不代表该页当前仍是失败态——整卷重跑自动
+    成功后条目仍保留（人工框与自动框共存，由用户在审阅画布裁决/撤销）。
+    """
+    try:
+        performance = json.loads(item.get("performance_json") or "{}")
+        pages = (performance.get("recognition") or {}).get("manual_verified_pages") or {}
+        if not isinstance(pages, dict):
+            return []
+        out: list[dict[str, Any]] = []
+        for key, entry in pages.items():
+            try:
+                page = int(key)
+            except (TypeError, ValueError):
+                continue
+            if page <= 0 or not isinstance(entry, dict):
+                continue
+            try:
+                box_count = int(entry.get("box_count") or 0)
+            except (TypeError, ValueError):
+                box_count = 0
+            out.append(
+                {
+                    "page": page,
+                    "box_count": box_count,
+                    "verified_at": str(entry.get("verified_at") or ""),
+                    "operator": str(entry.get("operator") or ""),
+                }
+            )
+        out.sort(key=lambda entry: entry["page"])
+        return out
+    except (ValueError, TypeError):
+        return []
+
+
+def _manual_pages_export_note(manual_pages: list[dict[str, Any]]) -> str:
+    """人工补框页的导出侧警示（中性英文，与 _failed_pages_export_warning 同风格）。
+
+    只在无失败页但有人工页时用作 ``error``（失败页警示优先——error 字段先报
+    交付闸正在阻断的那一侧）；说明「人工标注未经自动识别校验」是包内披露语义。
+    """
+    if not manual_pages:
+        return ""
+    ids = "pages " + ", ".join(str(entry["page"]) for entry in manual_pages[:20])
+    suffix = "" if len(manual_pages) <= 20 else " …"
+    return (
+        f"{len(manual_pages)} page(s) manually annotated after recognition failure "
+        f"({ids}{suffix}); manual annotations were NOT verified by the automated pipeline"
+    )
+
+
 def _review_confirmed(item: dict[str, Any], has_output: bool, skip_item_review: bool) -> bool:
     if skip_item_review and has_output:
         return True
@@ -548,6 +602,11 @@ def _is_ready_for_delivery(
     除 item 级失败/缺成品/未确认/跳过打码外，**页级识别失败**同样不可交付——失败页
     「未被扫过敏感数据」，结构化清单已落 performance，展示面不得再报 ready_for_delivery
     （门⑥ 二段 F4：旧实现只把失败页写进 error 文案，交付裁定与展示面脱节）。
+
+    Issue#280：谓词表达式**不变**——``manual_verified`` 页放行的前提是 ledger 维护
+    正确：verify 物理把页移出 ``failed_pages``、撤销把页写回。任何把 ledger 条目页
+    重新写回 ``failed_pages`` 的路径（整卷重跑再失败、revoke）都会让本闸重新阻断
+    ——这是 #199 红线不退让的机制保证（失败页永不悄悄进包）。
     """
     return (
         _status_value(item.get("status")) != JobItemStatus.FAILED.value
@@ -625,6 +684,7 @@ def build_export_report(
     selected_visual_review_issue_pages_count = 0
     selected_visual_review_by_issue: dict[str, int] = {}
     selected_visual_evidence = _empty_visual_evidence()
+    manual_verified_selected_pages = 0
 
     for item in items:
         file_id = str(item["file_id"])
@@ -633,6 +693,7 @@ def build_export_report(
         has_output, redacted_skip_reason = _redacted_output_state(info)
         review_confirmed = _review_confirmed(item, has_output, skip_item_review)
         recognition_failed_pages = _recognition_failed_page_ids(item)
+        manual_verified_pages = _manual_verified_pages_of(item)
         ready_for_delivery = _is_ready_for_delivery(
             item,
             has_output,
@@ -654,6 +715,7 @@ def build_export_report(
         if is_selected:
             selected_items.append(item)
             selected_detected_entities += detected_entities
+            manual_verified_selected_pages += len(manual_verified_pages)
             _merge_visual_evidence(selected_visual_evidence, visual_evidence)
             if visual_quality["issue_count"] > 0:
                 selected_visual_review_issue_files += 1
@@ -678,6 +740,11 @@ def build_export_report(
         if not include_files:
             continue
         raw_file_type = info.get("file_type") if info else None
+        # Issue#280：error 的优先级 = error_message / metadata_warning / 失败页警示 /
+        # 人工补框警示（后者只在无失败页时兜底——失败页警示报的是闸正在阻断的一侧）。
+        error_text = item.get("error_message") or metadata_warning or (
+            _failed_pages_export_warning(recognition_failed_pages)
+        ) or _manual_pages_export_note(manual_verified_pages)
         report_files.append(
             {
                 "item_id": item["id"],
@@ -692,9 +759,8 @@ def build_export_report(
                 "page_count": _safe_int((info or {}).get("page_count")) or None,
                 "selected_for_export": is_selected,
                 "delivery_status": delivery_status,
-                "error": item.get("error_message") or metadata_warning or (
-                    _failed_pages_export_warning(recognition_failed_pages)
-                ),
+                "error": error_text,
+                "manual_verified_pages": manual_verified_pages,
                 "recognition_failed_pages": recognition_failed_pages,
                 "metadata_warning": metadata_warning,
                 "ready_for_delivery": ready_for_delivery,
@@ -728,6 +794,8 @@ def build_export_report(
             "review_confirmed_selected_files": review_confirmed_selected_count,
             "failed_selected_files": failed_selected_count,
             "detected_entities": selected_detected_entities,
+            # Issue#280：选中件的人工补框页总数（完成度「N 自动 + M 人工」口径）。
+            "manual_verified_selected_pages": manual_verified_selected_pages,
             "redaction_coverage": redacted_selected_count / selected_count if selected_count else 0,
             "delivery_status": delivery_status,
             "action_required_files": action_required_count,
@@ -791,6 +859,7 @@ def iter_report_file_rows(
         has_output, redacted_skip_reason = _redacted_output_state(info)
         review_confirmed = _review_confirmed(item, has_output, skip_item_review)
         recognition_failed_pages = _recognition_failed_page_ids(item)
+        manual_verified_pages = _manual_verified_pages_of(item)
         ready_for_delivery = _is_ready_for_delivery(
             item,
             has_output,
@@ -819,7 +888,12 @@ def iter_report_file_rows(
             "ready_for_delivery": ready_for_delivery,
             "entity_count": _safe_entity_count(info),
             "blocking_reasons": ";".join(blocking_reasons or []),
-            "error": item.get("error_message") or metadata_warning or "",
+            # Issue#280：与 build_export_report 同源（同一批 helper）——人工补框警示
+            # 只在无失败页时兜底，error 优先级与报告面一致。
+            "error": item.get("error_message") or metadata_warning or (
+                _failed_pages_export_warning(recognition_failed_pages)
+            ) or _manual_pages_export_note(manual_verified_pages),
+            "manual_verified_pages": manual_verified_pages,
         }
 
 
