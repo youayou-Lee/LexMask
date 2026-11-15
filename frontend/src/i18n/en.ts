@@ -1434,6 +1434,7 @@ const enOverrides: Record<string, string> = {
   'playground.redactedEntities': 'Redacted entities',
   'playground.unprocessedEntities': 'Unprocessed entities',
   'playground.sourceDistribution': 'Source distribution',
+  'playground.mappingCountDual': '{keys} items / {total} spots',
   'playground.mappingRecords': 'Mapping',
   'playground.noRecords': 'No mapping records yet.',
   'playground.versionHistory': 'Version history',

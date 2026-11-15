@@ -15,6 +15,7 @@ export const TextResultView: FC<{
   renderRedacted: () => ReactNode[];
   content: string;
   entityMap: Record<string, string>;
+  redactedCount: number;
   origToTypeId: Map<string, string>;
   matchCounts: Map<string, number>;
   scrollToMatch: (orig: string) => void;
@@ -30,6 +31,7 @@ export const TextResultView: FC<{
   renderRedacted,
   content,
   entityMap,
+  redactedCount,
   origToTypeId,
   matchCounts,
   scrollToMatch,
@@ -98,6 +100,7 @@ export const TextResultView: FC<{
 
         <MappingColumn
           entityMap={entityMap}
+          redactedCount={redactedCount}
           origToTypeId={origToTypeId}
           matchCounts={matchCounts}
           scrollToMatch={scrollToMatch}
@@ -207,6 +210,7 @@ export const ImageResultView: FC<{
   visionTypes: VisionTypeConfig[];
   getVisionTypeConfig: (typeId: string) => { name: string; color: string };
   entityMap: Record<string, string>;
+  redactedCount: number;
   origToTypeId: Map<string, string>;
   matchCounts: Map<string, number>;
   scrollToMatch: (orig: string) => void;
@@ -225,6 +229,7 @@ export const ImageResultView: FC<{
   visibleBoxes,
   getVisionTypeConfig,
   entityMap,
+  redactedCount,
   origToTypeId,
   matchCounts,
   scrollToMatch,
@@ -314,6 +319,7 @@ export const ImageResultView: FC<{
 
       <MappingColumn
         entityMap={entityMap}
+        redactedCount={redactedCount}
         origToTypeId={origToTypeId}
         matchCounts={matchCounts}
         scrollToMatch={scrollToMatch}

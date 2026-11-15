@@ -10,6 +10,8 @@ import type { VersionHistoryEntry } from '@/types';
 
 export interface MappingColumnProps {
   entityMap: Record<string, string>;
+  /** 实际打码处数（Issue#312 AC1）：与去重后的映射条数并列展示。 */
+  redactedCount?: number;
   origToTypeId: Map<string, string>;
   matchCounts?: Map<string, number>;
   scrollToMatch: (orig: string) => void;
@@ -23,6 +25,7 @@ export interface MappingColumnProps {
 
 export const MappingColumn: FC<MappingColumnProps> = ({
   entityMap,
+  redactedCount,
   origToTypeId,
   matchCounts,
   scrollToMatch,
@@ -46,8 +49,15 @@ export const MappingColumn: FC<MappingColumnProps> = ({
     >
       <div className="flex h-10 shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-muted/30 px-4">
         <span className="truncate text-xs font-semibold">{t('playground.mappingRecords')}</span>
-        <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-          {Object.keys(entityMap).length}
+        <span
+          className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
+          data-testid="mapping-count"
+        >
+          {Object.keys(entityMap).length > 0 && (redactedCount ?? 0) > 0
+            ? t('playground.mappingCountDual')
+                .replace('{keys}', String(Object.keys(entityMap).length))
+                .replace('{total}', String(redactedCount))
+            : Object.keys(entityMap).length}
         </span>
       </div>
       <ScrollArea className="flex-1">
