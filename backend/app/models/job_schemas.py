@@ -897,6 +897,9 @@ class ItemExportRequest(BaseModel):
     kind: Literal["full", "partial"] = "partial"
     pages: list[int] | None = None
     include_summary: bool = False
+    # Issue#322：partial 导出可携带提交时画布框快照（含手动拉框）。
+    # 权威次序 = 请求框 > review 草稿 > file_store；full 忽略（主产物直取）。
+    bounding_boxes: list[BoundingBox] | None = None
 
 
 class BatchDetailsBody(BaseModel):

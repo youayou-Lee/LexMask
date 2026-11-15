@@ -797,6 +797,7 @@ async def submit_item_export(
     kind: str,
     pages: Sequence[int] | None = None,
     include_summary: bool = False,
+    bounding_boxes: Sequence[BoundingBox] | None = None,
     manager: Any = None,
 ) -> ExportTask:
     """提交一个统一导出任务（full | partial；走 export_task_manager 的独立 IO worker）。
@@ -809,10 +810,13 @@ async def submit_item_export(
        full 跳类型闸、忽略 pages，缺省集 = exportable；排除清单 = 全部失败页带原因码。
     2. manual 页快照：``manual_ledger_of``（#280 账本，防御性形状兜底）；partial 只列
        included ∩ ledger，full 列全部条目。
-    3. **框账快照（改框即生效的核心，§2.6）**：review 草稿存在 ``bounding_boxes``
-       键且非 None 时**整份覆盖** file_info 的框（与交付期
-       ``seed_file_store_from_draft_payload`` 权威次序一致）；草稿无该键（未进过审阅
-       的卷）→ 用 file_store，行为与旧链完全一致。快照只读、不回写 file_store。
+    3. **框账快照（改框即生效的核心，§2.6）**：权威次序 =
+       **请求框 > review 草稿 > file_store**（Issue#322：partial 允许请求携带提交时
+       画布框快照，保证「手拉框后直接导出」所见即所得）。**语义是整份替换而非按页
+       合并**：请求框一旦非空，所有 included 页都必须能在快照里找到框账页，缺页走
+       ``pages_without_boxes`` 400 fail-closed（不回落 file_store）；前端因此提交
+       全页快照。请求框只对 partial 生效，full 仍按草稿 > file_store（主产物直取，
+       框不参与）。快照只读、不回写 file_store。
     4. route_summary / verify_incomplete / recognized_pages_at_export 快照。
 
     task kind 直接用 ``kind`` 值（r2 F8 (a)：meta 不带 ``kind`` 键——
@@ -838,7 +842,14 @@ async def submit_item_export(
             draft = store.get_item_review_draft(item_row["id"])
         except Exception:  # noqa: BLE001 - 草稿读取失败按"无草稿"处理（file_store 兜底）
             draft = None
-    if isinstance(draft, dict) and draft.get("bounding_boxes") is not None:
+    if kind == "partial" and bounding_boxes is not None:
+        # 请求框是平铺 list（BoundingBox 对象或 dict），转 dict 供
+        # boxes_pages_of / redactable_pages_of 的 list 分支识别页号。
+        boxes_source = [
+            box.model_dump() if isinstance(box, BoundingBox) else box
+            for box in bounding_boxes
+        ]
+    elif isinstance(draft, dict) and draft.get("bounding_boxes") is not None:
         boxes_source = draft["bounding_boxes"]
     else:
         boxes_source = (file_info or {}).get("bounding_boxes")

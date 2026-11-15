@@ -1,6 +1,7 @@
 // Copyright 2026 LexMask Contributors
 
 import { get, post, put, del } from './api-client';
+import type { BoundingBox } from '@/features/playground/types';
 import type {
   BatchExportReport,
   BatchExportReportFile,
@@ -1106,6 +1107,8 @@ export interface ItemExportRequest {
   kind: 'full' | 'partial';
   pages?: number[];
   includeSummary?: boolean;
+  /** Issue#322：partial 导出携带提交时画布框快照（含手动拉框），所见即所得。 */
+  boundingBoxes?: BoundingBox[];
 }
 
 export function startItemExport(
@@ -1118,6 +1121,9 @@ export function startItemExport(
     {
       kind: request.kind,
       ...(request.kind === 'partial' ? { pages: request.pages ?? [] } : {}),
+      ...(request.kind === 'partial' && request.boundingBoxes?.length
+        ? { bounding_boxes: request.boundingBoxes }
+        : {}),
       include_summary: request.includeSummary === true,
     },
   ).then(normalizeItemExportTask);

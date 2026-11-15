@@ -20,6 +20,7 @@ import { BatchPageMatrix } from '@/features/batch/components/batch-page-matrix';
 import { useItemExport } from '@/features/batch/hooks/use-item-export';
 
 import { useFileJobItem } from '../hooks/use-file-job-item';
+import type { BoundingBox } from '../types';
 
 interface PlaygroundPageExportProps {
   fileId: string | null;
@@ -34,6 +35,11 @@ interface PlaygroundPageExportProps {
    * 由宿主传入关闭回调（关闭 Dialog）。
    */
   onRequestClose?: () => void;
+  /**
+   * Issue#322：当前画布框快照（含手动拉框）。partial 导出随请求提交，
+   * 保证「手拉框后直接导出」所见即所得。
+   */
+  boundingBoxes?: readonly BoundingBox[];
 }
 
 /** 等宿主弹窗卸载、滚动锁释放后再回到画布（jsdom 兜底 setTimeout）。 */
@@ -51,6 +57,7 @@ export function PlaygroundPageExport({
   bare = false,
   defaultCollapsed = false,
   onRequestClose,
+  boundingBoxes,
 }: PlaygroundPageExportProps) {
   const t = useT();
   const { jobId, itemId } = useFileJobItem(fileId);
@@ -66,7 +73,7 @@ export function PlaygroundPageExport({
     submitting,
     actionError,
     submit,
-  } = useItemExport({ jobId, itemId, enabled: Boolean(itemId) });
+  } = useItemExport({ jobId, itemId, enabled: Boolean(itemId), boundingBoxes });
   const [open, setOpen] = useState(!compact && !defaultCollapsed);
 
   const counts = useMemo(() => {

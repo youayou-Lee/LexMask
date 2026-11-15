@@ -50,6 +50,7 @@ const PlaygroundInner: FC = () => {
     isImageMode,
     entities,
     setBoundingBoxes,
+    boundingBoxes,
     visibleBoxes,
     isLoading,
     loadingMessage,
@@ -604,6 +605,8 @@ const PlaygroundInner: FC = () => {
             onBackToEdit={() => setStage('preview')}
             onReset={handleReset}
             onDownload={handleDownload}
+            // 提交整卷全页框快照（非仅当前可见页）：导出端按页重建，缺页会 fail-closed。
+            boundingBoxes={boundingBoxes}
             onDownloadPseudonymCsv={confirmedPseudonymMap ? handleDownloadPseudonymCsv : undefined}
           />
         </div>
@@ -626,7 +629,11 @@ const PlaygroundInner: FC = () => {
         >
           {/* Issue#257 需求重对齐：识别中就能看到逐页结果并选页导出（快照产物）。 */}
           {taskRecognition && fileInfo?.file_id && (
-            <PlaygroundPageExport fileId={fileInfo.file_id} compact />
+            <PlaygroundPageExport
+              fileId={fileInfo.file_id}
+              compact
+              boundingBoxes={boundingBoxes}
+            />
           )}
         </PlaygroundLoading>
       )}

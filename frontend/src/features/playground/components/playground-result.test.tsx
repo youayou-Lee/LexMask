@@ -135,6 +135,7 @@ function renderResult(props: Partial<ComponentProps<typeof PlaygroundResult>> = 
       totalPages={1}
       onPageChange={() => undefined}
       visibleBoxes={[]}
+      boundingBoxes={[]}
       visionTypes={[]}
       getVisionTypeConfig={() => ({ name: '', color: '' })}
       onBackToEdit={() => undefined}
@@ -167,6 +168,7 @@ function ControlledResult() {
       totalPages={1}
       onPageChange={() => undefined}
       visibleBoxes={[]}
+      boundingBoxes={[]}
       visionTypes={[]}
       getVisionTypeConfig={() => ({ name: '', color: '' })}
       onBackToEdit={() => undefined}
