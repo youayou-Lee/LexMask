@@ -461,3 +461,29 @@ def test_clear_file_output_drops_preview_fields(tmp_path, monkeypatch):
     assert fms.clear_file_output("f1") is True
     assert not any(k.startswith("preview_") for k in fs.data["f1"])
     assert not preview.exists()
+
+
+def test_regenerate_subset_preview_removes_previous_file(env, tmp_path):
+    """Issue#332：重复生成子集预览必须删掉上一份 PDF，否则 OUTPUT_DIR 只增不减。
+
+    复现路径：识别中点一次「开始匿名化」→ 返回编辑改页 → 再点一次。旧产物若无人删，
+    每点一次就多留一份（本仓 OUTPUT_DIR 没有清扫器）。
+    """
+    store, job_id, item_id = _seed(tmp_path, 3)
+    src = _scanned_pdf(tmp_path / "src.pdf", 3)
+    info = _file_info(tmp_path, src, 3)
+    env["file-1"] = info
+
+    first = _call(env, store, job_id, item_id, info, pages=[1])
+    first_path = first["preview_output_path"]
+    assert Path(first_path).is_file()
+
+    second = _call(env, store, job_id, item_id, info, pages=[2, 3])
+    second_path = second["preview_output_path"]
+
+    assert second_path != first_path
+    assert Path(second_path).is_file(), "新预览必须存在"
+    assert not Path(first_path).exists(), "上一份预览必须被删（否则每次重生成都留孤儿）"
+    assert env["file-1"]["preview_output_path"] == second_path
+    leftovers = sorted(p.name for p in Path(settings.OUTPUT_DIR).glob("subset-preview-*.pdf"))
+    assert leftovers == [Path(second_path).name]

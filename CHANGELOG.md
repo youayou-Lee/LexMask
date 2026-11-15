@@ -2,6 +2,8 @@
 
 ## 2026-11-16
 
+- **Issue#332：重复生成子集预览不再漏下上一份 PDF**——`subset_preview_service.create_subset_preview` 覆写 `preview_output_path` 前先读出旧路径，写完后删旧文件（路径须在 `OUTPUT_DIR` 内，best-effort）。复现路径＝识别中「开始匿名化」→ 返回编辑改页 → 再点一次；本仓 OUTPUT_DIR 无清扫器，旧实现每点一次就多留一份孤儿（本地实测单份 7.7 MB）。新增判据 1 例（两份预览只存一份、新产物在、旧产物失）+ 变异 2 条（删清理调用 / 删错对象）均 KILLED。
+
 - **Issue#330：子集预览产物在识别收尾（item → `awaiting_review`）时被误清**——`clear_file_output` 拆分全卷产物字段与预览字段（新增 `include_preview` 开关），`job_store.update_item_status` 在目标状态为 `AWAITING_REVIEW`（识别收尾）时只清全卷产物、保留子集预览；重跑（PENDING 等）/打码开始（PROCESSING）/失败/取消仍连预览一起清。
   - **根因**：`job_models._OUTPUT_STALE_ITEM_STATUSES` 含 `AWAITING_REVIEW`（全卷产物失效集合），`update_item_status` 命中即 `clear_file_output(file_id)`；Issue#325 把 `preview_*` 纳入 `_OUTPUT_ARTIFACT_FIELDS` 后，「识别收尾」这条本该保留子集预览的迁移把本轮识别期的预览产物一起清了。
   - **门④ 实弹验收（2026-11-16，本地 86 页真卷 `扫描型PDF误判为文本型-2.pdf`）**：识别期 33 页子集预览 200；识别收尾（item → `awaiting_review`）后 `page-image?preview=true&page=33` 与 `download?preview=true` **修复前均 400「子集预览尚未生成」** → 修复后均 200（33 页）；未覆盖页（34）仍 404 `preview_page_not_covered`。手改框（`type=CUSTOM`/`source=manual`）进产物：全卷链路框区域 9030 px 变化 vs 对照 99 px；子集链路同款 9030 vs 99。

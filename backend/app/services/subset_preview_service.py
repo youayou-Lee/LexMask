@@ -38,6 +38,18 @@ def _remove_quietly(path: str | None) -> None:
         pass
 
 
+def _remove_stale_preview(path: str) -> None:
+    """Issue#332：删上一份子集预览（路径必须在 OUTPUT_DIR 内，best-effort）。"""
+    try:
+        from app.core.file_validation import safe_path_in_dir
+
+        if not safe_path_in_dir(path, settings.OUTPUT_DIR):
+            return
+        _remove_quietly(path)
+    except Exception:
+        pass
+
+
 def _has_selected_regions(
     boxes: Sequence[Any], entities: Sequence[Any], pages: Sequence[int]
 ) -> bool:
@@ -239,7 +251,15 @@ async def create_subset_preview(
         from app.services.file_management_service import get_file_store_lock
 
         async with get_file_store_lock():
+            # Issue#332：重复生成会覆盖 preview_output_path —— 上一份预览 PDF 必须跟着删，
+            # 否则每点一次「开始匿名化」就在 OUTPUT_DIR 里多留一份（无清扫器，只增不减）。
+            previous = file_store.get(fid)
+            stale_preview = (
+                previous.get("preview_output_path") if isinstance(previous, dict) else None
+            )
             file_store.update_fields(fid, payload)
+        if isinstance(stale_preview, str) and stale_preview.strip() and stale_preview != preview_path:
+            _remove_stale_preview(stale_preview)
     return {
         "file_id": file_info.get("file_id") or file_info.get("id"),
         "processed_pages": normalized,
