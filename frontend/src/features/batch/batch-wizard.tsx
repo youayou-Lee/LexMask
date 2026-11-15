@@ -98,6 +98,8 @@ export function BatchWizard() {
               goStep={w.goStep}
               submitQueueToWorker={w.submitQueueToWorker}
               requeueFailedItems={w.requeueFailedItems}
+              resolveExportIssue={w.resolveExportIssue}
+              flushCurrentReviewDraft={w.flushCurrentReviewDraft}
             />
           )}
 

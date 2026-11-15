@@ -32,7 +32,7 @@ from app.services.export_service import ExportTaskManager
 from app.services.file_management_service import _file_store_lock
 from app.services.file_store_db import FileStoreDB
 from app.services.job_store import JobItemStatus, JobStore, JobType
-from app.services.partial_export_service import config_from_job_config, submit_partial_export
+from app.services.partial_export_service import config_from_job_config, submit_item_export
 
 _FILE_ID = "file-1"
 _ORIGINAL_REASON = "视觉识别 page timeout after 300s: page budget exhausted"
@@ -194,15 +194,18 @@ async def test_verify_then_export_report_and_partial_manifest(tmp_path, monkeypa
     assert report["summary"]["ready_for_delivery"] is True
     files_api._assert_batch_delivery_ready(request, env.store, "apitester")  # 不再 409
 
-    # 部分导出 pages=[5] → manifest 落 manual_verified_pages（同一循环内 submit+轮询）
-    task = await submit_partial_export(
+    # 选页导出 pages=[5]（#278 统一链）→ manifest 落 manual_verified_pages
+    # （同一循环内 submit+轮询）；include_summary=True 以便端到端验证人工页披露句。
+    task = await submit_item_export(
         owner_id="apitester",
+        store=env.store,
+        job_row=env.store.get_job(env.jid) or {},
         item_row=env.item_row(),
         file_info=env.file_info(),
         config=config_from_job_config({"watermark_delivery": "keep"}),
+        kind="partial",
         pages=[5],
-        excluded_failed_pages=[],
-        snapshot_at="2026-11-15T08:00:00+00:00",
+        include_summary=True,
         manager=ExportTaskManager(),
     )
     for _ in range(600):
@@ -215,8 +218,12 @@ async def test_verify_then_export_report_and_partial_manifest(tmp_path, monkeypa
     entry = manifest["manual_verified_pages"][0]
     assert entry["page"] == 5 and entry["box_count"] == 2
     assert entry["operator"] == "apitester" and entry["verified_at"]
-    # 说明页逐页文案
-    assert any("第 5 页为人工补框结果" in line and "未经自动识别校验" in line for line in manifest["cover"])
+    # 说明.txt 逐页文案（#278 起说明信息在包内 说明.txt，不再有 manifest.cover）
+    import zipfile
+
+    with zipfile.ZipFile(Path(task.out_dir) / "part001.zip") as zf:
+        summary_text = zf.read("说明.txt").decode("utf-8")
+    assert "第 5 页为人工补框结果" in summary_text and "未经自动识别校验" in summary_text
     # meta 同字段（任务卡/记录面同拍快照）
     assert task.public().get("manual_verified_pages_count") == 1
 

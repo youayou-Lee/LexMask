@@ -1,19 +1,23 @@
 """Issue#257 一期 · AC1.2 / AC1.4 / AC1.5：部分导出的产物正确性与选页契约。
 
+Issue#278 统一导出改造后，本文件改用新名（``validate_export_pages`` /
+``build_summary_lines`` / ``build_item_package``），判据本身零变化：
+
 核心判据（门①.5 冷审后重写）：**逐页内嵌图像流 sha256 与「全量参照件」对照**。
 参照件 = 对同一原件走既有 ``Redactor().redact`` 打码全卷（不经
 ``execute_redaction``、不写 file_store）。该判据一次覆盖：框页号重映射、产物页序、
 渲染 DPI/JPEG 参数一致性、打码生效；再反向断言「产物页图像不等于参照件其它页」
 防止页序错位却自洽的假绿。
 
-另外钉住说明页的内容（逐页列举、不得写「第 1-5 页」这种撒谎区间）、失败页永不进包、
-以及 AC1.5 的错误码全集。
+另外钉住说明.txt 的内容（逐页列举、不得写「第 1-5 页」这种撒谎区间）、失败页永不进包、
+以及 AC1.5 的错误码全集。说明页插入逻辑已随 #278 废除（说明退为可选 说明.txt）。
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+from pathlib import Path
 
 import fitz
 import pytest
@@ -108,11 +112,11 @@ def _reference_pdf(src: str, boxes: list[BoundingBox], out_dir) -> str:
 # ---------------------------------------------------------------------------
 
 def test_partial_export_matches_reference_pages(synthetic_pdf, output_dir, tmp_path):
-    """AC1.2：页数、说明页、逐页图像 sha256 全部对得上全量参照件。"""
+    """AC1.2：页数、逐页图像 sha256 全部对得上全量参照件；说明页废除（#278）。"""
     boxes = [_box(p, f"b{p}") for p in (1, 2, 3, 4, 5, 6)]
     reference = _reference_pdf(synthetic_pdf, boxes, output_dir)
 
-    cover_lines = pes.build_cover_lines(
+    summary_lines = pes.build_summary_lines(
         pages=[1, 2, 3, 5],
         page_count=6,
         excluded=[(4, "inj")],
@@ -122,34 +126,37 @@ def test_partial_export_matches_reference_pages(synthetic_pdf, output_dir, tmp_p
         recognized_pages_at_export=4,
     )
     product = asyncio.run(
-        pes.build_partial_package(
+        pes.build_item_package(
+            kind="partial",
             source_path=synthetic_pdf,
             pages=[1, 2, 3, 5],
             boxes=boxes,
             config=_config(),
-            cover_lines=cover_lines,
             out_dir=str(tmp_path / "work"),
             final_name="部分导出.pdf",
+            include_summary=True,
+            summary_lines=summary_lines,
         )
     )
 
     doc = fitz.open(product["pdf_path"])
     try:
-        assert doc.page_count == 5, "说明页 1 + 选中 4"
-        cover_text = doc[0].get_text()
-        assert "第 1、2、3、5 页" in cover_text.replace("\n", "")
-        assert "共 4 页" in cover_text
-        assert "原卷总页数：6" in cover_text
-        assert "第 4 页" in cover_text and "inj" in cover_text
-        assert "生成时间" in cover_text and "快照时间" in cover_text
-        assert "MARKER-P6" not in cover_text
+        assert doc.page_count == 4, "说明页废除（#278）：包内只有选中 4 页"
+        texts = "".join(p.get_text() for p in doc)
+        assert "MARKER-P6" not in texts
     finally:
         doc.close()
+    assert product["summary_path"], "include_summary=True ⇒ 说明.txt 落盘"
+    summary_text = Path(product["summary_path"]).read_text(encoding="utf-8")
+    assert "第 1、2、3、5 页" in summary_text.replace("\n", "")
+    assert "共 4 页" in summary_text
+    assert "原卷总页数：6" in summary_text
+    assert "第 4 页" in summary_text and "inj" in summary_text
 
     # 逐页图像流对照：产物第 k+1 页 == 参照件第 pages[k] 页
     ref_shas = {p: _page_image_sha(reference, p - 1) for p in (1, 2, 3, 4, 5, 6)}
     for idx, page_no in enumerate([1, 2, 3, 5]):
-        got = _page_image_sha(product["pdf_path"], idx + 1)
+        got = _page_image_sha(product["pdf_path"], idx)  # 无说明页：产物页 k = 原卷 pages[k-1]
         assert got == ref_shas[page_no], f"page {page_no} image mismatch"
         others = [sha for p, sha in ref_shas.items() if p != page_no]
         assert got not in others, f"page {page_no} matches another reference page"
@@ -160,18 +167,19 @@ def test_partial_export_keeps_original_page_order(synthetic_pdf, output_dir, tmp
     boxes = [_box(p, f"b{p}") for p in (1, 3)]
     reference = _reference_pdf(synthetic_pdf, boxes, output_dir)
     product = asyncio.run(
-        pes.build_partial_package(
+        pes.build_item_package(
+            kind="partial",
             source_path=synthetic_pdf,
             pages=[3, 1],
             boxes=boxes,
             config=_config(),
-            cover_lines=["第 1、3 页"],
             out_dir=str(tmp_path / "work"),
             final_name="p.pdf",
         )
     )
-    assert _page_image_sha(product["pdf_path"], 1) == _page_image_sha(reference, 0)
-    assert _page_image_sha(product["pdf_path"], 2) == _page_image_sha(reference, 2)
+    assert product["summary_path"] is None, "include_summary 缺省关"
+    assert _page_image_sha(product["pdf_path"], 0) == _page_image_sha(reference, 0)
+    assert _page_image_sha(product["pdf_path"], 1) == _page_image_sha(reference, 2)
 
 
 def test_boxes_are_remapped_to_subset_page_numbers():
@@ -192,24 +200,33 @@ def test_boxes_are_remapped_to_subset_page_numbers():
 
 def test_validation_rejects_empty_selection():
     with pytest.raises(pes.PartialExportError) as exc:
-        pes.validate_partial_export_pages(
-            [], page_count=6, failed_pages=set(), recognized_pages={1, 2}, acknowledge_failed_excluded=False
+        pes.validate_export_pages(
+            [], kind="partial", page_count=6, failed_pages=set(), recognized_pages={1, 2}
         )
     assert exc.value.code == "pages_empty"
+
+
+def test_validation_partial_without_pages_is_400():
+    """#278：partial 无 pages ⇒ 新错误码 pages_required_for_partial。"""
+    with pytest.raises(pes.PartialExportError) as exc:
+        pes.validate_export_pages(
+            None, kind="partial", page_count=6, failed_pages=set(), recognized_pages={1, 2}
+        )
+    assert exc.value.code == "pages_required_for_partial"
 
 
 @pytest.mark.parametrize("bad", [0, -1, 7])
 def test_validation_rejects_out_of_range(bad):
     with pytest.raises(pes.PartialExportError) as exc:
-        pes.validate_partial_export_pages(
-            [bad], page_count=6, failed_pages=set(), recognized_pages={1, 2}, acknowledge_failed_excluded=False
+        pes.validate_export_pages(
+            [bad], kind="partial", page_count=6, failed_pages=set(), recognized_pages={1, 2}
         )
     assert exc.value.code == "pages_out_of_range"
 
 
 def test_validation_dedupes_and_allows_unsorted():
-    result = pes.validate_partial_export_pages(
-        [2, 1, 2], page_count=6, failed_pages=set(), recognized_pages={1, 2}, acknowledge_failed_excluded=False
+    result = pes.validate_export_pages(
+        [2, 1, 2], kind="partial", page_count=6, failed_pages=set(), recognized_pages={1, 2}
     )
     assert result["pages"] == [1, 2]
     assert result["excluded_failed_pages"] == []
@@ -217,54 +234,67 @@ def test_validation_dedupes_and_allows_unsorted():
 
 def test_validation_rejects_explicit_failed_page():
     with pytest.raises(pes.PartialExportError) as exc:
-        pes.validate_partial_export_pages(
-            [1, 4], page_count=6, failed_pages={4}, recognized_pages={1, 2, 3, 5}, acknowledge_failed_excluded=True
+        pes.validate_export_pages(
+            [1, 4], kind="partial", page_count=6, failed_pages={4}, recognized_pages={1, 2, 3, 5}
         )
     assert exc.value.code == "failed_pages_not_allowed"
 
 
 def test_validation_auto_excludes_failed_pages_within_span():
     """Issue#257 需求重对齐（2026-11-11）：失败页不再要求任何「知情确认」勾选，
-    区间内的失败页直接自动排除，并如实回报给调用方（写进说明页与 manifest）。"""
-    result = pes.validate_partial_export_pages(
-        [1, 2, 3, 5, 6], page_count=6, failed_pages={4}, recognized_pages={1, 2, 3, 5, 6},
-        acknowledge_failed_excluded=False,
+    区间内的失败页直接自动排除，并如实回报给调用方（写进说明.txt 与 manifest）。"""
+    result = pes.validate_export_pages(
+        [1, 2, 3, 5, 6], kind="partial", page_count=6, failed_pages={4}, recognized_pages={1, 2, 3, 5, 6}
     )
     assert result["excluded_failed_pages"] == [4]
     assert result["pages"] == [1, 2, 3, 5, 6]
     assert 4 not in result["pages"]
 
-    # 幂等：旧客户端继续带 acknowledge=True 也照旧工作（参数保留只为兼容）。
-    legacy = pes.validate_partial_export_pages(
-        [1, 2, 3, 5, 6], page_count=6, failed_pages={4}, recognized_pages={1, 2, 3, 5, 6},
-        acknowledge_failed_excluded=True,
-    )
-    assert legacy == result
-
 
 def test_validation_rejects_unrecognized_page():
     with pytest.raises(pes.PartialExportError) as exc:
-        pes.validate_partial_export_pages(
-            [1, 6], page_count=6, failed_pages=set(), recognized_pages={1}, acknowledge_failed_excluded=False
+        pes.validate_export_pages(
+            [1, 6], kind="partial", page_count=6, failed_pages=set(), recognized_pages={1}
         )
     assert exc.value.code == "pages_not_recognized"
 
 
-def test_validation_rejects_unsupported_type():
+def test_validation_rejects_unsupported_type_for_partial():
     with pytest.raises(pes.PartialExportError) as exc:
-        pes.validate_partial_export_pages(
-            [1], page_count=6, failed_pages=set(), recognized_pages={1},
-            acknowledge_failed_excluded=False, file_type="docx",
+        pes.validate_export_pages(
+            [1], kind="partial", page_count=6, failed_pages=set(), recognized_pages={1}, file_type="docx"
         )
     assert exc.value.code == "partial_export_unsupported_type"
 
 
+def test_validation_full_skips_type_gate():
+    """#278 r2 F6：full 走主产物直取，类型闸会误杀 agent md/docx ⇒ full 跳过类型闸。"""
+    result = pes.validate_export_pages(
+        None, kind="full", page_count=0, failed_pages=set(), recognized_pages=set(), file_type="md"
+    )
+    assert result["pages"] == []
+    assert result["excluded_failed_pages"] == []
+
+
+def test_validation_full_default_set_is_exportable_and_excludes_failed():
+    result = pes.validate_export_pages(
+        None, kind="full", page_count=6, failed_pages={4}, recognized_pages={1, 2, 3, 5, 6}
+    )
+    assert result["pages"] == [1, 2, 3, 5, 6]
+    assert result["excluded_failed_pages"] == [4]
+    # full 忽略传入 pages（缺省语义 = 全部可导出页）
+    ignored = pes.validate_export_pages(
+        [1], kind="full", page_count=6, failed_pages={4}, recognized_pages={1, 2, 3, 5, 6}
+    )
+    assert ignored == result
+
+
 # ---------------------------------------------------------------------------
-# 说明页内容（AC1.2 / AC5 红线：只允许页号、时间、原因码、导出 ID）
+# 说明.txt 内容（AC1.2 / AC5 红线：只允许页号、时间、原因码、导出 ID）
 # ---------------------------------------------------------------------------
 
-def test_cover_lines_list_pages_individually_and_never_leak_text():
-    lines = pes.build_cover_lines(
+def test_summary_lines_list_pages_individually_and_never_leak_text():
+    lines = pes.build_summary_lines(
         pages=[1, 2, 3, 5],
         page_count=6,
         excluded=[(4, "inj")],
@@ -277,26 +307,11 @@ def test_cover_lines_list_pages_individually_and_never_leak_text():
     assert "第 1、2、3、5 页" in text
     assert "第 1-5 页" not in text  # 撒谎区间
     assert "共 4 页" in text
+    assert "含说明页" not in text, "说明页废除后不得再出现 +1 语义（#278）"
     assert "原卷总页数：6" in text
     assert "0123456789abcdef" in text
     for line in lines:
         assert "secret-" not in line
-
-
-def test_cover_page_renders_chinese(synthetic_pdf, tmp_path):
-    """AC0 的服务层形态：china-s 写入后逐字符读回。"""
-    out = tmp_path / "with_cover.pdf"
-    pes.slice_pdf_pages(synthetic_pdf, [1, 2], str(out))
-    lines = ["本包含原卷第 1、2 页（共 2 页，其中说明页 1 页）", "原卷总页数：6"]
-    pes.insert_cover_page(str(out), lines)
-    doc = fitz.open(str(out))
-    try:
-        assert doc.page_count == 3
-        text = doc[0].get_text()
-        for line in lines:
-            assert line in text
-    finally:
-        doc.close()
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +321,7 @@ def test_cover_page_renders_chinese(synthetic_pdf, tmp_path):
 def test_partial_export_cleans_unmasked_subset_when_render_fails(
     synthetic_pdf, output_dir, tmp_path, monkeypatch
 ):
-    """Important-1：渲染/插页任一环节抛错，未打码的选中页副本不得留在导出目录。"""
+    """Important-1：渲染任一环节抛错，未打码的选中页副本不得留在导出目录。"""
     from app.services import redactor as redactor_module
 
     boxes = [_box(p, f"b{p}") for p in (1, 2)]
@@ -319,12 +334,12 @@ def test_partial_export_cleans_unmasked_subset_when_render_fails(
 
     with pytest.raises(RuntimeError, match="render exploded"):
         asyncio.run(
-            pes.build_partial_package(
+            pes.build_item_package(
+                kind="partial",
                 source_path=synthetic_pdf,
                 pages=[1, 2],
                 boxes=boxes,
                 config=_config(),
-                cover_lines=["【部分导出说明】"],
                 out_dir=str(work),
                 final_name="部分导出.pdf",
             )
@@ -345,12 +360,12 @@ def leftover_redacted(work):
 def test_validation_rejects_pages_without_boxes():
     """Important-2：选中页没有框账条目 ⇒ 拒收（否则原样渲染、零遮蔽出厂）。"""
     with pytest.raises(pes.PartialExportError) as excinfo:
-        pes.validate_partial_export_pages(
+        pes.validate_export_pages(
             [1, 2],
+            kind="partial",
             page_count=6,
             failed_pages=set(),
             recognized_pages={1, 2},
-            acknowledge_failed_excluded=False,
             file_type="pdf_scanned",
             boxes_pages={1},
         )
@@ -360,12 +375,12 @@ def test_validation_rejects_pages_without_boxes():
 
 def test_validation_accepts_pages_with_empty_boxes_entries():
     """空框列表（跑过视觉识别但零命中）仍然合法，不能被上面那条误杀。"""
-    selection = pes.validate_partial_export_pages(
+    selection = pes.validate_export_pages(
         [1, 2],
+        kind="partial",
         page_count=6,
         failed_pages=set(),
         recognized_pages={1, 2},
-        acknowledge_failed_excluded=False,
         file_type="pdf_scanned",
         boxes_pages={1, 2},
     )

@@ -7,6 +7,10 @@
 //  1) manual 页进预填（初始选择集 = success ∪ manual）；
 //  2) manual 页不被剪枝（剪枝谓词只保留 success+manual，failed/pending 摘除）；
 //  3) failed 页依旧排除（#199 红线在选择层就挡住）。
+//
+// 集成注记（batch2）：hook 被 #278 改名 use-partial-export-selection → use-item-export
+// （useItemExport，exportable 谓词 r2 F4 与本语义一致）；本文件保持 #280 的判据，
+// 消费面随新 hook 的 API 形态更新（startItemExport/listItemExports/getItemExport）。
 
 import { renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -27,13 +31,17 @@ vi.mock('./use-batch-page-status', () => ({
   }),
 }));
 
-vi.mock('@/services/jobsApi', () => ({
-  getPartialExport: vi.fn(),
-  listItemExports: vi.fn().mockResolvedValue({ exports: [], unavailable: [] }),
-  startPartialExport: vi.fn(),
+vi.mock('@/i18n', () => ({
+  useT: () => (key: string) => key,
 }));
 
-import { usePartialExportSelection } from './use-partial-export-selection';
+vi.mock('@/services/jobsApi', () => ({
+  getItemExport: vi.fn(),
+  listItemExports: vi.fn().mockResolvedValue({ exports: [], unavailable: [] }),
+  startItemExport: vi.fn(),
+}));
+
+import { useItemExport } from './use-item-export';
 
 afterEach(() => {
   hookState.status = null;
@@ -69,7 +77,7 @@ describe('部分导出选页白名单含 manual_verified 页（Issue#280）', ()
   it('预填选择集 = success ∪ manual；failed/pending 不进', async () => {
     hookState.status = makeStatus();
     const { result } = renderHook(() =>
-      usePartialExportSelection({ jobId: 'job-280', itemId: 'item-280' }),
+      useItemExport({ jobId: 'job-280', itemId: 'item-280' }),
     );
     await waitFor(() => {
       expect(result.current.selected.size).toBe(2);
@@ -82,7 +90,7 @@ describe('部分导出选页白名单含 manual_verified 页（Issue#280）', ()
   it('剪枝谓词同口径：已选 manual 页不被摘掉', async () => {
     hookState.status = makeStatus();
     const { result } = renderHook(() =>
-      usePartialExportSelection({
+      useItemExport({
         jobId: 'job-280',
         itemId: 'item-280',
         initialSelected: [1, 2, 3],

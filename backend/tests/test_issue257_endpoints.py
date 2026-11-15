@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from app.api.jobs import export_item_pages, get_item_exports, get_item_page_status
+from app.api.jobs import export_item, get_item_exports, get_item_page_status
+from app.models.job_schemas import ItemExportRequest
 from app.core.errors import AppError
 from app.services import file_operations, partial_export_service
 from app.services.export_service import ExportTask
@@ -166,21 +167,22 @@ def test_partial_export_auto_excludes_failed_page_in_span(wired, store, tmp_path
     monkeypatch.setattr(partial_export_service, "export_task_manager", manager)
 
     payload = asyncio.run(
-        export_item_pages(
+        export_item(
             job_id,
             item_id,
-            pages=[1, 2, 3, 5],
-            acknowledge_failed_excluded=False,
+            ItemExportRequest(kind="partial", pages=[1, 2, 3, 5]),
             store=store,
             owner_id="admin",
         )
     )
 
     assert payload["status"] == "queued"
-    assert payload["excluded_failed_pages"] == [4]
+    assert payload["excluded_failed_pages"] == [{"page": 4, "reason_code": "ocr boom"}]
     assert payload["pages"] == [1, 2, 3, 5]
+    assert payload["page_count"] == 4, "page_count = 包内页数（#278）"
+    assert payload["kind"] == "partial"
     assert len(manager.calls) == 1
-    assert manager.calls[0]["meta"]["excluded_failed_pages"] == [4]
+    assert manager.calls[0]["meta"]["excluded_failed_pages"] == [{"page": 4, "reason_code": "ocr boom"}]
 
 
 def test_partial_export_accepted_records_meta(wired, store, tmp_path, monkeypatch):
@@ -189,11 +191,10 @@ def test_partial_export_accepted_records_meta(wired, store, tmp_path, monkeypatc
     monkeypatch.setattr(partial_export_service, "export_task_manager", manager)
 
     payload = asyncio.run(
-        export_item_pages(
+        export_item(
             job_id,
             item_id,
-            pages=[5, 1, 3],
-            acknowledge_failed_excluded=True,
+            ItemExportRequest(kind="partial", pages=[5, 1, 3]),
             store=store,
             owner_id="admin",
         )
@@ -201,12 +202,13 @@ def test_partial_export_accepted_records_meta(wired, store, tmp_path, monkeypatc
 
     assert payload["export_id"] == "exp0001"
     assert payload["pages"] == [1, 3, 5]
-    assert payload["excluded_failed_pages"] == [4]
+    assert payload["excluded_failed_pages"] == [{"page": 4, "reason_code": "ocr boom"}]
     assert payload["status"] == "queued"
     assert payload["job_id"] == job_id
     assert payload["item_id"] == item_id
     assert manager.calls[0]["meta"]["pages"] == [1, 3, 5]
-    assert manager.calls[0]["kind"] == "partial_redaction"
+    assert manager.calls[0]["kind"] == "partial"
+    assert "kind" not in manager.calls[0]["meta"], "meta 不带 kind（r2 F8）"
 
 
 @pytest.mark.parametrize(
@@ -225,11 +227,10 @@ def test_partial_export_rejects_invalid_selection(wired, store, tmp_path, monkey
     monkeypatch.setattr(partial_export_service, "export_task_manager", manager)
     with pytest.raises(AppError) as excinfo:
         asyncio.run(
-            export_item_pages(
+            export_item(
                 job_id,
                 item_id,
-                pages=pages,
-                acknowledge_failed_excluded=True,
+                ItemExportRequest(kind="partial", pages=pages),
                 store=store,
                 owner_id="admin",
             )
@@ -246,11 +247,10 @@ def test_partial_export_rejects_non_paged_file_type(store, tmp_path, monkeypatch
     monkeypatch.setattr(file_operations, "get_file_info", lambda file_id: info)
     with pytest.raises(AppError) as excinfo:
         asyncio.run(
-            export_item_pages(
+            export_item(
                 job_id,
                 item_id,
-                pages=[1],
-                acknowledge_failed_excluded=False,
+                ItemExportRequest(kind="partial", pages=[1]),
                 store=store,
                 owner_id="admin",
             )
@@ -265,11 +265,10 @@ def test_partial_export_404_when_file_info_missing(store, tmp_path, monkeypatch)
     monkeypatch.setattr(file_operations, "get_file_info", lambda file_id: None)
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(
-            export_item_pages(
+            export_item(
                 job_id,
                 item_id,
-                pages=[1],
-                acknowledge_failed_excluded=False,
+                ItemExportRequest(kind="partial", pages=[1]),
                 store=store,
                 owner_id="admin",
             )
@@ -283,11 +282,10 @@ def test_partial_export_404_for_foreign_owner(wired, store, tmp_path, monkeypatc
     monkeypatch.setattr(partial_export_service, "export_task_manager", manager)
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(
-            export_item_pages(
+            export_item(
                 job_id,
                 item_id,
-                pages=[1],
-                acknowledge_failed_excluded=False,
+                ItemExportRequest(kind="partial", pages=[1]),
                 store=store,
                 owner_id="intruder",
             )
@@ -358,7 +356,7 @@ def test_partial_export_rejects_pages_without_boxes(store, wired, tmp_path):
     info["bounding_boxes"] = {1: info["bounding_boxes"][1]}
     with pytest.raises(AppError) as excinfo:
         asyncio.run(
-            export_item_pages(job_id, item_id, pages=[3], acknowledge_failed_excluded=False, store=store, owner_id="admin")
+            export_item(job_id, item_id, ItemExportRequest(kind="partial", pages=[3]), store=store, owner_id="admin")
         )
     assert excinfo.value.status_code == 400
     assert excinfo.value.error_code == "pages_without_boxes"
@@ -382,11 +380,10 @@ def test_partial_export_rejects_boxes_that_cannot_land_on_their_page(wired, stor
 
     with pytest.raises(AppError) as excinfo:
         asyncio.run(
-            export_item_pages(
+            export_item(
                 job_id,
                 item_id,
-                pages=[1],
-                acknowledge_failed_excluded=True,
+                ItemExportRequest(kind="partial", pages=[1]),
                 store=store,
                 owner_id="admin",
             )

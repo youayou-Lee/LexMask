@@ -2,6 +2,7 @@
 
 覆盖方案 v2 的 AC1.5（产物结构/清单）与 AC1.7（记录落盘、重启后仍能列出并下载），
 并钉住 AC1.3 的**主产物隔离**性质：导出过程不得改写 file_store 里的框/产物字段。
+Issue#278 改造后：产物为统一包（无说明页）、manifest/status 键按新契约断言。
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import pytest
 from app.core.config import settings
 from app.services.export_service import ExportTaskManager
 from app.services.job_store import JobItemStatus, JobStore, JobType
-from app.services.partial_export_service import list_item_exports, submit_partial_export
+from app.services.partial_export_service import list_item_exports, submit_item_export
 
 
 def _make_pdf(path: Path, pages: int) -> Path:
@@ -97,14 +98,16 @@ async def test_partial_export_task_end_to_end(tmp_path, monkeypatch):
     manager = ExportTaskManager()
     from app.services.partial_export_service import config_from_job_config
 
-    task = await submit_partial_export(
+    item_row = store.get_item(item_id)
+    task = await submit_item_export(
         owner_id="admin",
-        item_row=store.get_item(item_id),
+        store=store,
+        job_row=store.get_job(job_id),
+        item_row=item_row,
         file_info=info,
         config=config_from_job_config({"watermark_delivery": "keep"}),
+        kind="partial",
         pages=[1, 2, 3, 5],
-        excluded_failed_pages=[4],
-        snapshot_at="2026-11-11T00:00:00+00:00",
         manager=manager,
     )
 
@@ -116,7 +119,7 @@ async def test_partial_export_task_end_to_end(tmp_path, monkeypatch):
 
     sha_before = hashlib.sha256((Path(task.out_dir) / "part001.zip").read_bytes()).hexdigest()
 
-    # 产物：一个分卷 zip，内含说明页 + 4 页
+    # 产物：一个分卷 zip，内含 4 页（无说明页）+ manifest.json
     volumes = task.public()["volumes"]
     assert [v["name"] for v in volumes] == ["part001.zip"]
     zip_path = Path(task.out_dir) / "part001.zip"
@@ -124,27 +127,27 @@ async def test_partial_export_task_end_to_end(tmp_path, monkeypatch):
         names = zf.namelist()
         assert names[0] == "测试卷-部分导出(第1、2、3、5页).pdf"
         assert names[-1] == "manifest.json"
+        assert "说明.txt" not in names
         payload = zf.read(names[0])
     pdf_path = tmp_path / "extracted.pdf"
     pdf_path.write_bytes(payload)
     with fitz.open(pdf_path) as doc:
-        assert doc.page_count == 5
-        cover = doc[0].get_text()
-        assert "第 1、2、3、5 页" in cover
-        assert "共 4 页" in cover
-        assert "第 4 页" in cover and "ocr boom" in cover
-        assert "2026-11-11T00:00:00+00:00" in cover
-        assert "MARKER-P6" not in "".join(p.get_text() for p in doc)
+        assert doc.page_count == 4
+        texts = "".join(p.get_text() for p in doc)
+        assert "ocr boom" not in texts, "说明页废除：排除信息在 manifest/说明.txt，不在正文"
+        assert "MARKER-P6" not in texts
 
     # 清单 + 状态落盘（重启后扫盘能重建）
     manifest = json.loads((Path(task.out_dir) / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["pages"] == [1, 2, 3, 5]
-    assert manifest["excluded_failed_pages"] == [4]
+    assert manifest["page_count"] == 4, "page_count = 包内页数（#278）"
+    assert manifest["excluded_failed_pages"] == [{"page": 4, "reason_code": "ocr boom"}]
     assert manifest["job_id"] == job_id
+    assert manifest["kind"] == "partial"
     status = json.loads((Path(task.out_dir) / "export-status.json").read_text(encoding="utf-8"))
     assert status["job_id"] == job_id
     assert status["item_id"] == item_id
-    assert status["kind"] == "partial_redaction"
+    assert status["kind"] == "partial"
 
     # 模拟重启：全新 manager（内存表为空）仍能列出、查询状态、并按原字节下载
     fresh = ExportTaskManager()
@@ -156,8 +159,11 @@ async def test_partial_export_task_end_to_end(tmp_path, monkeypatch):
     resurrected = fresh.get(task.export_id, "admin")
     assert resurrected is not None
     assert resurrected.status == "completed"
+    assert resurrected.kind == "partial"
     assert resurrected.meta["pages"] == [1, 2, 3, 5]
-    assert resurrected.meta["excluded_failed_pages"] == [4]
+    assert resurrected.meta["excluded_failed_pages"] == [{"page": 4, "reason_code": "ocr boom"}]
+    assert resurrected.meta["files_sha256"], "#278：包内 entry sha256 落记录面"
+    assert "kind" not in resurrected.meta
 
     download_path = fresh.volume_path(task.export_id, "admin", "part001.zip")
     assert download_path == str(zip_path)
