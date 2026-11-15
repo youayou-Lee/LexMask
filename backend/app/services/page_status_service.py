@@ -395,18 +395,25 @@ def recognized_page_count(item_row: dict[str, Any], page_count: int) -> int:
 
 
 def exportable_page_numbers(item_row: dict[str, Any], page_count: int) -> set[int]:
-    """可进包页号集合（Issue#280）＝自动识别成功 ∪ 人工补框（manual_verified）。
+    """可进包页号集合（Issue#280 §2.3 / #278 §1 缺省集唯一权威）。
 
-    部分导出准入与说明页「已识别 N 页」口径都用它；失败页仍由 ``failed_pages``
-    在上游排除（manual 页已物理移出失败清单才会出现在这里）。
+    ``exportable = recognized ∪ manual − failed``：
+
+    * 自动识别成功 ∪ 人工补框页（manual_verified，#280 账本）；
+    * **减失败清单**：manual 账本与 ``failed_pages`` 同时记到的页（整卷重跑再失败、
+      人工兜底未成功仍记失败）不得进集——``failed_pages`` 权威优先于人工兜底，
+      #199 红线优先（#278 V3 判据钉死）。manual 页已物理移出失败清单才会出现在这里。
+
+    部分导出准入与说明页「已识别 N 页」口径都用它（两处消费同源，#280 r2 F-I3）。
     """
     exportable = recognized_page_numbers(item_row, page_count)
+    failed = set(failed_page_numbers(item_row))
     manual_map = _manual_page_map(item_row)
     for key in manual_map:
         page = _safe_int(key, -1)
         if 0 < page <= page_count:
             exportable.add(page)
-    return exportable
+    return exportable - failed
 
 
 def page_count_of(item_row: dict[str, Any], file_info: dict[str, Any] | None = None) -> int:
@@ -435,60 +442,16 @@ def failed_page_reasons(item_row: dict[str, Any]) -> dict[int, str]:
 
 
 # ---------------------------------------------------------------------------
-# Issue#278 统一导出链消费面（manual 账本防御性读取 + route 聚合）
+# Issue#278 统一导出链消费面（route 聚合；manual 账本投影与 #280 同源）
 # ---------------------------------------------------------------------------
 
-def _manual_ledger_map(item_row: dict[str, Any]) -> dict[int, dict[str, Any]]:
-    """#280 §2.0 账本防御性读取：``recognition.manual_verified_pages``。
-
-    账本形状（#280 §2.0 契约）：键为 ``str(page)``、值为
-    ``{verified_at, operator, box_count, original_reason}``；撤销后键消失。
-
-    **防御性形状兜底**：键缺失（#280 未合入 preview 前的常态路径，r2 F9）、值非
-    dict、页号脏值一律按缺失处理返回空表——导出是交付动作，绝不能因诊断账本崩。
-    #280 合入 preview 后本副本收敛为引用其 helper（PR 描述与注释双向互链）。
-    """
-    recognition = _coerce_dict(_performance_of(item_row).get("recognition"))
-    raw = recognition.get("manual_verified_pages")
-    if not isinstance(raw, dict):
-        return {}
-    out: dict[int, dict[str, Any]] = {}
-    for key, value in raw.items():
-        page = _safe_int(key, -1)
-        if page <= 0 or not isinstance(value, dict):
-            continue
-        out[page] = value
-    return out
-
-
-def exportable_page_numbers(item_row: dict[str, Any], page_count: int) -> set[int]:
-    """#280 §2.3 投影：``exportable = recognized ∪ manual``（统一导出缺省集的唯一权威）。
-
-    manual 页入集的两个硬约束：页号在 1..page_count 内；**不在失败清单**——
-    失败页永不进包（#199 红线）优先于人工兜底（人工页仍记为失败说明人工兜底未成功）。
-    """
-    recognized = recognized_page_numbers(item_row, page_count)
-    failed = set(failed_page_numbers(item_row))
-    manual = {p for p in _manual_ledger_map(item_row) if 0 < p <= max(_safe_int(page_count, 0), 0)}
-    return (recognized | manual) - failed
-
-
 def manual_ledger_of(item_row: dict[str, Any]) -> list[dict[str, Any]]:
-    """#280 §4.2 契约投影：``[{page, box_count, verified_at, operator}]`` 升序。
+    """#280 §4.2 契约投影（#278 统一导出消费）：``[{page, box_count, verified_at, operator}]`` 升序。
 
-    缺省键按「未披露」给空串/零，不编造值；条目语义 = 曾人工补框且未撤销。
+    与 ``manual_verified_pages_of`` 同一真源、同一形状（#280 合入后副本收敛为
+    委托，不再有两套并行账本读取；条目语义 = 曾人工补框且未撤销）。
     """
-    out: list[dict[str, Any]] = []
-    for page, value in sorted(_manual_ledger_map(item_row).items()):
-        out.append(
-            {
-                "page": page,
-                "box_count": _safe_int(value.get("box_count"), 0),
-                "verified_at": str(value.get("verified_at") or ""),
-                "operator": str(value.get("operator") or ""),
-            }
-        )
-    return out
+    return manual_verified_pages_of(item_row)
 
 
 def route_counts_of(item_row: dict[str, Any], pages: Iterable[int]) -> dict[str, int]:
