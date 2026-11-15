@@ -539,7 +539,7 @@ describe('Issue#327：识别在飞时的子集预览链路', () => {
     await waitFor(() => expect(screen.getByTestId('subset-preview').textContent).toBe('no'));
   });
 
-  it('(c2) 画布上某页的框被全部取消勾选 ⇒ 该页整页不进请求（R4-2：否则回落快照框照样打码）', async () => {
+  it('(c2) 画布上某页的框被全部取消勾选 ⇒ 该页零框（不回落服务端快照框，R4-2）', async () => {
     await seedRecognizing();
 
     await act(async () => {
