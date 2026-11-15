@@ -73,6 +73,9 @@ class RedactionRequest(BaseModel):
     entities: list[Entity] = Field(default_factory=list, description="Entities to redact")
     bounding_boxes: list[BoundingBox] = Field(default_factory=list, description="Image regions to redact")
     config: RedactionConfig = Field(default_factory=RedactionConfig)
+    # Issue#321：页子集打码。None/空 = 全卷（旧行为）；非空 = 只处理这些原卷页，
+    # 产物物理只含这些页（1-based、升序去重）。
+    pages: list[int] | None = Field(default=None, description="只处理的页号（1-based）；None=全卷")
 
 
 class PreviewEntityMapRequest(BaseModel):
@@ -131,6 +134,8 @@ class RedactionResult(BaseModel):
     )
     download_url: str
     output_path: str | None = Field(default=None, exclude=True)
+    processed_pages: list[int] = Field(default_factory=list, description="本次处理的原卷页（空=全卷）")
+    page_map: dict[int, int] = Field(default_factory=dict, description="产物页号 → 原卷页号")
 
 
 class CompareData(BaseModel):
