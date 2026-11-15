@@ -16,10 +16,10 @@
 
 - `PlaygroundPageExport` 新增可选 `onRequestClose`：
   - 点击「回到编辑」→ `setOpen(false)`（inline 形态收起导出块）→ 调用 `onRequestClose?.()`（弹窗形态由宿主关闭 Dialog）；
-  - 在下一帧滚动到 `#playground-bbox-editor`，并尝试把焦点交给画布（`canvas[tabindex]` / 首个 `tabindex=0` 元素），保证键盘用户也回到编辑。
-- 宿主 `playground-page.tsx` 传入 `onRequestClose={() => setExportPagesOpen(false)}`。
-- 选择集仍由 `use-item-export` 的模块级 `selectionCache` 保留，无需额外处理。
-- 修正 zh/en 的 `batchWizard.pages.exportSummary` 为 zip 口径（脱敏 PDF + 映射清单 + 可选 说明.txt）。
+  - 在下一帧滚动到 `#playground-bbox-editor`，并尝试把焦点交给画布（优先 `[role="application"][tabindex]`，兜底 `canvas[tabindex]` / 首个 `tabindex=0` 元素），保证键盘用户也回到编辑。
+- 宿主抽成 `PlaygroundExportDialog`（`playground-page.tsx` 使用），由它把 `onRequestClose` 接到 `setExportPagesOpen(false)`；result 阶段（`playground-result.tsx`）的导出块传 `onRequestClose={onBackToEdit}`。
+- 选择集：`use-item-export` 原 `selectionCache` 只在 `!enabled` 分支写入，而单文件弹窗整棵子树卸载时 `enabled` 恒 true ⇒ 从不落 cache。修复为 `selectedRef` + 以 `(job,item)` 为 key 的卸载 cleanup 写入；重开按上次选择恢复（含空集语义：空集仍像既有行为一样回落默认预选，CHANGELOG 已如实描述）。
+- 修正 zh/en 的 `singleExportHint` / `exportSummary` 为 zip 口径（脱敏 PDF + 映射清单 + 可选 说明.txt）。
 
 ## 影响面
 
@@ -44,3 +44,10 @@
 
 - 关闭弹窗后滚动/聚焦依赖宿主 DOM id `#playground-bbox-editor`（既有契约，测试中已钉）。
 - Radix Dialog 关闭后的滚动锁释放时点：用 `requestAnimationFrame` 延后一帧，兜底 `setTimeout`。
+
+## 门⑥ 评审修复（2026-11-15 晚）
+
+- **I-1 选择集卸载写入**：`use-item-export.ts` 加 `selectedRef` 与 `useEffect` 卸载 cleanup；`!enabled` 分支同读 ref。用例：`playground-page-export.test.tsx`「取消 1、2 → 卸载 → 重挂仍只选 3、5」。
+- **I-2 宿主接线判据**：新增 `playground-export-dialog.tsx`（真 Radix Dialog + `onCloseAutoFocus` 仅回到编辑路径 preventDefault）；`playground-export-dialog.test.tsx` 断言点 `export-back-to-edit` 后内容卸载。
+- **I-3 result 阶段判据**：新增 `playground-result-export-wiring.test.tsx`，真渲染 `PlaygroundResult`（mock 重子组件），点导出块的「回到编辑」断言 `onBackToEdit` 调用 1 次；删除 `onRequestClose={onBackToEdit}` 该用例必红（已实测）。
+- **M-4 夹具**：`issue278-back-to-edit.test.tsx` 画布夹具改 `div[role=application][tabindex=0]`；**M-5** 改 rAF 等待。
