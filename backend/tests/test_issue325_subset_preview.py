@@ -1,0 +1,257 @@
+"""Issue#325：子集预览打码（不迁移 item 状态、独立产物、实体定位在切片卷上）。"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+from pathlib import Path
+
+import fitz
+import pytest
+
+from app.core.config import settings
+from app.models.entity_schemas import BoundingBox, Entity
+from app.services.job_store import JobItemStatus, JobStore, JobType
+from app.services.partial_export_service import (
+    PartialExportError,
+    config_from_job_config,
+    submit_item_export,
+)
+from app.services.subset_preview_service import create_subset_preview
+
+PAGE_W, PAGE_H = 595.0, 842.0
+RECT = (80.0, 120.0, 240.0, 190.0)
+
+
+class _FileStore(dict):
+    def update_fields(self, file_id: str, updates: dict) -> None:
+        self.setdefault(file_id, {}).update(updates)
+
+
+def _scanned_pdf(path: Path, pages: int = 3) -> str:
+    doc = fitz.open()
+    for i in range(pages):
+        page = doc.new_page(width=PAGE_W, height=PAGE_H)
+        page.insert_text((72, 80), f"PAGE-{i + 1}", fontsize=14)
+        page.draw_rect(fitz.Rect(*RECT), color=(1, 0, 0), fill=(1, 0, 0))
+    doc.save(str(path))
+    doc.close()
+    return str(path)
+
+
+def _text_pdf(path: Path, pages: int = 2) -> str:
+    doc = fitz.open()
+    for _i in range(pages):
+        page = doc.new_page(width=PAGE_W, height=PAGE_H)
+        page.insert_text((80, 120), "ALICE", fontsize=14)
+    doc.save(str(path))
+    doc.close()
+    return str(path)
+
+
+def _box(page: int) -> BoundingBox:
+    x0, y0, x1, y1 = RECT
+    return BoundingBox(
+        id=f"b{page}",
+        x=x0 / PAGE_W,
+        y=y0 / PAGE_H,
+        width=(x1 - x0) / PAGE_W,
+        height=(y1 - y0) / PAGE_H,
+        page=page,
+        type="PERSON",
+        text=f"PAGE-{page}",
+        selected=True,
+    )
+
+
+def _seed(tmp_path: Path, page_count: int) -> tuple[JobStore, str, str]:
+    store = JobStore(str(tmp_path / "jobs.sqlite3"))
+    job_id = store.create_job(
+        job_type=JobType.TEXT_BATCH,
+        title="t",
+        config={"watermark_delivery": "keep", "image_redaction_method": "fill"},
+        owner_id="admin",
+    )
+    item_id = store.add_item(job_id, "file-1")
+    store.update_item_status(item_id, JobItemStatus.AWAITING_REVIEW)
+    pages = {str(p): {"status": "completed", "duration_ms": 100} for p in range(1, page_count + 1)}
+    store.update_item_performance(
+        item_id, {"recognition": {"page_count": page_count, "pages": pages, "failed_pages": {}}}
+    )
+    return store, job_id, item_id
+
+
+def _page_sha(path: str, page: int = 1) -> str:
+    with fitz.open(path) as doc:
+        return hashlib.sha256(doc[page - 1].get_pixmap(dpi=72).samples).hexdigest()
+
+
+def _config():
+    return config_from_job_config({"watermark_delivery": "keep", "image_redaction_method": "fill"})
+
+
+def _call(env, store, job_id, item_id, file_info, *, pages, boxes=None, entities=None):
+    return asyncio.run(
+        create_subset_preview(
+            file_store=env,
+            store=store,
+            job_row=store.get_job(job_id),
+            item_row=store.get_item(item_id),
+            file_info=file_info,
+            config=_config(),
+            pages=pages,
+            bounding_boxes=boxes,
+            entities=entities,
+        )
+    )
+
+
+@pytest.fixture()
+def env(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setattr(settings, "OUTPUT_DIR", str(out))
+    monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path))
+    return _FileStore()
+
+
+def _file_info(tmp_path: Path, path: str, page_count: int, file_type: str = "pdf_scanned") -> dict:
+    return {
+        "file_id": "file-1",
+        "file_type": file_type,
+        "is_scanned": file_type == "pdf_scanned",
+        "page_count": page_count,
+        "original_filename": "t.pdf",
+        "file_path": path,
+        "output_path": "",
+        "bounding_boxes": {str(p): [_box(p).model_dump()] for p in range(1, page_count + 1)},
+    }
+
+
+def test_scanned_subset_preview_is_independent_and_maps_pages(env, tmp_path):
+    store, job_id, item_id = _seed(tmp_path, 3)
+    src = _scanned_pdf(tmp_path / "src.pdf", 3)
+    info = _file_info(tmp_path, src, 3)
+    env["file-1"] = info
+
+    result = _call(env, store, job_id, item_id, info, pages=[1, 3])
+
+    assert result["page_map"] == {1: 1, 2: 3}
+    assert result["page_count"] == 2
+    assert Path(result["preview_output_path"]).is_file()
+    with fitz.open(result["preview_output_path"]) as doc:
+        assert doc.page_count == 2
+    stored = env["file-1"]
+    assert stored["processed_pages"] == [1, 3]
+    assert stored["preview_output_path"] == result["preview_output_path"]
+    assert stored["output_path"] == "", "子集预览不得覆盖主产物"
+    assert store.get_item(item_id)["status"] == JobItemStatus.AWAITING_REVIEW.value, "不得迁移 item 状态"
+
+
+def test_text_pdf_entities_are_located_on_slice(env, tmp_path):
+    store, job_id, item_id = _seed(tmp_path, 2)
+    src = _text_pdf(tmp_path / "text.pdf", 2)
+    info = _file_info(tmp_path, src, 2, file_type="pdf")
+    info["bounding_boxes"] = {}
+    env["file-1"] = info
+    before = _page_sha(src, 1)
+    ent = Entity(id="e1", text="ALICE", type="PERSON", start=0, end=5, page=1, selected=True)
+
+    result = _call(env, store, job_id, item_id, info, pages=[1], entities=[ent])
+
+    assert _page_sha(result["preview_output_path"], 1) != before, "文本型 PDF 的实体必须在切片卷上真实打码"
+
+
+def test_empty_pages_rejected(env, tmp_path):
+    store, job_id, item_id = _seed(tmp_path, 2)
+    info = _file_info(tmp_path, _scanned_pdf(tmp_path / "s.pdf", 2), 2)
+    env["file-1"] = info
+    with pytest.raises(PartialExportError) as exc:
+        _call(env, store, job_id, item_id, info, pages=[])
+    assert exc.value.code == "subset_pages_empty"
+
+
+def test_unknown_page_rejected(env, tmp_path):
+    store, job_id, item_id = _seed(tmp_path, 2)
+    info = _file_info(tmp_path, _scanned_pdf(tmp_path / "s.pdf", 2), 2)
+    env["file-1"] = info
+    with pytest.raises(PartialExportError) as exc:
+        _call(env, store, job_id, item_id, info, pages=[3])
+    assert exc.value.code == "subset_pages_out_of_range"
+
+
+def test_page_not_exportable_rejected(env, tmp_path):
+    store, job_id, item_id = _seed(tmp_path, 2)
+    store.update_item_performance(item_id, {"recognition": {"page_count": 2, "pages": {"1": {"status": "completed"}}, "failed_pages": {"2": "x"}}})
+    info = _file_info(tmp_path, _scanned_pdf(tmp_path / "s.pdf", 2), 2)
+    env["file-1"] = info
+    with pytest.raises(PartialExportError) as exc:
+        _call(env, store, job_id, item_id, info, pages=[1, 2])
+    assert exc.value.code == "subset_pages_not_ready"
+    assert exc.value.detail["pages"] == [2]
+
+
+def test_non_pdf_rejected(env, tmp_path):
+    store, job_id, item_id = _seed(tmp_path, 1)
+    info = _file_info(tmp_path, str(tmp_path / "a.txt"), 1, file_type="txt")
+    env["file-1"] = info
+    with pytest.raises(PartialExportError) as exc:
+        _call(env, store, job_id, item_id, info, pages=[1])
+    assert exc.value.code == "subset_unsupported_type"
+
+
+def test_full_export_guard_rejects_subset_preview_as_whole(env, tmp_path):
+    store, job_id, item_id = _seed(tmp_path, 3)
+    src = _scanned_pdf(tmp_path / "src.pdf", 3)
+    info = _file_info(tmp_path, src, 3)
+    info.update({"preview_output_path": str(tmp_path / "preview.pdf"), "processed_pages": [1, 2]})
+    with pytest.raises(PartialExportError) as exc:
+        asyncio.run(
+            submit_item_export(
+                owner_id="admin",
+                store=store,
+                job_row=store.get_job(job_id),
+                item_row=store.get_item(item_id),
+                file_info=info,
+                config=_config(),
+                kind="full",
+                pages=None,
+            )
+        )
+    assert exc.value.code == "subset_preview_incomplete"
+
+
+def test_subset_preview_route_forwards_pages_and_boxes(env, tmp_path, monkeypatch):
+    """路由级接线判据：删体字段/删转发，本用例必须红。"""
+    from fastapi.testclient import TestClient
+
+    from app.api import jobs as jobs_api
+    from app.core.auth import require_auth
+    from app.main import app
+
+    store, job_id, item_id = _seed(tmp_path, 2)
+    info = _file_info(tmp_path, _scanned_pdf(tmp_path / "s.pdf", 2), 2)
+    captured: dict = {}
+
+    async def _fake(**kwargs):
+        captured.update(kwargs)
+        return {"file_id": "file-1", "processed_pages": [1], "page_map": {1: 1}, "page_count": 1}
+
+    monkeypatch.setattr(jobs_api.subset_preview_service, "create_subset_preview", _fake)
+    monkeypatch.setattr(jobs_api, "_load_file_info", lambda _fid: info)
+    app.dependency_overrides[require_auth] = lambda: "admin"
+    app.dependency_overrides[jobs_api.get_job_store] = lambda: store
+    try:
+        with TestClient(app) as client:
+            resp = client.post(
+                f"/api/v1/jobs/{job_id}/items/{item_id}/subset-preview",
+                headers={"Authorization": "Bearer test"},
+                json={"pages": [1], "bounding_boxes": [_box(1).model_dump()]},
+            )
+    finally:
+        app.dependency_overrides.pop(require_auth, None)
+        app.dependency_overrides.pop(jobs_api.get_job_store, None)
+
+    assert resp.status_code == 200, resp.text
+    assert captured["pages"] == [1]
+    assert captured["bounding_boxes"] and captured["bounding_boxes"][0].page == 1

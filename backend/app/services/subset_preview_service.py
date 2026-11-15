@@ -1,0 +1,220 @@
+"""Issue#325：子集预览打码（不触碰 item 生命周期）。
+
+设计要点（门⑥ C-1/C-3 返工）：
+- 识别运行中即可调用：本服务**不迁移 item/job 状态**，也不写 ``output_path``；
+- 产物独立存放（``preview_output_path``），与主产物解耦，可反复重跑；
+- 只读 file_store 快照 + 自己的临时切片，不参与识别 worker 的写路径；
+- 页集合必须在可导出页（success ∪ manual_verified）内，显式空集 400；
+- 文本型 PDF 保留 ``FileType.PDF``，让实体→框定位在**切片卷**上发生（门⑥ C-2）。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import uuid
+from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
+from typing import Any
+
+import fitz
+
+from app.core.config import settings
+from app.models.entity_schemas import BoundingBox, Entity
+from app.services import page_status_service
+from app.services.partial_export_service import (
+    PartialExportError,
+    remap_boxes_to_subset,
+    slice_pdf_pages,
+)
+
+
+def _remove_quietly(path: str | None) -> None:
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _normalize_pages(pages: Sequence[int], page_count: int) -> list[int]:
+    """1-based 升序去重；空/越界/负数一律 400（不静默退化全卷）。"""
+    if not pages:
+        raise PartialExportError("subset_pages_empty", "至少选择一页后再开始匿名化")
+    normalized = sorted({int(p) for p in pages})
+    if normalized[0] < 1 or normalized[-1] > page_count:
+        raise PartialExportError(
+            "subset_pages_out_of_range",
+            f"页号必须在 1..{page_count} 内",
+            pages=[p for p in normalized if p < 1 or p > page_count],
+        )
+    return normalized
+
+
+def _normalize_boxes(raw: Iterable[Any] | None) -> list[BoundingBox]:
+    out: list[BoundingBox] = []
+    for item in raw or []:
+        if isinstance(item, BoundingBox):
+            out.append(item)
+        elif isinstance(item, dict):
+            out.append(BoundingBox.model_validate(item))
+    return out
+
+
+def _normalize_entities(raw: Iterable[Any] | None) -> list[Entity]:
+    out: list[Entity] = []
+    for item in raw or []:
+        if isinstance(item, Entity):
+            out.append(item)
+        elif isinstance(item, dict):
+            out.append(Entity.model_validate(item))
+    return out
+
+
+def _boxes_from_snapshot(raw: Any) -> list[BoundingBox]:
+    """file_store 的框账可能是 dict{页:list} 或扁平 list，统一成 list。"""
+    out: list[BoundingBox] = []
+    if isinstance(raw, dict):
+        for page_key, arr in raw.items():
+            if not isinstance(arr, list):
+                continue
+            default_page = int(page_key) if str(page_key).isdigit() else 1
+            for box in arr:
+                if isinstance(box, BoundingBox):
+                    out.append(box)
+                elif isinstance(box, dict):
+                    out.append(BoundingBox.model_validate({**box, "page": box.get("page", default_page)}))
+    elif isinstance(raw, list):
+        for box in raw:
+            if isinstance(box, BoundingBox):
+                out.append(box)
+            elif isinstance(box, dict):
+                out.append(BoundingBox.model_validate(box))
+    return out
+
+
+async def create_subset_preview(
+    *,
+    file_store: Any,
+    store: Any,
+    job_row: dict[str, Any],
+    item_row: dict[str, Any],
+    file_info: dict[str, Any],
+    config: Any,
+    pages: Sequence[int],
+    bounding_boxes: Sequence[Any] | None = None,
+    entities: Sequence[Any] | None = None,
+) -> dict[str, Any]:
+    """对 ``pages`` 生成一份预览打码 PDF，返回产物元数据（不改 item 状态）。"""
+    page_count = int(file_info.get("page_count") or 0)
+    if page_count <= 0:
+        raise PartialExportError("subset_page_count_unknown", "文件页数未知，无法生成子集预览")
+
+    normalized = _normalize_pages(pages, page_count)
+    exportable = page_status_service.exportable_page_numbers(item_row, page_count)
+    not_ready = [p for p in normalized if int(p) not in {int(x) for x in exportable}]
+    if not_ready:
+        raise PartialExportError(
+            "subset_pages_not_ready",
+            "所选页尚未识别成功或未人工确认，不能进入子集打码",
+            pages=not_ready,
+        )
+
+    file_type = str(file_info.get("file_type") or "").lower()
+    if file_type not in {"pdf", "pdf_scanned"}:
+        raise PartialExportError(
+            "subset_unsupported_type", "子集打码当前仅支持 PDF（文本型/扫描型）"
+        )
+
+    source_path = str(file_info.get("file_path") or "")
+    if not source_path:
+        raise PartialExportError("subset_source_missing", "找不到原始文件")
+
+    boxes = _normalize_boxes(bounding_boxes) if bounding_boxes is not None else _boxes_from_snapshot(
+        file_info.get("bounding_boxes")
+    )
+    ents = _normalize_entities(entities) if entities is not None else _normalize_entities(
+        file_info.get("entities")
+    )
+
+    # 切片卷：文本型 PDF 保留 FileType.PDF（实体→框定位在切片卷上发生）；
+    # 扫描件/图片走 PDF_SCANNED（只吃重映射后的视觉框）。
+    effective_type = "pdf" if file_type == "pdf" else "pdf_scanned"
+
+    tmp_subset = os.path.join(
+        settings.OUTPUT_DIR, f"subset-src-{uuid.uuid4().hex}.pdf"
+    )
+    preview_path = os.path.join(
+        settings.OUTPUT_DIR, f"subset-preview-{uuid.uuid4().hex}.pdf"
+    )
+    redacted_output: str | None = None
+    try:
+        await asyncio.to_thread(slice_pdf_pages, source_path, normalized, tmp_subset)
+        remapped = remap_boxes_to_subset(boxes, normalized)
+
+        from app.services.redactor import Redactor
+
+        effective_info = {
+            "file_path": tmp_subset,
+            "file_type": effective_type,
+            "is_scanned": effective_type == "pdf_scanned",
+            "page_count": len(normalized),
+        }
+        config_copy = _config_copy_keep(config)
+        result = await Redactor().redact(effective_info, ents, remapped, config_copy)
+        redacted_output = str(result.get("output_path") or "")
+        if not redacted_output or not os.path.isfile(redacted_output):
+            raise PartialExportError("subset_preview_failed", "子集预览打码未产出文件")
+
+        with fitz.open(redacted_output) as doc:
+            actual = doc.page_count
+        if actual != len(normalized):
+            raise PartialExportError(
+                "subset_preview_page_count_mismatch",
+                f"预览页数 {actual} != 预期 {len(normalized)}",
+                expected=len(normalized),
+                actual=actual,
+            )
+        await asyncio.to_thread(os.replace, redacted_output, preview_path)
+    except BaseException:
+        _remove_quietly(tmp_subset)
+        _remove_quietly(redacted_output)
+        _remove_quietly(preview_path)
+        raise
+    finally:
+        _remove_quietly(tmp_subset)
+
+    page_map = {idx + 1: page for idx, page in enumerate(normalized)}
+    payload = {
+        "preview_output_path": preview_path,
+        "processed_pages": normalized,
+        "page_map": page_map,
+        "preview_entity_map": dict(result.get("entity_map") or {}),
+        "preview_redacted_count": int(result.get("redacted_count") or 0),
+        "preview_created_at": datetime.now(UTC).isoformat(),
+        "page_count": len(normalized),
+    }
+    # 部分更新：读-合并-写，与识别写路径不共享长锁。
+    fid = str(file_info.get("file_id") or file_info.get("id") or "")
+    if fid:
+        file_store.update_fields(fid, payload)
+    return {
+        "file_id": file_info.get("file_id"),
+        "processed_pages": normalized,
+        "page_map": page_map,
+        "page_count": len(normalized),
+        "redacted_count": payload["preview_redacted_count"],
+        "preview_output_path": preview_path,
+    }
+
+
+def _config_copy_keep(config: Any) -> Any:
+    import copy
+
+    config_copy = copy.copy(config)
+    try:
+        config_copy.watermark_delivery = "keep"
+    except AttributeError:
+        pass
+    return config_copy

@@ -833,6 +833,17 @@ async def submit_item_export(
     # （auto ∪ manual，见 page_status_service）。两处消费（API 准入闸 jobs.py export
     # 端点 + 本处 validate/recognized_pages_at_export）必须同源，只改一处即口径分裂。
     exportable = page_status_service.exportable_page_numbers(item_row, page_count)
+
+    # Issue#325：子集预览（未覆盖全卷）不得被「完整导出」当成整卷产物 copyfile。
+    if kind == "full":
+        preview_pages = (file_info or {}).get("processed_pages") or []
+        if (file_info or {}).get("preview_output_path") and preview_pages and len(set(preview_pages)) < page_count:
+            raise PartialExportError(
+                "subset_preview_incomplete",
+                "当前只有子集预览（未覆盖全卷），不能做完整导出；请改用选页导出，或先重跑整卷",
+                processed_pages=sorted({int(p) for p in preview_pages}),
+                page_count=page_count,
+            )
     failed_map = page_status_service.failed_page_reasons(item_row)
 
     # —— 框账权威次序：review 草稿 > file_store（§2.6，改框即生效）——

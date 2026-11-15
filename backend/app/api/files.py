@@ -829,7 +829,12 @@ async def watermark_clean_download(file_id: str, owner_id: str = Depends(require
 
 
 @router.get("/files/{file_id}/download")
-async def download_file(file_id: str, redacted: bool = False, owner_id: str = Depends(require_auth)):
+async def download_file(
+    file_id: str,
+    redacted: bool = False,
+    preview: bool = False,
+    owner_id: str = Depends(require_auth),
+):
     """
     下载文件
 
@@ -841,9 +846,12 @@ async def download_file(file_id: str, redacted: bool = False, owner_id: str = De
         raise HTTPException(status_code=404, detail="文件不存在")
 
     if redacted:
-        file_path = snapshot.get("output_path")
+        file_path = snapshot.get("preview_output_path") if preview else snapshot.get("output_path")
         if not file_path:
-            raise HTTPException(status_code=400, detail="文件尚未匿名化")
+            raise HTTPException(
+                status_code=400,
+                detail="子集预览尚未生成" if preview else "文件尚未匿名化",
+            )
         filename = f"redacted_{snapshot.get('original_filename') or file_id}"
     else:
         file_path = snapshot.get("file_path")
@@ -872,6 +880,7 @@ async def get_page_image(
     page: int = 1,
     redacted: bool = False,
     raw: bool = False,
+    preview: bool = False,
     owner_id: str = Depends(require_auth),
 ):
     """Render a single page of a PDF as PNG (for history comparison).
@@ -887,9 +896,12 @@ async def get_page_image(
         raise HTTPException(status_code=404, detail="文件不存在")
 
     if redacted:
-        file_path = snapshot.get("output_path")
+        file_path = snapshot.get("preview_output_path") if preview else snapshot.get("output_path")
         if not file_path:
-            raise HTTPException(status_code=400, detail="文件尚未匿名化")
+            raise HTTPException(
+                status_code=400,
+                detail="子集预览尚未生成" if preview else "文件尚未匿名化",
+            )
         expected_dir = settings.OUTPUT_DIR
     else:
         file_path = snapshot.get("file_path")

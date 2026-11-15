@@ -23,7 +23,7 @@ from app.core.audit import audit_log
 from app.core.auth import require_auth, require_bulk_confirm
 from app.core.errors import AppError
 from app.models.errors import ConflictError, NotFoundError, ValidationError
-from app.models.job_schemas import ItemExportRequest, ManualVerifyRequest
+from app.models.job_schemas import ItemExportRequest, ManualVerifyRequest, SubsetPreviewRequest
 from app.models.schemas import (
     BatchDetailsBody,
     BatchDetailsResponse,
@@ -46,6 +46,7 @@ from app.services import (
     page_retry_service,
     page_status_service,
     partial_export_service,
+    subset_preview_service,
 )
 from app.services.job_store import JobItemStatus, JobStatus, JobStore, get_job_store
 
@@ -470,6 +471,47 @@ async def export_item(
         },
     )
     return task.public()
+
+
+@router.post("/{job_id}/items/{item_id}/subset-preview")
+async def create_item_subset_preview(
+    job_id: str,
+    item_id: str,
+    body: SubsetPreviewRequest,
+    store: JobStore = Depends(get_job_store),
+    owner_id: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """Issue#325：对「已处理页」生成子集预览打码产物。
+
+    识别运行中即可调用（不迁移 item/job 状态、不写主产物）；产物走
+    ``preview_output_path``，页集合与框账快照只读 file_store。
+    """
+    job, item = _require_item(store, job_id, item_id, owner_id)
+    file_info = _load_file_info(item.get("file_id"))
+    if file_info is None:
+        raise HTTPException(status_code=404, detail="file not found")
+    config = partial_export_service.config_from_job_config(_job_config_of(job))
+    from app.services.file_management_service import file_store
+
+    try:
+        return await subset_preview_service.create_subset_preview(
+            file_store=file_store,
+            store=store,
+            job_row=job,
+            item_row=item,
+            file_info=file_info,
+            config=config,
+            pages=body.pages,
+            bounding_boxes=body.bounding_boxes,
+            entities=body.entities,
+        )
+    except partial_export_service.PartialExportError as exc:
+        raise AppError(
+            status_code=400,
+            error_code=exc.code,
+            message=exc.message or exc.code,
+            detail=exc.detail,
+        )
 
 
 @router.get("/{job_id}/items/{item_id}/exports")
