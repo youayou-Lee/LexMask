@@ -1456,6 +1456,9 @@ class RecognitionPipelineMixin:
                     _doc = _doc if isinstance(_doc, dict) else {}
                     _quality_ms = quality.get("duration_ms")
                     _ocr_regions = _safe_int(_ocr.get("region_count"))
+                    # Issue#275 B3：stage_duration_ms 形状防御（非 dict ⇒ 空表）。
+                    _ocr_stage_ms = _ocr.get("stage_duration_ms")
+                    _ocr_stage_ms = _ocr_stage_ms if isinstance(_ocr_stage_ms, dict) else {}
                     if _ocr.get("ran"):
                         page_events.log_event(
                             "ocr_done",
@@ -1467,6 +1470,13 @@ class RecognitionPipelineMixin:
                             "ner_done",
                             ms=_safe_int(_ocr.get("duration_ms")),
                             regions=_ocr_regions,
+                            # Issue#275 B3：邻居上下文账本透传——stage_duration_ms
+                            # 即 ocr_has_service.last_duration_ms（stage_status
+                            # 本体，vision_service.record_pipeline_result 已整块
+                            # 并入 pipeline_status["ocr_has"]），DB 页账同键可查。
+                            # docline 卷级链无此键 ⇒ 空串/0（旧形态，不与页级混淆）。
+                            text_context=str(_ocr_stage_ms.get("has_text_neighbor_context") or ""),
+                            context_chars=_safe_int(_ocr_stage_ms.get("has_text_neighbor_chars")),
                         )
                     # Issue#276：视觉列终态事件（值与页账同源——已 overlay 后的字段；
                     # visual_types 是 list 不入事件，事件层只留标量位）。
