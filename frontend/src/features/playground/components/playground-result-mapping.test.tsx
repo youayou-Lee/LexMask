@@ -34,6 +34,11 @@ describe('MappingColumn 计数口径（Issue#312）', () => {
     expect(screen.getByTestId('mapping-count').textContent).toBe('2 条 / 5 处');
   });
 
+  it('redactedCount=0 时回落单数字口径（门⑥ M-3 边界）', () => {
+    render(<MappingColumn {...baseProps} redactedCount={0} />);
+    expect(screen.getByTestId('mapping-count').textContent).toBe('2');
+  });
+
   it('未提供 redactedCount 时保持旧的单数字口径', () => {
     render(<MappingColumn {...baseProps} />);
     expect(screen.getByTestId('mapping-count').textContent).toBe('2');

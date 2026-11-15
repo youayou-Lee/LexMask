@@ -131,8 +131,11 @@ async def _redact_image(
 | R5 `test_text_pdf_mask_rasterized_entity_map` | 文本型 PDF MASK 栅格化路径（`mask_boxes` 也入表）+ 原文不在成品文本层 | map 为空 |
 | R6 `test_text_path_entity_map_unchanged` | 文本链路（TXT，smart）map 与 `build_preview_entity_map` **逐键相等**、不含哨兵 | 已是绿（守不变） |
 | R7 `test_redaction_history_carries_same_map`（编排层，真 Redactor + stub store） | 快照与 `redaction_history[-1]` 同一 map | map 为空 |
-| R8 `test_restore_does_not_consume_mask_map` | mask map 值无化名形态；`restore_text` 只吃 body.mapping（patch `normalize_mapping` 抓参 + 结构钉） | 已是绿（守不变） |
+| R8 `test_restore_does_not_consume_mask_map` | mask map 值无化名形态；`restore_text` 只吃 body.mapping（patch `normalize_mapping` 抓参 + 行为钉） | 红（修复前快照无 map，前置断言即失败） |
+| R10 `test_zero_area_box_excluded_from_map_and_count` | 零面积框不入 map、不计入 `redacted_count` | 红（map 期望 1 键、实际空） |
+| R11 `test_map_keys_match_actually_masked_boxes` | map 键集 == 真正送入 `apply_redaction` 的框文本集（monkeypatch 抓参） | 红（同上） |
 | R9 `test_pseudonym_text_path_map_not_sentinel` | 反向对照：pseudonym 模式 map 值=化名词、≠哨兵（CSV 门控源未被污染） | 已是绿（守不变） |
+| 前端 `playground-result-mapping.test.tsx` | 双口径「2 条 / 5 处」、缺省回落单数字、`redactedCount=0` 回落单数字、en 口径 | 红（修复前表头只有键数） |
 | R0 `test_sentinel_constant_matches_issue_contract` | 常量 `IMAGE_REDACTED_LABEL` 与 Issue 契约字面量一致（防另起字面量） | ImportError |
 
 命令与门限：
@@ -162,15 +165,15 @@ async def _redact_image(
 | `frontend/src/features/playground/components/playground-result-mapping.tsx` | 表头双口径 `data-testid=mapping-count` |
 | `frontend/src/features/playground/components/playground-result-views.tsx` / `playground-result.tsx` | `redactedCount` 必填透传（Text/Image 两视图） |
 | `frontend/src/i18n/{zh,en}.ts` | `playground.mappingCountDual` 双键 |
-| `frontend/src/features/playground/components/playground-result-mapping.test.tsx` | 新增 2 例（双口径/回落） |
+| `frontend/src/features/playground/components/playground-result-mapping.test.tsx` | 新增 4 例（双口径/回落/redactedCount=0 边界/en 口径） |
 | `backend/tests/test_issue238_progress_reporting.py` | `_fake_image` 补 `entity_map_out=None` 形参（该 fake 是仓内唯一 monkeypatch `Redactor._redact_image` 的点） |
 | `CHANGELOG.md` | 2026-11-15 条目 |
 
 ### 8.2 TDD 红性证据（实现前）
 
-`python -m pytest tests/test_issue312_mask_entity_map.py -q` → **8 failed / 2 passed**：
+`python -m pytest tests/test_issue312_mask_entity_map.py -q`（按实现时 10 例文件 R0-R9 回退）→ **10 failed / 2 passed**：
 
-- 8 条红因均为「map 期望非空、实际 `{}`」——与 Issue 现场一致（不是夹具/环境问题；栅格化本身正常，断言才失败）；
+- 10 条红因均为「map 期望非空、实际 `{}`」——与 Issue 现场一致（不是夹具/环境问题；栅格化本身正常，断言才失败）；
 - 2 条绿是刻意的守不变钉（R6 文本链路 map = 预览口径、R9 化名 map 值非哨兵）。
 
 ### 8.3 实现后测试
@@ -180,8 +183,8 @@ async def _redact_image(
 | `python -m pytest tests/test_issue312_mask_entity_map.py -q` | **12 passed** |
 | `python -m pytest tests/ -k "redact or entity_map or image" -q` | **140 passed, 3391 deselected** |
 | 受影响全文件 11 个（见 §6） | **186 passed, 1 skipped** |
-| 前端 `npx vitest run` | **87 files / 649 passed**；`npm run build` 4.68s；`tsc` rc=0 |
-| `python -m pytest tests/ -q`（全量） | **3430 passed, 42 failed, 57 skipped** |
+| 前端 `npx vitest run` | **87 files / 651 passed**；`npm run build` 4.68s；`tsc` rc=0 |
+| `python -m pytest tests/ -q`（全量） | **3432 passed, 42 failed, 57 skipped** |
 
 **全量 42 failed 的归因**：把本次两个生产文件 `git stash` 掉（回到 `origin/preview` 行为）后重跑同一批文件 → **42 failed / 72 passed**，失败文件分布逐个相同（`test_lb_least_inflight` 6、`test_evalng_participants` 8、`test_issue52_date_forms_guarantee` 8、`test_issue308_box_quality_pass` 5、`test_issue217_mineru_sidecar_contract` 4、`test_safe_regex_*` 8、其余 3），即**既有环境相关失败**（subprocess/spawn、httpx、paddle 等），非本单回归。
 
