@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -394,18 +395,25 @@ def recognized_page_count(item_row: dict[str, Any], page_count: int) -> int:
 
 
 def exportable_page_numbers(item_row: dict[str, Any], page_count: int) -> set[int]:
-    """可进包页号集合（Issue#280）＝自动识别成功 ∪ 人工补框（manual_verified）。
+    """可进包页号集合（Issue#280 §2.3 / #278 §1 缺省集唯一权威）。
 
-    部分导出准入与说明页「已识别 N 页」口径都用它；失败页仍由 ``failed_pages``
-    在上游排除（manual 页已物理移出失败清单才会出现在这里）。
+    ``exportable = recognized ∪ manual − failed``：
+
+    * 自动识别成功 ∪ 人工补框页（manual_verified，#280 账本）；
+    * **减失败清单**：manual 账本与 ``failed_pages`` 同时记到的页（整卷重跑再失败、
+      人工兜底未成功仍记失败）不得进集——``failed_pages`` 权威优先于人工兜底，
+      #199 红线优先（#278 V3 判据钉死）。manual 页已物理移出失败清单才会出现在这里。
+
+    部分导出准入与说明页「已识别 N 页」口径都用它（两处消费同源，#280 r2 F-I3）。
     """
     exportable = recognized_page_numbers(item_row, page_count)
+    failed = set(failed_page_numbers(item_row))
     manual_map = _manual_page_map(item_row)
     for key in manual_map:
         page = _safe_int(key, -1)
         if 0 < page <= page_count:
             exportable.add(page)
-    return exportable
+    return exportable - failed
 
 
 def page_count_of(item_row: dict[str, Any], file_info: dict[str, Any] | None = None) -> int:
@@ -431,3 +439,57 @@ def failed_page_reasons(item_row: dict[str, Any]) -> dict[int, str]:
         if page > 0:
             out[page] = reason
     return out
+
+
+# ---------------------------------------------------------------------------
+# Issue#278 统一导出链消费面（route 聚合；manual 账本投影与 #280 同源）
+# ---------------------------------------------------------------------------
+
+def manual_ledger_of(item_row: dict[str, Any]) -> list[dict[str, Any]]:
+    """#280 §4.2 契约投影（#278 统一导出消费）：``[{page, box_count, verified_at, operator}]`` 升序。
+
+    与 ``manual_verified_pages_of`` 同一真源、同一形状（#280 合入后副本收敛为
+    委托，不再有两套并行账本读取；条目语义 = 曾人工补框且未撤销）。
+    """
+    return manual_verified_pages_of(item_row)
+
+
+def route_counts_of(item_row: dict[str, Any], pages: Iterable[int]) -> dict[str, int]:
+    """按 included 页聚合路由桶（manifest ``route_summary`` 的唯一聚合点，#278 §2.4）。
+
+    口径（design §2.4）：docline 接管优先（``pipeline_status.text_layer_doc.ran``），
+    其次 ``text_source``（#273 路由字段 ∈ text_layer/ocr/both），accelerator 是
+    #274/#275 预留字段（现无生产者恒空）；页记录缺失（pending/旧任务/file 模式）
+    → unknown。返回五键齐全的 dict（缺桶显式 0，机读方按「键存在即读」）。
+    """
+    counts: dict[str, int] = {
+        "text_layer": 0,
+        "ocr": 0,
+        "accelerator": 0,
+        "both": 0,
+        "unknown": 0,
+    }
+    recognition = _coerce_dict(_performance_of(item_row).get("recognition"))
+    raw_pages = recognition.get("pages") if isinstance(recognition.get("pages"), dict) else {}
+    for raw_page in pages or []:
+        page = _safe_int(raw_page, 0)
+        if page <= 0:
+            continue
+        bucket = "unknown"
+        record = raw_pages.get(str(page))
+        if isinstance(record, dict):
+            ran, _code, _coverage = _text_layer_route_of(record)
+            if ran:
+                bucket = "text_layer"
+            else:
+                source = str(record.get("text_source") or "").strip().lower()
+                if source == "text_layer":
+                    bucket = "text_layer"
+                elif source == "ocr":
+                    bucket = "ocr"
+                elif source == "both":
+                    bucket = "both"
+                elif record.get("accelerator") is True:
+                    bucket = "accelerator"
+        counts[bucket] += 1
+    return counts

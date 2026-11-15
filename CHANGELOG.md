@@ -3,6 +3,18 @@
 
 ## 2026-11-15
 
+### 变更（Issue#278）统一导出链：完整导出与选页导出合并为一条 item 级链，产物改为 zip 包——**说明页不再插入 PDF 正文（用户默认行为变化）**
+
+- **为什么**：用户口径（2026-11-12 重述）拍定——①选页导出与完整导出是同一个流程（页选择只是「导出」的参数）；②导出前要能回到编辑、改框即生效；③说明与正文分离，正文 PDF 里只有正文。旧链两条（部分导出切页重渲染 + step5 批量链打主产物）不同源，且旧部分导出强制往正文插说明页。
+- **用户可见行为变化（两条披露，F10）**：
+  1. **说明页废除**：导出产物 PDF 不再插入任何说明性内容页（旧部分导出的第一页强制说明页已删）。说明信息移至包内可选的 `说明.txt`（默认关闭，导出弹窗勾选「在包内附带 说明.txt」才生成）；
+  2. **完整导出改为统一包形态**：产物 = 一个 zip（脱敏产物 + `manifest.json` + 可选 `说明.txt`），与选页导出同一条链、同一 manifest 结构，仅 `kind`（`full`/`partial`）与渲染策略不同。`manifest.json` 机读清单含 `pages`/`page_count`（包内页数）/`excluded_failed_pages`（对象式带原因码）/`manual_verified_pages`（#280 契约，空集显式 `[]`）/`route_summary`/`files`（逐 entry sha256）/`app_version` 等全键。step5 单文件点「下载脱敏包」改走此链（>1 文件仍走既有批量传输链）。
+- **改了什么**：
+  - 后端：`POST /jobs/{j}/items/{i}/export`（202）唯一入口，旧 `partial-export` 端点删除；`full` = 主产物直取两档（无失败页卷逐字节 copyfile，sha256 与主产物相等；有失败页卷 fitz `insert_pdf` 结构级切页，失败页物理不进包）、跳类型闸（agent md/docx 完整导出保留，`pages=[]`/`page_count=0` 全键不省，附 mapping/retained 产物缺失记 `skipped` 不回滚）；`partial` = 切页重渲染（类型闸照旧）；导出快照取框权威次序 = review 草稿 > file_store（改框即生效；快照只读不回写主账）；页事件 JSONL 新增 `export_started`/`export_page_done`/`export_packaged`/`export_failed` 四个白名单事件；批量传输链 manifest 补 `kind: "batch_transport"`/`app_version` 两键（行为零变化）。
+  - 前端：导出弹窗双模式（完整/选页，缺省选页；step5 单文件入口缺省完整）+ 说明.txt 开关 + 「回到编辑」常驻按钮（batch=flush 草稿后 `resolveExportIssue` 跳审阅画布；playground=同页收起导出块+锚点聚焦编辑器）；选择集模块级 cache 持久化（关弹窗保留、重开预填、与最新页状态交集剪枝，剪枝谓词 success∪manual_verified）；进度卡只报服务端真实 stage/current/total；记录列表 kind 徽标 + 双口径摘要（legacy `partial_redaction` 旧记录保留 +1 说明页补偿、excluded int[] 读侧升格，TTL 内可继续下载）；i18n `batchWizard.partialExport.*` 迁移为 `batchWizard.export.*`（zh/en 成对）。
+  - 顺手修复（A4 实测暴露）：`ExportTaskManager` 双重入队缺陷（submit 预入队 + put_nowait 双投 ⇒ 同一导出 runner 跑两遍、zip 双写），worker 循环补终态防重入闸。
+- **测试**：后端新增 8 文件 47 例（manifest 逐键/route 聚合/A1-A6/事件白名单/脏账本不阻断），全量 **3297 passed**（基线 3250，失败集合 comm -3 双侧为空=零回归）；变异 V1-V9（10 变体）全 KILLED；前端新增 3 文件 15 例（弹窗双口径/选择持久化/回到编辑），全量 **622 passed**（基线 607，零回归）、tsc 双门 rc=0、build 绿。
+- **挂账**：云门④真卷 B1（审阅改框→回到导出→生成包→重启复下载）+ 真容器重启复验，随部署窗口执行（见 `LexMask-workspace/github-issues/2026-11-15-batch2/report-issue278.md`）。
 ### 增强（Issue#280）失败页人工拉框兜底 `manual_verified`：识别失败 ≠ 整卷交不出去，用户补框后带显式标记交付
 
 - **为什么**：用户口径（2026-11-12）——自动识别失败不该让整卷永远交不出去；急需完整交付结果时允许在失败页上人工拉框补齐，作为带显式标注的临时兜底。#199 红线**不退让**：识别失败且无人工确认的页永不进包；manual 页放行的唯一通道是带 auth 的显式 POST（+审计+事件+账本），该动作物理把页移出 `recognition.failed_pages`——不存在「failed 页未处理却 ready」的状态组合。

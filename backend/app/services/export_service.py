@@ -239,6 +239,11 @@ class ExportTaskManager:
             task = self._tasks.get(export_id)
             if task is None or task.runner is None:
                 continue
+            # 双重入队防护（Issue#278 A4 实测暴露）：submit 先 _ensure_worker（彼时
+            # 本任务 status 还是 queued，会被预入队一次）再 put_nowait 一次 ⇒ 同一
+            # 任务两次入队。不挡住就会把 runner 跑两遍（重复渲染/重复写 zip）。
+            if task.status in {"completed", "failed"}:
+                continue
             task.status = "running"
             task.progress["stage"] = "running"
             self._persist(task)

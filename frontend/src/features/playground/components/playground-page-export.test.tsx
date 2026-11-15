@@ -31,15 +31,15 @@ vi.mock('@/features/batch/hooks/use-batch-page-status', () => ({
 
 vi.mock('@/services/jobsApi', () => ({
   getItemPageStatus: vi.fn(),
-  startPartialExport: vi.fn(),
-  getPartialExport: vi.fn(),
+  startItemExport: vi.fn(),
+  getItemExport: vi.fn(),
   listItemExports: vi.fn(),
 }));
 
-import { listItemExports, startPartialExport } from '@/services/jobsApi';
+import { listItemExports, startItemExport } from '@/services/jobsApi';
 import { PlaygroundPageExport } from './playground-page-export';
 
-const mockedStart = vi.mocked(startPartialExport);
+const mockedStart = vi.mocked(startItemExport);
 const mockedList = vi.mocked(listItemExports);
 
 function makeStatus(overrides: Partial<ItemPageStatus> = {}): ItemPageStatus {
@@ -103,7 +103,7 @@ describe('单文件任务的逐页结果与选页导出（Issue#257 需求重对
     fireEvent.click(submit);
 
     await waitFor(() => expect(mockedStart).toHaveBeenCalledTimes(1));
-    expect(mockedStart).toHaveBeenCalledWith('job-1', 'item-1', [1, 2, 3, 5]);
+    expect(mockedStart).toHaveBeenCalledWith('job-1', 'item-1', { kind: 'partial', pages: [1, 2, 3, 5], includeSummary: false });
     // 说明页会逐条列出被排除的页，底栏只给一行汇总。
     expect(screen.getByTestId('playground-page-export-excluded').textContent).toContain('4');
   });

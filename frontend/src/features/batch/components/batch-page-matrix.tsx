@@ -53,6 +53,7 @@ const STATE_STYLES: Record<PageCellState, string> = {
   success: 'border-[var(--success-border)] bg-[var(--success-surface)] text-[var(--success-foreground)]',
   failed: 'border-destructive/40 bg-destructive/10 text-destructive',
   // Issue#280：琥珀色系——与 success 绿（自动识别成功）、failed 红（未处理）区分。
+  // （#278 曾在此留防御性成功格兜底；#280 真身合入后按其琥珀样式收敛为单条。）
   manual_verified: 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400',
   pending: 'border-border bg-muted text-muted-foreground',
 };
@@ -113,8 +114,9 @@ export function BatchPageMatrix({
     return tally;
   }, [status.pages]);
 
-  // Issue#280：manual_verified 页与 success 页同口径可进部分导出选择集
-  // （#199 红线只挡 failed——manual 页已由后端物理移出失败清单）。
+  // Issue#280 × #278 r2 F4：可导出谓词 = success ∪ manual_verified（#199 红线只挡
+  // failed——manual 页已由后端物理移出失败清单；success-only 会把 manual 页静默
+  // 摘出选择集，与「manual 页默认包含」裁定冲突）。
   const selectableState = (state: PageCellState) => state === 'success' || state === 'manual_verified';
   const allSuccess = useMemo(
     () =>
@@ -192,6 +194,8 @@ export function BatchPageMatrix({
   };
 
   const toggle = (page: number, state: PageCellState, shiftKey = false) => {
+    // manual_verified 页可勾选/可排除（#278 §1 缺省语义裁定 ④「用户可手动排除」由
+    // 页格可选中性承担；勾选语义与成功页一致）。
     if (disabled || !selectableState(state)) return;
     const anchor = anchorRef.current;
     if (shiftKey && anchor !== null && anchor !== page) {

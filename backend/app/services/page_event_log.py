@@ -57,7 +57,14 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
         # 块号直接用必填的 chunk_index，不另设 chunk_no 冗余字段）。
         optional=("traceback_frames", "message_sanitized", "kind"),
     ),
-    "ner_done": EventSchema(optional=("calls", "ms", "entities", "regions", "supplemented")),
+    # Issue#275 B3：text_context ∈ {neighbor, none, off}（页级链；docline 卷级
+    # 不带，缺省=旧形态向后兼容）、context_chars = 实附邻居字符总数（prev+next）。
+    "ner_done": EventSchema(
+        optional=(
+            "calls", "ms", "entities", "regions", "supplemented",
+            "text_context", "context_chars",
+        )
+    ),
     "ocr_done": EventSchema(optional=("ms", "regions", "source")),
     "page_done": EventSchema(
         optional=(
@@ -81,6 +88,16 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     # 拒写）——人名走审计面 audit_log.user 与 ledger；此为本设计唯一口径出处。
     "manual_verified": EventSchema(required=("box_count",), optional=()),
     "manual_revoked": EventSchema(optional=("box_count",)),
+    # —— Issue#278 统一导出链（白名单只增不改；写入点在 export runner，无请求上下文，
+    # runner 显式 set_event_context/set_current_page；全部 fail-open 包裹）——
+    "export_started": EventSchema(
+        optional=("kind", "pages_count", "include_summary", "export_id"),
+    ),
+    "export_page_done": EventSchema(optional=("export_id", "ms")),
+    "export_packaged": EventSchema(optional=("export_id", "bytes_total", "volumes")),
+    "export_failed": EventSchema(
+        required=("error_type",), optional=("export_id", "message_sanitized")
+    ),
     # —— 以下四种为架构 v2（#272-#275）预留：writer 契约可验（A1.7），本期无生产者 ——
     "arbitration": EventSchema(
         required=("winner", "loser"), optional=("metric", "values"),
