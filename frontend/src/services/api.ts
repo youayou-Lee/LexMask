@@ -258,8 +258,9 @@ export const fileApi = {
     return blob;
   },
 
-  getDownloadUrl: (fileId: string, redacted = false): string =>
-    `/api/v1/files/${fileId}/download?redacted=${redacted}`,
+  /** Issue#325：`preview=true` 读子集预览产物（未覆盖全卷时使用）。 */
+  getDownloadUrl: (fileId: string, redacted = false, preview = false): string =>
+    `/api/v1/files/${fileId}/download?redacted=${redacted}${preview ? '&preview=true' : ''}`,
 
   delete: async (fileId: string): Promise<void> => api.delete(`/files/${fileId}`),
 };
