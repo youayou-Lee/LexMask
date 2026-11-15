@@ -86,7 +86,7 @@ export const PlaygroundResultActionBar: FC<PlaygroundResultActionBarProps> = ({
     >
       {watermarkChip ? (
         <span
-          className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-amber-300/70 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300"
+          className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-border/70 bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
           data-testid="playground-watermark-chip"
         >
           {t('batchWizard.step4.pipelineWatermarkOverlay')} {watermarkChip}

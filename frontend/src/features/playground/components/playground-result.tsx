@@ -20,10 +20,7 @@ import type { VersionHistoryEntry } from '@/types';
 import type { BoundingBox, Entity, FileInfo, VisionTypeConfig } from '../types';
 import { PlaygroundResultActionBar } from './playground-result-action-bar';
 import { TextResultView, ImageResultView, OutputResultView } from './playground-result-views';
-import {
-  PlaygroundResultDetailsDialog,
-  unprocessedEntityCount,
-} from './playground-result-details-dialog';
+import { PlaygroundResultDetailsDialog } from './playground-result-details-dialog';
 import { usePlaygroundProcessingDetails } from './processing-details-card';
 import { PlaygroundPageExport } from './playground-page-export';
 import { useOutputPagePreview } from '../hooks/use-output-page-preview';
@@ -103,9 +100,10 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
     fileInfo?.file_id ?? null,
     fileInfo?.page_count ?? fileInfo?.pages?.length ?? null,
   );
-  const unprocessedEntities = redactionReport ? unprocessedEntityCount(redactionReport) : 0;
-  const detailsAlert =
-    processing.failed || processing.failedPages.length > 0 || unprocessedEntities > 0;
+  // Issue#311 门⑥ I3：`total - redacted` 含用户主动取消勾选的实体（backend
+  // total 含 selected=false），拿它做告警会「复核时一取消勾选就常亮」。告警口径
+  // 收紧为「处理失败」：失败页/任务失败；未处理数仍在详情弹窗里如实展示。
+  const detailsAlert = processing.failed || processing.failedPages.length > 0;
   const outputPreview = useOutputPagePreview({
     fileId: outputPreviewAvailable ? (fileInfo?.file_id ?? null) : null,
     page: outputPage,

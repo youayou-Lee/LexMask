@@ -206,8 +206,10 @@ describe('Issue#311 结果页默认视图', () => {
     const chip = screen.getByTestId('playground-watermark-chip');
     expect(chip.textContent).toContain(t('batchWizard.step4.pipelineWatermarkOverlay'));
     expect(chip.textContent).toContain('3');
-    // 不再是深色横幅里的浅字胶囊：落在动作行内、中性底色。
+    // 不再是深色横幅里的浅字胶囊：落在动作行内、中性底色（设计 D1，门⑥ Minor）。
     expect(screen.getByTestId('playground-result-action-bar').contains(chip)).toBe(true);
+    expect(chip.className).toContain('bg-muted');
+    expect(chip.className).not.toContain('amber');
   });
 
   it('默认 DOM 不渲染质量报告与处理详情（即使数据已取到）', async () => {
@@ -232,7 +234,9 @@ describe('Issue#311 结果页默认视图', () => {
     expect(screen.getByTestId('playground-page-export').getAttribute('data-default-collapsed')).toBe(
       'true',
     );
-    expect(screen.getByTestId('playground-result-view-toggle')).toBeTruthy();
+    const toolbar = screen.getByTestId('playground-result-toolbar');
+    expect(toolbar.contains(screen.getByTestId('playground-page-export'))).toBe(true);
+    expect(toolbar.contains(screen.getByTestId('playground-result-view-toggle'))).toBe(true);
   });
 });
 
@@ -260,8 +264,27 @@ describe('Issue#311 详情入口与告警点', () => {
     expect(screen.queryByTestId('playground-details-alert')).toBeNull();
   });
 
-  it('存在未处理项 → 详情按钮带琥珀色告警点', async () => {
-    renderResult(); // REPORT: total 10 / redacted 7 → 3 个未处理
+  it('仅有未处理项（用户取消勾选）不再触发告警点（门⑥ I3 口径）', async () => {
+    mockedGetJob.mockResolvedValue({
+      items: [
+        {
+          file_id: 'f1',
+          performance: {
+            recognition: {
+              mode: 'vision',
+              pages: { '1': { page: 1, status: 'completed', duration_ms: 10 } },
+            },
+          },
+        },
+      ],
+    } as unknown as Awaited<ReturnType<typeof getJob>>);
+    renderResult(); // REPORT: total 10 / redacted 7 → 3 个未处理（含 selected=false）
+    await waitFor(() => expect(mockedGetJob).toHaveBeenCalled());
+    expect(screen.queryByTestId('playground-details-alert')).toBeNull();
+  });
+
+  it('失败页 → 详情按钮带琥珀色告警点', async () => {
+    renderResult({ redactionReport: { ...REPORT, redacted_entities: 10 } });
     await waitFor(() => expect(screen.getByTestId('playground-details-alert')).toBeTruthy());
     expect(screen.getByTestId('playground-details-alert').className).toContain('bg-amber-500');
   });
@@ -289,6 +312,10 @@ describe('Issue#311 详情弹窗', () => {
     expect(report.textContent).toContain('7');
     expect(report.textContent).toContain(t('playground.unprocessedEntities'));
     expect(report.textContent).toContain('3');
+    // 门⑥ C1/C2/I1：处理方式/来源/类型标签复用旧口径，不回退成键名或错报手段。
+    expect(report.textContent).toContain(t('mode.mask'));
+    expect(report.textContent).toContain('HaS');
+    expect(report.textContent).not.toContain('PERSON');
 
     await waitFor(() => expect(screen.getByTestId('processing-details-title')).toBeTruthy());
     expect(screen.getByTestId('processing-details-total').textContent).toContain(
@@ -301,7 +328,8 @@ describe('Issue#311 详情弹窗', () => {
 
   it('ESC 关闭弹窗，诊断内容重新从 DOM 消失', async () => {
     render(<ControlledResult />);
-    fireEvent.click(screen.getByTestId('playground-details-button'));
+    const trigger = screen.getByTestId('playground-details-button');
+    fireEvent.click(trigger);
     expect(screen.getByTestId('playground-details-dialog')).toBeTruthy();
 
     fireEvent.keyDown(document, { key: 'Escape', code: 'Escape' });
@@ -309,5 +337,27 @@ describe('Issue#311 详情弹窗', () => {
     await waitFor(() => expect(screen.queryByTestId('playground-details-dialog')).toBeNull());
     expect(screen.queryByTestId('playground-quality-report')).toBeNull();
     expect(screen.queryByTestId('processing-details-title')).toBeNull();
+  });
+
+  it('右上角关闭按钮也能关闭弹窗（非 ESC 路径）', async () => {
+    render(<ControlledResult />);
+    fireEvent.click(screen.getByTestId('playground-details-button'));
+    expect(screen.getByTestId('playground-details-dialog')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    await waitFor(() => expect(screen.queryByTestId('playground-details-dialog')).toBeNull());
+  });
+
+  it('文本件 page_count 由 filePageCount 补齐（门⑥ I2）', async () => {
+    mockedGetJob.mockResolvedValue({
+      items: [{ file_id: 'f1', performance: { recognition: { mode: 'text', parse_ms: 8000 } } }],
+    } as unknown as Awaited<ReturnType<typeof getJob>>);
+
+    render(<ControlledResult />);
+    fireEvent.click(screen.getByTestId('playground-details-button'));
+
+    const row = await screen.findByTestId('processing-row-parse');
+    expect(row.textContent).toContain('86');
   });
 });

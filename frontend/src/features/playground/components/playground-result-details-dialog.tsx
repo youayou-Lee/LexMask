@@ -7,6 +7,7 @@
 import { type FC } from 'react';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { getEntityTypeName } from '@/config/entityTypes';
 import {
   Dialog,
   DialogContent,
@@ -50,9 +51,9 @@ function sourceLabel(key: string, t: (key: string) => string): string {
     case 'manual':
       return t('playground.sourceManual');
     case 'has':
-      return t('playground.sourceModel');
+      return 'HaS';
     case 'llm':
-      return t('playground.sourceModel');
+      return t('playground.sourceAi');
     default:
       return key;
   }
@@ -101,19 +102,22 @@ const DistributionBlock: FC<{
 /** 质量报告纯展示体（从动作条抽出，供详情弹窗使用；testid 与旧折叠区一致）。 */
 export const QualityReportBody: FC<{ report: Record<string, unknown> }> = ({ report }) => {
   const t = useT();
-  const typeRows = distributionRows(report.entity_type_distribution, (key) => key);
+  const typeRows = distributionRows(report.entity_type_distribution, (key) => getEntityTypeName(key));
   const sourceRows = distributionRows(report.source_distribution, (key) => sourceLabel(key, t));
   const confidenceRows = distributionRows(report.confidence_distribution, (key) =>
     confidenceLabel(key, t),
   );
   const redactionMode = typeof report.redaction_mode === 'string' ? report.redaction_mode : null;
   const modeLabel =
-    redactionMode === 'structured' ||
-    redactionMode === 'smart' ||
-    redactionMode === 'mask' ||
-    redactionMode === 'pseudonym'
-      ? t('playground.processingModeReplace')
-      : (redactionMode ?? '—');
+    redactionMode === 'structured'
+      ? t('mode.structured')
+      : redactionMode === 'smart'
+        ? t('mode.smart')
+        : redactionMode === 'mask'
+          ? t('mode.mask')
+          : redactionMode === 'pseudonym'
+            ? t('playground.processingModeReplace')
+            : (redactionMode ?? '');
 
   return (
     <div className="space-y-3 text-xs" data-testid="playground-quality-report">
@@ -132,10 +136,12 @@ export const QualityReportBody: FC<{ report: Record<string, unknown> }> = ({ rep
       <DistributionBlock title={t('report.typeDistribution')} rows={typeRows} />
       <DistributionBlock title={t('playground.sourceDistribution')} rows={sourceRows} />
       <DistributionBlock title={t('report.confidenceDistribution')} rows={confidenceRows} />
-      <div className="flex items-baseline justify-between gap-3 rounded-[14px] border border-border/60 bg-[var(--surface-control)] px-2.5 py-2">
-        <span className="text-muted-foreground">{t('playground.processingMode')}</span>
-        <span className="font-medium text-foreground">{modeLabel}</span>
-      </div>
+      {redactionMode ? (
+        <div className="flex items-baseline justify-between gap-3 rounded-[14px] border border-border/60 bg-[var(--surface-control)] px-2.5 py-2">
+          <span className="text-muted-foreground">{t('playground.processingMode')}</span>
+          <span className="font-medium text-foreground">{modeLabel}</span>
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -180,6 +186,7 @@ export const PlaygroundResultDetailsDialog: FC<PlaygroundResultDetailsDialogProp
           <section className="space-y-2" data-testid="playground-details-processing-section">
             <ProcessingDetailsCard
               performance={processing.performance}
+              filePageCount={processing.filePageCount}
               failed={processing.failed}
               errorMessage={processing.errorMessage}
             />

@@ -206,6 +206,8 @@ function draftTaskJobIdFor(fileId: string): string | null {
 
 export interface PlaygroundProcessingDetailsState extends ProcessingDetailsData {
   jobId: string | null;
+  /** 结果页拿到的原卷页数（与卡内派生同源；Issue#311 门⑥ I2）。 */
+  filePageCount: number | null;
   failed: boolean;
   errorMessage: string | null;
 }
@@ -263,6 +265,7 @@ export function usePlaygroundProcessingDetails(
   return {
     ...data,
     jobId,
+    filePageCount,
     failed: task?.phase === 'failed',
     errorMessage: task?.error ?? null,
   };

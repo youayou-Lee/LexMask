@@ -38,6 +38,7 @@ function processingState(
     failedPages: [3],
     hasData: true,
     jobId: 'job-1',
+    filePageCount: null,
     failed: false,
     errorMessage: null,
     ...overrides,
@@ -45,6 +46,44 @@ function processingState(
 }
 
 describe('Issue#311 详情弹窗', () => {
+  it('处理方式四枚举与来源标签按旧口径映射（门⑥ C1/C2）', () => {
+    const cases: Array<[string, string]> = [
+      ['structured', t('mode.structured')],
+      ['smart', t('mode.smart')],
+      ['mask', t('mode.mask')],
+      ['pseudonym', t('playground.processingModeReplace')],
+    ];
+    for (const [mode, label] of cases) {
+      const { unmount } = render(
+        <PlaygroundResultDetailsDialog
+          open
+          onOpenChange={() => undefined}
+          report={{ ...REPORT, redaction_mode: mode }}
+          processing={processingState()}
+        />,
+      );
+      const text = screen.getByTestId('playground-quality-report').textContent ?? '';
+      expect(text).toContain(label);
+      expect(text).not.toContain('playground.processingModeReplace');
+      unmount();
+    }
+  });
+
+  it('来源 has 显示 HaS、类型标签走翻译而非原始键（门⑥ C2/I1）', () => {
+    render(
+      <PlaygroundResultDetailsDialog
+        open
+        onOpenChange={() => undefined}
+        report={{ ...REPORT, source_distribution: { has: 6 } }}
+        processing={processingState()}
+      />,
+    );
+    const text = screen.getByTestId('playground-quality-report').textContent ?? '';
+    expect(text).toContain('HaS');
+    expect(text).not.toContain('PERSON');
+  });
+
+
   it('open 时同时渲染质量报告指标与处理详情（总耗时/失败页）', () => {
     render(
       <PlaygroundResultDetailsDialog
