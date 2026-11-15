@@ -108,6 +108,20 @@ describe('Issue#194 T7：submitRedactionTask', () => {
     expect(mockedPost).toHaveBeenCalledWith('/jobs/job-9/items/item-9/redact', body);
   });
 
+  it('Issue#321：config.pages 原样透传（页子集）', async () => {
+    mockedPost.mockResolvedValueOnce({ job_id: 'j', item_id: 'i', file_id: 'f' });
+    await submitRedactionTask('job-1', 'item-1', {
+      entities: [],
+      bounding_boxes: [],
+      config: { replacement_mode: 'mask', pages: [1, 3, 7] },
+    });
+    expect(mockedPost).toHaveBeenCalledWith('/jobs/job-1/items/item-1/redact', {
+      entities: [],
+      bounding_boxes: [],
+      config: { replacement_mode: 'mask', pages: [1, 3, 7] },
+    });
+  });
+
   it('jobId/itemId 经 encodeURIComponent', async () => {
     mockedPost.mockResolvedValueOnce({ job_id: 'j', item_id: 'i', file_id: 'f' });
 

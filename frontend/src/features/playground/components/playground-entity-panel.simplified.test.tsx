@@ -74,6 +74,14 @@ afterEach(() => {
 });
 
 describe('Issue#262：复核态右栏精简', () => {
+  it('Issue#321：识别中（isLoading）也可点开始匿名化——只处理已完成页', () => {
+    render(<PlaygroundEntityPanel {...baseProps} isLoading />);
+    const btn = screen.getByTestId('playground-redact-btn');
+    expect((btn as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(btn);
+    expect(baseProps.onRedact).toHaveBeenCalledTimes(1);
+  });
+
   it('主控件齐全且默认收起高级区（列表/类型统计/水印文本输入不可见）', () => {
     render(<PlaygroundEntityPanel {...baseProps} />);
     // ① 统计摘要+全选/清空

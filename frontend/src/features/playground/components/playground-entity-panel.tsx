@@ -272,7 +272,7 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
         )}
         <Button
           onClick={onRedact}
-          disabled={shownSelectedCount === 0 || isLoading || Boolean(replaceUnready)}
+          disabled={shownSelectedCount === 0 || Boolean(replaceUnready)}
           aria-describedby={disabledReason ? 'playground-redact-disabled-reason' : undefined}
           className={cn(
             'h-11 shrink-0 rounded-[20px] text-sm font-semibold shadow-[var(--shadow-control)]',
@@ -280,9 +280,7 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
           )}
           data-testid="playground-redact-btn"
         >
-          {isLoading
-            ? t('playground.processing')
-            : `${t('playground.startRedact')} (${shownSelectedCount})`}
+          {`${t('playground.startRedact')} (${shownSelectedCount})`}
         </Button>
 
         {/* Issue#262 A2：底部「高级」抽屉（默认收起）——原 Card 2 尾部的水印文本输入、

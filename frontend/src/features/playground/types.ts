@@ -31,6 +31,12 @@ export interface FileInfo {
    * 用来在结果页报「水印预处理 已摘除 N 页」。仅在回场/识别后填充。
    */
   vision_quality?: Record<string, unknown>;
+  /**
+   * Issue#321：本次打码只处理的原卷页（1-based，升序）。空/缺省 = 全卷。
+   * 产物文件本身只含这些页；`page_map` 给出「产物页号(1-based, 字符串键) → 原卷页号」。
+   */
+  processed_pages?: number[];
+  page_map?: Record<string, number>;
 }
 
 export interface Entity {

@@ -15,6 +15,7 @@ import {
 import { authFetch, downloadFile } from '@/services/api-client';
 import { getJob } from '@/services/jobsApi';
 import { resolveAwaitingReviewTask, submitRedactionTask } from '@/services/singleTaskApi';
+import { getItemPageStatus } from '@/services/jobsApi';
 import { useSingleTask } from '@/features/single-task/single-task-context';
 import type { VersionHistoryEntry } from '@/types';
 import { localizeErrorMessage } from '@/utils/localizeError';
@@ -595,6 +596,23 @@ export function usePlayground() {
         throw new Error(t('playground.redactPagesUnknownRetry'));
       }
 
+      // Issue#321：识别中/部分完成时，只把「已处理页」交后端打码——
+      // 产物物理只含这些页，用户不必等整卷跑完。
+      let subsetPages: number[] | undefined;
+      try {
+        const pageStatus = await getItemPageStatus(jobId, itemId);
+        const done = (pageStatus.pages ?? [])
+          .filter((cell) => cell.state === 'success' || cell.state === 'manual_verified')
+          .map((cell) => cell.page)
+          .sort((a, b) => a - b);
+        const total = pageStatus.page_count || fileCtx.fileInfo.page_count || 0;
+        if (done.length > 0 && total > 0 && done.length < total) {
+          subsetPages = done;
+        }
+      } catch {
+        // 页状态查询失败：按全卷提交（旧行为），不阻断打码
+      }
+
       // Issue #66：mask 模式下实体的选中状态由它的 ner 框代表（框即实体的
       // UI）；无框实体（定位失败）保持原选中态交后端 residual 兜底
       const execEntities = textPdfMaskMode
@@ -647,6 +665,7 @@ export function usePlayground() {
           // keep 为后端默认值，仅 strip 时显式写入，避免无关模式带上该键。
           watermark_delivery:
             !isPseudonym && recognition.watermarkDelivery === 'strip' ? 'strip' : undefined,
+          ...(subsetPages ? { pages: subsetPages } : {}),
         },
       });
       if (latestFileIdRef.current !== fileId) {
