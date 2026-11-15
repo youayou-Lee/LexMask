@@ -27,12 +27,15 @@ interface PlaygroundPageExportProps {
   compact?: boolean;
   /** 弹窗/卡片里已经自带容器：不再套外框与折叠头。 */
   bare?: boolean;
+  /** Issue#311：结果页默认收起（保留 summary 与展开能力），把视口让给对比预览。 */
+  defaultCollapsed?: boolean;
 }
 
 export function PlaygroundPageExport({
   fileId,
   compact = false,
   bare = false,
+  defaultCollapsed = false,
 }: PlaygroundPageExportProps) {
   const t = useT();
   const { jobId, itemId } = useFileJobItem(fileId);
@@ -49,7 +52,7 @@ export function PlaygroundPageExport({
     actionError,
     submit,
   } = useItemExport({ jobId, itemId, enabled: Boolean(itemId) });
-  const [open, setOpen] = useState(!compact);
+  const [open, setOpen] = useState(!compact && !defaultCollapsed);
 
   const counts = useMemo(() => {
     // Issue#280 × #278：manual_verified 并入 success 桶展示（exportable 谓词，该页已可导出）。

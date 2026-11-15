@@ -125,6 +125,21 @@ describe('单文件任务的逐页结果与选页导出（Issue#257 需求重对
     expect(screen.queryByTestId('playground-page-export')).toBeNull();
   });
 
+  it('defaultCollapsed（结果页瘦身）默认收起，仍可展开；未传时保持展开', async () => {
+    const collapsed = await renderSettled(<PlaygroundPageExport fileId="file-1" defaultCollapsed />);
+    const toggle = screen.getByTestId('playground-page-export-toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByTestId('page-matrix')).toBeNull();
+    fireEvent.click(toggle);
+    expect(screen.getByTestId('page-matrix')).toBeTruthy();
+    collapsed.unmount();
+
+    await renderSettled(<PlaygroundPageExport fileId="file-1" />);
+    expect(screen.getByTestId('playground-page-export-toggle').getAttribute('aria-expanded')).toBe(
+      'true',
+    );
+  });
+
   it('compact（识别浮层）默认收起，点标题展开', async () => {
     await renderSettled(<PlaygroundPageExport fileId="file-1" compact />);
 

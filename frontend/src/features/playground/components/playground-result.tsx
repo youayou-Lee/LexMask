@@ -18,9 +18,13 @@ import { getEntityRiskConfig } from '@/config/entityTypes';
 import { buildTextSegments } from '@/utils/textRedactionSegments';
 import type { VersionHistoryEntry } from '@/types';
 import type { BoundingBox, Entity, FileInfo, VisionTypeConfig } from '../types';
-import { PlaygroundResultActionBar, RedactionReportSection } from './playground-result-action-bar';
+import { PlaygroundResultActionBar } from './playground-result-action-bar';
 import { TextResultView, ImageResultView, OutputResultView } from './playground-result-views';
-import { PlaygroundProcessingDetails } from './processing-details-card';
+import {
+  PlaygroundResultDetailsDialog,
+  unprocessedEntityCount,
+} from './playground-result-details-dialog';
+import { usePlaygroundProcessingDetails } from './processing-details-card';
 import { PlaygroundPageExport } from './playground-page-export';
 import { useOutputPagePreview } from '../hooks/use-output-page-preview';
 
@@ -57,7 +61,6 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   content,
   entities,
   entityMap,
-  redactedCount,
   redactionReport,
   reportOpen,
   setReportOpen,
@@ -93,6 +96,16 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   // 成品视图仅文本型 PDF 提供（扫描件/图片的结果页本就实时渲染成品；
   // docx/txt 成品非 PDF 无页图，page-image 端点也不支持）
   const outputPreviewAvailable = !isImageMode && fileInfo?.file_type === 'pdf';
+
+  // Issue#311：处理详情解析上移到结果页——动作行告警点与「详情」弹窗共用同一份数据；
+  // 默认视图不再挂载处理详情卡（DOM 不渲染）。
+  const processing = usePlaygroundProcessingDetails(
+    fileInfo?.file_id ?? null,
+    fileInfo?.page_count ?? fileInfo?.pages?.length ?? null,
+  );
+  const unprocessedEntities = redactionReport ? unprocessedEntityCount(redactionReport) : 0;
+  const detailsAlert =
+    processing.failed || processing.failedPages.length > 0 || unprocessedEntities > 0;
   const outputPreview = useOutputPagePreview({
     fileId: outputPreviewAvailable ? (fileInfo?.file_id ?? null) : null,
     page: outputPage,
@@ -293,60 +306,60 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
     >
       <PlaygroundResultActionBar
         fileInfo={fileInfo}
-        redactedCount={redactedCount}
-        resultReady={resultReady}
         canDownload={resultReady}
+        detailsAlert={detailsAlert}
+        onOpenDetails={() => setReportOpen(true)}
         onBackToEdit={onBackToEdit}
         onReset={onReset}
         onDownload={onDownload}
         onDownloadPseudonymCsv={onDownloadPseudonymCsv}
       />
 
-      {redactionReport && (
-        <RedactionReportSection
-          report={redactionReport}
-          open={reportOpen}
-          onToggle={() => setReportOpen((open) => !open)}
-        />
-      )}
-
-      {/* Issue#194 Task 11：处理详情卡（质量报告旁）——fileId→jobId 经 provider/草稿，
-          旧文件（无任务）不渲染（AC3 条款）。fileId/page_count 缺失时安全置空。 */}
-      <PlaygroundProcessingDetails
-        fileId={fileInfo?.file_id ?? null}
-        filePageCount={fileInfo?.page_count ?? fileInfo?.pages?.length ?? null}
+      {/* Issue#311：质量报告 + 处理详情合并进「详情」弹窗；默认关闭，Radix 负责 ESC/遮罩/焦点。 */}
+      <PlaygroundResultDetailsDialog
+        open={reportOpen}
+        onOpenChange={setReportOpen}
+        report={redactionReport}
+        processing={processing}
       />
 
-      {/* Issue#257 需求重对齐：单文件任务也要能看逐页结果、选页导出（运行中/结果页同一块）。 */}
-      <PlaygroundPageExport fileId={fileInfo?.file_id ?? null} />
-
-      {outputPreviewAvailable && (
-        <div
-          className="mx-3 flex shrink-0 items-center gap-1 self-start rounded-2xl border border-border/60 bg-[var(--surface-control)] p-1 shadow-[var(--shadow-control)] md:mx-4"
-          data-testid="playground-result-view-toggle"
-        >
-          {(
-            [
-              ['compare', t('playground.resultViewToggle.compare')],
-              ['output', t('playground.resultViewToggle.output')],
-            ] as const
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setResultView(key)}
-              className={cn(
-                'whitespace-nowrap rounded-xl px-3 py-1.5 text-xs font-medium transition-colors',
-                resultView === key
-                  ? 'bg-card text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground',
-              )}
-              data-testid={`playground-result-view-${key}`}
-            >
-              {label}
-            </button>
-          ))}
+      {/* Issue#257 需求重对齐：单文件任务也要能看逐页结果、选页导出（运行中/结果页同一块）。
+          Issue#311：默认收起（summary 仍可见），与「对照 | 成品」同一行，把高度让给预览。 */}
+      <div
+        className="mb-2 flex shrink-0 flex-wrap items-center gap-2"
+        data-testid="playground-result-toolbar"
+      >
+        <div className="min-w-0 flex-1">
+          <PlaygroundPageExport fileId={fileInfo?.file_id ?? null} defaultCollapsed />
         </div>
-      )}
+        {outputPreviewAvailable && (
+          <div
+            className="flex shrink-0 items-center gap-1 self-center rounded-2xl border border-border/60 bg-[var(--surface-control)] p-1 shadow-[var(--shadow-control)]"
+            data-testid="playground-result-view-toggle"
+          >
+            {(
+              [
+                ['compare', t('playground.resultViewToggle.compare')],
+                ['output', t('playground.resultViewToggle.output')],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setResultView(key)}
+                className={cn(
+                  'whitespace-nowrap rounded-xl px-3 py-1.5 text-xs font-medium transition-colors',
+                  resultView === key
+                    ? 'bg-card text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+                data-testid={`playground-result-view-${key}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       {resultView === 'compare' && (
         <div className="mx-3 flex shrink-0 gap-1 rounded-t-[20px] border border-border/60 border-b-0 bg-background px-2 pt-2 md:hidden">
@@ -371,7 +384,11 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
         </div>
       )}
 
-      {resultView === 'output' && outputPreviewAvailable ? (
+      <div
+        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+        data-testid="playground-result-preview"
+      >
+        {resultView === 'output' && outputPreviewAvailable ? (
         <OutputResultView
           url={outputPreview.url}
           pageCount={outputPreview.pageCount}
@@ -421,6 +438,7 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
           onPageChange={onPageChange}
         />
       )}
+      </div>
     </div>
   );
 };

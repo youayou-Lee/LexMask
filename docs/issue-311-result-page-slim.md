@@ -42,7 +42,7 @@
 | `frontend/src/features/playground/components/playground-result.tsx` | 根容器 `flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden`，顺序渲染横幅 → 报告 → 处理详情 → 导出块 → 切换条 → 预览；`reportOpen` 由宿主 `playground-page.tsx` 传入，`use-playground.ts:93` 默认 `false` |
 | `playground-result-action-bar.tsx` | 深色横幅 + `RedactionReportSection` + 报告指标/分布 helpers；右侧动作按钮与 `data-testid` 均在此 |
 | `processing-details-card.tsx` | `ProcessingDetailsCard` / `ProcessingRowsList` / `PlaygroundProcessingDetails`（任务 job → performance 解析壳）；空数据返回 `null` |
-| `playground-page-export.tsx` | `useState(!compact)` ⇒ 结果页默认展开；`compact` 同时收窄页格高度并隐藏导出记录 |
+| `playground-page-export.tsx` | `useState(!compact)` ⇒ 结果页默认展开；`compact` 同时收窄页格高度并隐藏导出记录；新增 `defaultCollapsed` 后结果页默认收起 |
 | `src/components/ui/dialog.tsx` | Radix 基元：焦点陷阱、ESC、遮罩关闭均为内置行为 |
 | `src/i18n/{zh,en}.ts` | 扁平键表，`i18n-parity.test.ts` 双向校验键集合 |
 
@@ -77,7 +77,7 @@
 
 从 `processing-details-card.tsx` 抽出：
 
-- `usePlaygroundProcessingDetails(fileId, filePageCount)`：沿用现有 provider → sticky → 草稿 → `getJob(jobId, { performance: true })` 解析链，返回 `{ rows, totalMs, textDirect, failedPages, failed, errorMessage, performance, merged }`。
+- `usePlaygroundProcessingDetails(fileId, filePageCount)`：沿用现有 provider → sticky → 草稿 → `getJob(jobId, { performance: true })` 解析链，返回 `{ jobId, performance, mergedPerf, rows, totalMs, textDirect, failedPages, hasData, failed, errorMessage }`。
 - `ProcessingDetailsBody`：`ProcessingDetailsCard` 的纯展示体（保留全部 testid）。
 - `ProcessingDetailsCard` 改为薄壳调用 `ProcessingDetailsBody`；`PlaygroundProcessingDetails` 保留导出以兼容既有测试，但结果页不再渲染它，改由 `PlaygroundResult` 调用 hook 提前拿到 `failedPages` 供告警点与弹窗使用。
 
@@ -103,11 +103,10 @@
 新增 zh/en 同步键（保留旧键，避免 parity 失败）：
 
 - `playground.details`：详情 / Details
-- `playground.detailsDialogTitle`：质量与处理详情 / Quality and processing details
-- `playground.detailsDialogDesc`：默认隐藏的质量报告与处理详情 / Quality report and processing details, hidden by default
-- `playground.detailsEmpty`：暂无可查看的详情 / No details to show
-- `playground.detailsAlert`：存在失败页或未处理项 / Some pages failed or items were not processed
-- `playground.detailsOpen`：查看详情 / View details
+- `playground.detailsDialogTitle`：质量报告与处理详情 / Quality report & processing details
+- `playground.detailsDialogDesc`：质量报告与逐阶段处理过程集中在这里，默认视图不占用预览空间。/ Quality metrics and per-stage processing live here, out of the default preview view.
+- `playground.detailsEmpty`：暂无质量报告或处理详情。/ No quality report or processing details yet.
+- `playground.detailsAlert`：有失败页或未处理项 / Some pages failed or items are unprocessed
 
 ## 5. 改动文件
 

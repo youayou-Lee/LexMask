@@ -3,6 +3,13 @@
 
 ## 2026-11-15
 
+### 变更（Issue#311）结果页默认视图瘦身：深色完成横幅改为右上角动作行，质量报告/处理详情收进「详情」弹窗
+
+- **为什么**：结果页默认视图被横幅、质量报告折叠区与处理详情卡占掉大量纵向空间，对比预览被挤到视口下半部；用户口径要求默认视图只留动作按钮 + 逐页导出 + 预览，诊断信息按需查看但不能被隐藏（失败页/未处理项必须透出）。
+- **改了什么**：删除「匿名化完成」深色横幅（图标/标题/计数/步骤条/hint）与旧 `RedactionReportSection` 折叠卡；动作按钮改为右上角一行（返回编辑 / 处理新文件 / 化名对照表 / 下载），水印「已摘除 N 页」降级为行内小 badge 保留可见；质量报告与处理详情合并进新 `PlaygroundResultDetailsDialog`（Radix Dialog，默认关闭、ESC/遮罩可关、焦点陷阱），处理详情复用 `ProcessingRowsList`/`ProcessingDetailsCard`，总耗时、阶段行、失败页清单不变；存在失败页、未处理实体或任务失败时详情按钮带琥珀色告警点（含 aria-label 说明）；`PlaygroundPageExport` 新增 `defaultCollapsed`，结果页默认收起、summary 仍可见，与「对照｜成品」切换同一行；预览容器保持 `flex-1 min-h-0` 并新增 `playground-result-preview` 标识。默认 DOM 不再渲染质量报告/处理详情（数据仍由 `usePlaygroundProcessingDetails` 取到，供弹窗与告警点判断）。
+- **测试**：新增 `playground-result.test.tsx` 9 例（旧横幅消失/动作行与三个既有 testid/水印 badge/默认 DOM 无报告与详情/告警点三态/弹窗打开后指标与处理详情齐全/ESC 关闭/预览 flex-1）；`playground-page-export.test.tsx` +3 例钉 `defaultCollapsed`；前端全量 `vitest run` **87 文件 657 例全过**、`npm run build` 绿、`npx tsc -p tsconfig.test.json --noEmit` 绿；`npm run lint` 仅余 preview 既有 6 错误（issue278 测试/console-page/wiring-contract/single-task-context，均非本支文件）。
+- **挂账**：1440×900 / 86 页卷的 chrome ≤120px、预览 ≥60% 需在结果页内容区口径下用浏览器实测（本支无 Playwright 配置，按设计稿风险章节交给验收；页面顶部到预览顶部含全局 76px 头时无法 ≤120px，口径须按设计稿注明）。
+
 ### 修正（Issue#308）实体框质量打磨：标签双份/过度捕获/页脚页码误报/断行拆分框
 
 - **为什么**：#301 验收发现的实体框质量四类问题——①同案号值落 LEGAL_CASE_ID+CASE_NUMBER 双框（实体表重复、按类型停用语义混乱）；②NER/正则框吞叙述前缀（`防城区法院作出（2021）…` 整句成框，打码误伤旁文字）+ 碎片框（`事调解书》`）+ 金额框吞整句；③页脚页码 `3` 被误标 LEGAL_CASE_ID（打码涂掉页码）；④OCR 断行把同一案号拆两个残缺框。
