@@ -41,6 +41,8 @@ export interface PlaygroundResultProps {
   /** Issue#327：当前结果来自子集预览（preview=true 读预览产物，页数为子集页数）。 */
   preview?: boolean;
   previewPageCount?: number | null;
+  /** Issue#327 门⑥ C-4：子集 page_map（子集序号 → 原卷页号），page-image 端点按原卷页号取页。 */
+  previewPageMap?: Record<string, number> | null;
   imageUrl: string;
   redactedImageUrl?: string;
   redactedImageError?: string | null;
@@ -73,6 +75,7 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   isImageMode,
   preview,
   previewPageCount,
+  previewPageMap,
   imageUrl,
   redactedImageUrl,
   redactedImageError,
@@ -91,7 +94,9 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   const t = useT();
   const [mobileTab, setMobileTab] = useState<'original' | 'redacted' | 'mapping'>('original');
   // Issue #83：结果页「对照 | 成品」视图切换（成品=下载文件的实际渲染）
-  const [resultView, setResultView] = useState<'compare' | 'output'>('compare');
+  // Issue#327：子集预览恒为「成品」视图——对照视图是前端按框实时渲染的，
+  // 识别在飞时前端没有框（既看不到打码也没有页数语义），只有服务端预览产物可信。
+  const [resultView, setResultView] = useState<'compare' | 'output'>(preview ? 'output' : 'compare');
   const [outputPage, setOutputPage] = useState(1);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const clickCounterRef = useRef<Record<string, number>>({});
@@ -99,9 +104,12 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   const activeMarksRef = useRef<HTMLElement[]>([]);
   const resultReady = !isImageMode || Boolean(redactedImageUrl);
 
-  // 成品视图仅文本型 PDF 提供（扫描件/图片的结果页本就实时渲染成品；
-  // docx/txt 成品非 PDF 无页图，page-image 端点也不支持）
-  const outputPreviewAvailable = !isImageMode && fileInfo?.file_type === 'pdf';
+  // 成品视图：文本型 PDF 提供（扫描件/图片的结果页本就实时渲染成品；
+  // docx/txt 成品非 PDF 无页图，page-image 端点也不支持）。
+  // Issue#327：子集预览必须走服务端产物（扫描件也要）——预览件是后端切页+打码
+  // 出来的真 PDF，用 page-image?preview=true 逐页取；前端实时渲染的「成品」在
+  // 识别在飞时根本没有框，等于白页。
+  const outputPreviewAvailable = preview || (!isImageMode && fileInfo?.file_type === 'pdf');
 
   // Issue#311：处理详情解析上移到结果页——动作行告警点与「详情」弹窗共用同一份数据；
   // 默认视图不再挂载处理详情卡（DOM 不渲染）。
@@ -118,6 +126,7 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
     page: outputPage,
     preview,
     pageCountOverride: previewPageCount ?? undefined,
+    pageMap: previewPageMap ?? null,
     enabled: outputPreviewAvailable && resultView === 'output',
   });
   // 翻页时按成品真实页数钳制（docx 回转后成品页数可能与原卷不同；页数未知
@@ -347,7 +356,7 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
           />
 
         </div>
-        {outputPreviewAvailable && (
+        {outputPreviewAvailable && !preview && (
           <div
             className="flex shrink-0 items-center gap-1 self-center rounded-2xl border border-border/60 bg-[var(--surface-control)] p-1 shadow-[var(--shadow-control)]"
             data-testid="playground-result-view-toggle"

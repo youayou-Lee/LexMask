@@ -68,6 +68,13 @@ export interface PlaygroundEntityPanelProps {
   onToggleBox: (id: string) => void;
   onEntityClick: (entity: Entity, event: ReactMouseEvent) => void;
   onRemoveEntity: (id: string) => void;
+  /**
+   * Issue#327：识别在飞时的「先匿名化已处理的 N/M 页」入口。
+   * `subsetTotalPages > subsetReadyCount > 0` 时红色主按钮切到子集口径：
+   * 不受 `isLoading`/勾选数限制（识别中画布本来就没有框，被这两条挡住等于入口不存在）。
+   */
+  subsetReadyCount?: number;
+  subsetTotalPages?: number;
 }
 
 export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
@@ -109,6 +116,8 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
     onToggleBox,
     onEntityClick,
     onRemoveEntity,
+    subsetReadyCount = 0,
+    subsetTotalPages = 0,
   }) => {
     const t = useT();
     // Issue#262 A2：复核态右栏精简——细粒度操作（逐类型统计/逐框逐实体列表/
@@ -133,8 +142,17 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
       }
       return map;
     }, [entityTypes, visionTypes]);
-    const disabledReason =
-      recognitionIssue && totalCount === 0
+    // Issue#327：子集口径——识别在飞且已处理页 < 总页数（0 < N < M）。
+    // 此时画布通常还没有框（识别中不允许手改画布），若按普通口径判定必被
+    // 「无勾选」「识别中」两条禁掉 ⇒ 子集入口在目标场景里根本点不到。
+    const subsetAction = subsetReadyCount > 0 && subsetReadyCount < subsetTotalPages;
+    // 子集口径只豁免「识别中」「画布无框」两条（识别中画布本来就没框）；
+    // 替换模式的化名映射未确认完仍然禁——映射未就绪就出产物 = 成品与所见不一致。
+    const disabledReason = subsetAction
+      ? replaceUnready
+        ? t('playground.pseudonymConfirmRequiredShort')
+        : ''
+      : recognitionIssue && totalCount === 0
         ? recognitionIssue
         : totalCount === 0
           ? t('playground.redactDisabledNoResults')
@@ -272,17 +290,27 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
         )}
         <Button
           onClick={onRedact}
-          disabled={shownSelectedCount === 0 || isLoading || Boolean(replaceUnready)}
+          disabled={
+            subsetAction
+              ? Boolean(replaceUnready)
+              : shownSelectedCount === 0 || isLoading || Boolean(replaceUnready)
+          }
           aria-describedby={disabledReason ? 'playground-redact-disabled-reason' : undefined}
           className={cn(
             'h-11 shrink-0 rounded-[20px] text-sm font-semibold shadow-[var(--shadow-control)]',
-            (shownSelectedCount === 0 || Boolean(replaceUnready)) && 'opacity-50',
+            !subsetAction && (shownSelectedCount === 0 || Boolean(replaceUnready)) && 'opacity-50',
+            subsetAction && 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
           )}
           data-testid="playground-redact-btn"
+          data-subset={subsetAction ? 'true' : undefined}
         >
-          {isLoading
-            ? t('playground.processing')
-            : `${t('playground.startRedact')} (${shownSelectedCount})`}
+          {subsetAction
+            ? t('playground.subsetAction')
+                .replace('{done}', String(subsetReadyCount))
+                .replace('{total}', String(subsetTotalPages))
+            : isLoading
+              ? t('playground.processing')
+              : `${t('playground.startRedact')} (${shownSelectedCount})`}
         </Button>
 
         {/* Issue#262 A2：底部「高级」抽屉（默认收起）——原 Card 2 尾部的水印文本输入、

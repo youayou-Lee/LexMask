@@ -2,7 +2,9 @@
 
 ### 2026-11-16
 
-- **Issue#327（前端）：识别期「已处理页」子集预览接线**——`pickSubsetPages` 取 success/manual_verified 页；点「开始匿名化」时若已处理页 ∈ (0, 全卷) → 同步 `POST /jobs/{id}/items/{id}/subset-preview`，结果页直接展示子集预览（`preview=true` 页图/下载、页数按回执钳制），不再等整卷识别完；全卷完成仍走原后台打码。测试 +4（`lib/subset-pages.test.ts`），全量 95 files / 708 passed，build 4.79s。
+- **Issue#327（前端）：识别在飞即可「先匿名化已处理的 N/M 页」——子集入口 + 只含这批页的结果预览 + 返回编辑**——`lib/subset-pages.ts`（`pickSubsetPages`/`isRecognitionInFlight`/`subsetCandidates`/`mergeSubsetBoxes`/`outputPreviewPageForRequest`）；识别期间按 3s 轮询页账（`GET /jobs/{job}/items/{item}/page-status`）派生入口文案与页集合；点「开始匿名化」→ `POST /jobs/{id}/items/{id}/subset-preview`，结果页只含这批页（`preview=true` 页图/下载，页数按回执钳制），识别收尾不把他踢回确认页（`awaiting_review` 守卫），「返回编辑」回到识别现场重新选页；**识别终态一律走全卷链路**（终态 + 失败页不得静默降级为子集）。
+  - **门⑥ 复审修复（4 Critical + 5 Important 全处置）**：C-1 识别在飞时入口不可达（`isLoading` 恒 true + 画布无框 ⇒ 零勾选禁用）→ 子集口径豁免门禁并换文案；C-2 扫描件识别中画布无框 ⇒ 子集请求必 400 `subset_no_regions` → 画布为空时**不发** `bounding_boxes`（后端吃 file_store 快照），有手拉框时按页整页覆盖合并快照；C-3 `handleDownload` 闭包依赖漏 `subsetPreview` ⇒ 恒下载全卷 → 补依赖 + 接线钉；C-4 前端把子集序号当原卷页号发 `page-image` ⇒ 非前缀子集永久 404 → 用 `page_map` 反查换算（新增 `outputPreviewPageForRequest`）；I-1 识别终态 + 失败页时静默降级 → 只有 `recognition_state === 'running'` 才允许子集口径。
+  - **测试**：`lib/subset-pages.test.ts` 21 例（页集合/在飞判定/合并覆盖/页号换算）；`components/playground-entity-panel.subset.test.tsx` 4 例（C-1 入口可点 + 非子集口径行为逐字不变 + 页=总页不启用 + 红字提示不误报）；`hooks/use-playground.subset-preview.test.tsx` 4 例（子集请求体/终态不降级/手拉框合并/下载带 `preview=true`）；`wiring-contract.test.ts` +3 处接线钉（context 白名单/下载依赖数组/在飞判定）；前端全量 `vitest run` **97 files / 736 passed**，`tsc`（app+test）绿，`npm run build` 4.46s 绿。
 
 
 ### 新增（Issue#325）子集预览打码：识别运行中即可对已处理页出预览，不迁移 item 生命周期

@@ -153,7 +153,9 @@ const zhBase: Record<string, string> = {
   'console.pageOf': '第 {page} / {total} 页',
 
   'playground.subsetPreviewReady':
-    '已对 {done}/{total} 个已处理页生成预览，可继续编辑后再处理',
+    '已对 {done}/{total} 个已处理页生成预览，可返回编辑后重新生成',
+  // Issue#327：识别在飞时的主按钮（子集口径）——「只要有已处理页就能先匿名化」
+  'playground.subsetAction': '先匿名化已处理的 {done}/{total} 页',
   'playground.title': '处理单个文件',
   'playground.recognizing': '正在识别...',
   'playground.redacting': '正在匿名化...',

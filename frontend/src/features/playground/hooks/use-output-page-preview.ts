@@ -4,6 +4,7 @@ import { useEffect, useReducer, useRef } from 'react';
 import { authFetch } from '@/services/api-client';
 import { t } from '@/i18n';
 import { localizeErrorMessage } from '@/utils/localizeError';
+import { outputPreviewPageForRequest } from '../lib/subset-pages';
 
 const CACHE_LIMIT = 24;
 
@@ -14,6 +15,12 @@ export interface UseOutputPagePreviewOptions {
   preview?: boolean;
   /** 子集预览的总页数（覆盖 X-Page-Count 原卷口径）。 */
   pageCountOverride?: number;
+  /**
+   * Issue#327 门⑥ C-4：子集 page_map（子集序号 → 原卷页号，后端 `{idx + 1: page}`）。
+   * `page-image?preview=true` 的 `page` 参数是**原卷页号**，翻页器走子集序号，
+   * 必须换算后再发——否则非前缀子集（如 10-63）恒 404 preview_page_not_covered。
+   */
+  pageMap?: Record<string, number> | null;
   /** false 时不发请求（成品视图切换为懒加载，回对照视图即停） */
   enabled: boolean;
 }
@@ -45,6 +52,7 @@ export function useOutputPagePreview({
   page,
   preview = false,
   pageCountOverride,
+  pageMap,
   enabled,
 }: UseOutputPagePreviewOptions): OutputPagePreviewState {
   const cacheRef = useRef<Map<string, CacheEntry>>(new Map());
@@ -53,7 +61,13 @@ export function useOutputPagePreview({
   const epochRef = useRef(0);
   const [, forceRender] = useReducer((count: number) => count + 1, 0);
 
-  const activeKey = enabled && fileId ? `${fileId}:${page}` : null;
+  // 实际请求的原卷页号（子集序号 → 原卷页号；无 page_map 时原样）
+  const requestPage = outputPreviewPageForRequest(page, pageMap);
+  // 缓存键必须按**请求**（原卷页号 + 预览口径）建：同一子集序号在不同 page_map 下
+  // 对应不同原卷页（用户可以对同一份文件连续做两次不同页范围的子集预览），
+  // 按子集序号建键会命中上一轮的页图。
+  const activeKey =
+    enabled && fileId ? `${fileId}:${requestPage}:${preview ? 'preview' : 'full'}` : null;
   const cached = activeKey ? cacheRef.current.get(activeKey) : undefined;
   const cachedError = activeKey ? errorsRef.current.get(activeKey) : undefined;
 
@@ -79,7 +93,9 @@ export function useOutputPagePreview({
     const key = activeKey;
     const epoch = ++epochRef.current;
     inflightRef.current.add(key);
-    authFetch(`/api/v1/files/${fileId}/page-image?page=${page}&redacted=true${preview ? '&preview=true' : ''}`)
+    authFetch(
+      `/api/v1/files/${fileId}/page-image?page=${requestPage}&redacted=true${preview ? '&preview=true' : ''}`,
+    )
       .then(async (res) => {
         if (!res.ok) {
           // 400=尚未匿名化（成品不存在）；其余按渲染失败兜底
@@ -119,9 +135,10 @@ export function useOutputPagePreview({
         errorsRef.current.set(key, localizeErrorMessage(err, 'playground.outputPreview.failed'));
         forceRender();
       });
-    // 缓存/在途/错误表都在 ref 里，key 已含 fileId 与页码
+    // 缓存/在途/错误表都在 ref 里；key 含 fileId + 原卷页号 + 预览口径，
+    // requestPage 由 page/pageMap 派生（pageMap 变化 ⇒ key 变化，不会命中旧页图）
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeKey]); // preview/pageCountOverride 已并入 activeKey 之外的 URL 参数，见下方拼接；保持缓存键按 file+page
+  }, [activeKey]); // preview/pageCountOverride/pageMap 已并入 activeKey 之外的请求参数，见上方拼接
 
   return {
     url: cached?.url ?? '',

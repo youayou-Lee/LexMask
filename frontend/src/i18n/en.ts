@@ -154,7 +154,9 @@ const enBase: Record<string, string> = {
   'console.pageOf': 'Page {page} of {total}',
 
   'playground.subsetPreviewReady':
-    'Preview generated for {done}/{total} processed pages; keep editing and re-run anytime',
+    'Preview generated for {done}/{total} processed pages; go back to edit and regenerate anytime',
+  // Issue#327：识别在飞时的主按钮（子集口径）
+  'playground.subsetAction': 'Anonymize the {done}/{total} processed pages first',
   'playground.title': 'Process One File',
   'playground.recognizing': 'Recognizing...',
   'playground.redacting': 'Redacting...',
