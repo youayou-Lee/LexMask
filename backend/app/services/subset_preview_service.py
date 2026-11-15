@@ -38,6 +38,17 @@ def _remove_quietly(path: str | None) -> None:
         pass
 
 
+def _has_selected_regions(boxes: Sequence[Any], entities: Sequence[Any]) -> bool:
+    """存在至少一个选中的框/实体才算「会打码」；零命中不得静默返回 200。"""
+    for box in boxes:
+        if getattr(box, "selected", True) is not False:
+            return True
+    for ent in entities:
+        if getattr(ent, "selected", True) is not False:
+            return True
+    return False
+
+
 def _normalize_pages(pages: Sequence[int], page_count: int) -> list[int]:
     """1-based 升序去重；空/越界/负数一律 400（不静默退化全卷）。"""
     if not pages:
@@ -113,6 +124,15 @@ async def create_subset_preview(
 
     normalized = _normalize_pages(pages, page_count)
     exportable = page_status_service.exportable_page_numbers(item_row, page_count)
+    file_type = str(file_info.get("file_type") or "").lower()
+    # C-4：文本型 PDF 的 NER 是整卷异步任务，生产账本不写逐页 performance.pages；
+    # 识别完成（AWAITING_REVIEW/COMPLETED）即视为全卷可用。
+    text_pdf_finished = file_type == "pdf" and str(item_row.get("status") or "") in {
+        "awaiting_review",
+        "completed",
+    }
+    if text_pdf_finished and not exportable:
+        exportable = set(range(1, page_count + 1))
     not_ready = [p for p in normalized if int(p) not in {int(x) for x in exportable}]
     if not_ready:
         raise PartialExportError(
@@ -121,15 +141,14 @@ async def create_subset_preview(
             pages=not_ready,
         )
 
-    file_type = str(file_info.get("file_type") or "").lower()
     if file_type not in {"pdf", "pdf_scanned"}:
         raise PartialExportError(
             "subset_unsupported_type", "子集打码当前仅支持 PDF（文本型/扫描型）"
         )
 
     source_path = str(file_info.get("file_path") or "")
-    if not source_path:
-        raise PartialExportError("subset_source_missing", "找不到原始文件")
+    if not source_path or not os.path.isfile(source_path):
+        raise PartialExportError("subset_source_unreadable", "原始文件不存在或不可读")
 
     boxes = _normalize_boxes(bounding_boxes) if bounding_boxes is not None else _boxes_from_snapshot(
         file_info.get("bounding_boxes")
@@ -152,6 +171,11 @@ async def create_subset_preview(
     try:
         await asyncio.to_thread(slice_pdf_pages, source_path, normalized, tmp_subset)
         remapped = remap_boxes_to_subset(boxes, normalized)
+        if not _has_selected_regions(remapped, ents):
+            raise PartialExportError(
+                "subset_no_regions",
+                "所选页没有任何选中框或实体，预览不会产生打码；请先补框或确认实体",
+            )
 
         from app.services.redactor import Redactor
 
@@ -193,14 +217,17 @@ async def create_subset_preview(
         "preview_entity_map": dict(result.get("entity_map") or {}),
         "preview_redacted_count": int(result.get("redacted_count") or 0),
         "preview_created_at": datetime.now(UTC).isoformat(),
-        "page_count": len(normalized),
+        "preview_page_count": len(normalized),
     }
-    # 部分更新：读-合并-写，与识别写路径不共享长锁。
+    # C-1：与识别写路径共用同一把 file_store 锁，避免非原子读改写互相覆盖。
     fid = str(file_info.get("file_id") or file_info.get("id") or "")
     if fid:
-        file_store.update_fields(fid, payload)
+        from app.services.file_management_service import get_file_store_lock
+
+        async with get_file_store_lock():
+            file_store.update_fields(fid, payload)
     return {
-        "file_id": file_info.get("file_id"),
+        "file_id": file_info.get("file_id") or file_info.get("id"),
         "processed_pages": normalized,
         "page_map": page_map,
         "page_count": len(normalized),

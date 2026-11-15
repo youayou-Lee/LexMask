@@ -911,7 +911,7 @@ class SubsetPreviewRequest(BaseModel):
       由后端做实体→框定位。
     """
 
-    pages: list[int] = Field(..., min_length=1)
+    pages: list[int]
     bounding_boxes: list[BoundingBox] | None = None
     entities: list[Entity] | None = None
 

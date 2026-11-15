@@ -837,7 +837,12 @@ async def submit_item_export(
     # Issue#325：子集预览（未覆盖全卷）不得被「完整导出」当成整卷产物 copyfile。
     if kind == "full":
         preview_pages = (file_info or {}).get("processed_pages") or []
-        if (file_info or {}).get("preview_output_path") and preview_pages and len(set(preview_pages)) < page_count:
+        if (
+            not (file_info or {}).get("output_path")
+            and (file_info or {}).get("preview_output_path")
+            and preview_pages
+            and len(set(preview_pages)) < page_count
+        ):
             raise PartialExportError(
                 "subset_preview_incomplete",
                 "当前只有子集预览（未覆盖全卷），不能做完整导出；请改用选页导出，或先重跑整卷",

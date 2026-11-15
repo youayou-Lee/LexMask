@@ -31,3 +31,11 @@ Issue#321 的 PR#324 被门⑥ 判定阻断：
 - 暂只支持 PDF（pdf/pdf_scanned）；图片/TXT/DOC 不支持。
 - 每页是否“可导出”依赖 item performance 的 success/manual_verified 投影。
 - 预览产物独立存放，不做自动清理（由 TTL/后续任务处理）。
+
+## 门⑥ 评审修复（2026-11-16）
+- **C-1**：预览写回与识别写共用 `get_file_store_lock()`；payload 仅 preview_* 键。
+- **C-2**：落库键改 `preview_page_count`，**不再改写共享 `page_count`**；二次预览可跑。
+- **C-3**：full 守卫只在**缺主产物**时拦；全卷打码成功清 preview_*；「预览→全卷重跑→full 导出」有回归钉。
+- **C-4**：文本型 PDF 在识别完成（awaiting_review/completed）且无页账时按全卷放行准入。
+- **Important**：空集 400（服务层）、零框/零实体 400 `subset_no_regions`、缺源 400 `subset_source_unreadable`、page-image 按 `page_map` 反查原卷页号并回原卷 `X-Page-Count`、下载预览文件名 `redacted_preview_*`。
+- 仍挂账（另案）：草稿优先级与导出不一致、预览文件 TTL/清理、路由 response_model/audit、文本 NER 整卷页账（#326 关联）。

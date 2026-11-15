@@ -255,3 +255,72 @@ def test_subset_preview_route_forwards_pages_and_boxes(env, tmp_path, monkeypatc
     assert resp.status_code == 200, resp.text
     assert captured["pages"] == [1]
     assert captured["bounding_boxes"] and captured["bounding_boxes"][0].page == 1
+
+
+def test_preview_does_not_pollute_page_count_and_can_run_again(env, tmp_path):
+    """C-2：预览不得把共享记录的 page_count 改成子集页数；二次预览必须可跑。"""
+    store, job_id, item_id = _seed(tmp_path, 3)
+    src = _scanned_pdf(tmp_path / "src2.pdf", 3)
+    info = _file_info(tmp_path, src, 3)
+    env["file-1"] = info
+    first = _call(env, store, job_id, item_id, info, pages=[3])
+    assert env["file-1"]["page_count"] == 3
+    assert env["file-1"]["preview_page_count"] == 1
+    second = _call(env, store, job_id, item_id, info, pages=[3])
+    assert second["processed_pages"] == [3]
+    assert first["preview_output_path"] != second["preview_output_path"]
+
+
+def test_text_preview_replaces_original_text(env, tmp_path):
+    """C-2/判据：文本型 PDF 预览页文本层必须不再含原文（像素差不作为证据）。"""
+    store, job_id, item_id = _seed(tmp_path, 2)
+    src = _text_pdf(tmp_path / "text.pdf", 2)
+    info = _file_info(tmp_path, src, 2, file_type="pdf")
+    info["bounding_boxes"] = {}
+    info["entities"] = [
+        {
+            "id": "e1", "text": "ALICE", "type": "PERSON", "start": 0, "end": 5,
+            "page": 2, "selected": True, "source": "manual",
+        }
+    ]
+    env["file-1"] = info
+    result = _call(env, store, job_id, item_id, info, pages=[2], boxes=[])
+    assert result["redacted_count"] == 1
+    with fitz.open(result["preview_output_path"]) as doc:
+        assert "ALICE" not in doc[0].get_text()
+
+
+def test_full_export_after_full_redaction_is_not_blocked(env, tmp_path):
+    """C-3：已有主产物时，残留的预览字段不得再拦 full 导出。"""
+    store, job_id, item_id = _seed(tmp_path, 3)
+    src = _scanned_pdf(tmp_path / "src3.pdf", 3)
+    out = _scanned_pdf(tmp_path / "out3.pdf", 3)
+    info = _file_info(tmp_path, src, 3)
+    info.update({
+        "output_path": out,
+        "preview_output_path": out,
+        "processed_pages": [1],
+        "page_map": {1: 1},
+        "page_count": 3,
+    })
+    env["file-1"] = info
+    from app.services import partial_export_service
+
+    async def _run():
+        try:
+            await partial_export_service.submit_item_export(
+                owner_id="admin",
+                store=store,
+                job_row=store.get_job(job_id),
+                item_row=store.get_item(item_id),
+                file_info=info,
+                config=_config(),
+                kind="full",
+                pages=None,
+                include_summary=False,
+                bounding_boxes=None,
+            )
+        except partial_export_service.PartialExportError as exc:
+            assert exc.code != "subset_preview_incomplete"
+
+    asyncio.run(_run())
