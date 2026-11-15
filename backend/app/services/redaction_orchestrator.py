@@ -48,6 +48,23 @@ def _elapsed_ms(started: float) -> int:
     return max(0, round((time.perf_counter() - started) * 1000))
 
 
+def _discard_subset_preview_file(preview_path: Any) -> None:
+    """Issue#330 门⑥ 建议 2：删子集预览磁盘文件（路径必须在 OUTPUT_DIR 内，best-effort）。"""
+    if not (isinstance(preview_path, str) and preview_path.strip()):
+        return
+    try:
+        from app.core.config import settings
+        from app.core.file_validation import safe_path_in_dir
+
+        if not safe_path_in_dir(preview_path, settings.OUTPUT_DIR):
+            logger.warning("Refuse to delete subset preview outside OUTPUT_DIR: %s", preview_path)
+            return
+        if os.path.exists(preview_path):
+            os.remove(preview_path)
+    except Exception:
+        logger.warning("Failed to delete subset preview %s", preview_path, exc_info=True)
+
+
 def _get_file_store():
     from app.services.file_management_service import file_store
     return file_store
@@ -296,6 +313,8 @@ async def execute_redaction(
             info["bounding_boxes"] = _group_boxes_by_page(request.bounding_boxes)
             info["entities"] = to_jsonable(request.entities)
             # Issue#325：全卷打码成功后清掉子集预览记录（顶层），full 守卫随之解除。
+            # Issue#330 门⑥ 建议 2：连带删盘，否则旧子集 PDF 永留 OUTPUT_DIR（无清扫器）。
+            _discard_subset_preview_file(info.get("preview_output_path"))
             info["preview_output_path"] = None
             info["processed_pages"] = []
             info["page_map"] = {}

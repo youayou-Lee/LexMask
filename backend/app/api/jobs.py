@@ -473,6 +473,17 @@ async def export_item(
     return task.public()
 
 
+_SUBSET_PREVIEW_REJECT_STATUSES = frozenset(
+    {
+        # Issue#330 门⑥ 必修：全卷成品已存在或即将覆盖 ⇒ 子集预览一律拒。
+        JobItemStatus.COMPLETED.value,
+        JobItemStatus.REVIEW_APPROVED.value,
+        JobItemStatus.REDACTING.value,
+        JobItemStatus.CANCELLED.value,
+    }
+)
+
+
 @router.post("/{job_id}/items/{item_id}/subset-preview")
 async def create_item_subset_preview(
     job_id: str,
@@ -485,8 +496,22 @@ async def create_item_subset_preview(
 
     识别运行中即可调用（不迁移 item/job 状态、不写主产物）；产物走
     ``preview_output_path``，页集合与框账快照只读 file_store。
+
+    Issue#330 门⑥ 必修：终态一律拒（409）——全卷成品已存在/即将覆盖时再造预览，
+    产物没有任何迁移会再清它（``COMPLETED`` 不在产物失效状态集合里），
+    ``preview=true`` 会长期返回一份陈旧子集，误导用户以为那是交付物。
     """
     job, item = _require_item(store, job_id, item_id, owner_id)
+    if item.get("status") in _SUBSET_PREVIEW_REJECT_STATUSES:
+        raise AppError(
+            status_code=409,
+            error_code="subset_preview_item_not_in_flight",
+            message=(
+                "当前任务状态不支持子集预览（全卷成品已生成或正在生成）；"
+                "请刷新页面后改用完整匿名化/下载入口"
+            ),
+            detail={"status": item.get("status")},
+        )
     file_info = _load_file_info(item.get("file_id"))
     if file_info is None:
         raise HTTPException(status_code=404, detail="file not found")
@@ -578,8 +603,7 @@ async def retry_item_pages(
     return result
 
 
-# Issue#280 端点级错误映射：忙/状态不允许/冲突 = 409（可重试、需要用户动作）；
-# 参数错 = 400。与 retry_item_pages 的映射方式逐字同款。
+# Issue#280 端点级错误映射：忙/状态不允许/冲突 = 409（可重试、需要用户动作）；# 参数错 = 400。与 retry_item_pages 的映射方式逐字同款。
 _MANUAL_VERIFY_409_CODES = frozenset(
     {
         "item_busy",

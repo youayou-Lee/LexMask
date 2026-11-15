@@ -326,6 +326,10 @@ def clear_file_output(
     ``include_preview=False``：只清全卷产物，保留子集预览（识别收尾专用——识别完成
     不是「旧产物失效」，清掉会让进行中的子集结果页立刻 400）。默认 True 保持清产/
     驳回/删除/重跑路径的既有语义。
+
+    返回值语义：file_store 元数据**是否变化**。注意 ``include_preview=False`` 时返回值只
+    反映**全卷字段**（识别期子集预览的典型形态只有 preview_* 而无全卷字段 ⇒ 返回 False，
+    调用方不得据此认为「无子集预览存在」）。
     """
     info = file_store.get(file_id)
     if not isinstance(info, dict):
@@ -372,11 +376,13 @@ def repair_file_store_output_records() -> int:
         if not output_path:
             continue
         if not isinstance(output_path, str):
-            if clear_file_output(file_id, delete_disk=False):
+            # Issue#330 门⑥ 建议 3：本函数判据只看**全卷** ``output_path`` 是否安全/类型合法，
+            # 与子集预览无关 ⇒ 不得顺带把 preview_* 清掉（否则启动期修复会无谓销毁可用预览）。
+            if clear_file_output(file_id, delete_disk=False, include_preview=False):
                 repaired += 1
             continue
         if not safe_path_in_dir(output_path, settings.OUTPUT_DIR):
-            if clear_file_output(file_id, delete_disk=False):
+            if clear_file_output(file_id, delete_disk=False, include_preview=False):
                 repaired += 1
     return repaired
 
@@ -988,6 +994,15 @@ async def delete_file(file_id: str) -> dict[str, Any] | None:
     op = snapshot.get("output_path", "")
     if op and os.path.exists(op) and safe_path_in_dir(op, settings.OUTPUT_DIR):
         os.remove(op)
+
+    # Issue#330 门⑥ 建议 2：子集预览产物也是本文件的派生文件，删文件时一并删，
+    # 否则 OUTPUT_DIR 里永留孤儿 PDF（无清扫器）。
+    pp = snapshot.get("preview_output_path", "")
+    if pp and os.path.exists(pp) and safe_path_in_dir(pp, settings.OUTPUT_DIR):
+        try:
+            os.remove(pp)
+        except OSError:
+            logger.warning("Failed to remove subset preview for file %s", file_id, exc_info=True)
 
     try:
         _get_job_store().delete_items_for_file(file_id)
