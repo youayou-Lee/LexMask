@@ -605,6 +605,7 @@ const PlaygroundInner: FC = () => {
             onBackToEdit={() => setStage('preview')}
             onReset={handleReset}
             onDownload={handleDownload}
+            // 提交整卷全页框快照（非仅当前可见页）：导出端按页重建，缺页会 fail-closed。
             boundingBoxes={boundingBoxes}
             onDownloadPseudonymCsv={confirmedPseudonymMap ? handleDownloadPseudonymCsv : undefined}
           />

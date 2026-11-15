@@ -812,8 +812,11 @@ async def submit_item_export(
        included ∩ ledger，full 列全部条目。
     3. **框账快照（改框即生效的核心，§2.6）**：权威次序 =
        **请求框 > review 草稿 > file_store**（Issue#322：partial 允许请求携带提交时
-       画布框快照，保证「手拉框后直接导出」所见即所得）。请求框只对 partial 生效，
-       full 仍按草稿 > file_store（主产物直取，框不参与）。快照只读、不回写 file_store。
+       画布框快照，保证「手拉框后直接导出」所见即所得）。**语义是整份替换而非按页
+       合并**：请求框一旦非空，所有 included 页都必须能在快照里找到框账页，缺页走
+       ``pages_without_boxes`` 400 fail-closed（不回落 file_store）；前端因此提交
+       全页快照。请求框只对 partial 生效，full 仍按草稿 > file_store（主产物直取，
+       框不参与）。快照只读、不回写 file_store。
     4. route_summary / verify_incomplete / recognized_pages_at_export 快照。
 
     task kind 直接用 ``kind`` 值（r2 F8 (a)：meta 不带 ``kind`` 键——

@@ -26,6 +26,8 @@ import {
 } from '@/services/jobsApi';
 
 import { useBatchPageStatus } from './use-batch-page-status';
+// NOTE: batch 钩子复用 playground 的 BoundingBox 类型（历史形状同源）；若后续拆分
+// 共享类型模块，这里改为从 shared 引入，避免 batch→playground 反向依赖。
 import type { BoundingBox } from '@/features/playground/types';
 
 const TASK_POLL_MS = 1500;

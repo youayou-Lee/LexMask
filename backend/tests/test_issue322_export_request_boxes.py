@@ -1,6 +1,7 @@
 """Issue#322：选页直接导出必须包含当前手动拉框（请求框权威）。
 
-判据：同一份 store 框账，请求框只影响其覆盖页；未覆盖页逐页像素不变；
+判据：请求框是整份替换（非按页合并）——带上全页快照时，改过的页变化、
+同框页逐页像素不变；快照缺页则 400 fail-closed 不回落 store；
 full 导出忽略请求框（主产物直取）。
 """
 
@@ -19,7 +20,11 @@ from app.core.config import settings
 from app.models.entity_schemas import BoundingBox
 from app.services.export_service import ExportTaskManager
 from app.services.job_store import JobItemStatus, JobStore, JobType
-from app.services.partial_export_service import config_from_job_config, submit_item_export
+from app.services.partial_export_service import (
+    PartialExportError,
+    config_from_job_config,
+    submit_item_export,
+)
 
 PAGE_W, PAGE_H = 595.0, 842.0
 RECT_A = (80.0, 120.0, 200.0, 180.0)
@@ -120,7 +125,7 @@ def env(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_request_boxes_override_store_only_on_covered_pages(env, tmp_path):
+def test_request_boxes_snapshot_replaces_whole_source_and_requires_all_pages(env, tmp_path):
     store = JobStore(str(tmp_path / "jobs.sqlite3"))
     job_id, item_id = _seed(store, 3)
     src = Path(_make_pdf(tmp_path / "src.pdf", 3))
@@ -159,8 +164,8 @@ def test_request_boxes_override_store_only_on_covered_pages(env, tmp_path):
 
     assert sha_edited[2] != sha_base[2], "请求框所在页 2 必须变化（请求框优先生效）"
     assert sha_edited[3] != sha_base[3], "请求框所在页 3 必须变化（store 无该页框）"
-    # 页 1：请求框没有页 1，回落 store 的旧框 → 与 base 相同
-    assert sha_edited[1] == sha_base[1], "请求框未覆盖的页不得变化"
+    # 页 1：请求框把页 1 也带上了（画布全页快照），且与 store 同框 → 与 base 相同
+    assert sha_edited[1] == sha_base[1], "请求框与 store 同框的页不得变化"
 
     # 快照只读：file_store 一个字节没动
     assert json.dumps(file_info, sort_keys=True, ensure_ascii=False) == before
@@ -194,3 +199,87 @@ def test_request_boxes_ignored_for_full_export(env, tmp_path):
     )
     got = _extract_pdf(task, tmp_path, "full")
     assert hashlib.sha256(got.read_bytes()).hexdigest() == hashlib.sha256(main.read_bytes()).hexdigest()
+
+
+def test_request_boxes_missing_page_fails_closed(env, tmp_path):
+    """请求框是整份替换：缺页不回落 file_store，而是 400 fail-closed（I-2 语义钉）。"""
+    store = JobStore(str(tmp_path / "jobs.sqlite3"))
+    job_id, item_id = _seed(store, 2)
+    src = Path(_make_pdf(tmp_path / "src.pdf", 2))
+    file_info = {
+        "file_id": "file-1",
+        "file_type": "pdf_scanned",
+        "page_count": 2,
+        "original_filename": "测试卷.pdf",
+        "file_path": str(src),
+        "bounding_boxes": {str(p): [_box(p)] for p in range(1, 3)},
+    }
+    manager = ExportTaskManager()
+    config = config_from_job_config({"watermark_delivery": "keep", "image_redaction_method": "fill"})
+    with pytest.raises(PartialExportError) as excinfo:
+        asyncio.run(
+            _run(
+                store, job_id, item_id, file_info, config,
+                kind="partial", pages=[1, 2], manager=manager,
+                boxes=[BoundingBox.model_validate(_box(1))],
+            )
+        )
+    assert excinfo.value.code == "pages_without_boxes"
+    assert excinfo.value.detail["pages"] == [2]
+
+
+def test_export_route_forwards_request_boxes(env, tmp_path, monkeypatch):
+    """路由级接线判据（I-1）：删体字段/删转发，本用例必须红。"""
+    from fastapi.testclient import TestClient
+
+    from app.api import jobs as jobs_api
+    from app.core.auth import require_auth
+    from app.main import app
+
+    store = JobStore(str(tmp_path / "jobs.sqlite3"))
+    job_id, item_id = _seed(store, 2)
+    src = Path(_make_pdf(tmp_path / "src.pdf", 2))
+    file_info = {
+        "file_id": "file-1",
+        "file_type": "pdf_scanned",
+        "page_count": 2,
+        "original_filename": "测试卷.pdf",
+        "file_path": str(src),
+        "bounding_boxes": {str(p): [_box(p)] for p in range(1, 3)},
+    }
+    captured: dict = {}
+
+    async def _fake_submit(**kwargs):
+        captured.update(kwargs)
+
+        class _Task:
+            export_id = "exp-route-test"
+
+            def public(self):
+                return {"export_id": self.export_id}
+
+        return _Task()
+
+    monkeypatch.setattr(jobs_api.partial_export_service, "submit_item_export", _fake_submit)
+    monkeypatch.setattr(jobs_api, "_load_file_info", lambda _fid: file_info)
+    app.dependency_overrides[require_auth] = lambda: "admin"
+    app.dependency_overrides[jobs_api.get_job_store] = lambda: store
+    try:
+        with TestClient(app) as client:
+            resp = client.post(
+                f"/api/v1/jobs/{job_id}/items/{item_id}/export",
+                headers={"Authorization": "Bearer test"},  # CSRF middleware 跳过 Bearer
+                json={
+                    "kind": "partial",
+                    "pages": [1],
+                    "bounding_boxes": [_box(1), _box(2)],
+                },
+            )
+    finally:
+        app.dependency_overrides.pop(require_auth, None)
+        app.dependency_overrides.pop(jobs_api.get_job_store, None)
+
+    assert resp.status_code == 202, resp.text
+    got = captured["bounding_boxes"]
+    assert got is not None and len(got) == 2
+    assert got[0].page == 1 and got[1].page == 2
