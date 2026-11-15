@@ -275,6 +275,7 @@ class OcrHasVisionService:
         ocr_blocks: list[OCRTextBlock],
         width: int,
         height: int,
+        selected_type_ids: set[str] | None = None,
     ) -> list[SensitiveRegion]:
         """Regex 保证层：补齐 HaS Text 漏检的 regex 类型（Issue #43）。
 
@@ -282,12 +283,21 @@ class OcrHasVisionService:
         精确 span、跨行拆分与去重——旧实现按 block 整行打码，案号/车牌这类
         出现在叙述行中的实体会被严重过度遮盖。
         当没有配置任何带 regex_pattern 的启用类型时严格无操作（返回 []）。
+
+        Issue#302：保证层必须与任务级勾选求交——`selected_type_ids` 是本次任务
+        勾选的类型 id 集（canonical 后）；勾选未传（None，内部调用方）保持旧行为
+        跑全部启用正则类型。账号级停用仍是上限（get_regex_types 已过滤）。
         """
         from app.services import entity_type_service as ets
         from app.services.vision.ocr_entity_match import split_regions_across_lines
         from app.services.vision.ocr_pipeline import match_entities_to_ocr
 
         regex_types = ets.get_regex_types(self.current_owner_id)
+        if selected_type_ids is not None:
+            regex_types = [
+                item for item in regex_types
+                if _canonical_image_text_type(item.id) in selected_type_ids
+            ]
         if not regex_types or not ocr_blocks:
             return []
 
@@ -414,6 +424,7 @@ class OcrHasVisionService:
             ignored_types = [type_id for type_id in requested_entity_type_ids if type_id not in entity_type_ids]
             if ignored_types:
                 logger.info("PDF OCR+HaS semantic path ignoring visual/non-semantic types: %s", ignored_types)
+            regex_selected_type_ids: set[str] | None = set(requested_entity_type_ids)
         else:
             # 无勾选时的默认清单与 HaS Text 载荷层单源(has_text_payload),不再维护
             # 本地副本。id 只喂给集合隶属布尔(needs_table_precision 等);实际 NER
@@ -421,6 +432,7 @@ class OcrHasVisionService:
             from app.services.vision.has_text_payload import DEFAULT_HAS_TEXT_TYPE_IDS
             entity_type_ids = _semantic_entity_type_ids(list(DEFAULT_HAS_TEXT_TYPE_IDS))
             semantic_vision_types = vision_types
+            regex_selected_type_ids = None
 
         entities = []
         expanded_blocks = self._expand_table_blocks(ocr_blocks)
@@ -453,9 +465,9 @@ class OcrHasVisionService:
             duration_ms["match"] = 0
 
         # 正则兜底：文本链路最后一步，补齐 HaS Text 漏检的自定义正则类型
-        # （未配置任何 regex 类型时严格无操作）
+        # （未配置任何 regex 类型时严格无操作；Issue#302：与任务勾选求交）
         if ocr_blocks:
-            regions.extend(self._apply_regex_fallback(ocr_blocks, 0, 0))
+            regions.extend(self._apply_regex_fallback(ocr_blocks, 0, 0, selected_type_ids=regex_selected_type_ids))
             regions = self._suppress_dates_inside_number_codes(regions)
 
         duration_ms["draw"] = 0
@@ -502,6 +514,7 @@ class OcrHasVisionService:
 
         # 把用户配置转换为类型 ID 列表
         visual_entity_type_ids: list[str] = []
+        regex_selected_type_ids: set[str] | None = None
         if vision_types:
             requested_entity_type_ids = _canonicalize_image_text_types([t.id for t in vision_types])
             entity_type_ids = _semantic_entity_type_ids(requested_entity_type_ids)
@@ -509,6 +522,7 @@ class OcrHasVisionService:
                 type_id for type_id in requested_entity_type_ids if type_id in VISUAL_ONLY_ENTITY_TYPES
             ]
             semantic_vision_types = _semantic_vision_types(vision_types)
+            regex_selected_type_ids = set(requested_entity_type_ids)
             logger.info("User enabled types: %s", [t.name for t in vision_types])
             ignored_types = [
                 type_id
@@ -610,9 +624,9 @@ class OcrHasVisionService:
             logger.warning("PaddleOCR returned no text blocks")
 
         # 正则兜底：文本链路最后一步，补齐 HaS Text 漏检的自定义正则类型
-        # （未配置任何 regex 类型时严格无操作）
+        # （未配置任何 regex 类型时严格无操作；Issue#302：与任务勾选求交）
         if ocr_blocks:
-            all_regions.extend(self._apply_regex_fallback(ocr_blocks, width, height))
+            all_regions.extend(self._apply_regex_fallback(ocr_blocks, width, height, selected_type_ids=regex_selected_type_ids))
             all_regions = self._suppress_dates_inside_number_codes(all_regions)
 
         logger.info("Final detected %d sensitive regions", len(all_regions))
