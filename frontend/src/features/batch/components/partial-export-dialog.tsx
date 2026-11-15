@@ -223,6 +223,8 @@ export function PartialExportDialog({
                       selected={selected}
                       onChange={setSelected}
                       disabled={!canPick}
+                      // Issue#314：选页导出点页只切换选择——诊断面板/route chip 去审阅看。
+                      detailPolicy="none"
                     />
 
                     {excludedInSpan.length > 0 && (

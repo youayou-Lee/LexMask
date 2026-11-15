@@ -281,3 +281,34 @@ describe('统一导出对话框（Issue#278）', () => {
     expect(meta.textContent).toContain('排除失败页 2 页');
   });
 });
+
+describe('选页导出场景：点页只改选择，不弹技术详情（Issue#314）', () => {
+  it('点成功页只切换选择：DOM 无「第 N 页发生了什么」、无 route chip', async () => {
+    statusBox.current = makeStatus({
+      route_summary: { verdict: 'page_pipeline', fallback_reason_code: 'no_text_layer' },
+    });
+    await renderDialog({ defaultKind: 'partial' });
+
+    const cell = screen.getByTestId('page-cell-1');
+    const before = cell.getAttribute('aria-pressed');
+    fireEvent.click(cell);
+
+    // 选择真的变了（导出点页的主语义），但技术面板整块不出现。
+    expect(cell.getAttribute('aria-pressed')).not.toBe(before);
+    expect(screen.queryByTestId('page-detail-panel')).toBeNull();
+    expect(screen.queryByTestId('page-route-chip')).toBeNull();
+    expect(screen.queryByText(/第 1 页发生了什么/)).toBeNull();
+  });
+
+  it('点失败页不弹技术面板，失败页仍不可选', async () => {
+    await renderDialog({ defaultKind: 'partial' });
+
+    const failed = screen.getByTestId('page-cell-4');
+    expect(failed.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(failed);
+    expect(failed.getAttribute('aria-pressed')).toBe('false');
+    expect(screen.queryByTestId('page-detail-panel')).toBeNull();
+    // 错误状态仍可见（title 带失败原因），只是不展开诊断面板。
+    expect(failed.getAttribute('title')).toContain('失败');
+  });
+});

@@ -137,3 +137,31 @@ describe('单文件任务的逐页结果与选页导出（Issue#257 需求重对
     expect(screen.getByTestId('page-matrix')).toBeTruthy();
   });
 });
+describe('单文件导出场景：点页只改选择（Issue#314）', () => {
+  it('点成功页只切换选择，且不弹「第 N 页发生了什么」/route chip', async () => {
+    statusBox.current = makeStatus({
+      route_summary: { verdict: 'page_pipeline', fallback_reason_code: 'no_text_layer' },
+    });
+    await renderSettled(<PlaygroundPageExport fileId="file-1" />);
+
+    const cell = screen.getByTestId('page-cell-1');
+    const before = cell.getAttribute('aria-pressed');
+    fireEvent.click(cell);
+
+    expect(cell.getAttribute('aria-pressed')).not.toBe(before);
+    expect(screen.queryByTestId('page-detail-panel')).toBeNull();
+    expect(screen.queryByTestId('page-route-chip')).toBeNull();
+    expect(screen.queryByText(/第 1 页发生了什么/)).toBeNull();
+  });
+
+  it('点失败页不弹技术面板；失败页仍不可选', async () => {
+    await renderSettled(<PlaygroundPageExport fileId="file-1" />);
+
+    const failed = screen.getByTestId('page-cell-4');
+    expect(failed.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(failed);
+    expect(failed.getAttribute('aria-pressed')).toBe('false');
+    expect(screen.queryByTestId('page-detail-panel')).toBeNull();
+    expect(failed.getAttribute('title')).toContain('失败');
+  });
+});
