@@ -44,8 +44,9 @@ def _remove_quietly(path: str | None) -> None:
 def _remove_stale_preview(path: str, file_id: str = "") -> None:
     """Issue#332：删上一份子集预览（路径必须在 OUTPUT_DIR 内，best-effort）。
 
-    删失败只留 warning（与 ``redaction_orchestrator._discard_subset_preview_file`` 同口径）——
-    新预览已经可用，静默会让孤儿文件无声堆积。
+    失败口径（与 ``redaction_orchestrator._discard_subset_preview_file`` 相近但不完全一致——
+    那边用 ``os.path.exists`` 预判、不区分「已不存在」）：路径已不存在（并发/重试）静默，
+    其余 ``OSError`` 留 warning——否则孤儿文件无声堆积，运维无从发现。
     """
     try:
         from app.core.file_validation import safe_path_in_dir
@@ -53,9 +54,18 @@ def _remove_stale_preview(path: str, file_id: str = "") -> None:
         if not safe_path_in_dir(path, settings.OUTPUT_DIR):
             logger.warning("Refuse to delete subset preview outside OUTPUT_DIR: %s", path)
             return
-        _remove_quietly(path)
-    except OSError:
-        logger.warning("Failed to delete stale subset preview for %s: %s", file_id, path, exc_info=True)
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning(
+                "Failed to delete stale subset preview for %s: %s", file_id, path, exc_info=True
+            )
+    except Exception:  # 清理是 best-effort，任何异常都不得影响主流程
+        logger.warning(
+            "Unexpected error while deleting stale subset preview %s", path, exc_info=True
+        )
 
 
 def _has_selected_regions(

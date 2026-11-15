@@ -536,3 +536,37 @@ def test_regenerate_keeps_old_preview_when_store_write_fails(env, tmp_path):
         )
 
     assert Path(old_path).is_file(), "写元数据失败时不得删旧预览（先写后删的顺序）"
+
+
+def test_stale_preview_delete_failure_logs_warning(tmp_path, monkeypatch, caplog):
+    """Issue#332 门⑥ 二轮 I-2：删失败必须留 warning（否则孤儿无声堆积）。"""
+    from app.services import subset_preview_service as sps
+
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setattr(settings, "OUTPUT_DIR", str(out))
+    victim = out / "subset-preview-deadbeef.pdf"
+    victim.write_bytes(b"%PDF-1.4")
+
+    def _boom(_path):
+        raise PermissionError("disk readonly")
+
+    monkeypatch.setattr(sps.os, "remove", _boom)
+    with caplog.at_level("WARNING", logger=sps.logger.name):
+        sps._remove_stale_preview(str(victim), "file-1")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("Failed to delete stale subset preview" in m for m in warnings), warnings
+
+
+def test_missing_stale_preview_is_silent(tmp_path, monkeypatch, caplog):
+    """路径已不存在（并发/重试）= 正常，不得 warning。"""
+    from app.services import subset_preview_service as sps
+
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setattr(settings, "OUTPUT_DIR", str(out))
+    with caplog.at_level("WARNING", logger=sps.logger.name):
+        sps._remove_stale_preview(str(out / "subset-preview-gone.pdf"), "file-1")
+
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
