@@ -7,8 +7,9 @@
 
 - **为什么**：#279 给页格加了「第 N 页发生了什么」技术面板与卷头 route chip，#289 又把点击收敛为「点格子 = 展开详情」。三个宿主共用一份页格，导出场景（批量选页导出、单文件选页导出）因此每次点页码都被技术面板打断——成功页的 `route_verdict`/`stage_ms` 对导出没有价值，面板还把选页操作顶走。
 - **改了什么**：`BatchPageMatrix` 新增 `detailPolicy?: 'always' | 'issues' | 'none'`（缺省 `always` 兼容未迁移宿主）。`none`：点击只切换选择（Shift 连选/范围输入/全选/反选/清空不变），不渲染详情面板与 route chip，不可选格 cursor 据实改 `cursor-not-allowed`（不加 `disabled` 属性，读屏仍可读 title 失败原因）；`issues`：成功/pending 页点击只选择，仅 failed 与 manual_verified 页展开详情，重试/撤销人工框/人工补框入口保留可用；`always`：现行为。根节点新增 `data-detail-policy` 便于测试与排障；失败页仍不可进选择集（#199 红线不动）。
+- **门⑥ 评审修复**：`interactive = 展开 || 可选` 统一驱动 cursor/aria-disabled（issues 下 pending 页不再「死点击」却显示 pointer，读屏不再报可按下）；非 Shift 点击不展开的页会收起旧面板，且详情渲染前二次校验页状态仍应展开（面板内重试成功后旧面板不残留）；matrix `disabled` 时整格只读、详情不再展开，使 #289 的 not-allowed 光标判据与真实行为一致。
 - **宿主接线**：`partial-export-dialog.tsx`（批量导出）与 `playground-page-export.tsx`（单文件导出）传 `none`；`batch-row-pages.tsx`（批量审阅）传 `issues`。
-- **测试**：新增 `issue314-page-detail-policy.test.tsx` 11 例（none 只选择/无面板/无 chip、失败页不可选、Shift 连选与范围输入、issues 成功页不展开+失败页展开且重试可达+人工页撤销可达、缺省 always 兼容）；`issue278-export-dialog` +2 例、`playground-page-export` +2 例、`issue257-page-retry` 成功页补「不展开」判据、`issue279-page-detail` 导出挂载点改为 none 语义并保留 always 只读判据、`issue276-page-detail-visual` +1 例（none 下视觉行不泄漏、卷头提示保留）。前端全量 `vitest` 434 passed（batch+playground 域），build/lint/tsc 见报告。
+- **测试**：新增 `issue314-page-detail-policy.test.tsx` 16 例（none 只选择/无面板/无 chip/全选口径、失败页不可选、Shift 连选与范围输入、issues 成功页不展开+失败页展开且重试可达+人工页撤销可达+pending 不可交互+展开残留两条+disabled 只读、缺省 always 兼容）；`issue278-export-dialog` +2 例、`playground-page-export` +2 例、`issue257-page-retry` 成功页补「不展开」判据、`issue279-page-detail` 导出挂载点改为 none 语义并保留 always 只读判据、`issue276-page-detail-visual` +1 例（none 下视觉行不泄漏、卷头提示保留）。前端全量 `vitest` 668 passed（batch+playground 域 439），build/lint/tsc 见报告。
 - **行为变更**：导出弹窗点页码不再弹出技术面板与 route chip（诊断去批量审阅页、记录/页事件日志看）。
 
 ### 修正（Issue#308）实体框质量打磨：标签双份/过度捕获/页脚页码误报/断行拆分框

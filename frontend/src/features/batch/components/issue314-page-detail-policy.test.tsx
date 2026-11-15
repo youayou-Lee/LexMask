@@ -172,6 +172,17 @@ describe('detailPolicy=none：导出场景点页只改选择（Issue#314）', ()
     expect(selectedPages()).toEqual([1, 2, 4]);
     expect(screen.queryByTestId('page-detail-panel')).toBeNull();
   });
+
+  it('全选 = success ∪ manual_verified，失败/pending 不入选（AC4 显式判据）', () => {
+    const onSelectionChange = vi.fn();
+    render(<ControlledMatrix policy="none" onSelectionChange={onSelectionChange} />);
+
+    fireEvent.click(screen.getByTestId('page-matrix-select-all'));
+    expect(onSelectionChange).toHaveBeenCalledTimes(1);
+    expect([...onSelectionChange.mock.calls[0][0]].sort((a, b) => a - b)).toEqual([1, 2, 4]);
+    expect(selectedPages()).toEqual([1, 2, 4]);
+    expect(screen.queryByTestId('page-detail-panel')).toBeNull();
+  });
 });
 
 describe('detailPolicy=issues：批量审阅只有问题页展开（Issue#314）', () => {
@@ -237,6 +248,63 @@ describe('detailPolicy=issues：批量审阅只有问题页展开（Issue#314）
     render(<ControlledMatrix policy="issues" />);
     expect(screen.getByTestId('page-route-chip').textContent).toContain('逐页识别');
   });
+
+  it('pending 页不是「死点击」：无选择、无面板，光标与 aria-disabled 据实', () => {
+    const onSelectionChange = vi.fn();
+    render(<ControlledMatrix policy="issues" onSelectionChange={onSelectionChange} />);
+
+    const pendingCell = screen.getByTestId('page-cell-5');
+    expect(pendingCell.getAttribute('data-state')).toBe('pending');
+    // 既不展开（issues 只展开问题页）也选不中（pending 不可导出）⇒ 点击无反馈。
+    expect(pendingCell.className).toContain('cursor-not-allowed');
+    expect(pendingCell.getAttribute('aria-disabled')).toBe('true');
+
+    fireEvent.click(pendingCell);
+    expect(onSelectionChange).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('page-detail-panel')).toBeNull();
+  });
+
+  it('展开失败页后再点成功页：旧面板收起，点击页与面板不残留', () => {
+    render(<ControlledMatrix policy="issues" />);
+
+    fireEvent.click(screen.getByTestId('page-cell-3'));
+    expect(screen.getByTestId('page-detail-panel').getAttribute('data-page')).toBe('3');
+
+    fireEvent.click(screen.getByTestId('page-cell-1'));
+    expect(selectedPages()).toEqual([1]);
+    expect(screen.queryByTestId('page-detail-panel')).toBeNull();
+  });
+
+  it('失败页在面板内重试成功（page_count 不变）后旧面板消失', () => {
+    const failed = makeStatus();
+    const retried = makeStatus({
+      pages: [
+        { page: 1, state: 'success' },
+        { page: 2, state: 'success' },
+        { page: 3, state: 'success' },
+        {
+          page: 4,
+          state: 'manual_verified',
+          manual: {
+            box_count: 2,
+            verified_at: '2026-11-15T01:00:00+00:00',
+            operator: 'u1',
+            auto_completed: false,
+          },
+        },
+        { page: 5, state: 'pending' },
+      ],
+      failed_pages: [],
+    });
+    const { rerender } = render(<ControlledMatrix policy="issues" status={failed} />);
+
+    fireEvent.click(screen.getByTestId('page-cell-3'));
+    expect(screen.getByTestId('page-detail-panel').getAttribute('data-page')).toBe('3');
+
+    rerender(<ControlledMatrix policy="issues" status={retried} />);
+    expect(screen.queryByTestId('page-detail-panel')).toBeNull();
+    expect(screen.getByTestId('page-cell-3').getAttribute('data-expanded')).toBe('false');
+  });
 });
 
 describe('缺省 always：未迁移宿主兼容现行为（Issue#314）', () => {
@@ -249,5 +317,25 @@ describe('缺省 always：未迁移宿主兼容现行为（Issue#314）', () => 
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId('page-detail-panel').getAttribute('data-page')).toBe('1');
     expect(screen.getByTestId('page-route-chip')).toBeTruthy();
+  });
+
+  it('always + disabled：只读矩阵不展开详情，光标与 aria 不撒谎（Minor-2）', () => {
+    render(
+      <BatchPageMatrix
+        status={makeStatus()}
+        selected={new Set()}
+        onChange={vi.fn()}
+        disabled
+      />,
+    );
+
+    const failedCell = screen.getByTestId('page-cell-3');
+    // disabled = 整格只读：cursor/aria 与真实行为一致（#289 光标判据不变）。
+    expect(failedCell.className).toContain('cursor-not-allowed');
+    expect(failedCell.className).not.toContain('cursor-pointer');
+    expect(failedCell.getAttribute('aria-disabled')).toBe('true');
+
+    fireEvent.click(failedCell);
+    expect(screen.queryByTestId('page-detail-panel')).toBeNull();
   });
 });

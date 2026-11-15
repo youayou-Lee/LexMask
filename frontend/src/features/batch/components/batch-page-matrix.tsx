@@ -206,12 +206,25 @@ export function BatchPageMatrix({
     return true;
   };
 
+  // 点击是否有「展开/选择」中的任一种效果：issues 下 pending 页两者皆无，
+  // 光标与 aria-disabled 必须据实反映，不能谎报可点（门⑥ Important-1/3）。
+  const interactive = (state: PageCellState) => expandsDetail(state) || selectableState(state);
+
   const activate = (page: number, state: PageCellState, shiftKey = false) => {
     // 详情展开与选择是并行的两件事：Shift 连选是批量操作，不顺手换展开页。
     // Issue#289：点击（含失败页）只负责展开/收起详情——「看」与「重试」拆分，
     // 重试由详情面板内的显式按钮（page-detail-retry）触发，格子不再调 onRetryPage。
-    // Issue#314：展开与否先过 detailPolicy（none 永不展开；issues 只展开问题页）。
-    if (!shiftKey && expandsDetail(state)) setExpandedPage((prev) => (prev === page ? null : page));
+    // Issue#314：展开与否先过 detailPolicy；点不展开的页（issues 下的成功/pending）
+    // 要顺手收起旧面板，避免「点击页 ≠ 面板页」的残留（门⑥ Important-2a）。
+    // disabled = 整个矩阵只读（导出已提交/识别中），详情也不再展开——否则光标
+    // not-allowed（#289 判据）与「点得开」互相矛盾（门⑥ Minor-2）。
+    if (!shiftKey && !disabled) {
+      if (expandsDetail(state)) {
+        setExpandedPage((prev) => (prev === page ? null : page));
+      } else {
+        setExpandedPage((prev) => (prev === null ? prev : null));
+      }
+    }
     if (state === 'failed') return; // #199 红线：失败页永不进选择集（与 toggle 的守卫互为冗余）
     toggle(page, state, shiftKey);
   };
@@ -275,8 +288,13 @@ export function BatchPageMatrix({
   })();
 
   // Issue#279：展开页的详情投影；页记录缺 detail（旧数据）时字段回落，不空转崩。
-  // Issue#314：none 策略下详情面板整块不渲染（双保险：activate 也不会写 expandedPage）。
-  const expandedCell = detailPolicy === 'none' || expandedPage === null ? null : status.pages.find((cell) => cell.page === expandedPage) ?? null;
+  // Issue#314：none 策略下整块不渲染；渲染前再校验该页当前状态仍应展开——
+  // 失败页在面板内重试成功后 page_count 不变、重置 effect 不触发，旧面板必须消失
+  // （门⑥ Important-2b）。
+  const expandedCell =
+    detailPolicy === 'none'
+      ? null
+      : status.pages.find((cell) => cell.page === expandedPage && expandsDetail(cell.state)) ?? null;
 
   return (
     <div className="flex flex-col gap-2" data-testid="page-matrix" data-detail-policy={detailPolicy}>
@@ -399,11 +417,11 @@ export function BatchPageMatrix({
                   'relative flex h-8 items-center justify-center rounded-md border text-[11px] font-medium tabular-nums transition-colors',
                   STATE_STYLES[cell.state],
                   isSelected && 'ring-2 ring-primary ring-offset-1 ring-offset-background',
-                  // Issue#289：三种格子都可点（展开详情）——光标只区分「可用/禁用」，
-                  // 不再对失败页谎报不可点；禁用时唯一 cursor 语义，双类不并存。
-                  // Issue#314：none 策略下不可选页点了没有任何效果（不展开也不选择），
-                  // 光标据实改为 not-allowed（不加 disabled 属性——读屏仍需读到 title 里的失败原因）。
-                  disabled || (detailPolicy === 'none' && !selectableState(cell.state))
+                  // Issue#289：格子点击先看详情、再看选择；光标反映「这次点击是否有反馈」。
+                  // Issue#314：issues 下 pending 页既不展开也选不中（门⑥ Important-1），
+                  // none 下不可选页同理；disabled 时整格只读（activate 不展开），
+                  // not-allowed 与真实行为一致（门⑥ Minor-2）。
+                  disabled || !interactive(cell.state)
                     ? 'cursor-not-allowed opacity-60'
                     : 'cursor-pointer',
                 )}
@@ -416,8 +434,10 @@ export function BatchPageMatrix({
                   .replace('{state}', stateLabel(cell.state))
                   .replace('{reason}', reasonLabel)}
                 aria-pressed={isSelected}
-                // Issue#289：点击展开对三种状态都有意义，aria-disabled 只跟随 matrix 禁用位。
-                aria-disabled={disabled}
+                // Issue#314：aria-disabled 与真实可交互性一致——issues 下 pending 页、
+                // none 下不可选页单击无反馈，读屏不能报「可按下」（门⑥ Important-3）。
+                // 仍不加 disabled 属性，保持可聚焦以读出 title 里的失败原因。
+                aria-disabled={disabled || !interactive(cell.state)}
                 data-testid={`page-cell-${cell.page}`}
                 data-state={cell.state}
                 data-selected={isSelected ? 'true' : 'false'}
