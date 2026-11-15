@@ -11,6 +11,11 @@ from app.models.schemas import BoundingBox, FileType, RedactionConfig
 
 logger = logging.getLogger(__name__)
 
+# Issue#312：图片链路的映射值。它不是替换词，而是「此处原文已被像素遮挡」的事实
+# 记录——图片链路只做像素处理、从不调用 RedactionContext.get_replacement，故用常量
+# 而非掩码词（如 `张*`）。右栏「映射记录」据此列出原文，满足审计「哪些值被处理过」。
+IMAGE_REDACTED_LABEL = "已打码"
+
 DEFAULT_IMAGE_REDACTION_METHOD = "mosaic"
 DEFAULT_IMAGE_REDACTION_STRENGTH = 75
 MIN_IMAGE_REDACTION_STRENGTH = 1  # lower clamp bound for redaction strength
@@ -160,6 +165,28 @@ def prepare_image_redaction(
     return selected_boxes, method, strength, fill_color
 
 
+def build_image_entity_map(boxes: list[BoundingBox]) -> dict[str, str]:
+    """Issue#312：把参与遮挡的框文本重建成 ``{原文: 已打码}``。
+
+    - 仅收录 ``selected`` 框（未参与遮挡的框既不入表也不该被当作已处理）；
+    - ``(text or "").strip()`` 为空即跳过——图片框 text 允许为 None/空白（实证
+      1598 框里存在空文本），入表会造出空原文行；
+    - dict 键天然去重：同一原文出现多次只留一行，与「N 行映射 / M 处遮挡」双口径
+      一致（表头原文数=map 行数，处数=redacted_count）。
+
+    纯函数、无 IO，供图片链路与测试共用，避免口径二次实现。
+    """
+    entity_map: dict[str, str] = {}
+    for box in boxes:
+        if not box.selected:
+            continue
+        text = (box.text or "").strip()
+        if not text:
+            continue
+        entity_map[text] = IMAGE_REDACTED_LABEL
+    return entity_map
+
+
 class ImageRedactorMixin:
     """
     图片匿名化方法集合
@@ -175,6 +202,7 @@ class ImageRedactorMixin:
         output_path: str,
         config: RedactionConfig,
         progress_cb: Callable[[int, int], None] | None = None,
+        entity_map_out: dict[str, str] | None = None,
     ) -> int:
         """
         图片/扫描件匿名化：HaS Image 风格块级匿名化
@@ -187,11 +215,17 @@ class ImageRedactorMixin:
             output_path: 输出文件路径
             config: 匿名化配置
             progress_cb: Issue#238 可选逐页进度回调 (current, total)，透传栅格化路径
+            entity_map_out: Issue#312 可选出参——把实际参与遮挡的框文本写进
+                ``{原文: 已打码}``。**与返回值同源同一次 prepare**：map 行数恒
+                ≤ 返回的遮挡处数，且不会重复跑裁剪/告警。
 
         Returns:
             匿名化区域数量
         """
         safe_boxes, method, strength, fill_color = prepare_image_redaction(selected_boxes, config)
+
+        if entity_map_out is not None:
+            entity_map_out.update(build_image_entity_map(safe_boxes))
 
         await self.vision_service.apply_redaction(
             file_path,

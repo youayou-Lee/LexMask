@@ -3,6 +3,13 @@
 
 ## 2026-11-15
 
+### 修正（Issue#312）扫描件打码模式「映射记录」为空：图片链路补写「已打码」映射
+
+- **为什么**：#312 实证——86 页扫描卷 1598 个框（655 个去重非空原文）全部 `selected`、像素遮挡正常，但落库 `entity_map={}`、`entities=[]`，右栏「映射记录」0 行。根因：图片链路（`PDF_SCANNED` / `IMAGE`，含文本型 PDF 的 MASK 栅格化）只做像素遮挡、从不调用 `RedactionContext.get_replacement`，而 `entity_map` 只由替换链路写入。
+- **改了什么**：`image_redactor.py` 新增常量 `IMAGE_REDACTED_LABEL = "已打码"` 与纯函数 `build_image_entity_map(safe_boxes)`（只收 `selected` 框、`(text or "").strip()` 空即跳过、dict 键天然去重）；`_redact_image` 增可选关键字出参 `entity_map_out`，在 `prepare_image_redaction` 返回的 `safe_boxes` 上写入——与 `redacted_count` 同源同一次计算，**返回值仍是 int**（遮挡处数语义不变；映射行数 ≤ 处数）；`redactor.redact()` 图片分支只多传 `entity_map_out=context.entity_map`。落库沿用编排层既有三写点（文件快照 / `redaction_history` / 执行响应），前端零改动（唯一口径仍是 `GET /api/v1/files/{id}` 的 `entity_map`）。
+- **测试**：新增 `tests/test_issue312_mask_entity_map.py` 10 例——扫描件与单图「非空 + 去重 + 值恒哨兵 + count 不变」、空文本（None/空串/半角空白/全角空白）过滤、未选中框排除、文本型 PDF 的 MASK 栅格化、文本链路 map 与 `build_preview_entity_map` 逐键相等（哨兵不泄漏）、编排层快照与 `redaction_history` 同一 map、mask map 不含化名/占位符形态且 restore 只消费请求体 `mapping`、化名路径反向对照；后端全量零回归。
+- **行为边界**：只新增映射行——遮挡像素、`redacted_count`、文本链路产物逐字节不变；化名 CSV 门控源不受污染（值恒「已打码」，非化名/占位符形态）；存量记录不回填（重跑才补）；空文本框仍遮挡、只是不入表。
+
 ### 修正（Issue#308）实体框质量打磨：标签双份/过度捕获/页脚页码误报/断行拆分框
 
 - **为什么**：#301 验收发现的实体框质量四类问题——①同案号值落 LEGAL_CASE_ID+CASE_NUMBER 双框（实体表重复、按类型停用语义混乱）；②NER/正则框吞叙述前缀（`防城区法院作出（2021）…` 整句成框，打码误伤旁文字）+ 碎片框（`事调解书》`）+ 金额框吞整句；③页脚页码 `3` 被误标 LEGAL_CASE_ID（打码涂掉页码）；④OCR 断行把同一案号拆两个残缺框。
