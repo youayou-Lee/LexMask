@@ -3,6 +3,24 @@
 
 ## 2026-11-15
 
+### 增强（Issue#280）失败页人工拉框兜底 `manual_verified`：识别失败 ≠ 整卷交不出去，用户补框后带显式标记交付
+
+- **为什么**：用户口径（2026-11-12）——自动识别失败不该让整卷永远交不出去；急需完整交付结果时允许在失败页上人工拉框补齐，作为带显式标注的临时兜底。#199 红线**不退让**：识别失败且无人工确认的页永不进包；manual 页放行的唯一通道是带 auth 的显式 POST（+审计+事件+账本），该动作物理把页移出 `recognition.failed_pages`——不存在「failed 页未处理却 ready」的状态组合。
+- **改了什么**（后端）：
+  - 新服务 `page_manual_service.py`：准入（file_type 400 / awaiting_review 409 / 越界 400 / `page_not_failed`+`page_already_manual_verified` 409 / **`manual_boxes_conflict` 409 仅对「页不在 ledger 的 source=manual 框」**——审阅期手拉框不许被 verify 整页替换静默吞掉；自动框与 ledger 内重验替换不误伤，r2 F-I4 收窄口径）/ `manual_boxes_required`（框必填、文本可选 Ruling）/ 坐标 400；提交四写：file_store 整页替换（int/str 双键同摘）+ 审阅草稿同替换（交付期草稿整份覆盖 file_store，漏并=丢人工框）+ 账本双表整表替换（failed_pages 移出 / `manual_verified_pages` 写入谁·何时·框数·原失败原因快照）+ 页事件 `manual_verified`；撤销 `revoke_manual_verify` 写回 `original_reason`（重跑再失败页不覆盖新原因码，§4.3 边角 2 分支处置）、ledger 整条删除、file_store/草稿删该页 manual 框、事件 `manual_revoked`；事件与审计 operator 落 `audit_log.user` 顶层（诊断面白名单不声明人名字段，r2 F-I1 唯一口径）。
+  - 投影第四态：`page_status_service` 新 `_PAGE_STATE_MANUAL="manual_verified"`，`failed_pages` 权威优先（重跑再失败页回红叉）、manual 页带 `manual:{box_count,verified_at,operator,auto_completed}`；卷级 `manual_verified_pages` 清单；`recognized_page_numbers` 保持纯自动口径，新增 `exportable_page_numbers`（auto ∪ manual）供部分导出准入与说明页（两处消费同源，r2 F-I3）。
+  - 交付闸：`_is_ready_for_delivery` 谓词表达式**不变**（阻断输入仍是 failed_pages）——语义变更由账本维护承载（docstring 注明机制保证）；`build_export_report`/`iter_report_file_rows` per-file 新增 `manual_verified_pages` + 无失败页时 `error` 用中性英文警示；summary 新增 `manual_verified_selected_pages`；`job_metadata` 轻量列表新增 `manual_verified_pages_count`（`recognition_success_pages` 保持纯自动口径，前端拼「148 自动 + 1 人工 / 149」用两键相加）。
+  - 导出：部分导出 manifest/meta 新增 `manual_verified_pages`+`manual_verified_pages_count`（只列 included 页，快照语义）；说明页逐页披露「第 X 页为人工补框结果，未经自动识别校验」；响应模型 `JobExportReportFile.manual_verified_pages` / summary `manual_verified_selected_pages`（additive 向后兼容）。
+  - 重跑不覆盖人工框（r2 冷审裁定：人工框永远保留并存，无 supersede）：`detect_vision` 写回点收窄守卫——按**对象属性** `b.source=="manual"` 过滤保留旧人工框与自动框拼接（r3 P0：`_boxes_from_page` 返回 BoundingBox 模型，isinstance(dict) 判定恒 False 会静默丢框）；`_write_failed_pages` 只留注释性不变式，finalize 零对账代码；单页重试既有 `_merge_retried_boxes_into_review_draft` manual 保留口径与之统一。
+  - 事件 schema：`manual_verified`(required box_count) / `manual_revoked`(optional box_count) 入 `EVENT_SCHEMAS` 白名单（只增不改）。
+  - 端点：`POST/DELETE /jobs/{id}/items/{id}/pages/{page}/manual-verify`（202；409/400 错误码映射与 retry_item_pages 逐字同款）；请求模型 `ManualVerifyBoxIn`/`ManualVerifyRequest`。
+- **改了什么**（前端）：
+  - `jobsApi.ts`：`PageCellState` 增 `manual_verified`；`ItemPageStatus.manual_verified_pages` + 页格 `manual` 元信息（旧后端无键回落 null/[]，normalizer 兜底）；`manualVerifyPage`/`revokeManualVerify`。
+  - 页格：琥珀色第四态格 + 「人工」角标（aria 同步）；manual 页与 success 同口径可进选择集/连选（#199 红线只挡 failed）；汇总行「成功 N · 人工 M · 失败 K · 未跑 P」；manual 详情（操作者/补框时间/框数 + 自动成功重跑共存提示 + 两段确认撤销）；failed 详情新增「人工补框」主按钮（disabled 跟随 retryable 同一准入）。
+  - 新对话框 `manual-annotate-dialog.tsx`：复用 `ImageBBoxEditor`（pipelines 类型表 + 默认色，零新依赖）；页图走净化副本 page-image（不传 raw=true，Issue#236 裁定）；框空禁用保存、每框文本可选输入；错误码走 `manualError.*`（未知码回落通用文案）。
+  - `batch-row-pages` 接线（对话框 + 撤销刷新同一 page-status 路径）；`use-partial-export-selection` 白名单谓词增 manual（预填/剪枝同口径）；`partial-export-dialog` 与 step5 导出页新增「本卷含 N 页人工补框」提示条（data-testid=manual-pages-hint）；i18n zh/en 成对 33 键。
+- **测试**：后端 5 文件 22 例（投影四态矩阵+failed∧ledger 优先+exportable 口径 / 事件白名单拒写 / 交付闸 A1 放行+A2 阻断 / API 全链 B1 verify→放行→真 ExportTaskManager manifest+说明页披露、B2 撤销→重新 409→二次撤销 409、B3 负向准入矩阵含 conflict 与 r3 例外正判据、B4 框落账 `_boxes_by_page` 同口径、C3 manual 页不可重试、D1 审计顶层 user/detail、C1/C2 整卷重跑包裹注入写回点后失败与自动成功并存）——全量 3272 passed/48 skipped 零回归（基线 3250+22）；变异 M1-M4/M6 五条「删守卫→判据红→还原」全杀死；ruff 清洁。前端 3 文件 12 例（grid/dialog/selection）——vitest 619 passed（基线 607+12）、tsc 双门 rc=0、build 绿，comm -3 零删除。
+- **挂账**：云门④ G1/G2（真卷 verify→交付→manifest 检查；稳定失败页复用 #209/#277 挂账卷或 `flaky_proxy` RST 造障）按 ledger.md 流程挂账不在本支清偿；门⑤浏览器手验 F4 本地栈可跑；§4.3 边角 1（画布删框不回写 ledger 的 box_count 失同步）按设计稿标注「verify 时刻口径」兜住，误导演明显著另立跟踪 issue。
 ### 增强（Issue#276）文本列与视觉列正交：页账双列记账（visual_source/visual_types/visual_region_count/visual_failed_reason）+ 页格「本页视觉列」四态呈现
 
 - **为什么**：印章、签名、手写批注在文本层和 OCR 里都不存在，只能靠视觉列（LA）。此前文本列与视觉列在记账与展示上完全耦合——LA 不可用时 #256 只在**条目级**落一句 `visual_detection_skipped`，逐页打开「这页发生了什么」看不到视觉列跳过；视觉阶段运行中异常只有 `pipeline_status.visual_features.error` 与 warning，页账无机读码；「文本列命中即认为处理完」让绿格被误读成「完整完成」。父 #272（架构 v2）P3：把视觉列做成与 #273 `text_source` 对称的**页账第二列**，分别记账、分别可失败。

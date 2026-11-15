@@ -803,7 +803,21 @@ async def detect_vision(
             info = file_store.get(file_id)
             if "bounding_boxes" not in info:
                 info["bounding_boxes"] = {}
-            info["bounding_boxes"][page] = bounding_boxes
+            # Issue#280（r2 冷审裁定 + r3 P0 修复）：人工拉框兜底的页重跑/重试时
+            # **人工框永远保留**（与自动框并存，#261 C2 同族规则的收窄点；单页重试
+            # page retry(force=True) 与整卷重跑都经此写回点）。
+            # 口径（r3）：_boxes_from_page 返回 list[BoundingBox]（原始 dict 已被
+            # model_validate 归一），必须按**对象属性** b.source 过滤——isinstance(dict)
+            # 检查在模型对象上恒 False，照抄会静默丢人工框。两个列表同为
+            # BoundingBox 模型直接拼接；持久化经 file_store.set 的 to_jsonable 归一。
+            # 自动管线从不产出 source="manual"（entity_schemas 的 manual 仅人工路径
+            # 写入）⇒ 无需从 fresh 里剔除。
+            existing_manual = [
+                b
+                for b in _boxes_from_page(_page_value(info.get("bounding_boxes"), page), page)
+                if getattr(b, "source", None) == "manual"
+            ]
+            info["bounding_boxes"][page] = [*existing_manual, *bounding_boxes]
             if "vision_quality" not in info or not isinstance(info.get("vision_quality"), dict):
                 info["vision_quality"] = {}
             info["vision_quality"][page] = vision_quality
