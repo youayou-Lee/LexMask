@@ -829,6 +829,18 @@ const enBase: Record<string, string> = {
   'pageDetail.fallbackReason.build_budget': 'Build exceeded budget',
   'pageDetail.fallbackReason.verdict_unusable': 'Text layer unusable',
   'pageDetail.fallbackReason.repeated_fragment_coverage': 'Repeated fragment coverage out of range',
+  // Issue#276: visual column states (page detail row). Hit counts are LA-scope
+  // (MinerU seal / dedicated detector channels not included).
+  'pageDetail.visual': 'Visual column',
+  'pageDetail.visualDone': 'Ran ({count} LA hits)',
+  'pageDetail.visualDoneZeroHit': 'Ran (0 LA hits)',
+  'pageDetail.visualSkippedLaUnavailable': 'Skipped (vision service unavailable)',
+  'pageDetail.visualFailedStage': 'Failed (visual stage error; text column unaffected)',
+  'pageDetail.visualAbsent': 'No visual types selected',
+  // Issue#276: volume-level visual gap hint (skipped/failed pages are green but
+  // not "fully complete").
+  'batchWizard.pages.visualSkipHint':
+    'Visual column gaps: pages {pages} skipped (LA unavailable) or failed; text results unaffected',
   'batchWizard.partialExport.title': 'Partial export (selected pages only)',
   'batchWizard.partialExport.loading': 'Loading per-page status…',
   'batchWizard.partialExport.unsupportedType':
@@ -1277,8 +1289,6 @@ const enOverrides: Record<string, string> = {
   'playground.presetAll': 'All types',
   'playground.advancedTypes': 'Advanced · fine-tune types',
   'playground.advancedReview': 'Advanced · per-type / per-box selection',
-  'playground.group.regex': 'Fixed format',
-  'playground.group.semantic': 'Semantic recognition',
   'playground.popout': 'Pop out',
   'playground.reRecognize': 'Run recognition again',
   'playground.reconfigTypes': 'Adjust recognition items',
@@ -1963,8 +1973,6 @@ Object.assign(enOverrides, {
     'OCR extracts text and coordinates; HaS handles semantic recognition. The image pipeline does not use fallback expressions.',
   'settings.pipelineDisplayName.image': 'Visual elements',
   'settings.pipelineDescription.image': 'GLM-4.6V detects fixed visual elements.',
-  'playground.group.regex': 'Custom fallback',
-  'playground.group.semantic': 'HaS text recognition',
   'settings.redaction.regexEmptyInline':
     'No default setup is needed. Custom fallback items will appear here as soon as you add them.',
   'settings.redaction.pipelineEmptyInline':
