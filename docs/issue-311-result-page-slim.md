@@ -138,7 +138,7 @@
 
 1. `playground-result.test.tsx`
    - 默认渲染：无深色横幅文案/`playground-quality-report`/`processing-details-*`；动作行与三个保留 testid 存在；水印 badge 可见。
-   - 告警点：`failedPages` 非空 → 出现；`report.total > redacted` → 出现；二者皆无 → 不出现。
+   - 告警点：`failedPages` 非空或 `task.failed` → 出现；仅有未处理数（含 `selected=false`）→ 不出现。
    - 点击详情 → `playground-quality-report` 与 `processing-details-title` / rows / total 出现；指标数值与 report 一致。
    - ESC 关闭弹窗；关闭后诊断节点消失。
    - 容器类名断言 `flex-1`、`min-h-0`；导出块默认收起（展开内容不在 DOM）。
