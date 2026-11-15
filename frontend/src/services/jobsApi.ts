@@ -714,11 +714,40 @@ export function commitAllReviews(jobId: string): Promise<CommitAllReviewsResult>
 // 投影成每页一条 {page,state,reason}，失败清单（failed_pages）是 reason 的权威来源。
 // 缺页记录 = 还没跑到（pending），不区分「识别中」与「未开始」——那是文件名行的事。
 
-export type PageCellState = 'success' | 'failed' | 'pending';
+// Issue#280：第四态 manual_verified —— 自动识别失败、人工拉框补齐并由人确认。
+// 离开本态的唯一通道是用户显式撤销（revokeManualVerify）；整卷重跑自动成功也
+// 不系统翻绿（人工条目与人工框保留并存，琥珀徽标由用户在审阅画布裁决）。
+// Issue#278 统一导出链消费同一四态：选择谓词 success ∪ manual_verified（exportable）。
+export type PageCellState = 'success' | 'failed' | 'manual_verified' | 'pending';
 export type ItemRecognitionState = 'not_started' | 'running' | 'done' | 'failed' | 'cancelled';
 
 /** 该页走的识别路由（Issue#279）：docline=文本层链接管，page_pipeline=逐页识别。 */
 export type PageRouteVerdict = 'docline' | 'page_pipeline';
+
+/**
+ * 页视觉列四态（Issue#276）：done=LA 实跑（含零命中）；skipped=LA 不可用被剥离；
+ * failed=LA 实跑但阶段异常；absent=未勾选视觉项（显式缺席）。
+ * 「跑过且没找到」（zero_hit）≠「根本没跑」（skipped），两者不同字。
+ */
+export type PageVisualState = 'done' | 'skipped' | 'failed' | 'absent';
+
+/** 页记录的视觉列投影（旧后端无此键 → null）。 */
+export type ItemPageVisual = {
+  state: PageVisualState;
+  source: 'la' | 'none';
+  failed_reason?: 'la_unavailable' | 'visual_stage_error' | null;
+  /** LA 口径命中数（不含 MinerU seal / 专用检测器通道）。 */
+  region_count?: number;
+  zero_hit?: boolean;
+};
+
+/** 卷级视觉列汇总（Issue#276；旧后端无此键 → null）。 */
+export type ItemVisualSummary = {
+  done: number;
+  skipped: number;
+  failed: number;
+  absent: number;
+};
 
 /**
  * 「这页发生了什么」（Issue#279 后端投影扩展）：路由 / 各阶段耗时 / 失败类型 /
@@ -732,12 +761,24 @@ export type ItemPageDetail = {
   error_type?: string | null;
   attempts?: number | null;
   duration_ms?: number | null;
+  /** Issue#276：视觉列四态投影（旧后端无此键 → null）。 */
+  visual?: ItemPageVisual | null;
 };
 
 /** 卷级路由摘要：docline 接管 / 逐页 + 首个 fallback 码；毫无路由证据时为 null。 */
 export type ItemPageRouteSummary = {
   verdict: PageRouteVerdict;
   fallback_reason_code?: string | null;
+};
+
+/** Issue#280：manual 页的 verify 时刻快照（审计口径；画布删框不回写）。 */
+export type ItemPageManualMeta = {
+  box_count: number;
+  verified_at: string;
+  operator?: string | null;
+  /** 整卷重跑自动成功后人工框与自动框并存（琥珀徽标的共存提示输入）。 */
+  auto_completed: boolean;
+  original_reason?: string | null;
 };
 
 export type ItemPageCell = {
@@ -748,6 +789,8 @@ export type ItemPageCell = {
   cache_hit?: boolean;
   /** Issue#279：页详情（旧后端无此键 → null）。 */
   detail?: ItemPageDetail | null;
+  /** Issue#280：manual 页元信息（其余状态缺省）。 */
+  manual?: ItemPageManualMeta | null;
 };
 
 export type ItemPageStatus = {
@@ -763,8 +806,17 @@ export type ItemPageStatus = {
   snapshot_at: string;
   pages: ItemPageCell[];
   failed_pages: number[];
+  /** Issue#280：卷级人工补框页清单（升序，#278 manifest 契约同形；旧后端无键 → []）。 */
+  manual_verified_pages?: Array<{
+    page: number;
+    box_count: number;
+    verified_at: string;
+    operator: string;
+  }>;
   /** Issue#279：卷头路由摘要（旧后端无此键 → null）。 */
   route_summary?: ItemPageRouteSummary | null;
+  /** Issue#276：卷级视觉列汇总（旧后端无此键 → null）。 */
+  visual_summary?: ItemVisualSummary | null;
 };
 
 export type BatchExportVolume = {
@@ -773,8 +825,18 @@ export type BatchExportVolume = {
   file_count?: number;
 };
 
-export type PartialExportTask = {
+/** Issue#278 统一导出任务记录（legacy 值 "partial_redaction" 原样透传，读侧双形状兼容）。 */
+export type ItemExportFileEntry = {
+  name: string;
+  bytes: number;
+  sha256: string;
+};
+
+export type ExcludedFailedPage = { page: number; reason_code: string };
+
+export type ItemExportTask = {
   export_id: string;
+  /** "full" | "partial"；legacy 记录是 "partial_redaction"（前端按 legacy 口径渲染）。 */
   kind: string;
   title: string;
   status: string;
@@ -787,13 +849,22 @@ export type PartialExportTask = {
   finished_at?: string | null;
   job_id?: string;
   item_id?: string;
+  /** 包内页清单（r2 F1：full 结构级切页后语义为真）。 */
   pages?: number[];
+  /** 包内页数（#278 改口径；legacy 记录里是原卷总页数，渲染侧按 kind 分流）。 */
   page_count?: number;
-  excluded_failed_pages?: number[];
+  /** 对象式（新记录）；legacy int[] 由 normalizer 就地升格（r2 F7）。 */
+  excluded_failed_pages?: ExcludedFailedPage[];
   snapshot_at?: string;
+  manual_verified_pages_count?: number;
+  files?: ItemExportFileEntry[];
+  include_summary?: boolean;
 };
 
-const PAGE_CELL_STATES: ReadonlySet<string> = new Set(['success', 'failed', 'pending']);
+const PAGE_CELL_STATES: ReadonlySet<string> = new Set(['success', 'failed', 'manual_verified', 'pending']);
+
+/** Issue#276：视觉列四态白名单——未知 state 视同无该键（fail-null，绝不猜）。 */
+const PAGE_VISUAL_STATES: ReadonlySet<string> = new Set(['done', 'skipped', 'failed', 'absent']);
 
 const PAGE_ROUTE_VERDICTS: ReadonlySet<string> = new Set(['docline', 'page_pipeline']);
 
@@ -801,11 +872,49 @@ function asRouteVerdict(value: unknown): PageRouteVerdict {
   return PAGE_ROUTE_VERDICTS.has(asString(value)) ? (asString(value) as PageRouteVerdict) : 'page_pipeline';
 }
 
+/** Issue#276：visual 键投影（state 不在白名单内 / 形状异常一律 null）。 */
+function normalizePageVisual(raw: unknown): ItemPageVisual | null {
+  if (raw == null || !isRecord(raw)) return null;
+  const visual = raw as Record<string, unknown>;
+  const state = asString(visual.state);
+  if (!PAGE_VISUAL_STATES.has(state)) return null;
+  const out: ItemPageVisual = {
+    state: state as PageVisualState,
+    source: visual.source === 'la' ? 'la' : 'none',
+  };
+  if (visual.failed_reason != null) {
+    out.failed_reason = asNullableString(visual.failed_reason) as ItemPageVisual['failed_reason'];
+  }
+  if (visual.region_count != null) {
+    out.region_count = asNumber(visual.region_count, 0);
+  }
+  if (visual.state === 'done') {
+    out.zero_hit = asNumber(visual.region_count, 0) === 0;
+  }
+  return out;
+}
+
+/** Issue#276：卷级视觉列汇总（缺键/形状异常 → null）。 */
+function normalizeVisualSummary(raw: unknown): ItemVisualSummary | null {
+  if (raw == null || !isRecord(raw)) return null;
+  const summary = raw as Record<string, unknown>;
+  return {
+    done: asNumber(summary.done, 0),
+    skipped: asNumber(summary.skipped, 0),
+    failed: asNumber(summary.failed, 0),
+    absent: asNumber(summary.absent, 0),
+  };
+}
+
 /** Issue#279：页详情投影（后端缺键/形状异常一律回落 null，不给页格塞半截对象）。 */
 function normalizePageDetail(raw: unknown): ItemPageDetail | null {
   if (raw == null || !isRecord(raw)) return null;
   const detail = raw as Record<string, unknown>;
   const stageMs = asNumberRecord(detail.stage_ms);
+  // Issue#276：本函数是 detail 进组件前的唯一闸口——只加类型不透传会让
+  // detail.visual 永远 undefined（r2 F7）。无视觉证据（旧数据/白名单外 state）
+  // 时省键，与后端「无字段省键」惯例对齐。
+  const visual = normalizePageVisual(detail.visual);
   return {
     route_verdict: asRouteVerdict(detail.route_verdict),
     fallback_reason_code: asNullableString(detail.fallback_reason_code),
@@ -814,6 +923,7 @@ function normalizePageDetail(raw: unknown): ItemPageDetail | null {
     error_type: asNullableString(detail.error_type),
     attempts: detail.attempts == null ? null : asNumber(detail.attempts, 1),
     duration_ms: nullableNumber(detail.duration_ms),
+    ...(visual ? { visual } : {}),
   };
 }
 
@@ -827,6 +937,21 @@ function normalizeRouteSummary(raw: unknown): ItemPageRouteSummary | null {
   };
 }
 
+/** Issue#280：manual 页元信息投影（后端缺键/形状异常一律回落 null）。 */
+function normalizeManualMeta(raw: unknown): ItemPageManualMeta | null {
+  if (raw == null || !isRecord(raw)) return null;
+  const meta = raw as Record<string, unknown>;
+  const verifiedAt = asNullableString(meta.verified_at);
+  const operator = asNullableString(meta.operator);
+  return {
+    box_count: asNumber(meta.box_count, 0),
+    verified_at: verifiedAt ?? '',
+    operator,
+    auto_completed: meta.auto_completed === true,
+    original_reason: asNullableString(meta.original_reason),
+  };
+}
+
 function normalizePageCell(raw: unknown, fallbackPage: number): ItemPageCell {
   const cell = asRecord(raw);
   const state = asString(cell.state, 'pending');
@@ -837,6 +962,7 @@ function normalizePageCell(raw: unknown, fallbackPage: number): ItemPageCell {
     duration_ms: cell.duration_ms == null ? null : asNumber(cell.duration_ms),
     cache_hit: cell.cache_hit === true,
     detail: normalizePageDetail(cell.detail),
+    manual: normalizeManualMeta(cell.manual),
   };
 }
 
@@ -861,11 +987,24 @@ export function normalizeItemPageStatus(raw: unknown): ItemPageStatus {
     failed_pages: Array.isArray(payload.failed_pages)
       ? payload.failed_pages.map((value) => asNumber(value)).filter((value) => value > 0)
       : [],
+    // Issue#280：卷级人工补框页清单（旧后端无键 → []）。
+    manual_verified_pages: Array.isArray(payload.manual_verified_pages)
+      ? payload.manual_verified_pages.map((entry) => {
+          const record = asRecord(entry);
+          return {
+            page: asNumber(record.page, 0),
+            box_count: asNumber(record.box_count, 0),
+            verified_at: asString(record.verified_at),
+            operator: asString(record.operator),
+          };
+        })
+      : [],
     route_summary: normalizeRouteSummary(payload.route_summary),
+    visual_summary: normalizeVisualSummary(payload.visual_summary),
   };
 }
 
-export function normalizePartialExportTask(raw: unknown): PartialExportTask {
+export function normalizeItemExportTask(raw: unknown): ItemExportTask {
   const task = asRecord(raw);
   const progress = asRecord(task.progress);
   const volumes = Array.isArray(task.volumes)
@@ -881,8 +1020,28 @@ export function normalizePartialExportTask(raw: unknown): PartialExportTask {
   const pages = Array.isArray(task.pages)
     ? task.pages.map((value) => asNumber(value)).filter((value) => value > 0)
     : [];
-  const excluded = Array.isArray(task.excluded_failed_pages)
-    ? task.excluded_failed_pages.map((value) => asNumber(value)).filter((value) => value > 0)
+  // r2 F7 双形状兼容：legacy 记录是 number[] → 就地升格为对象式（reason_code 空）；
+  // 新记录已是对象式，原样透传。
+  const excluded: ExcludedFailedPage[] = Array.isArray(task.excluded_failed_pages)
+    ? task.excluded_failed_pages
+        .map((value) => {
+          if (isRecord(value)) {
+            return { page: asNumber(value.page), reason_code: asString(value.reason_code) };
+          }
+          const page = asNumber(value);
+          return page > 0 ? { page, reason_code: '' } : null;
+        })
+        .filter((value): value is ExcludedFailedPage => value !== null && value.page > 0)
+    : [];
+  const files: ItemExportFileEntry[] = Array.isArray(task.files)
+    ? task.files.map((entry) => {
+        const record = asRecord(entry);
+        return {
+          name: asString(record.name),
+          bytes: asNumber(record.bytes),
+          sha256: asString(record.sha256),
+        };
+      })
     : [];
   return {
     export_id: asString(task.export_id),
@@ -906,6 +1065,9 @@ export function normalizePartialExportTask(raw: unknown): PartialExportTask {
     page_count: asNumber(task.page_count),
     excluded_failed_pages: excluded,
     snapshot_at: asString(task.snapshot_at),
+    manual_verified_pages_count: asNumber(task.manual_verified_pages_count, 0),
+    files,
+    include_summary: task.include_summary === true,
   };
 }
 
@@ -916,13 +1078,6 @@ export function getItemPageStatus(jobId: string, itemId: string): Promise<ItemPa
   ).then(normalizeItemPageStatus);
 }
 
-/**
- * 部分导出：只导出选中页（原卷页号）+ 一张说明页。
- *
- * 2026-11-11 需求重对齐：不再有「我已了解失败页」勾选——区间内的失败页由后端
- * **自动排除**并在产物说明页逐条列出，本函数不再传 `acknowledge_failed_excluded`
- * （后端仍接受该字段以兼容历史客户端，但不影响判定）。
- */
 export interface ItemRef {
   job_id: string;
   item_id: string;
@@ -946,30 +1101,41 @@ export function getItemRefByFile(fileId: string): Promise<ItemRef> {
   });
 }
 
-export function startPartialExport(
-  jobId: string,
-  itemId: string,
-  pages: number[],
-): Promise<PartialExportTask> {
-  return post(
-    `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/partial-export`,
-    { pages },
-  ).then(normalizePartialExportTask);
+/** Issue#278 统一导出：full（缺省=全部可导出页，不传 pages）| partial（pages 必填）。 */
+export interface ItemExportRequest {
+  kind: 'full' | 'partial';
+  pages?: number[];
+  includeSummary?: boolean;
 }
 
-export function getPartialExport(exportId: string): Promise<PartialExportTask> {
-  return get(`/files/batch/export/${encodeURIComponent(exportId)}`).then(normalizePartialExportTask);
+export function startItemExport(
+  jobId: string,
+  itemId: string,
+  request: ItemExportRequest,
+): Promise<ItemExportTask> {
+  return post(
+    `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/export`,
+    {
+      kind: request.kind,
+      ...(request.kind === 'partial' ? { pages: request.pages ?? [] } : {}),
+      include_summary: request.includeSummary === true,
+    },
+  ).then(normalizeItemExportTask);
+}
+
+export function getItemExport(exportId: string): Promise<ItemExportTask> {
+  return get(`/files/batch/export/${encodeURIComponent(exportId)}`).then(normalizeItemExportTask);
 }
 
 export async function listItemExports(
   jobId: string,
   itemId: string,
-): Promise<{ exports: PartialExportTask[]; unavailable: string[] }> {
+): Promise<{ exports: ItemExportTask[]; unavailable: string[] }> {
   const payload = asRecord(
     await get(`/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/exports`),
   );
   const exports = Array.isArray(payload.exports)
-    ? payload.exports.map(normalizePartialExportTask)
+    ? payload.exports.map(normalizeItemExportTask)
     : [];
   return { exports, unavailable: asStringArray(payload.unavailable) };
 }
@@ -995,4 +1161,80 @@ export function retryItemPages(
         : [],
     };
   });
+}
+
+// ─── Issue#280：失败页人工拉框兜底（manual_verified） ─────────────────────────
+
+/** 人工补框请求的单框（归一化 0..1，与后端 BoundingBox 同坐标系；文本可选）。 */
+export interface ManualBoxPayload {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  type: string;
+  text?: string | null;
+}
+
+/** POST manual-verify 的 202 受理结果。 */
+export interface ManualVerifyResult {
+  page: number;
+  state: string;
+  box_count: number;
+  verified_at: string;
+  operator: string;
+  item_status: string;
+}
+
+/** DELETE manual-verify 的 202 受理结果。 */
+export interface ManualRevokeResult {
+  page: number;
+  state: string;
+  revoked_at: string;
+  operator: string;
+}
+
+function normalizeManualVerifyResult(payload: unknown): ManualVerifyResult {
+  const record = asRecord(payload);
+  return {
+    page: asNumber(record.page, 0),
+    state: asString(record.state, 'manual_verified'),
+    box_count: asNumber(record.box_count, 0),
+    verified_at: asString(record.verified_at),
+    operator: asString(record.operator),
+    item_status: asString(record.item_status),
+  };
+}
+
+function normalizeManualRevokeResult(payload: unknown): ManualRevokeResult {
+  const record = asRecord(payload);
+  return {
+    page: asNumber(record.page, 0),
+    state: asString(record.state, 'failed'),
+    revoked_at: asString(record.revoked_at),
+    operator: asString(record.operator),
+  };
+}
+
+/** 失败页人工补框（框必填、文本可选；服务端强制 source=manual）。 */
+export function manualVerifyPage(
+  jobId: string,
+  itemId: string,
+  page: number,
+  boxes: ManualBoxPayload[],
+): Promise<ManualVerifyResult> {
+  return post(
+    `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/pages/${page}/manual-verify`,
+    { boxes },
+  ).then(normalizeManualVerifyResult);
+}
+
+/** 撤销人工补框：页回 failed、重新阻断交付（#199 红线由账本维护承载）。 */
+export function revokeManualVerify(
+  jobId: string,
+  itemId: string,
+  page: number,
+): Promise<ManualRevokeResult> {
+  return del(
+    `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/pages/${page}/manual-verify`,
+  ).then(normalizeManualRevokeResult);
 }

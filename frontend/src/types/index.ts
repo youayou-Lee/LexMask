@@ -131,6 +131,13 @@ export interface BatchExportReportFile {
   visual_review_hint: boolean;
   visual_evidence?: BatchExportReportVisualEvidence;
   visual_review: BatchExportReportVisualReview;
+  /** Issue#280：人工补框页（本地报告缺省为空数组；条目只代表「曾补框且未撤销」）。 */
+  manual_verified_pages?: Array<{
+    page: number;
+    box_count: number;
+    verified_at: string;
+    operator: string;
+  }>;
 }
 
 export type BatchExportReportSummaryDeliveryStatus =
@@ -163,6 +170,8 @@ export interface BatchExportReportSummary {
   visual_review_issue_labels: string[];
   visual_review_by_issue: Record<string, number>;
   visual_evidence?: BatchExportReportVisualEvidence;
+  /** Issue#280：选中件的人工补框页总数（后端 summary.manual_verified_selected_pages）。 */
+  manual_verified_selected_pages?: number;
 }
 
 export interface JobExportReportZipSkipped {

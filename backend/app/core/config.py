@@ -575,6 +575,15 @@ class Settings(BaseSettings):
     # 运维阀（组失败/负健康仍记 metrics，页照常 completed）。
     HAS_NER_UNAVAILABLE_PAGE_FAIL: bool = True
 
+    # 视觉列失败是否把页判为失败（Issue#276 §3.4，默认关=本设计口径）。
+    # False（默认）：视觉列与文本列正交记账——LA 阶段异常只记
+    # `visual_column.failed_reason="visual_stage_error"`（页账机读码 + 投影琥珀
+    # chip），页照常 completed、不进 failed_pages（`is_page_fatal_stage_error`
+    # 既有语义）。True：用户显式勾选了视觉类型（勾选侧非空）且 LA 阶段异常时，
+    # 异常包成 `VisualStageError` 专类升级页级失败（参照 RoutingEvidenceTimeout
+    # 先例）；理由码不变。云门④可在隔离栈开 True 观察，不开不阻塞。
+    VISUAL_EXPLICIT_TYPE_PAGE_FAIL: bool = False
+
     # HaS 提示词近似重复折叠（Issue#209 提示词侧止损）：页 133 的 HaS 提示词 323 行
     # 里 293 行（≈90%）是"只差数字"的近似重复行（水印碎片：映峰1450120 /
     # 映峰1450120141 / 术映峰1450120141…）——精确去重杀不掉（每段编号独立），
@@ -755,6 +764,9 @@ class Settings(BaseSettings):
     ROUTING_L2_RENDER_DPI: int = 100                # L2 渲染 DPI
     ROUTING_VERIFY_OCR_TIMEOUT_SEC: int = 90        # 证据 OCR 阶段死线（超时⇒verify_incomplete）
     ROUTING_VERIFY_OCR_EVIDENCE_ENABLED: bool = True  # 证据 OCR 逃生口（False⇒verify 降级直信）
+    # --- Issue#275 P2：整卷链默认关（B）+ 页级邻居上下文 ---
+    RECOGNITION_NEIGHBOR_CONTEXT_CHARS: int = 200   # 页级 NER 邻居上下文字符数（前页尾+后页首）；0=关闭。只辅助召回不参与判定
+    RECOGNITION_ACCELERATOR_ENABLED: str = "off"    # off|auto|on；整卷链压力阀（Issue#275 A），本期无消费者、仅留缝（accelerator.stub 恒 False）
 
     @field_validator("ROUTING_FULLPAGE_IMAGE_COVERAGE")
     @classmethod
@@ -984,6 +996,22 @@ class Settings(BaseSettings):
     def _validate_routing_mode(cls, v: str) -> str:
         if v not in ("page", "file"):
             raise ValueError("RECOGNITION_ROUTING_MODE must be 'page' or 'file'")
+        return v
+
+    @field_validator("RECOGNITION_NEIGHBOR_CONTEXT_CHARS")
+    @classmethod
+    def _validate_neighbor_context_chars(cls, v: int) -> int:
+        # 上限 2000 防把邻居配成半页文本挤爆组预算（与 _NER_CONTEXT_RESERVE_TOKENS
+        # 的量级错配防护）；0 = 关闭（等价 #273 现状、签名键消失）。
+        if not 0 <= v <= 2000:
+            raise ValueError("RECOGNITION_NEIGHBOR_CONTEXT_CHARS must be in [0, 2000]")
+        return v
+
+    @field_validator("RECOGNITION_ACCELERATOR_ENABLED")
+    @classmethod
+    def _validate_accelerator_enabled(cls, v: str) -> str:
+        if v not in ("off", "auto", "on"):
+            raise ValueError("RECOGNITION_ACCELERATOR_ENABLED must be 'off'|'auto'|'on'")
         return v
 
     @field_validator("TEXT_LAYER_REPEATED_TOKEN_MIN_CHARS")

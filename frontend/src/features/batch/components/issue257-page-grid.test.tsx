@@ -34,12 +34,12 @@ vi.mock('@/hooks/use-service-health', () => ({
 
 vi.mock('@/services/jobsApi', () => ({
   getItemPageStatus: vi.fn(),
-  startPartialExport: vi.fn(),
-  getPartialExport: vi.fn(),
+  startItemExport: vi.fn(),
+  getItemExport: vi.fn(),
   listItemExports: vi.fn(),
 }));
 
-import { listItemExports, startPartialExport } from '@/services/jobsApi';
+import { listItemExports, startItemExport } from '@/services/jobsApi';
 import { FileType } from '@/types';
 import type { BatchRow } from '../types';
 import { BatchPageMatrix } from './batch-page-matrix';
@@ -47,7 +47,7 @@ import { BatchStep3Recognize } from './batch-step3-recognize';
 import { BatchRowPages } from './batch-row-pages';
 import { PartialExportDialog } from './partial-export-dialog';
 
-const mockedStart = vi.mocked(startPartialExport);
+const mockedStart = vi.mocked(startItemExport);
 const mockedList = vi.mocked(listItemExports);
 
 function makeStatus(overrides: Partial<ItemPageStatus> = {}): ItemPageStatus {
@@ -177,7 +177,7 @@ describe('部分导出对话框（Issue#257）', () => {
 
     fireEvent.click(submit);
     await waitFor(() => expect(mockedStart).toHaveBeenCalledTimes(1));
-    expect(mockedStart).toHaveBeenCalledWith('job-1', 'item-1', [1, 2, 3, 5]);
+    expect(mockedStart).toHaveBeenCalledWith('job-1', 'item-1', { kind: 'partial', pages: [1, 2, 3, 5], includeSummary: false });
   });
 
   it('导出记录渲染下载链接（跨重启记录来自后端列表）', async () => {
@@ -195,7 +195,7 @@ describe('部分导出对话框（Issue#257）', () => {
           file_count: 1,
           pages: [1, 2, 3],
           page_count: 12,
-          excluded_failed_pages: [4],
+          excluded_failed_pages: [{ page: 4, reason_code: 'page_timeout' }],
           created_at: '2026-11-11T00:00:00+00:00',
           finished_at: '2026-11-11T00:00:30+00:00',
         },

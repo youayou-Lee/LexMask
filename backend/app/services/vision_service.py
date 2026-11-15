@@ -15,6 +15,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import numpy as np
@@ -75,6 +76,21 @@ class RoutingEvidenceTimeout(TimeoutError):
     """
 
 
+class VisualStageError(RuntimeError):
+    """Issue#276 §3.4：视觉列阶段异常的升级专类（``VISUAL_EXPLICIT_TYPE_PAGE_FAIL``
+    开关开启且用户显式勾选了视觉类型时才包装）。
+
+    默认 False ⇒ 本类在生产路径上永不出现，视觉列异常维持「stage failed +
+    页 completed」（``is_page_fatal_stage_error`` docstring 第 3 点，两列正交的
+    语义钉）。专类参照 ``RoutingEvidenceTimeout`` 先例：``is_page_fatal_stage_error``
+    末尾加一条 ``isinstance``。注意：本类的**唯一**产生形态即 gate-ON，而 gate-ON
+    ⇒ 页整体 fatal（`page_fatal_error` raise，#199 语义）⇒ 失败页页账 visual
+    字段按失败页口径恒零键（r2 F1，不回读）——不存在「页账
+    ``visual_failed_reason`` 携带本异常信息」的形态，页级可见的机读面只有
+    ``failed_pages`` 的异常类名与 #279 ``page_failed`` 事件的 ``error_type``。
+    """
+
+
 def is_page_fatal_stage_error(result) -> bool:
     """阶段异常是否应**升级为页级失败**（门⑥ F8 加固，2026-10-29）。
 
@@ -112,6 +128,11 @@ def is_page_fatal_stage_error(result) -> bool:
         # Issue#263：与 #209 同模式——kill switch 关闭时页级同样放行（双保险，
         # 正常路径下 False 档根本不会抛出）。
         return bool(getattr(settings, "HAS_NER_UNAVAILABLE_PAGE_FAIL", True))
+    # Issue#276 §3.4：视觉列显式类型升级（VISUAL_EXPLICIT_TYPE_PAGE_FAIL，默认关）。
+    # 专类只在开关开启且勾选侧非空时由 visual_features 任务包装产生——到达本函数
+    # 即代表用户显式要求过该类型。
+    if isinstance(result, VisualStageError):
+        return bool(getattr(settings, "VISUAL_EXPLICIT_TYPE_PAGE_FAIL", False))
     return isinstance(result, RoutingEvidenceTimeout)
 
 from PIL import Image, ImageOps
@@ -125,7 +146,7 @@ from app.core.visual_feature_categories import (
     normalize_visual_slug,
 )
 from app.models.schemas import BoundingBox, FileType
-from app.services import watermark_overlay
+from app.services import page_neighbor_context, watermark_overlay
 from app.services.file_parser import FileParser
 from app.services.ocr_has_vision_service import get_ocr_has_vision_service
 from app.services.page_routing.arbiter import arbitrate
@@ -339,7 +360,45 @@ class VisionService:
         self.last_seal_source_status: str = ""
         self.last_seal_source_effective: str = ""
         self._seal_source_logged: set[tuple[str, str]] = set()
+        # Issue#275：邻居上下文登记用文件路径——``_neighbor_context`` 激活窗口内
+        # 有值（recognition_path），窗口外恒 None（IMAGE 路径/窗口外不登记）。
+        self._neighbor_registry_path: str | None = None
 
+
+    # ------------------------------------------------------------------
+    # Issue#275 B2：页级邻居上下文——激活窗口与登记点
+    # ------------------------------------------------------------------
+
+    @asynccontextmanager
+    async def _neighbor_context(self, recognition_path: str, page: int, file_type: "FileType"):
+        """页级 NER 邻居上下文的激活窗口（只包识别执行段）。
+
+        放这一层（而非 ``run_has_text_analysis``）因为只有这里同时知道
+        ``recognition_path + page``；contextvar 随 await 传播，读动作发生在
+        注入点的 async 段（§3.5），不依赖 to_thread 线程内读取。
+
+        **激活门（Issue#275 F-C1，设计 §2.7）**：仅 ``PDF/PDF_SCANNED`` **且**
+        ``RECOGNITION_ROUTING_MODE == "page"`` 才激活。file 模式（回滚开关）
+        邻居上下文必须完全不生效——contextvar 恒未激活 ⇒ 注入点
+        ``resolve_neighbors_for_current`` 恒 ``{"inactive": True}`` ⇒ 组输入/
+        缓存探针与本页文本逐字节相同 ⇒ 行为与 #273 合并前逐字节等价（连同
+        签名 file 零新键，页缓存无混合回放）。IMAGE 无页邻接同理不激活。
+        这是 activate 的**唯一**调用点 ⇒ 路由门单点生效，注入端无须重复判模式。
+        """
+        token = None
+        routing_mode = str(getattr(settings, "RECOGNITION_ROUTING_MODE", "file") or "file")
+        if (
+            file_type in (FileType.PDF, FileType.PDF_SCANNED)
+            and routing_mode == "page"
+        ):
+            self._neighbor_registry_path = recognition_path
+            token = page_neighbor_context.activate(recognition_path, page)
+        try:
+            yield
+        finally:
+            self._neighbor_registry_path = None
+            if token is not None:
+                page_neighbor_context.clear(token)
 
     async def detect_with_dual_pipeline(
         self,
@@ -523,6 +582,10 @@ class VisionService:
                 # Issue#273：page 模式由编排层传入页级路由决策（PageDecision）；
                 # file 模式恒 None ⇒ 走今天原样路径（attempt → probe_lock → OCR
                 # 回落），行为零改变。
+                # Issue#276：page_routing 只管文本来源；视觉列跑不跑与记账见
+                # visual_column（P0 契约：判定链不新增任何视觉输入）。勾选侧
+                # seal_requested 对文本层的既有跳过（下方 attempt_pdf_text_layer
+                # 的 return None）是视觉语义对文本执行面的既存正交钩子，维持原样。
                 action = str(getattr(page_routing, "action", "") or "") if page_routing is not None else None
 
                 if action is None:
@@ -749,15 +812,25 @@ class VisionService:
 
         if effective_visual_feature_types:
             logger.info("Running visual features with %d types...", len(effective_visual_feature_types))
-            jobs.append(
-                (
-                    "visual_features",
-                    lambda: timed(
+
+            async def _visual_features_job():
+                try:
+                    return await timed(
                         "visual_features",
                         invoke_detector(self._detect_with_visual_features, page, effective_visual_feature_types),
-                    ),
-                )
-            )
+                    )
+                except Exception as exc:
+                    # Issue#276 §3.4：默认关（页照常 completed）；开关开启且勾选侧
+                    # 非空时把阶段异常包成专类升级页级失败（is_page_fatal_stage_error
+                    # 认；机读理由码不变，页账仍 visual_stage_error）。
+                    if (
+                        bool(getattr(settings, "VISUAL_EXPLICIT_TYPE_PAGE_FAIL", False))
+                        and visual_feature_items
+                    ):
+                        raise VisualStageError(f"visual_features: {exc}") from exc
+                    raise
+
+            jobs.append(("visual_features", _visual_features_job))
         else:
             logger.info("Visual features skipped (no types enabled)")
 
@@ -816,28 +889,32 @@ class VisionService:
             len(jobs) > 1
             and bool(getattr(settings, "VISION_DUAL_PIPELINE_PARALLEL", False))
         )
-        if not jobs:
-            logger.info("No vision pipeline jobs enabled; returning empty results")
-        elif run_parallel:
-            # OCR+HaS and LA run concurrently. Safe now that PaddleOCR-VL
-            # recognition is REMOTE (off the OCR card) and LA runs at 1280, so
-            # same-card OCR+LA no longer OOMs. Toggle off via the flag to revert.
-            outcomes = await asyncio.gather(
-                *(factory() for _label, factory in jobs), return_exceptions=True
-            )
-            for (label, _factory), result in zip(jobs, outcomes, strict=False):
-                await record_pipeline_result(label, result)
-                if is_page_fatal_stage_error(result):
-                    page_fatal_error = result
-        else:
-            for label, factory in jobs:
-                try:
-                    result = await factory()
-                except Exception as exc:
-                    result = exc
-                await record_pipeline_result(label, result)
-                if is_page_fatal_stage_error(result):
-                    page_fatal_error = result
+        # Issue#275 B2：邻居上下文激活窗口只包识别执行段（登记点 / 取文注入点
+        # 都在工厂调用树内）；后处理（签名检测器 / 去重等）不消费邻居，窗口外
+        # 不激活。仅 PDF 激活（IMAGE 无页邻接）。
+        async with self._neighbor_context(recognition_path, page, file_type):
+            if not jobs:
+                logger.info("No vision pipeline jobs enabled; returning empty results")
+            elif run_parallel:
+                # OCR+HaS and LA run concurrently. Safe now that PaddleOCR-VL
+                # recognition is REMOTE (off the OCR card) and LA runs at 1280, so
+                # same-card OCR+LA no longer OOMs. Toggle off via the flag to revert.
+                outcomes = await asyncio.gather(
+                    *(factory() for _label, factory in jobs), return_exceptions=True
+                )
+                for (label, _factory), result in zip(jobs, outcomes, strict=False):
+                    await record_pipeline_result(label, result)
+                    if is_page_fatal_stage_error(result):
+                        page_fatal_error = result
+            else:
+                for label, factory in jobs:
+                    try:
+                        result = await factory()
+                    except Exception as exc:
+                        result = exc
+                    await record_pipeline_result(label, result)
+                    if is_page_fatal_stage_error(result):
+                        page_fatal_error = result
 
         if page_fatal_error is not None:
             # 让页级调用方按 #199 的既有语义把它写进 recognition.failed_pages
@@ -853,6 +930,31 @@ class VisionService:
                 getattr(getattr(self, "ocr_has_service", None), "last_duration_ms", {}) or {},
             )
             raise page_fatal_error
+
+        # Issue#276：视觉列记账块。与 page_routing["text_source"] 对称的第二列——
+        # 只在本函数能看到的范围内如实合成；「la_unavailable」这个原因本层不知道
+        # （队列预检剥离后 visual_feature_types=[] 与「用户没勾」同形），由
+        # task_queue_pipelines overlay。专用检测器（signature/fingerprint）与
+        # MinerU seal 通道不改变 source——它们是对 LA 的替换/补充，不是第二列的
+        # 失败（region_count 亦为 LA 口径，不含 seal/detector 命中）。
+        # page_fatal_error raise 的路径（文本列 fatal）走不到这里——失败页的
+        # 视觉列由 task_queue_pipelines 终态写入点恒零键处理（r2 F1，不回读）。
+        pipeline_status["visual_column"] = {
+            "source": "la" if pipeline_status["visual_features"]["ran"] else "none",
+            "types": [
+                str(getattr(item, "id", item))
+                for item in (effective_visual_feature_types or [])
+            ],
+            # requested = 勾选侧原表（含 fingerprint 等专用检测器通道 slug），审计用
+            "requested_types": [
+                str(getattr(item, "id", item)) for item in visual_feature_items
+            ],
+            "region_count": int(pipeline_status["visual_features"]["region_count"]),
+            "failed_reason": (
+                "visual_stage_error" if pipeline_status["visual_features"]["failed"] else None
+            ),
+        }
+        self.last_pipeline_status = pipeline_status
 
         # Specialized signature detector (conditional-detr) REPLACES the LA
         # signature grounding when configured — single-class, never fires on
@@ -2093,6 +2195,11 @@ class VisionService:
             logger.info("DEDUP removed %d duplicate boxes (IoU within same type only)", removed_count)
         return result
 
+    @staticmethod
+    def _blocks_text(blocks: list) -> str:
+        """blocks 文本拼接（Issue#275 单源复用：layer_text 与邻居登记同一拼接式）。"""
+        return "\n".join(str(block.text or "") for block in blocks)
+
     async def _detect_with_pdf_text_layer(
         self,
         file_path: str,
@@ -2118,7 +2225,19 @@ class VisionService:
         }
         # 扫描页的内嵌文本层是叠在整页图片上的低质量 OCR 产物（断行、乱序、
         # 字段错位），字符数再多也不能用于识别，必须回退图像 OCR。
-        layer_text = "\n".join(str(block.text or "") for block in blocks)
+        # Issue#275：登记点在扫描闸**之前**是故意的——扫描页的碎片段即使被本页
+        # 判定不可用，其文字对邻居仍是真实墨迹（登记的是原文不是结论，§3.3-④⑧）。
+        # 登记只在激活窗口内发生（``_neighbor_registry_path`` 由
+        # ``_neighbor_context`` 单点落位：file 模式 / IMAGE / 窗口外零登记——
+        # F-C1：回滚模式下邻居面零副作用），与 OCR 登记点同构。
+        if getattr(self, "_neighbor_registry_path", None):
+            page_neighbor_context.store_page_text(
+                self._neighbor_registry_path,
+                page,
+                self._blocks_text(blocks),
+                source="text_layer",
+            )
+        layer_text = self._blocks_text(blocks)
         if await self.file_parser.is_pdf_page_scanned(file_path, page) or (
             self.file_parser.has_fragmented_text_layer(layer_text)
         ):
@@ -2189,6 +2308,16 @@ class VisionService:
             draw_result=draw_result,
             blocks_out=page_blocks,
         )
+        # Issue#275：登记 OCR 真实产出（失败页无 blocks ⇒ store 拒空，§3.3-④）。
+        # 路径取激活窗口落的 ``_neighbor_registry_path``（recognition_path）；
+        # 窗口外（IMAGE 直跑 / 单测直调）为 None ⇒ 不登记。
+        if getattr(self, "_neighbor_registry_path", None):
+            page_neighbor_context.store_page_text(
+                self._neighbor_registry_path,
+                page,
+                self._blocks_text(page_blocks),
+                source="ocr",
+            )
         # This call's OCR blocks, captured off the process-wide singleton so the
         # hallucinated-card gate never judges against a concurrent page's blocks.
         self._page_ocr_blocks = page_blocks

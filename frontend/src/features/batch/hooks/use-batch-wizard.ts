@@ -824,6 +824,7 @@ export function useBatchWizard() {
     canGoStep,
     goStep,
     resolveExportIssue,
+    flushCurrentReviewDraft,
     advanceToUploadStep,
     advanceToExportStep,
     bulkConfirmAll,

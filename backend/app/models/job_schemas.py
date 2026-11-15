@@ -11,6 +11,19 @@ from .entity_schemas import BoundingBox, Entity
 JobExportSummaryDeliveryStatus = Literal["ready_for_delivery", "action_required", "no_selection"]
 JobExportFileDeliveryStatus = Literal["ready_for_delivery", "action_required", "not_selected"]
 
+
+class ManualVerifiedPageEntry(BaseModel):
+    """Issue#280：人工补框页条目（报告面 / manifest 契约同形：page/box_count/verified_at/operator）。
+
+    条目语义（r2 裁定）：只代表「该页曾人工补框且未撤销」，不代表该页当前仍是
+    失败态；操作者可随时撤销（条目随之消失）。
+    """
+
+    page: int = Field(description="1-based page number that was manually annotated.")
+    box_count: int = Field(default=0, description="Bounding-box count at verification time (audit snapshot).")
+    verified_at: str = Field(default="", description="ISO8601 timestamp of the manual verification.")
+    operator: str = Field(default="", description="Username that performed the manual verification.")
+
 __all__ = [
     "JobItemMini",
     "JobProgress",
@@ -30,6 +43,9 @@ __all__ = [
     "JobExportReportVisualEvidence",
     "JobExportReportVisualReview",
     "JobExportReportZipSkipped",
+    "ManualVerifiedPageEntry",
+    "ManualVerifyBoxIn",
+    "ManualVerifyRequest",
     "ReviewDraftResponse",
     "JobCreateBody",
     "JobUpdateBody",
@@ -519,6 +535,14 @@ class JobExportReportFile(BaseModel):
         default_factory=JobExportReportVisualReview,
         description="Advisory visual-review quality signals for this file; currently non-blocking.",
     )
+    manual_verified_pages: list[ManualVerifiedPageEntry] = Field(
+        default_factory=list,
+        description=(
+            "Issue#280: pages manually annotated after recognition failure. Entries only "
+            "mean the page was manually annotated and not revoked; after a full rerun "
+            "succeeded, manual boxes coexist with automatic ones until the user revokes."
+        ),
+    )
 
 
 class JobExportReportSummary(BaseModel):
@@ -575,6 +599,10 @@ class JobExportReportSummary(BaseModel):
     review_confirmed_selected_files: int = Field(default=0, description="Selected files with confirmed review state.")
     failed_selected_files: int = Field(default=0, description="Selected files whose job item status is failed.")
     detected_entities: int = Field(default=0, description="Detected entity count across selected files.")
+    manual_verified_selected_pages: int = Field(
+        default=0,
+        description="Issue#280: total manually-annotated pages across selected files.",
+    )
     redaction_coverage: float = Field(default=0, description="redacted_selected_files / selected_files, or 0 for an empty selection.")
     delivery_status: JobExportSummaryDeliveryStatus = Field(
         default="no_selection",
@@ -822,6 +850,28 @@ class JobUpdateBody(BaseModel):
     skip_item_review: bool | None = None
 
 
+class ManualVerifyBoxIn(BaseModel):
+    """Issue#280：人工补框请求的单框（归一化 0..1，与 BoundingBox 同坐标系）。
+
+    Ruling：框必填、文本可选——``text`` 缺省照常打码（图形遮蔽），映射表类消费方
+    对 ``text=null`` 需容忍（既有实体链已容忍）。``source`` 由服务端强制
+    ``manual``，请求体不携带。
+    """
+
+    x: float = Field(description="Normalized left coordinate (0..1).")
+    y: float = Field(description="Normalized top coordinate (0..1).")
+    width: float = Field(description="Normalized width (0..1).")
+    height: float = Field(description="Normalized height (0..1).")
+    type: str = Field(description="Region/entity type id.", examples=["PERSON"])
+    text: str | None = Field(default=None, description="Optional text; graphical masking still applies.")
+
+
+class ManualVerifyRequest(BaseModel):
+    """Issue#280：POST manual-verify 请求体（≥1 框；空集合在服务层 400）。"""
+
+    boxes: list[ManualVerifyBoxIn] = Field(description="Manually drawn bounding boxes (at least one).")
+
+
 class ReviewDraftBody(BaseModel):
     entities: list[Entity] = Field(default_factory=list)
     bounding_boxes: list[BoundingBox] = Field(default_factory=list)
@@ -833,6 +883,20 @@ class ReviewDraftBody(BaseModel):
 
 class ReviewCommitBody(ReviewDraftBody):
     pass
+
+
+class ItemExportRequest(BaseModel):
+    """Issue#278 统一 item 级导出请求体（完整导出与选页导出同一个端点）。
+
+    * ``kind="partial"``：切页重渲染快照包，``pages`` 必填非空（服务端 400）；
+    * ``kind="full"``：主产物直取成品包，``pages`` 被忽略（缺省 = 全部可导出页）；
+    * ``include_summary``：包内附带 ``说明.txt``（默认关——说明页已废除，说明与
+      正文分离，正文 PDF 不含任何插入页）。
+    """
+
+    kind: Literal["full", "partial"] = "partial"
+    pages: list[int] | None = None
+    include_summary: bool = False
 
 
 class BatchDetailsBody(BaseModel):

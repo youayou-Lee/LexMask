@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -42,6 +43,10 @@ _RECOGNITION_STATE_BY_ITEM_STATUS: dict[str, str] = {
 _PAGE_STATE_COMPLETED = "success"
 _PAGE_STATE_FAILED = "failed"
 _PAGE_STATE_PENDING = "pending"
+# Issue#280：第四态——自动识别失败、人工拉框补齐并由人确认。离开本态的唯一
+# 通道是用户显式撤销（revoke），整卷重跑自动成功也**不**系统翻绿（人工条目与
+# 人工框保留并存，页格维持琥珀徽标，由用户在审阅画布裁决）。
+_PAGE_STATE_MANUAL = "manual_verified"
 
 
 def is_paged_file_type(file_type: Any) -> bool:
@@ -103,6 +108,44 @@ def _failed_page_map(item_row: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def _manual_page_map(item_row: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Issue#280：读 ``recognition.manual_verified_pages``（谁/何时/框数/原失败原因）。
+
+    形状异常（list / 条目非 dict）一律按空账处理——投影绝不因账本脏数据崩。
+    """
+    recognition = _coerce_dict(_performance_of(item_row).get("recognition"))
+    raw = recognition.get("manual_verified_pages")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for key, value in raw.items():
+        page = _safe_int(key, -1)
+        if page <= 0 or not isinstance(value, dict):
+            continue
+        out[str(page)] = value
+    return out
+
+
+def manual_verified_pages_of(item_row: dict[str, Any]) -> list[dict[str, Any]]:
+    """卷级人工补框页清单（页号升序）。导出报告 / page-status / 部分导出共用。"""
+    manual_map = _manual_page_map(item_row)
+    out: list[dict[str, Any]] = []
+    for key, entry in manual_map.items():
+        page = _safe_int(key, -1)
+        if page <= 0:
+            continue
+        out.append(
+            {
+                "page": page,
+                "box_count": _safe_int(entry.get("box_count"), 0),
+                "verified_at": str(entry.get("verified_at") or ""),
+                "operator": str(entry.get("operator") or ""),
+            }
+        )
+    out.sort(key=lambda entry: entry["page"])
+    return out
+
+
 def _text_layer_route_of(record: dict[str, Any]) -> tuple[bool, str | None, Any]:
     """读页记录 ``pipeline_status.text_layer_doc`` → (该页是否被 docline 接管, fallback 原因码, coverage)。
 
@@ -146,12 +189,42 @@ def _route_summary_of(raw_pages: dict[str, Any], page_count: int) -> dict[str, A
     return None
 
 
+def _visual_state_of(record: dict[str, Any]) -> dict[str, Any] | None:
+    """Issue#276：页记录 visual 字段 → 投影四态。旧数据/无字段 → None（省键）。
+
+    派生顺序契约：``failed_reason`` 判定**先于** ``source == "la"``——
+    ``source="la"`` + ``failed_reason="visual_stage_error"`` 是真值表行 5 的
+    **正常形态**（failed ⇒ ran=True ⇒ source 恒 "la"），顺序翻转会把它吞成 done。
+    零命中（ran=True, region_count=0）= done 的 zero_hit，严禁折成 skipped。
+    """
+    source = record.get("visual_source")
+    if source is None and not record.get("visual_failed_reason"):
+        return None
+    reason = record.get("visual_failed_reason") or None
+    if reason == "la_unavailable":
+        state = "skipped"
+    elif reason == "visual_stage_error":
+        state = "failed"
+    elif source == "la":
+        state = "done"
+    else:
+        state = "absent"
+    out: dict[str, Any] = {"state": state, "source": source or "none"}
+    if reason:
+        out["failed_reason"] = reason
+    if state == "done":
+        out["region_count"] = _safe_int(record.get("visual_region_count"), 0)
+        out["zero_hit"] = out["region_count"] == 0
+    return out
+
+
 def _page_detail_of(record: dict[str, Any], retry_counts: dict[str, Any], page_no: int) -> dict[str, Any]:
     """per-page「这页发生了什么」（Issue#279）：路由 / 分段耗时 / 失败类型 / 尝试次数。
 
     只读页账既有字段做投影，不改变三态判定（state/reason 逻辑零改动）；
     ``fallback_reason_code``/``coverage``/``stage_ms`` 缺省时省键（None-safe 透传），
     ``error_type``/``attempts`` 恒在（成功页 error_type=None、无账 attempts=1）。
+    Issue#276：视觉列四态投影 ``visual`` 只在有视觉字段时出现（旧数据省键）。
     """
     ran, fallback_code, coverage = _text_layer_route_of(record)
     detail: dict[str, Any] = {
@@ -169,6 +242,9 @@ def _page_detail_of(record: dict[str, Any], retry_counts: dict[str, Any], page_n
         detail["stage_ms"] = dict(breakdown)
     if record.get("duration_ms") is not None:
         detail["duration_ms"] = _safe_int(record.get("duration_ms"), 0) or None
+    visual = _visual_state_of(record)
+    if visual is not None:
+        detail["visual"] = visual
     return detail
 
 
@@ -199,6 +275,7 @@ def build_page_status(
     recognition = _coerce_dict(_performance_of(item_row).get("recognition"))
     raw_pages = recognition.get("pages") if isinstance(recognition.get("pages"), dict) else {}
     failed_map = _failed_page_map(item_row)
+    manual_map = _manual_page_map(item_row)
     retry_counts = recognition.get("page_retry_counts")
     retry_counts = retry_counts if isinstance(retry_counts, dict) else {}
 
@@ -210,29 +287,71 @@ def build_page_status(
         # 失败清单是权威（#199/#257）：只要页号在 failed_pages 里就是失败，即便页记录
         # 写着 completed。两套账本若因任何路径分叉（旧数据、并发写、手工修库）不一致，
         # 页格必须以"交付闸会拒收的那一侧"为准，否则会出现"页格全绿但导出被拒"的死局。
-        if str(page_no) in failed_map:
+        in_failed = str(page_no) in failed_map
+        in_manual = str(page_no) in manual_map
+        if in_failed:
+            # Issue#280：failed_pages 权威优先——即使 ledger 有条目（整卷重跑再失败）
+            # 也回 failed（红叉），manual 条目让位（用户可重验或撤销）。
             state = _PAGE_STATE_FAILED
+        elif in_manual:
+            # Issue#280：第四态。离开 manual_verified 的唯一通道是用户显式撤销；
+            # 整卷重跑自动成功页 ledger 条目与人工框保留 ⇒ 页维持琥珀徽标
+            # （ledger 优先于页账 completed，共存待用户在审阅画布裁决）。
+            state = _PAGE_STATE_MANUAL
         reason: str | None = None
         if state == _PAGE_STATE_FAILED:
             reason = failed_map.get(str(page_no)) or str(record.get("error") or "") or None
-        pages.append(
-            {
-                "page": page_no,
-                "state": state,
-                "reason": reason,
-                "duration_ms": _safe_int(record.get("duration_ms"), 0) or None,
-                "cache_hit": bool(str(record.get("cache_status") or "").startswith("hit")),
-                # Issue#279：这页发生了什么（路由/分段耗时/失败类型/尝试次数）——
-                # 纯只读扩展，state/reason 判定不动。
-                "detail": _page_detail_of(record, retry_counts, page_no),
+        cell: dict[str, Any] = {
+            "page": page_no,
+            "state": state,
+            "reason": reason,
+            "duration_ms": _safe_int(record.get("duration_ms"), 0) or None,
+            "cache_hit": bool(str(record.get("cache_status") or "").startswith("hit")),
+            # Issue#279：这页发生了什么（路由/分段耗时/失败类型/尝试次数）——
+            # 纯只读扩展，state/reason 判定不动。
+            "detail": _page_detail_of(record, retry_counts, page_no),
+        }
+        if state == _PAGE_STATE_MANUAL:
+            entry = manual_map[str(page_no)]
+            manual_detail: dict[str, Any] = {
+                # box_count 是 verify 时刻口径（审计快照），画布删框不回写（§4.3 边角 1）。
+                "box_count": _safe_int(entry.get("box_count"), 0),
+                "verified_at": str(entry.get("verified_at") or ""),
+                "operator": str(entry.get("operator") or ""),
+                # 自动成功重跑后的并存提示输入：页账 completed 但 ledger 有条目。
+                "auto_completed": str(record.get("status") or "") == "completed",
             }
-        )
+            for missing_key in ("verified_at", "operator"):
+                if not manual_detail[missing_key]:
+                    manual_detail.pop(missing_key)
+            if entry.get("original_reason"):
+                manual_detail["original_reason"] = str(entry["original_reason"])
+            cell["manual"] = manual_detail
+        pages.append(cell)
 
     failed_pages: list[int] = []
     for key in failed_map:
         page = _safe_int(key, -1)
         if 0 < page <= page_count:
             failed_pages.append(page)
+
+    # Issue#276：卷级视觉列汇总。任一页有视觉证据才出键（旧数据兼容 → None）；
+    # pending_visual = 已起跑但未到终态的页（视觉列未记账）。只读派生，
+    # 不动 _page_state / failed_map / 选页白名单（#257 契约）。
+    visual_summary: dict[str, int] | None = None
+    counter = {"done": 0, "skipped": 0, "failed": 0, "absent": 0, "pending_visual": 0}
+    for page_no in range(1, page_count + 1):
+        record = raw_pages.get(str(page_no))
+        if not isinstance(record, dict):
+            continue
+        if not record.get("status"):
+            counter["pending_visual"] += 1
+            continue
+        visual = _visual_state_of(record)
+        if visual is not None:
+            counter[visual["state"]] += 1
+    if counter["done"] or counter["skipped"] or counter["failed"] or counter["absent"]:
+        visual_summary = counter
 
     return {
         "item_id": item_row.get("id"),
@@ -247,8 +366,12 @@ def build_page_status(
         "snapshot_at": snapshot_at or datetime.now(UTC).isoformat(),
         "pages": pages,
         "failed_pages": sorted(set(failed_pages)),
+        # Issue#280：卷级人工补框页清单（升序，含 page/box_count/verified_at/operator）。
+        "manual_verified_pages": manual_verified_pages_of(item_row),
         # Issue#279：卷头路由摘要（docline 接管 / 逐页 + 首个 fallback 码 / 证据全无 → None）。
         "route_summary": _route_summary_of(raw_pages, page_count),
+        # Issue#276：卷级视觉列汇总（无视觉证据 → None，旧数据兼容）。
+        "visual_summary": visual_summary,
     }
 
 
@@ -269,6 +392,28 @@ def recognized_page_numbers(item_row: dict[str, Any], page_count: int) -> set[in
 
 def recognized_page_count(item_row: dict[str, Any], page_count: int) -> int:
     return len(recognized_page_numbers(item_row, page_count))
+
+
+def exportable_page_numbers(item_row: dict[str, Any], page_count: int) -> set[int]:
+    """可进包页号集合（Issue#280 §2.3 / #278 §1 缺省集唯一权威）。
+
+    ``exportable = recognized ∪ manual − failed``：
+
+    * 自动识别成功 ∪ 人工补框页（manual_verified，#280 账本）；
+    * **减失败清单**：manual 账本与 ``failed_pages`` 同时记到的页（整卷重跑再失败、
+      人工兜底未成功仍记失败）不得进集——``failed_pages`` 权威优先于人工兜底，
+      #199 红线优先（#278 V3 判据钉死）。manual 页已物理移出失败清单才会出现在这里。
+
+    部分导出准入与说明页「已识别 N 页」口径都用它（两处消费同源，#280 r2 F-I3）。
+    """
+    exportable = recognized_page_numbers(item_row, page_count)
+    failed = set(failed_page_numbers(item_row))
+    manual_map = _manual_page_map(item_row)
+    for key in manual_map:
+        page = _safe_int(key, -1)
+        if 0 < page <= page_count:
+            exportable.add(page)
+    return exportable - failed
 
 
 def page_count_of(item_row: dict[str, Any], file_info: dict[str, Any] | None = None) -> int:
@@ -294,3 +439,57 @@ def failed_page_reasons(item_row: dict[str, Any]) -> dict[int, str]:
         if page > 0:
             out[page] = reason
     return out
+
+
+# ---------------------------------------------------------------------------
+# Issue#278 统一导出链消费面（route 聚合；manual 账本投影与 #280 同源）
+# ---------------------------------------------------------------------------
+
+def manual_ledger_of(item_row: dict[str, Any]) -> list[dict[str, Any]]:
+    """#280 §4.2 契约投影（#278 统一导出消费）：``[{page, box_count, verified_at, operator}]`` 升序。
+
+    与 ``manual_verified_pages_of`` 同一真源、同一形状（#280 合入后副本收敛为
+    委托，不再有两套并行账本读取；条目语义 = 曾人工补框且未撤销）。
+    """
+    return manual_verified_pages_of(item_row)
+
+
+def route_counts_of(item_row: dict[str, Any], pages: Iterable[int]) -> dict[str, int]:
+    """按 included 页聚合路由桶（manifest ``route_summary`` 的唯一聚合点，#278 §2.4）。
+
+    口径（design §2.4）：docline 接管优先（``pipeline_status.text_layer_doc.ran``），
+    其次 ``text_source``（#273 路由字段 ∈ text_layer/ocr/both），accelerator 是
+    #274/#275 预留字段（现无生产者恒空）；页记录缺失（pending/旧任务/file 模式）
+    → unknown。返回五键齐全的 dict（缺桶显式 0，机读方按「键存在即读」）。
+    """
+    counts: dict[str, int] = {
+        "text_layer": 0,
+        "ocr": 0,
+        "accelerator": 0,
+        "both": 0,
+        "unknown": 0,
+    }
+    recognition = _coerce_dict(_performance_of(item_row).get("recognition"))
+    raw_pages = recognition.get("pages") if isinstance(recognition.get("pages"), dict) else {}
+    for raw_page in pages or []:
+        page = _safe_int(raw_page, 0)
+        if page <= 0:
+            continue
+        bucket = "unknown"
+        record = raw_pages.get(str(page))
+        if isinstance(record, dict):
+            ran, _code, _coverage = _text_layer_route_of(record)
+            if ran:
+                bucket = "text_layer"
+            else:
+                source = str(record.get("text_source") or "").strip().lower()
+                if source == "text_layer":
+                    bucket = "text_layer"
+                elif source == "ocr":
+                    bucket = "ocr"
+                elif source == "both":
+                    bucket = "both"
+                elif record.get("accelerator") is True:
+                    bucket = "accelerator"
+        counts[bucket] += 1
+    return counts

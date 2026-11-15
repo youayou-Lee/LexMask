@@ -17,7 +17,7 @@ import { useT } from '@/i18n';
 import { batchExportApi } from '@/services/api';
 import { Button } from '@/components/ui/button';
 import { BatchPageMatrix } from '@/features/batch/components/batch-page-matrix';
-import { usePartialExportSelection } from '@/features/batch/hooks/use-partial-export-selection';
+import { useItemExport } from '@/features/batch/hooks/use-item-export';
 
 import { useFileJobItem } from '../hooks/use-file-job-item';
 
@@ -48,13 +48,15 @@ export function PlaygroundPageExport({
     submitting,
     actionError,
     submit,
-  } = usePartialExportSelection({ jobId, itemId, enabled: Boolean(itemId) });
+  } = useItemExport({ jobId, itemId, enabled: Boolean(itemId) });
   const [open, setOpen] = useState(!compact);
 
   const counts = useMemo(() => {
-    const tally = { success: 0, failed: 0, pending: 0 };
+    // Issue#280 × #278：manual_verified 并入 success 桶展示（exportable 谓词，该页已可导出）。
+    const tally = { success: 0, failed: 0, pending: 0, manual_verified: 0 };
     status?.pages.forEach((cell) => {
-      tally[cell.state] += 1;
+      if (cell.state === 'manual_verified') tally.success += 1;
+      else tally[cell.state] += 1;
     });
     return tally;
   }, [status]);
@@ -138,7 +140,7 @@ export function PlaygroundPageExport({
               className="rounded-lg border border-destructive/30 bg-destructive/5 px-2.5 py-1.5 text-xs text-destructive"
               data-testid="playground-page-export-excluded"
             >
-              {t('batchWizard.partialExport.excludedHint')
+              {t('batchWizard.export.excludedHint')
                 .replace('{pages}', excludedInSpan.join('、'))
                 .replace('{count}', String(excludedInSpan.length))}
             </p>
@@ -151,6 +153,22 @@ export function PlaygroundPageExport({
             >
               {summary}
             </span>
+            {/* Issue#278「回到编辑」：单文件是同页内联编辑（无 phase 可跳），
+                语义 = 收起导出块 + 滚到内嵌框编辑器并聚焦（r2 F5）。 */}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8"
+              onClick={() => {
+                setOpen(false);
+                const editor = document.getElementById('playground-bbox-editor');
+                editor?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }}
+              data-testid="export-back-to-edit"
+            >
+              {t('batchWizard.export.backToEdit')}
+            </Button>
             <Button
               type="button"
               size="sm"
@@ -160,8 +178,8 @@ export function PlaygroundPageExport({
               data-testid="playground-page-export-submit"
             >
               {submitting
-                ? t('batchWizard.partialExport.submitting')
-                : t('batchWizard.partialExport.submit').replace('{count}', String(total))}
+                ? t('batchWizard.export.submitting')
+                : t('batchWizard.export.submit').replace('{count}', String(total))}
             </Button>
           </div>
 
@@ -190,18 +208,18 @@ export function PlaygroundPageExport({
                       download
                       data-testid={`playground-page-export-download-${volume.name}`}
                     >
-                      {t('batchWizard.partialExport.download')}
+                      {t('batchWizard.export.download')}
                     </a>
                   ))}
                 </span>
               ) : (
                 <span className="ml-2 text-muted-foreground">
                   {activeTask.status === 'failed'
-                    ? (activeTask.error ?? t('batchWizard.partialExport.taskStatus.failed'))
+                    ? (activeTask.error ?? t('batchWizard.export.taskStatus.failed'))
                     : t(
                         activeTask.status === 'queued'
-                          ? 'batchWizard.partialExport.taskStatus.queued'
-                          : 'batchWizard.partialExport.taskStatus.running',
+                          ? 'batchWizard.export.taskStatus.queued'
+                          : 'batchWizard.export.taskStatus.running',
                       )}
                 </span>
               )}
@@ -227,7 +245,7 @@ export function PlaygroundPageExport({
                         className="text-primary underline underline-offset-2"
                         download
                       >
-                        {t('batchWizard.partialExport.download')}
+                        {t('batchWizard.export.download')}
                       </a>
                     ))}
                 </li>

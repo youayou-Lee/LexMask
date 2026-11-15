@@ -161,6 +161,13 @@ def _vision_signature(
         from app.core.routing_thresholds import get_routing_thresholds, thresholds_fingerprint
 
         signature["routing_thresholds_fp"] = thresholds_fingerprint(get_routing_thresholds())
+        # Issue#275 B2：邻居上下文字符数改变 NER 实发文本（组键自动随邻居分离），
+        # 页级 vision 签名必须随 chars 变——开↔关两个方向签名都变，杜绝「翻了
+        # env 不 bump 版本 ⇒ 回放旧框」（ner_governance 指纹先例）。**键只在
+        # chars>0 时存在**：off 态签名与 #273 现状逐键相等（零缓存失效，§2.7）。
+        neighbor_chars = int(getattr(settings, "RECOGNITION_NEIGHBOR_CONTEXT_CHARS", 0) or 0)
+        if neighbor_chars > 0:
+            signature["neighbor_context_chars"] = neighbor_chars
     return signature
 
 
@@ -704,6 +711,23 @@ async def detect_vision(
             _route_ms,
         )
         doc_boxes, doc_memo = None, None
+        # Issue#275 A 接入缝（本期 stub 恒 False，B 行为逐字节不变）：
+        # 未来 A（加速器压力阀）要复用整卷链填页时，唯一旁路点在这里——
+        # accelerator_should_fill(file_id) 为 True 时才允许走
+        # text_layer_doc_boxes_for_page。缝契约（accelerator.py 模块注释）：
+        # ①A 结果让位页级（页级已出结果以页级为准）②块级降级不整卷弃权
+        # ③取消/失败落负缓存（#204）④签名必须加 accelerator 键（同
+        # neighbor_context_chars 键先例）。
+        from app.services.accelerator import accelerator_should_fill
+
+        if accelerator_should_fill(file_id):
+            doc_boxes, doc_memo = await text_layer_doc_boxes_for_page(
+                file_id=file_id,
+                snapshot=snapshot,
+                page=page,
+                ocr_has_types=effective_ocr_types,
+                owner_id=owner_id,
+            )
     elif ocr_has_enabled:
         # 门⑥ 第三轮 Important#3：必须传**总开关生效后**的类型表，且管线被租户整体
         # 关掉时根本不调用本链——否则「用户关掉的 OCR+HaS」会被文档级链复活。
@@ -803,7 +827,21 @@ async def detect_vision(
             info = file_store.get(file_id)
             if "bounding_boxes" not in info:
                 info["bounding_boxes"] = {}
-            info["bounding_boxes"][page] = bounding_boxes
+            # Issue#280（r2 冷审裁定 + r3 P0 修复）：人工拉框兜底的页重跑/重试时
+            # **人工框永远保留**（与自动框并存，#261 C2 同族规则的收窄点；单页重试
+            # page retry(force=True) 与整卷重跑都经此写回点）。
+            # 口径（r3）：_boxes_from_page 返回 list[BoundingBox]（原始 dict 已被
+            # model_validate 归一），必须按**对象属性** b.source 过滤——isinstance(dict)
+            # 检查在模型对象上恒 False，照抄会静默丢人工框。两个列表同为
+            # BoundingBox 模型直接拼接；持久化经 file_store.set 的 to_jsonable 归一。
+            # 自动管线从不产出 source="manual"（entity_schemas 的 manual 仅人工路径
+            # 写入）⇒ 无需从 fresh 里剔除。
+            existing_manual = [
+                b
+                for b in _boxes_from_page(_page_value(info.get("bounding_boxes"), page), page)
+                if getattr(b, "source", None) == "manual"
+            ]
+            info["bounding_boxes"][page] = [*existing_manual, *bounding_boxes]
             if "vision_quality" not in info or not isinstance(info.get("vision_quality"), dict):
                 info["vision_quality"] = {}
             info["vision_quality"][page] = vision_quality

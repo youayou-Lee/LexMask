@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { getRedactionStateLabel, resolveRedactionState } from '@/utils/redactionState';
-import { getJobExportReport } from '@/services/jobsApi';
+import { getItemRefByFile, getJobExportReport } from '@/services/jobsApi';
 import {
   batchExportApi,
   type BatchExportEstimate,
@@ -27,6 +27,7 @@ import {
 } from '../lib/batch-export-report';
 import type { BatchRow, Step } from '../types';
 import { triggerDownload } from '../hooks/use-batch-wizard-utils';
+import { PartialExportDialog } from './partial-export-dialog';
 
 type DeliveryGroup = 'ready' | 'review' | 'redact' | 'retry';
 
@@ -112,6 +113,15 @@ function BatchStep5ExportInner({
   const [serverReportLoading, setServerReportLoading] = useState(false);
   const [serverReportFailed, setServerReportFailed] = useState(false);
   const [reportReloadNonce, setReportReloadNonce] = useState(0);
+  // Issue#278：step5 选中恰 1 个文件点「下载脱敏包」→ 打开统一导出弹窗（缺省完整导出）；
+  // >1 走既有批量传输链（多文件批量是传输形态，不套逐页渲染，§1 裁定）。
+  const [itemExportTarget, setItemExportTarget] = useState<{
+    jobId: string;
+    itemId: string;
+    filename: string;
+    fileId: string;
+  } | null>(null);
+  const [itemExportResolving, setItemExportResolving] = useState(false);
   const localReport = useMemo(() => buildBatchExportReport(rows, selectedIds), [rows, selectedIds]);
   const report = serverReport ?? localReport;
   const deliveryStatus =
@@ -133,6 +143,19 @@ function BatchStep5ExportInner({
   const reportFilesById = useMemo(
     () => new Map(report.files.map((file) => [file.file_id, file])),
     [report.files],
+  );
+  // Issue#280：选中件的人工补框页（提示条数据源；后端 report 才有此键，本地报告缺省为空）。
+  const selectedManualPages = useMemo(
+    () =>
+      selectedRows.flatMap(
+        (row) => reportFilesById.get(row.file_id)?.manual_verified_pages ?? [],
+      ),
+    [reportFilesById, selectedRows],
+  );
+  const manualPagesTotal = selectedManualPages.length;
+  const manualPageIds = useMemo(
+    () => [...new Set(selectedManualPages.map((entry) => entry.page))].sort((a, b) => a - b),
+    [selectedManualPages],
   );
   const deliveryGroups = useMemo(() => {
     const groups: Record<DeliveryGroup, BatchRow[]> = {
@@ -172,6 +195,35 @@ function BatchStep5ExportInner({
 
   // 超过阈值时同步打包必 413，改走异步分卷导出
   const useAsyncExport = selectedIds.length > ASYNC_EXPORT_FILE_THRESHOLD;
+
+  const openItemExport = async () => {
+    if (!activeJobId || selectedIds.length !== 1 || itemExportResolving) return;
+    const fileId = selectedIds[0];
+    setItemExportResolving(true);
+    try {
+      const ref = await getItemRefByFile(fileId);
+      const row = rows.find((item) => item.file_id === fileId);
+      setItemExportTarget({
+        jobId: ref.job_id || activeJobId,
+        itemId: ref.item_id,
+        filename: row?.original_filename ?? fileId,
+        fileId,
+      });
+    } catch {
+      // 反查失败（单文件 provider 账本已清且无兜底）：回落既有批量链。
+      await downloadZip(true);
+    } finally {
+      setItemExportResolving(false);
+    }
+  };
+
+  const handleDownloadRedacted = () => {
+    if (selectedIds.length === 1 && !useAsyncExport) {
+      void openItemExport();
+      return;
+    }
+    void (useAsyncExport ? startAsyncExport() : downloadZip(true));
+  };
 
   // 导出体积预估（选择变化 500ms 防抖，st_size 求和秒回）
   useEffect(() => {
@@ -353,16 +405,24 @@ function BatchStep5ExportInner({
           )}
           <Button
             className="h-9 shrink-0 whitespace-nowrap"
-            onClick={() => void (useAsyncExport ? startAsyncExport() : downloadZip(true))}
-            disabled={useAsyncExport ? exportStarting || redactedZipDisabled : redactedZipDisabled}
+            onClick={handleDownloadRedacted}
+            disabled={
+              (selectedIds.length === 1 && !useAsyncExport
+                ? itemExportResolving
+                : useAsyncExport
+                  ? exportStarting
+                  : zipLoading) || redactedZipDisabled
+            }
             data-testid="download-redacted"
           >
             <ShieldCheck data-icon="inline-start" />
             {useAsyncExport
               ? t('batchWizard.step5.asyncExportStart')
-              : zipLoading
-                ? t('batchWizard.step5.downloading')
-                : t('batchWizard.step5.downloadRedacted')}
+              : selectedIds.length === 1
+                ? t('batchWizard.export.submitFull')
+                : zipLoading
+                  ? t('batchWizard.step5.downloading')
+                  : t('batchWizard.step5.downloadRedacted')}
           </Button>
           <Button
             variant="outline"
@@ -407,6 +467,18 @@ function BatchStep5ExportInner({
               .replace('{files}', String(exportEstimate.file_count))
               .replace('{volumes}', String(exportEstimate.estimated_volume_count))}
           </div>
+        )}
+
+        {/* Issue#280：选中件含人工补框页时显式提示（随包交付并在说明中标注）。 */}
+        {manualPagesTotal > 0 && (
+          <p
+            className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+            data-testid="manual-pages-hint"
+          >
+            {t('batchWizard.export.manualHint')
+              .replace('{count}', String(manualPagesTotal))
+              .replace('{pages}', manualPageIds.join('、'))}
+          </p>
         )}
 
         {exportTask && (
@@ -550,6 +622,20 @@ function BatchStep5ExportInner({
           })}
         </div>
       </CardContent>
+      <PartialExportDialog
+        open={itemExportTarget !== null}
+        jobId={itemExportTarget?.jobId ?? null}
+        itemId={itemExportTarget?.itemId ?? null}
+        filename={itemExportTarget?.filename ?? ''}
+        defaultKind="full"
+        onBackToEdit={() => {
+          const fileId = itemExportTarget?.fileId;
+          setItemExportTarget(null);
+          if (resolveExportIssue) resolveExportIssue(fileId);
+          else goStep(4);
+        }}
+        onClose={() => setItemExportTarget(null)}
+      />
     </Card>
   );
 }

@@ -10,7 +10,6 @@ import asyncio
 import json
 import logging
 import time
-from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -24,6 +23,7 @@ from app.core.audit import audit_log
 from app.core.auth import require_auth, require_bulk_confirm
 from app.core.errors import AppError
 from app.models.errors import ConflictError, NotFoundError, ValidationError
+from app.models.job_schemas import ItemExportRequest, ManualVerifyRequest
 from app.models.schemas import (
     BatchDetailsBody,
     BatchDetailsResponse,
@@ -42,6 +42,7 @@ from app.models.schemas import (
 from app.models.single_task_schemas import SingleRedactBody, SingleRedactResult
 from app.services import (
     file_operations,
+    page_manual_service,
     page_retry_service,
     page_status_service,
     partial_export_service,
@@ -349,44 +350,14 @@ def _job_config_of(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def _redactable_pages_of(file_info: dict[str, Any] | None) -> set[int]:
-    """框账里「已选框都能落到本页」的页集合（干净页=空框账，也算安全）。
-
-    账页号与框自带的 ``page`` 不一致时，重映射会静默丢框、产物就把该页原样
-    栅格化进包（文本层消失后连"零残留"检查都抓不到）⇒ 这类页 fail-closed。
-    """
-    raw = (file_info or {}).get("bounding_boxes") or {}
-    safe: set[int] = set()
-    if not isinstance(raw, dict):
-        return safe
-    for key, boxes in raw.items():
-        try:
-            page_no = int(key)
-        except (TypeError, ValueError):
-            continue
-        parsed = partial_export_service.normalize_boxes(boxes, strict=True)
-        if all(int(box.page or 1) == page_no for box in parsed if box.selected):
-            safe.add(page_no)
-    return safe
+    """框账里「已选框都能落到本页」的页集合（已迁至 partial_export_service，
+    保留薄包装兼容既有 import 面——框账口径唯一出处 = 服务层，防口径分裂）。"""
+    return partial_export_service.redactable_pages_of(file_info)
 
 
 def _boxes_pages_of(file_info: dict[str, Any] | None) -> set[int]:
-    """file_store 里有框账条目的页号集合（校验「选了没跑过视觉识别的页」）。"""
-    raw = (file_info or {}).get("bounding_boxes") or {}
-    pages: set[int] = set()
-    if isinstance(raw, dict):
-        for key in raw:
-            try:
-                pages.add(int(key))
-            except (TypeError, ValueError):
-                continue
-    elif isinstance(raw, list):
-        for box in raw:
-            if isinstance(box, dict):
-                try:
-                    pages.add(int(box.get("page") or 1))
-                except (TypeError, ValueError):
-                    continue
-    return pages
+    """框账里有条目的页号集合（已迁至 partial_export_service，同上）。"""
+    return partial_export_service.boxes_pages_of(file_info)
 
 
 def _load_file_info(file_id: Any) -> dict[str, Any] | None:
@@ -436,68 +407,65 @@ async def get_item_page_status(
     return page_status_service.build_page_status(item, file_info)
 
 
-@router.post("/{job_id}/items/{item_id}/partial-export", status_code=202)
-async def export_item_pages(
+@router.post("/{job_id}/items/{item_id}/export", status_code=202)
+async def export_item(
     job_id: str,
     item_id: str,
-    pages: list[int] = Body(..., embed=True, description="要导出的原卷页号（1-based，可乱序）"),
-    acknowledge_failed_excluded: bool = Body(
-        False,
-        embed=True,
-        description="所选页范围内含识别失败页时，必须显式为 true（失败页永不进包）",
-    ),
+    body: ItemExportRequest,
     store: JobStore = Depends(get_job_store),
     owner_id: str = Depends(require_auth),
 ) -> dict[str, Any]:
-    """页级部分导出：只含选中页 + 说明页，异步任务走 /files/batch/export 下载。"""
+    """统一 item 级导出（Issue#278）：完整导出与选页导出同一条链。
+
+    * ``kind="partial"``：切页重渲染（快照包），``pages`` 必填；
+    * ``kind="full"``：主产物直取/结构级切页（成品包），缺省 = 全部可导出页
+      （自动成功页 ∪ 人工补框页），失败页永不进包（#199）。
+    产物 = 一个包（脱敏 PDF + manifest.json + 可选 说明.txt），异步任务走
+    /files/batch/export 下载。
+    """
     job, item = _require_item(store, job_id, item_id, owner_id)
     file_info = _load_file_info(item.get("file_id"))
     if file_info is None:
         raise HTTPException(status_code=404, detail="file not found")
 
-    page_count = page_status_service.page_count_of(item, file_info)
     try:
-        selection = partial_export_service.validate_partial_export_pages(
-            pages,
-            page_count=page_count,
-            failed_pages=set(page_status_service.failed_page_numbers(item)),
-            recognized_pages=page_status_service.recognized_page_numbers(item, page_count),
-            acknowledge_failed_excluded=acknowledge_failed_excluded,
-            file_type=file_info.get("file_type"),
-            boxes_pages=_boxes_pages_of(file_info),
-            redactable_pages=_redactable_pages_of(file_info),
+        # Issue#280（r2 F-I3）同源口径：准入白名单（exportable_page_numbers = auto ∪
+        # manual − failed）的唯一出处是统一导出服务内的 validate_export_pages，
+        # 端点不再各自拼口径。
+        config = partial_export_service.config_from_job_config(_job_config_of(job))
+        task = await partial_export_service.submit_item_export(
+            owner_id=owner_id,
+            store=store,
+            job_row=job,
+            item_row=item,
+            file_info=file_info,
+            config=config,
+            kind=body.kind,
+            pages=body.pages,
+            include_summary=body.include_summary,
         )
     except partial_export_service.PartialExportError as exc:
-        # 知情确认是 409（可重试、需要用户动作），参数错误是 400。
+        # 409 = 可重试、需要用户动作（主产物未就绪 / 无可导出页）；参数错误 = 400。
         # 走 AppError 的统一信封：前端按 error_code 路由文案，message 是人话。
         raise AppError(
-            status_code=409 if exc.code == "failed_pages_ack_required" else 400,
+            status_code=409
+            if exc.code in {"export_not_ready", "export_no_pages", "failed_pages_ack_required"}
+            else 400,
             error_code=exc.code,
             message=exc.message or exc.code,
             detail=exc.detail,
         )
 
-    config = partial_export_service.config_from_job_config(
-        _job_config_of(job)
-    )
-    task = await partial_export_service.submit_partial_export(
-        owner_id=owner_id,
-        item_row=item,
-        file_info=file_info,
-        config=config,
-        pages=selection["pages"],
-        excluded_failed_pages=selection["excluded_failed_pages"],
-        snapshot_at=datetime.now(UTC).isoformat(),
-    )
     audit_log(
         "export",
-        "partial_redaction",
+        "item_export",
         task.export_id,
         detail={
             "job_id": job_id,
             "item_id": item_id,
-            "pages": selection["pages"],
-            "excluded_failed_pages": selection["excluded_failed_pages"],
+            "kind": body.kind,
+            "pages": body.pages,
+            "include_summary": body.include_summary,
         },
     )
     return task.public()
@@ -565,6 +533,99 @@ async def retry_item_pages(
         detail={"job_id": job_id, "item_id": item_id, "pages": selection},
     )
     return result
+
+
+# Issue#280 端点级错误映射：忙/状态不允许/冲突 = 409（可重试、需要用户动作）；
+# 参数错 = 400。与 retry_item_pages 的映射方式逐字同款。
+_MANUAL_VERIFY_409_CODES = frozenset(
+    {
+        "item_busy",
+        "manual_verify_requires_awaiting_review",
+        "page_not_failed",
+        "page_already_manual_verified",
+        "manual_boxes_conflict",
+        "page_not_manual_verified",
+    }
+)
+
+
+@router.post(
+    "/{job_id}/items/{item_id}/pages/{page}/manual-verify",
+    status_code=202,
+)
+async def manual_verify_page(
+    job_id: str,
+    item_id: str,
+    page: int,
+    request: ManualVerifyRequest,
+    store: JobStore = Depends(get_job_store),
+    owner_id: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """失败页人工拉框兜底（Issue#280 能力 4）：框必填、文本可选。
+
+    保存后该页从 ``recognition.failed_pages`` 移出、写入
+    ``recognition.manual_verified_pages``，人工框以 ``source=manual`` 落
+    file_store 与审阅草稿；交付闸随之放行（#199 红线由账本维护承载，见
+    ``_is_ready_for_delivery`` docstring）。撤销走同路径 DELETE。
+    """
+    job, item = _require_item(store, job_id, item_id, owner_id)
+    file_info = _load_file_info(item.get("file_id"))
+    if file_info is None:
+        raise HTTPException(status_code=404, detail="file not found")
+
+    page_count = page_status_service.page_count_of(item, file_info)
+    try:
+        page_manual_service.validate_manual_verify(
+            item,
+            page,
+            [box.model_dump() for box in request.boxes],
+            page_count=page_count,
+            file_type=file_info.get("file_type"),
+            page_boxes=file_info.get("bounding_boxes"),
+        )
+    except page_manual_service.PageManualError as exc:
+        raise AppError(
+            status_code=409 if exc.code in _MANUAL_VERIFY_409_CODES else 400,
+            error_code=exc.code,
+            message=exc.message or exc.code,
+            detail=exc.detail,
+        )
+
+    return await page_manual_service.submit_manual_verify(
+        store=store,
+        job=job,
+        item=item,
+        page=page,
+        boxes=[box.model_dump() for box in request.boxes],
+        operator=owner_id,
+        file_info=file_info,
+    )
+
+
+@router.delete(
+    "/{job_id}/items/{item_id}/pages/{page}/manual-verify",
+    status_code=202,
+)
+async def revoke_manual_verify_page(
+    job_id: str,
+    item_id: str,
+    page: int,
+    store: JobStore = Depends(get_job_store),
+    owner_id: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """撤销人工补框（Issue#280）：页回 failed（写回原失败原因码）并重新阻断交付。"""
+    job, item = _require_item(store, job_id, item_id, owner_id)
+    try:
+        return await page_manual_service.revoke_manual_verify(
+            store=store, job=job, item=item, page=page, operator=owner_id
+        )
+    except page_manual_service.PageManualError as exc:
+        raise AppError(
+            status_code=409 if exc.code in _MANUAL_VERIFY_409_CODES else 400,
+            error_code=exc.code,
+            message=exc.message or exc.code,
+            detail=exc.detail,
+        )
 
 
 @router.post("/{job_id}/submit", response_model=JobResponse)

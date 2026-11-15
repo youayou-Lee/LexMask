@@ -11,6 +11,71 @@
 - **测试**：新增 `test_issue308_box_quality_pass.py` 47 例（五 pass 单测 + 负样本钉：0710 视觉特征框豁免/家族外不消解/页脚完整案号存活/拼接不匹配不合并/跨类型半截不合并 + AMOUNT 块路径三形态 + preset 正则五形态对拍 + 接线钉 3 例）；全量 pytest 零回归（失败集 comm-3=0）；真卷双跑快照 diff 全类型守卫（家族外值多重集逐字节不变）。
 - **行为变更**：同页同值重叠的编号/金额家族框至多存一框（存活类型 LEGAL_CASE_ID/DOCUMENT_NUMBER 优先）；数字全空的编号/金额家族值不再落框；页脚带（页底 8%）纯数字 ≤3 位不再成编号类框；AMOUNT 块级回退在有字符框证据时不再吞整句。召回护栏：p6 空格形态、p4 断裂两半、p3 跨页前半截等 #301 召回成果逐条复核不降。
 
+### 增强（Issue#275）P2：整卷链默认关（B 定稿态钉住）+ 页级邻居上下文（B2/B3），A 只留接入缝
+
+- **为什么**：架构 v2（#272）裁定——整卷链（docline）不再是默认路径，改为默认关闭的可选压力阀（A 后置）；跨页实体连续性改由**页级邻居上下文**承担（B）。11-12 实测：NER 耗时由单请求固定开销（~0.75s）主导，整卷链省请求数 30% 的代价是首屏 2s→105s、整卷 30s→97s；页级路由（#273）已把「首个请求同步跑全卷块 NER」旁路掉，本支把旁路钉住、改写成显式 A 接入缝，净新增工作在邻居上下文。
+- **改了什么**：
+  - 新模块 `backend/app/services/page_neighbor_context.py`：进程内页文本登记表（per-卷 LRU ≤8 卷、每卷 ≤`TEXT_LAYER_DOCLINE_MAX_PAGES` 页、同页双源 text_layer 优先）+ `resolve_neighbors`（registry miss 且邻页为 PDF ⇒ `file_parser.get_pdf_page_text_blocks` 直取兜底、memo 化；任何异常 fail-open 返回空侧 + `{"error": 类型名}`，绝不 raise）+ contextvar 页间隔离（`activate/clear/resolve_neighbors_for_current`，读动作在 async 段一次性完成）。`_vol_key = realpath:size:mtime_ns` 加强变体（同路径同尺寸换内容可判异）。全部 fail-open：登记/取文失败只损失邻居召回，绝不影响识别主链。
+  - 注入点（`has_text_analysis.run_has_text_analysis`）：too_short 闸**之后**、组规划**之前**——邻居进 `plan_has_text_group_texts` 输入让预算闭包自动计入（规划后拼接会突破 context_tokens 上限），不进 `has_payload.texts` 本体；**上下文只进主查**（残差/bridge pass 不吃邻居，回映仍只对本页块 `_match_entities_to_ocr`——只辅助召回不参与判定）。缓存探测对称性（F-1）：整页探针改探 `probe_text = "\n".join(group_input_texts)`，与单组实发形态逐字同源；chars=0 时 `probe_text == text_content` 逐字相等（现状快路径回归钉）。metrics 五键落 stage_status（随 `stage_duration_ms` 入 DB 页账）：`has_text_neighbor_context`（neighbor|none|off 三值，error 有意不扩值集）/`has_text_neighbor_chars`/`has_text_neighbor_prev_source`/`next_source`/`has_text_neighbor_error`（M-3：取文出错单独计数）。
+  - 激活与登记（`vision_service`）：`detect_with_dual_pipeline` 的识别执行段包进 `_neighbor_context` 激活窗口（仅 PDF；IMAGE 无页邻接自然空）；登记点两处——`_detect_with_pdf_text_layer` 在**扫描闸之前**登记 text_layer（扫描页碎片段对邻居仍是真实墨迹，M-6 成本显式承认不另设闸）、`_detect_with_ocr_has` 在 `detect_and_draw` 后登记 ocr（路径取激活窗口落的 `_neighbor_registry_path`）；`_blocks_text` 单源复用（layer_text 与登记同一拼接式）。
+  - 签名键（`redaction_orchestrator._vision_signature`）：page 模式且 `RECOGNITION_NEIGHBOR_CONTEXT_CHARS>0` 才加 `neighbor_context_chars` 键——开↔关两方向签名都变（ner_governance 指纹先例），**off 态签名与 #273 逐键相等（零缓存失效）**；file 模式零新键（v6 键集逐字节，回滚开关语义不破）。
+  - A 接入缝：`detect_vision` page 分支的硬编码旁路改写为 `if accelerator_should_fill(file_id)`——新 `backend/app/services/accelerator.py` stub 恒 False，`RECOGNITION_ACCELERATOR_ENABLED=off|auto|on`（默认 off）本期无消费者，auto/on 记 warning 留痕防「配了没生效」静默；缝契约四条（结果让位页级/块级降级/负缓存 #204/签名加键）写进模块注释。file 分支一字不动。
+  - 配置两键（`config.py`）：`RECOGNITION_NEIGHBOR_CONTEXT_CHARS`（默认 200，[0,2000] 校验，0=关闭）+ `RECOGNITION_ACCELERATOR_ENABLED`（off|auto|on 校验）。
+  - 账本（B3）：`page_event_log.EVENT_SCHEMAS["ner_done"]` optional 扩容 `+(text_context, context_chars)`（白名单制，旧 producer 事件向后兼容）；`task_queue_pipelines` 页级 `ner_done` 透传两字段（docline 卷级链不带，不与页级混淆）。`page_event_summary` 不消费新字段（向后兼容）。
+- **开关矩阵**：默认（page+200）= B 定稿态；`RECOGNITION_NEIGHBOR_CONTEXT_CHARS=0` = B 关邻居（签名键消失、缓存回 #273 键集）；`RECOGNITION_ROUTING_MODE=file` = 一键回滚 #273 合并前现状（邻居完全不生效、签名逐字节）。两个开关正交。
+- **测试**：新增 4 文件 49 例——neighbor_context 单元（指纹/拒空/双源优先/LRU/边界 1-8/contextvar 隔离/裁剪粒度）、注入点（首组含 prev_tail/末组含 next_head、too_short 先于注入、metrics 五键、负健康仍抛 `HasTextNerUnavailable` #263 钉、残差文本不含邻居）、接线（签名三态键集钉、page 分支 docline 零调用、seam 通断、stub 三态 warning、ner_done schema 白名单扩容/拒写/旧形态兼容、两登记点+扫描页预闸登记）、缓存隔离（probe sha==实发组 sha、chars=0 逐字相等、同页同邻居 hit_before_slot、同页/跨页异邻居不串键）。设计稿 §5 变异判据 1-7 逐条「突变红→还原绿」验证 PASS。后端全量 3299 passed/48 skipped（=基线 3250+49，零失败零新增 skip，node-id 级 comm -3 除新增 275 测试外零差异）；前端零改动。
+- **挂账**：86 页真卷 spike 三态对比（file / B neighbor=0 / B neighbor=200，三轮各自清缓存）挂云门④执行（§4.2 判据先定）；水印卷旁验（M-6 观测项：对比 neighbor=0/200 的 failed_pages 与逐页 region_count）；默认 200 部署即 page 模式页缓存全量 miss 重建（与 #273 同性质，非回归）。
+### 变更（Issue#278）统一导出链：完整导出与选页导出合并为一条 item 级链，产物改为 zip 包——**说明页不再插入 PDF 正文（用户默认行为变化）**
+
+- **为什么**：用户口径（2026-11-12 重述）拍定——①选页导出与完整导出是同一个流程（页选择只是「导出」的参数）；②导出前要能回到编辑、改框即生效；③说明与正文分离，正文 PDF 里只有正文。旧链两条（部分导出切页重渲染 + step5 批量链打主产物）不同源，且旧部分导出强制往正文插说明页。
+- **用户可见行为变化（两条披露，F10）**：
+  1. **说明页废除**：导出产物 PDF 不再插入任何说明性内容页（旧部分导出的第一页强制说明页已删）。说明信息移至包内可选的 `说明.txt`（默认关闭，导出弹窗勾选「在包内附带 说明.txt」才生成）；
+  2. **完整导出改为统一包形态**：产物 = 一个 zip（脱敏产物 + `manifest.json` + 可选 `说明.txt`），与选页导出同一条链、同一 manifest 结构，仅 `kind`（`full`/`partial`）与渲染策略不同。`manifest.json` 机读清单含 `pages`/`page_count`（包内页数）/`excluded_failed_pages`（对象式带原因码）/`manual_verified_pages`（#280 契约，空集显式 `[]`）/`route_summary`/`files`（逐 entry sha256）/`app_version` 等全键。step5 单文件点「下载脱敏包」改走此链（>1 文件仍走既有批量传输链）。
+- **改了什么**：
+  - 后端：`POST /jobs/{j}/items/{i}/export`（202）唯一入口，旧 `partial-export` 端点删除；`full` = 主产物直取两档（无失败页卷逐字节 copyfile，sha256 与主产物相等；有失败页卷 fitz `insert_pdf` 结构级切页，失败页物理不进包）、跳类型闸（agent md/docx 完整导出保留，`pages=[]`/`page_count=0` 全键不省，附 mapping/retained 产物缺失记 `skipped` 不回滚）；`partial` = 切页重渲染（类型闸照旧）；导出快照取框权威次序 = review 草稿 > file_store（改框即生效；快照只读不回写主账）；页事件 JSONL 新增 `export_started`/`export_page_done`/`export_packaged`/`export_failed` 四个白名单事件；批量传输链 manifest 补 `kind: "batch_transport"`/`app_version` 两键（行为零变化）。
+  - 前端：导出弹窗双模式（完整/选页，缺省选页；step5 单文件入口缺省完整）+ 说明.txt 开关 + 「回到编辑」常驻按钮（batch=flush 草稿后 `resolveExportIssue` 跳审阅画布；playground=同页收起导出块+锚点聚焦编辑器）；选择集模块级 cache 持久化（关弹窗保留、重开预填、与最新页状态交集剪枝，剪枝谓词 success∪manual_verified）；进度卡只报服务端真实 stage/current/total；记录列表 kind 徽标 + 双口径摘要（legacy `partial_redaction` 旧记录保留 +1 说明页补偿、excluded int[] 读侧升格，TTL 内可继续下载）；i18n `batchWizard.partialExport.*` 迁移为 `batchWizard.export.*`（zh/en 成对）。
+  - 顺手修复（A4 实测暴露）：`ExportTaskManager` 双重入队缺陷（submit 预入队 + put_nowait 双投 ⇒ 同一导出 runner 跑两遍、zip 双写），worker 循环补终态防重入闸。
+- **测试**：后端新增 8 文件 47 例（manifest 逐键/route 聚合/A1-A6/事件白名单/脏账本不阻断），全量 **3297 passed**（基线 3250，失败集合 comm -3 双侧为空=零回归）；变异 V1-V9（10 变体）全 KILLED；前端新增 3 文件 15 例（弹窗双口径/选择持久化/回到编辑），全量 **622 passed**（基线 607，零回归）、tsc 双门 rc=0、build 绿。
+- **挂账**：云门④真卷 B1（审阅改框→回到导出→生成包→重启复下载）+ 真容器重启复验，随部署窗口执行（见 `LexMask-workspace/github-issues/2026-11-15-batch2/report-issue278.md`）。
+### 增强（Issue#280）失败页人工拉框兜底 `manual_verified`：识别失败 ≠ 整卷交不出去，用户补框后带显式标记交付
+
+- **为什么**：用户口径（2026-11-12）——自动识别失败不该让整卷永远交不出去；急需完整交付结果时允许在失败页上人工拉框补齐，作为带显式标注的临时兜底。#199 红线**不退让**：识别失败且无人工确认的页永不进包；manual 页放行的唯一通道是带 auth 的显式 POST（+审计+事件+账本），该动作物理把页移出 `recognition.failed_pages`——不存在「failed 页未处理却 ready」的状态组合。
+- **改了什么**（后端）：
+  - 新服务 `page_manual_service.py`：准入（file_type 400 / awaiting_review 409 / 越界 400 / `page_not_failed`+`page_already_manual_verified` 409 / **`manual_boxes_conflict` 409 仅对「页不在 ledger 的 source=manual 框」**——审阅期手拉框不许被 verify 整页替换静默吞掉；自动框与 ledger 内重验替换不误伤，r2 F-I4 收窄口径）/ `manual_boxes_required`（框必填、文本可选 Ruling）/ 坐标 400；提交四写：file_store 整页替换（int/str 双键同摘）+ 审阅草稿同替换（交付期草稿整份覆盖 file_store，漏并=丢人工框）+ 账本双表整表替换（failed_pages 移出 / `manual_verified_pages` 写入谁·何时·框数·原失败原因快照）+ 页事件 `manual_verified`；撤销 `revoke_manual_verify` 写回 `original_reason`（重跑再失败页不覆盖新原因码，§4.3 边角 2 分支处置）、ledger 整条删除、file_store/草稿删该页 manual 框、事件 `manual_revoked`；事件与审计 operator 落 `audit_log.user` 顶层（诊断面白名单不声明人名字段，r2 F-I1 唯一口径）。
+  - 投影第四态：`page_status_service` 新 `_PAGE_STATE_MANUAL="manual_verified"`，`failed_pages` 权威优先（重跑再失败页回红叉）、manual 页带 `manual:{box_count,verified_at,operator,auto_completed}`；卷级 `manual_verified_pages` 清单；`recognized_page_numbers` 保持纯自动口径，新增 `exportable_page_numbers`（auto ∪ manual）供部分导出准入与说明页（两处消费同源，r2 F-I3）。
+  - 交付闸：`_is_ready_for_delivery` 谓词表达式**不变**（阻断输入仍是 failed_pages）——语义变更由账本维护承载（docstring 注明机制保证）；`build_export_report`/`iter_report_file_rows` per-file 新增 `manual_verified_pages` + 无失败页时 `error` 用中性英文警示；summary 新增 `manual_verified_selected_pages`；`job_metadata` 轻量列表新增 `manual_verified_pages_count`（`recognition_success_pages` 保持纯自动口径，前端拼「148 自动 + 1 人工 / 149」用两键相加）。
+  - 导出：部分导出 manifest/meta 新增 `manual_verified_pages`+`manual_verified_pages_count`（只列 included 页，快照语义）；说明页逐页披露「第 X 页为人工补框结果，未经自动识别校验」；响应模型 `JobExportReportFile.manual_verified_pages` / summary `manual_verified_selected_pages`（additive 向后兼容）。
+  - 重跑不覆盖人工框（r2 冷审裁定：人工框永远保留并存，无 supersede）：`detect_vision` 写回点收窄守卫——按**对象属性** `b.source=="manual"` 过滤保留旧人工框与自动框拼接（r3 P0：`_boxes_from_page` 返回 BoundingBox 模型，isinstance(dict) 判定恒 False 会静默丢框）；`_write_failed_pages` 只留注释性不变式，finalize 零对账代码；单页重试既有 `_merge_retried_boxes_into_review_draft` manual 保留口径与之统一。
+  - 事件 schema：`manual_verified`(required box_count) / `manual_revoked`(optional box_count) 入 `EVENT_SCHEMAS` 白名单（只增不改）。
+  - 端点：`POST/DELETE /jobs/{id}/items/{id}/pages/{page}/manual-verify`（202；409/400 错误码映射与 retry_item_pages 逐字同款）；请求模型 `ManualVerifyBoxIn`/`ManualVerifyRequest`。
+- **改了什么**（前端）：
+  - `jobsApi.ts`：`PageCellState` 增 `manual_verified`；`ItemPageStatus.manual_verified_pages` + 页格 `manual` 元信息（旧后端无键回落 null/[]，normalizer 兜底）；`manualVerifyPage`/`revokeManualVerify`。
+  - 页格：琥珀色第四态格 + 「人工」角标（aria 同步）；manual 页与 success 同口径可进选择集/连选（#199 红线只挡 failed）；汇总行「成功 N · 人工 M · 失败 K · 未跑 P」；manual 详情（操作者/补框时间/框数 + 自动成功重跑共存提示 + 两段确认撤销）；failed 详情新增「人工补框」主按钮（disabled 跟随 retryable 同一准入）。
+  - 新对话框 `manual-annotate-dialog.tsx`：复用 `ImageBBoxEditor`（pipelines 类型表 + 默认色，零新依赖）；页图走净化副本 page-image（不传 raw=true，Issue#236 裁定）；框空禁用保存、每框文本可选输入；错误码走 `manualError.*`（未知码回落通用文案）。
+  - `batch-row-pages` 接线（对话框 + 撤销刷新同一 page-status 路径）；`use-partial-export-selection` 白名单谓词增 manual（预填/剪枝同口径）；`partial-export-dialog` 与 step5 导出页新增「本卷含 N 页人工补框」提示条（data-testid=manual-pages-hint）；i18n zh/en 成对 33 键。
+- **测试**：后端 5 文件 22 例（投影四态矩阵+failed∧ledger 优先+exportable 口径 / 事件白名单拒写 / 交付闸 A1 放行+A2 阻断 / API 全链 B1 verify→放行→真 ExportTaskManager manifest+说明页披露、B2 撤销→重新 409→二次撤销 409、B3 负向准入矩阵含 conflict 与 r3 例外正判据、B4 框落账 `_boxes_by_page` 同口径、C3 manual 页不可重试、D1 审计顶层 user/detail、C1/C2 整卷重跑包裹注入写回点后失败与自动成功并存）——全量 3272 passed/48 skipped 零回归（基线 3250+22）；变异 M1-M4/M6 五条「删守卫→判据红→还原」全杀死；ruff 清洁。前端 3 文件 12 例（grid/dialog/selection）——vitest 619 passed（基线 607+12）、tsc 双门 rc=0、build 绿，comm -3 零删除。
+- **挂账**：云门④ G1/G2（真卷 verify→交付→manifest 检查；稳定失败页复用 #209/#277 挂账卷或 `flaky_proxy` RST 造障）按 ledger.md 流程挂账不在本支清偿；门⑤浏览器手验 F4 本地栈可跑；§4.3 边角 1（画布删框不回写 ledger 的 box_count 失同步）按设计稿标注「verify 时刻口径」兜住，误导演明显著另立跟踪 issue。
+### 增强（Issue#276）文本列与视觉列正交：页账双列记账（visual_source/visual_types/visual_region_count/visual_failed_reason）+ 页格「本页视觉列」四态呈现
+
+- **为什么**：印章、签名、手写批注在文本层和 OCR 里都不存在，只能靠视觉列（LA）。此前文本列与视觉列在记账与展示上完全耦合——LA 不可用时 #256 只在**条目级**落一句 `visual_detection_skipped`，逐页打开「这页发生了什么」看不到视觉列跳过；视觉阶段运行中异常只有 `pipeline_status.visual_features.error` 与 warning，页账无机读码；「文本列命中即认为处理完」让绿格被误读成「完整完成」。父 #272（架构 v2）P3：把视觉列做成与 #273 `text_source` 对称的**页账第二列**，分别记账、分别可失败。
+- **改了什么**：
+  - `vision_service.detect_with_dual_pipeline`：jobs 循环结束后合成 `pipeline_status["visual_column"]`（唯一合成点）——`source`（la/none，LA 口径不含 MinerU seal/专用检测器通道）、`types`（走 LA 的 slug）、`requested_types`（勾选侧原表，审计用）、`region_count`、`failed_reason`（`visual_stage_error`，来自 `record_pipeline_result` 已落的 failed 态，不发明新状态）。`is_page_fatal_stage_error` 既有语义零改动——视觉列失败不把整页判失败（#263 文本列升级语义原样，两列互不传导）。
+  - `task_queue_pipelines`：四终态写入点——completed 分支 `**_visual_fields_from_quality(quality)`（quality 派生在前）+ `**page_visual_ledger` overlay（r2 F6 收窄为只含 `visual_failed_reason="la_unavailable"`，由队列层的 #256 预检剥离事实补账）；timeout/异常分支 visual 字段**恒零键**（r2 F1：写回仅在检测整体成功后发生，失败页无新账，不回读、不编造、不残留旧账）；重试翻绿写点补 `**_visual_fields_from_file_store`（r2 F2：fresh 回读，防翻绿页被整记录替换清零静默退化 absent）。completed 分支 `page_done` 事件增传 `visual_source`/`visual_failed_reason`（#279 `EVENT_SCHEMAS["page_done"]` 白名单扩容，`visual_types` 是 list 不入 JSONL）。
+  - `page_status_service`：只读派生 `_visual_state_of` 四态（done/skipped/failed/absent；`failed_reason` 判定先于 `source=="la"`——行 5 正常形态防吞；零命中=done 的 zero_hit 严禁折成 skipped）进 `detail.visual`；卷级 `visual_summary` 五计数（任一页有视觉证据才出键，旧数据 None）。三态判定、`failed_pages` 权威、部分导出选页白名单零改动（#257 契约）——「完整完成」新口径=绿格 + `visual_state ∈ {absent, done}`，skipped/failed 页绿格带琥珀标记。
+  - 前端：`jobsApi.ts` 页视觉列类型 + `PAGE_VISUAL_STATES` 白名单 fail-null + `normalizePageDetail` 透传 `visual`（r2 F7：唯一闸口只加类型不透传等于没做）+ `visual_summary`；`batch-page-matrix.tsx` 详情面板新增「本页视觉列」行（skipped/failed 琥珀）+ 卷头 `page-matrix-visual-hint` 琥珀提示（不改 failed 计数与重试逻辑）；i18n zh/en 7 键成对（命中数文案明写 LA 口径，r2 F8 防门⑤争议）。step3 行级提示裁剪给 #276-followup（行数据走 item 摘要管道，出界）。
+  - 预留（默认关）：`VISUAL_EXPLICIT_TYPE_PAGE_FAIL`（§3.4）——开 True 且用户显式勾选视觉类型时阶段异常包成 `VisualStageError` 专类升级页级失败（参照 `RoutingEvidenceTimeout` 先例），机读理由码不变。
+  - `scripts/audit_page_event_log.py --self-test` 补 page_done 白名单双向钉：携带 `visual_source` 落盘、携带 `visual_types` 拒写（dropped_unknown_field）。
+- **测试**：新增后端 3 文件 38 例（`test_issue276_page_visual_ledger.py` 四终态写入点 + overlay + 事件 + helper 契约；`test_issue276_dual_column.py` 双列框合流 + 合成块四形态 + P0 契约钉（routing/visual 提取互不引用）+ 升级开关两态；`test_issue276_page_status_visual.py` 四态投影 × 旧数据 None + visual_summary + 三态零改动负向钉）；前端 `issue276-page-detail-visual.test.tsx` 13 例（五文案 zh/en、琥珀 class、卷头 hint、normalize 透传、未知 state fail-null）。变异 M1-M7 全 KILLED（删合成块/删 overlay/三态投毒/撤白名单键/派生序翻转/零命中折 skipped/漏 retry 回读各判红后还原）；后端全量 3288 passed / 48 skipped（基线 3250+38，零回归）；前端 80 文件 620 passed、tsc 双门、build 绿；既有 #256/#273/#279/#257/#199/#263 回归面零改动全绿。
+- **挂账**：验收 4（云 DCU 印章召回对比）挂云门④；step3 终局行级提示另立 `#276-followup`。
+### 清扫（Issue#296）死代码第二轮：recognition-config 孤儿导出族 + rec hook 仅测试引用字段
+
+- **为什么**：#269（PR#298）挂账面。`buildPlaygroundTextGroups` 及其类型族的唯一消费者（`use-playground-recognition.ts`）已在 #269 删除，成为零消费孤儿导出；`sortedEntityTypes`/`setPlaygroundTextTypeGroupSelection` 仅测试 mock 引用、UI 零消费。
+- **清扫了什么**：
+  - `features/playground/lib/recognition-config.ts`：删 `buildPlaygroundTextGroups`、`PlaygroundTextGroup`、`PlaygroundTextGroupKey` 类型族及随之失去唯一消费方的 `SelectionTone` import。
+  - i18n 死键：`playground.group.regex` / `playground.group.semantic`（唯一消费方即被删函数；en 两副本 + zh 三副本；zh/en 键位奇偶测试两侧同步删保持 parity）。
+  - `use-playground-recognition.ts` 公开面收缩：`sortedEntityTypes`（memo）与 `setPlaygroundTextTypeGroupSelection`（callback）及 return 条目；`sortEntityTypes` 服务函数仍有 2 处活消费（缓存载入/目录重取）保留。
+  - 三个组件测试（legal-preset / scope-dialog / reskin）mock 对象同步清理两死字段。
+- **验证**：逐项 grep 证明零消费后才删（含测试、e2e、i18n、类型引用、动态键模板串）；全量 vitest 与基线 comm -3 零差异；tsc 双门 rc=0；build 绿；复活变异抽查：临时加回被删导出，607 用例零变红且类型门通过，证实所删为零消费真死代码。
 ### 修正（Issue#302）正则保证层与任务级识别项勾选求交：未勾选的日期不再被 DATE 正则打码
 
 - **为什么**：正则保证层（#43 引入）只看账号级启用集（`get_regex_types`），与任务级勾选完全无关——用户未勾选时间/日期，正文日期仍被 DATE 正则打码（实例：扫描型PDF误判为文本型-1.pdf 第 3 页）。与「勾什么识别什么」的既定语义（#78 账号三态、`_semantic_entity_type_ids` 注释）矛盾。docline 链保证层（#115）同族同病。
