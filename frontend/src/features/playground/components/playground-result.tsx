@@ -102,7 +102,10 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   const clickCounterRef = useRef<Record<string, number>>({});
   const activeMarkTimeoutRef = useRef<number | null>(null);
   const activeMarksRef = useRef<HTMLElement[]>([]);
-  const resultReady = !isImageMode || Boolean(redactedImageUrl);
+  // 门⑥ 四段 R4-3：子集口径的成品就是「本次这批页」，首帧不依赖 redactedImageUrl
+  // （子集分支不 bump redactionVersion ⇒ 不会重新请求 redacted 预览图；扫描件下
+  // `resultReady` 恒 false ⇒ 下载按钮直接不渲染）。
+  const resultReady = preview || !isImageMode || Boolean(redactedImageUrl);
 
   // 成品视图：文本型 PDF 提供（扫描件/图片的结果页本就实时渲染成品；
   // docx/txt 成品非 PDF 无页图，page-image 端点也不支持）。

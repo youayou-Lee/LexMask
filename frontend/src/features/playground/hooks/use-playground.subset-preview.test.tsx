@@ -191,6 +191,26 @@ function Probe() {
       </button>
       <button
         type="button"
+        data-testid="set-unselected-boxes"
+        onClick={() =>
+          pg.setBoundingBoxes([
+            {
+              id: 'u1',
+              page: 2,
+              x: 10,
+              y: 10,
+              width: 20,
+              height: 20,
+              type: 'custom_ocr_has_name',
+              selected: false,
+            },
+          ])
+        }
+      >
+        set-unselected-boxes
+      </button>
+      <button
+        type="button"
         data-testid="set-boxes"
         onClick={() =>
           pg.setBoundingBoxes([
@@ -517,6 +537,44 @@ describe('Issue#327：识别在飞时的子集预览链路', () => {
     });
 
     await waitFor(() => expect(screen.getByTestId('subset-preview').textContent).toBe('no'));
+  });
+
+  it('(c2) 画布上某页的框被全部取消勾选 ⇒ 该页整页不进请求（R4-2：否则回落快照框照样打码）', async () => {
+    await seedRecognizing();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('set-unselected-boxes'));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+
+    await waitFor(() => expect(createSubsetPreview).toHaveBeenCalledTimes(1));
+    const body = vi.mocked(createSubsetPreview).mock.calls[0][2] as {
+      bounding_boxes?: Array<{ id: string; page?: number }>;
+    };
+    const boxes = body.bounding_boxes ?? [];
+    // 画布有框 ⇒ 走合并分支；页 2 的框未勾选 ⇒ 既不带画布框，也不回落服务端快照框
+    expect(boxes.filter((box) => box.page === 2)).toEqual([]);
+    expect(boxes.filter((box) => box.page === 1)).toEqual([
+      expect.objectContaining({ id: 's1', page: 1 }),
+    ]);
+  });
+
+  it('(d2) 非子集口径下载：URL 不得带 preview=true（R4-1 负例：恒带会被后端 400）', async () => {
+    await seedRecognizing();
+    // 没有子集回执（stage 仍在 preview）⇒ 走全卷口径
+    expect(screen.getByTestId('subset-preview').textContent).toBe('no');
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('download-btn'));
+    });
+
+    await waitFor(() => expect(downloadFile).toHaveBeenCalledTimes(1));
+    const [url] = vi.mocked(downloadFile).mock.calls[0] as [string, string];
+    expect(url).toContain('redacted=true');
+    expect(url).not.toContain('preview=true');
   });
 
   it('(d) 结果页下载带 preview=true（C-3：闭包依赖含 subsetPreview）', async () => {

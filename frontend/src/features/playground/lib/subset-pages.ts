@@ -82,13 +82,17 @@ export function subsetCandidates(
  * 手改结果。口径：**画布碰过的页用画布框，其余页用服务端快照框**；画布为空则整份交回
  * 服务端快照（调用方发 undefined，后端从 file_store 兜底）。
  */
-export function mergeSubsetBoxes<T extends { page?: number }>(
+export function mergeSubsetBoxes<T extends { page?: number; selected?: boolean }>(
   snapshot: T[],
   canvas: T[],
 ): T[] {
   if (!canvas.length) return snapshot;
+  // 门⑥ 四段 R4-2：touched 取**全量**画布页（含未勾选框）。否则「把某页的框全部取消
+  // 勾选」不会被识别成「用户动过这页」⇒ 回落服务端快照框 ⇒ 该页照样被打码，与全卷
+  // 链路（`remap_boxes_to_subset` 按 `selected` 过滤）口径不一致。
   const touched = new Set(canvas.map((box) => Number(box.page || 1)));
-  return [...snapshot.filter((box) => !touched.has(Number(box.page || 1))), ...canvas];
+  const kept = canvas.filter((box) => box.selected !== false);
+  return [...snapshot.filter((box) => !touched.has(Number(box.page || 1))), ...kept];
 }
 
 /**

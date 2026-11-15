@@ -791,7 +791,9 @@ export function usePlayground() {
         // 或只有用户手改/手拉的框。直接发画布框会把服务端框整份替换（丢页），直接不发
         // 又丢掉手改结果——因此：**画布为空 → 不发框（后端从 file_store 兜底）**；
         // **画布有框 → 画布碰过的页整页覆盖快照框**。
-        const canvasBoxes = imageCtx.boundingBoxes.filter((box) => box.selected !== false);
+        // 传**全量**画布框（含未勾选）：mergeSubsetBoxes 内部按 `selected` 过滤，但页覆盖
+        // 判定必须看得见未勾选框（否则「某页框全取消勾选」会回落到快照框 ⇒ 照样打码）。
+        const canvasBoxes = imageCtx.boundingBoxes;
         let boxesPayload: unknown[] | undefined;
         if (canvasBoxes.length > 0) {
           const snapshot = await fetchSnapshotBoxes(fileId);

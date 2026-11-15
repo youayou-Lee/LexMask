@@ -197,6 +197,13 @@ describe('Issue#327：子集结果页取图发原卷页号（C-4）', () => {
     ).toBe(false);
   });
 
+  it('扫描件（image 模式）子集口径：首帧就渲染下载按钮（R4-3：不得依赖 redactedImageUrl）', () => {
+    // 子集分支不 bump redactionVersion ⇒ 不会再请求 redacted 预览图；若 resultReady
+    // 仍写成 `!isImageMode || Boolean(redactedImageUrl)`，扫描件下按钮直接不渲染。
+    renderResult({ preview: true, previewPageCount: 54, previewPageMap: PAGE_MAP, isImageMode: true });
+    expect(screen.getByTestId('playground-download')).toBeTruthy();
+  });
+
   it('子集口径下不渲染「对照｜成品」切换（识别在飞没有可对照的框）', () => {
     renderResult({ preview: true, previewPageCount: 54, previewPageMap: PAGE_MAP });
     expect(screen.queryByTestId('playground-result-view-toggle')).toBeNull();

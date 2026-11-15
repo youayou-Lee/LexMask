@@ -125,6 +125,20 @@ describe('mergeSubsetBoxes (Issue#327 门⑥ C-2)', () => {
     const canvas = [{ id: 'm1', page: 5, x: 0, y: 0, width: 1, height: 1 }];
     expect(mergeSubsetBoxes(snapshot, canvas)).toEqual([...snapshot, ...canvas]);
   });
+
+  it('某页的框全部被取消勾选 ⇒ 该页整页不进请求（R4-2：不得回落快照框）', () => {
+    const canvas = [{ id: 'u1', page: 2, x: 0, y: 0, width: 1, height: 1, selected: false }];
+    // 页 2 被画布覆盖 ⇒ 快照里页 2 的框必须去掉；画布未选框不发 ⇒ 页 2 零框
+    expect(mergeSubsetBoxes(snapshot, canvas)).toEqual([snapshot[0]]);
+  });
+
+  it('同页混合：选中框照常发，未选框不发（页仍算被覆盖）', () => {
+    const canvas = [
+      { id: 'm1', page: 2, x: 0, y: 0, width: 1, height: 1, selected: true },
+      { id: 'u1', page: 2, x: 1, y: 1, width: 1, height: 1, selected: false },
+    ];
+    expect(mergeSubsetBoxes(snapshot, canvas)).toEqual([snapshot[0], canvas[0]]);
+  });
 });
 
 describe('outputPreviewPageForRequest (Issue#327 门⑥ C-4)', () => {
