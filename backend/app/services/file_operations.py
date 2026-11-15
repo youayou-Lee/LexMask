@@ -85,6 +85,7 @@ async def execute_redaction_request(
     bounding_boxes: list,
     config: Any,
     progress_cb: Callable[[int, int], None] | None = None,
+    pages: list[int] | None = None,
 ) -> None:
     """Execute redaction via the service layer.
 
@@ -98,6 +99,7 @@ async def execute_redaction_request(
         entities=entities,
         bounding_boxes=bounding_boxes,
         config=config,
+        pages=pages,
     )
     await execute_redaction(req, progress_cb=progress_cb)
 

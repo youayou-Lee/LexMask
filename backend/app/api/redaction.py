@@ -64,6 +64,8 @@ async def execute_redaction(
     try:
         _fms.assert_file_owner(request.file_id, owner_id)
         response = await _orch.execute_redaction(request)
+    except _orch.SubsetRedactionError as exc:
+        raise AppError(status_code=400, error_code="subset_redaction_invalid", message=str(exc))
     except PdfEncryptedError as exc:
         # Issue #30：加密 PDF 返回结构化错误码，不再 404 英文原文
         raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
@@ -101,6 +103,8 @@ async def preview_image_redaction(
             page=page,
             config=body.config,
         )
+    except _orch.SubsetRedactionError as exc:
+        raise AppError(status_code=400, error_code="subset_redaction_invalid", message=str(exc))
     except PdfEncryptedError as exc:
         raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
     except ValueError as exc:
@@ -133,6 +137,8 @@ async def locate_entities(
             "ner",
             "ner",  # source：前端据此区分识别框/手拉框（显示与执行同步都靠它）
         )
+    except _orch.SubsetRedactionError as exc:
+        raise AppError(status_code=400, error_code="subset_redaction_invalid", message=str(exc))
     except PdfEncryptedError as exc:
         # Issue #30：加密 PDF 返回结构化错误码（旧行为是 except Exception 吞成
         # 无码 400，中文界面只能显示英文原文）
@@ -152,6 +158,8 @@ async def get_comparison(file_id: str, owner_id: str = Depends(require_auth)):
     try:
         _fms.assert_file_owner(file_id, owner_id)
         return await _orch.get_comparison(file_id)
+    except _orch.SubsetRedactionError as exc:
+        raise AppError(status_code=400, error_code="subset_redaction_invalid", message=str(exc))
     except PdfEncryptedError as exc:
         # Issue #30：compare 链路（get_comparison→_extract_pdf_text）遇加密卷 400+错误码，不落 500
         raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)
@@ -199,6 +207,8 @@ async def detect_sensitive_regions(
             include_result_image=include_result_image,
             owner_id=owner_id,
         )
+    except _orch.SubsetRedactionError as exc:
+        raise AppError(status_code=400, error_code="subset_redaction_invalid", message=str(exc))
     except PdfEncryptedError as exc:
         # Issue #30：加密 PDF 返回结构化错误码，不再 404 "document closed or encrypted"
         raise AppError(status_code=400, error_code=exc.error_code, message=exc.user_message)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import tempfile
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -19,6 +20,7 @@ from typing import Any
 
 import httpx
 
+from app.core.config import settings
 from app.core.errors import AppError
 from app.core.persistence import to_jsonable
 from app.core.visual_feature_categories import has_only_ocr_fallback_visual_slugs
@@ -46,6 +48,19 @@ logger = logging.getLogger(__name__)
 
 def _elapsed_ms(started: float) -> int:
     return max(0, round((time.perf_counter() - started) * 1000))
+
+
+class SubsetRedactionError(ValueError):
+    """页子集打码请求非法（页号越界 / 类型不支持 / 非打码模式）。"""
+
+
+def _remove_quietly(path: str | None) -> None:
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _get_file_store():
@@ -274,15 +289,67 @@ async def execute_redaction(
         request.config = request.config.model_copy(update={"replacement_mode": ReplacementMode.SMART})
 
     _attach_word_pools(request.config, str(file_info.get("owner_id") or "local_user"))
+
+    # —— Issue#321 页子集打码 ——
+    # 只对「已处理页」出产物：切页（原卷升序）→ 框页号重映射 → 按扫描件栅格化打码。
+    # 未处理页物理不进产物；全卷路径（pages 缺省）完全不变。
+    subset_pages: list[int] | None = None
+    subset_tmp_path: str | None = None
+    effective_file_info = file_info
+    effective_boxes = request.bounding_boxes
+    if request.pages:
+        subset_pages = sorted({int(p) for p in request.pages})
+        if not subset_pages or subset_pages[0] < 1:
+            raise SubsetRedactionError("页号必须从 1 开始")
+        if _mask_file_type not in {"pdf", "pdf_scanned"}:
+            raise SubsetRedactionError("页子集打码仅支持 PDF（扫描件/含框文本型）")
+        if request.config.replacement_mode != ReplacementMode.MASK:
+            raise SubsetRedactionError("页子集打码仅支持打码模式")
+
+        page_count = int(file_info.get("page_count") or 0)
+        if not page_count:
+            import fitz
+
+            with fitz.open(str(file_info.get("file_path"))) as _doc:
+                page_count = _doc.page_count
+        bad_pages = [p for p in subset_pages if p > page_count]
+        if bad_pages:
+            raise SubsetRedactionError(f"页号超出原卷范围（共 {page_count} 页）：{bad_pages}")
+
+        from app.services.partial_export_service import remap_boxes_to_subset, slice_pdf_pages
+
+        fd, subset_tmp_path = tempfile.mkstemp(
+            prefix="subset-", suffix=".pdf", dir=str(settings.OUTPUT_DIR)
+        )
+        os.close(fd)
+        try:
+            slice_pdf_pages(str(file_info.get("file_path")), subset_pages, subset_tmp_path)
+        except Exception as exc:  # noqa: BLE001 - 统一转成 400 语义
+            _remove_quietly(subset_tmp_path)
+            raise SubsetRedactionError(f"切页失败：{exc}") from exc
+        effective_file_info = {
+            **file_info,
+            "file_path": subset_tmp_path,
+            "file_type": "pdf_scanned",
+            "is_scanned": True,
+            "page_count": len(subset_pages),
+        }
+        # 只保留子集页的框，并把 page 改成子卷页号（1..len(subset_pages)）
+        effective_boxes = remap_boxes_to_subset(request.bounding_boxes, subset_pages)
+
     redactor = Redactor()
-    result = await redactor.redact(
-        file_info=file_info,
-        entities=request.entities,
-        bounding_boxes=request.bounding_boxes,
-        config=request.config,
-        progress_cb=progress_cb,
-    )
-    selected_item_count = _selected_request_item_count(request.entities, request.bounding_boxes)
+    try:
+        result = await redactor.redact(
+            file_info=effective_file_info,
+            entities=request.entities,
+            bounding_boxes=effective_boxes,
+            config=request.config,
+            progress_cb=progress_cb,
+        )
+    finally:
+        if subset_tmp_path:
+            _remove_quietly(subset_tmp_path)
+    selected_item_count = _selected_request_item_count(request.entities, effective_boxes)
 
     # 更新文件存储
     async with lock:
@@ -295,6 +362,13 @@ async def execute_redaction(
             info["redacted_count"] = int(result.get("redacted_count", 0))
             info["bounding_boxes"] = _group_boxes_by_page(request.bounding_boxes)
             info["entities"] = to_jsonable(request.entities)
+            # Issue#321：本次处理页与产物页映射（全卷运行则清空子集元数据）
+            info["processed_pages"] = list(subset_pages) if subset_pages else []
+            info["page_map"] = (
+                {str(idx + 1): page for idx, page in enumerate(subset_pages)}
+                if subset_pages
+                else {}
+            )
             # 版本历史追踪
             version_entry = {
                 "version": len(info.get("redaction_history", [])) + 1,
@@ -304,6 +378,12 @@ async def execute_redaction(
                 "replacement_count": result["redacted_count"],
                 "entity_map": result.get("entity_map", {}),
                 "mode": request.config.replacement_mode.value if hasattr(request.config.replacement_mode, 'value') else str(request.config.replacement_mode),
+                "processed_pages": list(subset_pages) if subset_pages else [],
+                "page_map": (
+                    {str(idx + 1): page for idx, page in enumerate(subset_pages)}
+                    if subset_pages
+                    else {}
+                ),
                 "created_at": datetime.now(UTC).isoformat(),
             }
             if "redaction_history" not in info:
@@ -319,6 +399,12 @@ async def execute_redaction(
         residual_entities=result.get("residual_entities", []),
         download_url=f"/api/v1/files/{file_id}/download?redacted=true",
         output_path=result.get("output_path"),
+        processed_pages=list(subset_pages) if subset_pages else [],
+        page_map=(
+            {idx + 1: page for idx, page in enumerate(subset_pages)}
+            if subset_pages
+            else {}
+        ),
     )
 
     # Prometheus metrics

@@ -2093,12 +2093,19 @@ class RedactionPipelineMixin:
                 watermark_text=(str(cfg.get("watermark_text") or "").strip() or None),
                 watermark_delivery=cfg.get("watermark_delivery"),
             )
+            raw_pages = cfg.get("pages")
+            subset_pages = (
+                sorted({int(p) for p in raw_pages if isinstance(p, int) and p >= 1})
+                if isinstance(raw_pages, list) and raw_pages
+                else None
+            )
             await execute_redaction_request(
                 task.file_id,
                 entities,
                 boxes,
                 config,
                 progress_cb=redaction_progress_cb if redaction_pages > 0 else None,
+                pages=subset_pages,
             )
             self._record_item_performance(
                 store,
