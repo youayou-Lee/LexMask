@@ -54,6 +54,19 @@ vi.mock('./playground-result-views', () => ({
 
 vi.mock('./processing-details-card', () => ({
   PlaygroundProcessingDetails: () => null,
+  usePlaygroundProcessingDetails: () => ({
+    performance: null,
+    mergedPerf: null,
+    rows: [],
+    totalMs: null,
+    textDirect: false,
+    failedPages: [],
+    hasData: false,
+    jobId: 'job-1',
+    filePageCount: null,
+    failed: false,
+    errorMessage: null,
+  }),
 }));
 
 import type { FileInfo } from '../types';
@@ -120,6 +133,8 @@ describe('result 阶段导出块接线（Issue#313 I-3）', () => {
       );
     });
 
+    // Issue#311 起导出块默认收起：先展开摘要，再找「回到编辑」。
+    fireEvent.click(screen.getByTestId('playground-page-export-toggle'));
     fireEvent.click(screen.getByTestId('export-back-to-edit'));
     expect(onBackToEdit).toHaveBeenCalledTimes(1);
   });
