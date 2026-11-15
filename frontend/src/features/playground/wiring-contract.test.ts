@@ -174,12 +174,20 @@ describe('Issue#327 子集预览接线契约：三处接线不得被静默摘掉
     }
   });
 
-  it('下载/翻页：handleDownload 依赖含 subsetPreview（C-3）；结果页把子集序号翻回原卷页号（C-4）', () => {
-    // C-3：URL 里出现 preview=true 的同一表达式必须在依赖数组里带 subsetPreview
-    expect(playgroundHook).toMatch(/preview=true/);
+  it('下载/翻页：handleDownload 走唯一 URL 实现 + 依赖含 subsetPreview（C-3）；结果页把子集序号翻回原卷页号（C-4）', () => {
+    // C-3 ①：URL 构造收敛到 fileApi.getDownloadUrl 一份实现，生产侧不得再手写
+    // （二轮评审：api.ts 加了 preview 形参却仍手写 URL ⇒ 两份实现；旧判据 `/preview=true/`
+    //  被注释里的同名字面量满足，属假保证，本轮改掉）
+    expect(playgroundHook).toMatch(
+      /fileApi\.getDownloadUrl\(fileCtx\.fileInfo\.file_id, true, !!subsetPreview\)/,
+    );
+    expect(playgroundHook).not.toMatch(/download\?redacted=true/);
+    // C-3 ②：读 subsetPreview 的同一表达式必须在依赖数组里（漏了 ⇒ 恒发全卷 URL）
     expect(playgroundHook).toMatch(/\[fileCtx\.fileInfo, subsetPreview\]/);
     // C-4：子集序号 → 原卷页号的唯一换算函数（lib/subset-pages.ts）必须被结果页接线
     expect(page).toMatch(/previewPageMap=\{subsetPreview\?\.page_map \?\? null\}/);
+    // 三轮必修2：子集回执不落盘 ⇒ 草稿阶段降级（否则刷新后结果页退回全卷口径）
+    expect(playgroundHook).toMatch(/draftStageForResume\(fileCtx\.stage, subsetPreview !== null\)/);
   });
 
   it('识别终态不得静默降级为子集（I-1 红线：只有识别在飞才允许子集口径）', () => {

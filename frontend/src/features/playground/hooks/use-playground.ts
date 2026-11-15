@@ -13,6 +13,7 @@ import {
   setScopedStorageItem,
 } from '@/lib/storage';
 import { authFetch, downloadFile } from '@/services/api-client';
+import { fileApi } from '@/services/api';
 import { getItemPageStatus, getJob, type ItemPageStatus } from '@/services/jobsApi';
 import {
   isRecognitionInFlight,
@@ -33,6 +34,7 @@ import { localizeErrorMessage } from '@/utils/localizeError';
 import {
   buildDraftSnapshot,
   boundingBoxesFromServerInfo,
+  draftStageForResume,
   parseDraft,
   planResume,
   serializeDraft,
@@ -1126,7 +1128,8 @@ export function usePlayground() {
     if (!fileCtx.fileInfo) return;
     const timer = setTimeout(() => {
       const snapshot = buildDraftSnapshot({
-        stage: fileCtx.stage,
+        // Issue#327 门⑥ 三轮必修：子集回执不落盘 ⇒ 结果页降级为 preview（见 draftStageForResume）
+        stage: draftStageForResume(fileCtx.stage, subsetPreview !== null),
         fileInfo: fileCtx.fileInfo!,
         content: fileCtx.content,
         entities: entityCtx.entities,
@@ -1170,6 +1173,8 @@ export function usePlayground() {
     entityMap,
     redactedCount,
     pendingRedact,
+    // Issue#327 门⑥ 三轮必修：子集回执决定 stage 降级 ⇒ 必须在依赖里
+    subsetPreview,
     ownerKey,
   ]);
 
@@ -1339,7 +1344,9 @@ export function usePlayground() {
     // preview=true 才会读预览件；闭包依赖里必须含 subsetPreview（旧实现漏了，
     // 恒不带 → 下载拿到的是整卷成品/404）。
     return downloadFile(
-      `/api/v1/files/${fileCtx.fileInfo.file_id}/download?redacted=true${subsetPreview ? '&preview=true' : ''}`,
+      // Issue#327 门⑥ 三轮必修：URL 构造收敛到 fileApi.getDownloadUrl 一份实现
+      // （上一轮只在 api.ts 加了 preview 形参却仍手写 URL ⇒ 两份实现 + 空转测试）
+      fileApi.getDownloadUrl(fileCtx.fileInfo.file_id, true, !!subsetPreview),
       `redacted_${fileCtx.fileInfo.filename}`,
     ).catch((err) => {
       showToast(localizeErrorMessage(err, 'common.downloadFailed'), 'error');

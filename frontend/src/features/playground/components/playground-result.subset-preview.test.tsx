@@ -160,8 +160,13 @@ describe('Issue#327：子集结果页取图发原卷页号（C-4）', () => {
   it('子集口径常驻提示：本次仅含已处理的 N 页（原卷共 M 页）', () => {
     renderResult({ preview: true, previewPageCount: 54, previewPageMap: PAGE_MAP });
     const banner = screen.getByTestId('playground-result-subset-banner');
-    expect(banner.textContent).toContain('54');
-    expect(banner.textContent).toContain('86');
+    // 整句相等（门⑥ 三轮 Minor：只查两个数字都在时，done/total 互换仍绿）
+    expect(banner.textContent).toBe('本次预览仅含已处理的 54 页（原卷共 86 页）');
+  });
+
+  it('非子集口径不渲染该提示（否则用户在整卷结果页被误导「只含 N 页」）', () => {
+    renderResult({ preview: false });
+    expect(screen.queryByTestId('playground-result-subset-banner')).toBeNull();
   });
 
   it('子集页数以回执 page_count 为准（后端 X-Page-Count 仍是全卷页数）：末页落到 page_map 的原卷页号', async () => {

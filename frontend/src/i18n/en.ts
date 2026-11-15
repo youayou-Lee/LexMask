@@ -158,9 +158,11 @@ const enBase: Record<string, string> = {
   // Issue#327：识别在飞时的主按钮（子集口径）
   'playground.subsetAction': 'Anonymize the {done}/{total} processed pages first',
   // 结果页常驻提示（验收口径②：让用户看见「本次只含这批页」）
-  'playground.subsetBanner': 'Preview contains only the {done} processed pages (of {total} in the document)',
+  'playground.subsetBanner':
+    'Preview contains only the {done} processed pages (of {total} in the document)',
   // 子集框账合并失败：读不到服务端快照就必须中止（静默继续=漏打码）
-  'playground.subsetSnapshotUnavailable': 'Failed to read the recognition snapshot; nothing was submitted to avoid missed redactions. Please retry.',
+  'playground.subsetSnapshotUnavailable':
+    'Failed to read the recognition snapshot; nothing was submitted to avoid missed redactions. Please retry.',
   'playground.title': 'Process One File',
   'playground.recognizing': 'Recognizing...',
   'playground.redacting': 'Redacting...',

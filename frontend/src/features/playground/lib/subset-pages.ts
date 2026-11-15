@@ -52,7 +52,8 @@ export function pickSubsetPages(
   return { pages, total: Math.max(1, pageCount) };
 }
 
-/** 识别在飞（页账仍可能增长）——子集预览入口的唯一判据（终态必须走全卷链路）。 */export function isRecognitionInFlight(
+/** 识别在飞（页账仍可能增长）——子集预览入口的唯一判据（终态必须走全卷链路）。 */
+export function isRecognitionInFlight(
   recognitionState: string | null | undefined,
 ): boolean {
   return recognitionState === 'running';
