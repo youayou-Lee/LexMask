@@ -295,6 +295,14 @@ async def execute_redaction(
             info["redacted_count"] = int(result.get("redacted_count", 0))
             info["bounding_boxes"] = _group_boxes_by_page(request.bounding_boxes)
             info["entities"] = to_jsonable(request.entities)
+            # Issue#325：全卷打码成功后清掉子集预览记录（顶层），full 守卫随之解除。
+            info["preview_output_path"] = None
+            info["processed_pages"] = []
+            info["page_map"] = {}
+            info["preview_entity_map"] = {}
+            info["preview_redacted_count"] = 0
+            info["preview_page_count"] = 0
+            info["preview_created_at"] = None
             # 版本历史追踪
             version_entry = {
                 "version": len(info.get("redaction_history", [])) + 1,

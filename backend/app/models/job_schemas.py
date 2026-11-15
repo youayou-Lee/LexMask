@@ -902,6 +902,20 @@ class ItemExportRequest(BaseModel):
     bounding_boxes: list[BoundingBox] | None = None
 
 
+class SubsetPreviewRequest(BaseModel):
+    """Issue#325 子集预览打码请求体（识别运行中可用，不迁移 item 状态）。
+
+    * ``pages``：1-based 页号，必须落在 success ∪ manual_verified 内；
+    * ``bounding_boxes``：当前画布全页框快照（可选；缺省读 file_store）；
+    * ``entities``：确认后的实体（可选；缺省读 file_store）——文本型 PDF 在切片卷上
+      由后端做实体→框定位。
+    """
+
+    pages: list[int]
+    bounding_boxes: list[BoundingBox] | None = None
+    entities: list[Entity] | None = None
+
+
 class BatchDetailsBody(BaseModel):
     """Request body for POST /jobs/batch-details — fetch multiple job details at once."""
     ids: list[str] = Field(..., min_length=0, max_length=50)
