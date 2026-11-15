@@ -15,9 +15,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ItemPageStatus } from '@/services/jobsApi';
 
 const statusBox = vi.hoisted(() => ({ current: null as ItemPageStatus | null }));
+// 选择集 cache 是模块级的：给每个用例独立 item，避免用例间互相污染。
+const idsBox = vi.hoisted(() => ({ jobId: 'job-1', itemId: 'item-1' }));
 
 vi.mock('../hooks/use-file-job-item', () => ({
-  useFileJobItem: () => ({ jobId: 'job-1', itemId: 'item-1' }),
+  useFileJobItem: () => ({ jobId: idsBox.jobId, itemId: idsBox.itemId }),
 }));
 
 vi.mock('@/features/batch/hooks/use-batch-page-status', () => ({
@@ -66,6 +68,8 @@ function makeStatus(overrides: Partial<ItemPageStatus> = {}): ItemPageStatus {
 }
 
 beforeEach(() => {
+  idsBox.jobId = 'job-1';
+  idsBox.itemId = 'item-1';
   statusBox.current = makeStatus();
   mockedStart.mockReset();
   mockedList.mockReset();
@@ -108,14 +112,16 @@ describe('单文件任务的逐页结果与选页导出（Issue#257 需求重对
     expect(screen.getByTestId('playground-page-export-excluded').textContent).toContain('4');
   });
 
-  it('底栏汇总不留占位符：同一句里的两处 {count} 都要替换掉', async () => {
+  it('底栏汇总不留占位符，且产物口径是 zip（Issue#313 去掉旧说明页文案）', async () => {
     await renderSettled(<PlaygroundPageExport fileId="file-1" />);
 
     const summary = screen.getByTestId('playground-page-export-summary').textContent ?? '';
-    // 真实 UI 事故：只 replace 首发时，尾部「产物 = 说明页 1 页 + {count} 页」原样漏出。
+    // 真实 UI 事故：只 replace 首发时会漏出 `{count}`；这里同时钉住占位符全替换。
     expect(summary).not.toContain('{');
     expect(summary).not.toContain('}');
-    expect(summary).toContain('说明页');
+    // #278 起说明页不再插入 PDF，产物是 zip；旧「说明页 1 页」文案必须消失。
+    expect(summary).not.toContain('说明页 1 页');
+    expect(summary).toContain('zip');
     expect(summary).toContain('4');
   });
 
@@ -137,6 +143,7 @@ describe('单文件任务的逐页结果与选页导出（Issue#257 需求重对
     expect(screen.getByTestId('page-matrix')).toBeTruthy();
   });
 });
+
 describe('单文件导出场景：点页只改选择（Issue#314）', () => {
   it('点成功页只切换选择，且不弹「第 N 页发生了什么」/route chip', async () => {
     statusBox.current = makeStatus({
@@ -163,5 +170,26 @@ describe('单文件导出场景：点页只改选择（Issue#314）', () => {
     expect(failed.getAttribute('aria-pressed')).toBe('false');
     expect(screen.queryByTestId('page-detail-panel')).toBeNull();
     expect(failed.getAttribute('title')).toContain('失败');
+  });
+});
+
+describe('选择集恢复（Issue#313 门⑥ I-1）', () => {
+  it('回到编辑再重开：选择集按上次勾选恢复，不回落全选（Issue#313 门⑥ I-1）', async () => {
+    idsBox.itemId = 'item-cache';
+    const first = await renderSettled(<PlaygroundPageExport fileId="file-1" />);
+    // 默认全选 4 页可导出页（1、2、3、5）；取消 1、2 → 只剩 3、5。
+    fireEvent.click(screen.getByTestId('page-cell-1'));
+    fireEvent.click(screen.getByTestId('page-cell-2'));
+    expect(screen.getByTestId('page-cell-1').getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByTestId('page-cell-2').getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByTestId('page-cell-3').getAttribute('aria-pressed')).toBe('true');
+    first.unmount();
+
+    // 模拟 Dialog 关闭即卸载、再打开重新挂载。
+    await renderSettled(<PlaygroundPageExport fileId="file-1" />);
+    expect(screen.getByTestId('page-cell-1').getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByTestId('page-cell-2').getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByTestId('page-cell-3').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('page-cell-5').getAttribute('aria-pressed')).toBe('true');
   });
 });
