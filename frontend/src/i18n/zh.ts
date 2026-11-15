@@ -1383,6 +1383,7 @@ const zhOverrides: Record<string, string> = {
   'playground.redactedEntities': '已匿名化实体',
   'playground.unprocessedEntities': '未处理实体',
   'playground.sourceDistribution': '来源分布',
+  'playground.mappingCountDual': '{keys} 条 / {total} 处',
   'playground.mappingRecords': '映射记录',
   'playground.noRecords': '还没有映射记录。',
   'playground.versionHistory': '版本记录',

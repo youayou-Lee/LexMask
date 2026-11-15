@@ -174,6 +174,10 @@ def build_image_entity_map(boxes: list[BoundingBox]) -> dict[str, str]:
     - dict 键天然去重：同一原文出现多次只留一行，与「N 行映射 / M 处遮挡」双口径
       一致（表头原文数=map 行数，处数=redacted_count）。
 
+    输入约定（门⑥ M1）：调用方 ``_redact_image`` 传入的是 ``prepare_image_redaction``
+    产出的 ``safe_boxes``——已过滤 selected，且 clamp 后零面积框已被丢弃。下面的
+    ``selected`` 判断是防御性重复，保留以便未来独立复用；不要把它当作选框入口。
+
     纯函数、无 IO，供图片链路与测试共用，避免口径二次实现。
     """
     entity_map: dict[str, str] = {}
@@ -225,6 +229,9 @@ class ImageRedactorMixin:
         safe_boxes, method, strength, fill_color = prepare_image_redaction(selected_boxes, config)
 
         if entity_map_out is not None:
+            # 门⑥ M2：该出参只允许「空 map」或「同值哨兵（已打码）」两种形态。
+            # 未来若出现文本+图片混链，必须改成逐键写入并对「同键不同值」告警，
+            # 禁止静默覆盖文本链路已经产出的替换词。
             entity_map_out.update(build_image_entity_map(safe_boxes))
 
         await self.vision_service.apply_redaction(

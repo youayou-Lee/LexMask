@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from typing import Any
 
 import fitz
@@ -338,13 +339,15 @@ async def test_restore_does_not_consume_mask_map(_dirs, monkeypatch):
         assert not restore_service.PSEUDONYM_RE.fullmatch(value)
         assert not restore_service._BARE_PLACEHOLDER_RE.fullmatch(value)
 
-    # restore 的唯一输入是请求体 mapping（结构钉 + 行为钉）
-    import inspect
-
+    # restore 的唯一输入是请求体 mapping（门⑥ M6 行为判据）：给编排层塞一份
+    # 含冲突「已打码」映射的 store；若 restore 将来接上快照读取，下面的断言会立刻变红。
     import app.api.vlmd as vlmd
 
-    source = inspect.getsource(vlmd.restore_text)
-    assert "entity_map" not in source and "file_store" not in source, "restore 不得读文件快照"
+    class _StoreWithMaskMap:
+        def get_file_info(self, file_id: str) -> dict[str, Any]:
+            return {"entity_map": {"[人名一]": REDACTED, "嫌疑人": REDACTED}}
+
+    monkeypatch.setattr(orch, "_get_file_store", lambda: _StoreWithMaskMap())
 
     captured: dict[str, Any] = {}
     real_normalize = vlmd.normalize_mapping
@@ -383,3 +386,69 @@ async def test_pseudonym_text_path_map_not_sentinel(_dirs) -> None:
     )
     assert result["entity_map"]["陈文清"] == "王某"
     assert REDACTED not in result["entity_map"].values()
+
+
+# ---------------------------------------------------------------------------
+# R10：clamp 后零面积框不入表、也不计处数（门⑥ I2 同源判据）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_zero_area_box_excluded_from_map_and_count(_dirs) -> None:
+    up, _ = _dirs
+    src = up / "scan.pdf"
+    _make_pdf(src)
+    boxes = [
+        _box("b1", "有效项", y=0.10),
+        _box("b2", "零面积项", y=0.20, width=0.0),
+    ]
+    result = await _redact(
+        file_info={"file_path": str(src), "file_type": "pdf_scanned", "is_scanned": True},
+        entities=[],
+        bounding_boxes=boxes,
+        config=RedactionConfig(replacement_mode="mask"),
+    )
+    assert result["entity_map"] == {"有效项": REDACTED}, "零面积框像素未上，映射不得写已打码"
+    assert result["redacted_count"] == 1, "处数只数真正参与遮挡的框"
+
+
+# ---------------------------------------------------------------------------
+# R11：map 键集 == 真正传入上像素的框文本集（把 safe_boxes 改回 selected_boxes 必红）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_map_keys_match_actually_masked_boxes(_dirs, monkeypatch) -> None:
+    up, out = _dirs
+    src = up / "scan.pdf"
+    _make_pdf(src)
+    boxes = [
+        _box("b1", "甲", y=0.10),
+        _box("b2", "乙", y=0.20),
+        _box("b3", "乙", y=0.30),
+        _box("b4", "   ", y=0.40),
+        _box("b5", "未选中", y=0.50, selected=False),
+        _box("b6", "零面积", y=0.60, width=0.0),
+    ]
+    redactor = Redactor()
+    captured: dict[str, list[BoundingBox]] = {}
+
+    async def _fake_apply(file_path, file_type, safe_boxes, output_path, **kwargs):
+        captured["boxes"] = list(safe_boxes)
+        shutil.copyfile(file_path, output_path)
+
+    monkeypatch.setattr(redactor.vision_service, "apply_redaction", _fake_apply)
+    result = await redactor.redact(
+        file_info={"file_path": str(src), "file_type": "pdf_scanned", "is_scanned": True},
+        entities=[],
+        bounding_boxes=boxes,
+        config=RedactionConfig(replacement_mode="mask"),
+    )
+    assert "boxes" in captured, "前置条件：图片链路确实调用了 apply_redaction"
+    masked_texts = [(box.text or "").strip() for box in captured["boxes"]]
+    assert masked_texts == ["甲", "乙", "乙", ""], "空白框上像素但不得入表，未选/零面积不入链"
+    assert {text for text in masked_texts if text} == set(result["entity_map"]), (
+        "map 键集必须等于真正上像素的框文本集（同一次 prepare 的 safe_boxes）"
+    )
+    assert result["entity_map"] == {"甲": REDACTED, "乙": REDACTED}
+    assert result["redacted_count"] == len(captured["boxes"]) == 4
