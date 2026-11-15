@@ -665,7 +665,11 @@ const PlaygroundInner: FC = () => {
         <DialogContent className="max-w-3xl" data-testid="playground-export-pages-dialog">
           <DialogTitle>{t('batchWizard.pages.singleTitle')}</DialogTitle>
           <div className="max-h-[70vh] overflow-y-auto">
-            <PlaygroundPageExport fileId={fileInfo?.file_id ?? null} bare />
+            <PlaygroundPageExport
+              fileId={fileInfo?.file_id ?? null}
+              bare
+              onRequestClose={() => setExportPagesOpen(false)}
+            />
           </div>
         </DialogContent>
       </Dialog>

@@ -108,14 +108,16 @@ describe('单文件任务的逐页结果与选页导出（Issue#257 需求重对
     expect(screen.getByTestId('playground-page-export-excluded').textContent).toContain('4');
   });
 
-  it('底栏汇总不留占位符：同一句里的两处 {count} 都要替换掉', async () => {
+  it('底栏汇总不留占位符，且产物口径是 zip（Issue#313 去掉旧说明页文案）', async () => {
     await renderSettled(<PlaygroundPageExport fileId="file-1" />);
 
     const summary = screen.getByTestId('playground-page-export-summary').textContent ?? '';
-    // 真实 UI 事故：只 replace 首发时，尾部「产物 = 说明页 1 页 + {count} 页」原样漏出。
+    // 真实 UI 事故：只 replace 首发时会漏出 `{count}`；这里同时钉住占位符全替换。
     expect(summary).not.toContain('{');
     expect(summary).not.toContain('}');
-    expect(summary).toContain('说明页');
+    // #278 起说明页不再插入 PDF，产物是 zip；旧「说明页 1 页」文案必须消失。
+    expect(summary).not.toContain('说明页 1 页');
+    expect(summary).toContain('zip');
     expect(summary).toContain('4');
   });
 
