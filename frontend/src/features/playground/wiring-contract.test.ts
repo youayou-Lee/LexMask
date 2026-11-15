@@ -147,8 +147,8 @@ describe('Issue#123 接线契约：四处接线不得被静默摘掉', () => {
     // context 层：类型 + 映射 + 依赖数组（五字段缺一即测试红——防止三槽拆分漏搬）
     for (const field of ['taskSegment', 'taskInFlight', 'taskStartedAt', 'taskTextMode', 'redactProgress'] as const) {
       expect(context).toContain(`${field}: PlaygroundContextValue['${field}'];`);
-      expect(context).toMatch(new RegExp(`${field}: ctx\.${field},`));
-      expect(context).toMatch(new RegExp(`ctx\.${field},`));
+      expect(context).toMatch(new RegExp(`${field}: ctx\\.${field},`));
+      expect(context).toMatch(new RegExp(`ctx\\.${field},`));
     }
     // 页面层：loading 拿到四字段 + 打码小卡渲染 redactProgress
     expect(page).toMatch(/segment=\{taskRecognition \? taskSegment : null\}/);

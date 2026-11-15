@@ -12,7 +12,7 @@
 // → 请求 URL。用**非恒等** page_map（子集序号 1 → 原卷页号 20），恒等映射会让方向
 // 写反也照样绿（这正是第一版实现能骗过自己的原因）。
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { authFetch } from '@/services/api-client';
@@ -110,6 +110,9 @@ function renderResult(props: Partial<React.ComponentProps<typeof PlaygroundResul
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+  // jsdom 无 createObjectURL（页图 blob → object URL 需要）
+  window.URL.createObjectURL = vi.fn().mockReturnValue('blob:mock-page');
+  window.URL.revokeObjectURL = vi.fn();
   mockProvider();
   // 页图请求返回一个极小的 PNG 响应（内容不解析，只看 URL）
   mockedAuthFetch.mockResolvedValue({
@@ -152,6 +155,41 @@ describe('Issue#327：子集结果页取图发原卷页号（C-4）', () => {
         ),
       ).toBe(true),
     );
+  });
+
+  it('子集口径常驻提示：本次仅含已处理的 N 页（原卷共 M 页）', () => {
+    renderResult({ preview: true, previewPageCount: 54, previewPageMap: PAGE_MAP });
+    const banner = screen.getByTestId('playground-result-subset-banner');
+    expect(banner.textContent).toContain('54');
+    expect(banner.textContent).toContain('86');
+  });
+
+  it('子集页数以回执 page_count 为准（后端 X-Page-Count 仍是全卷页数）：末页落到 page_map 的原卷页号', async () => {
+    // 后端 #325 的 preview 分支把 X-Page-Count 写成全卷页数（86），子集口径必须
+    // 用回执 page_count（54）压住它，否则末页请求 page=86 ⇒ preview_page_not_covered 404。
+    mockedAuthFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'image/png', 'X-Page-Count': '86' }),
+      blob: async () => new Blob(['x'], { type: 'image/png' }),
+    } as unknown as Response);
+    renderResult({ preview: true, previewPageCount: 54, previewPageMap: PAGE_MAP });
+
+    const last = await screen.findByTitle('末页');
+    fireEvent.click(last);
+
+    // 子集第 54 页 → page_map 反查原卷页号 73
+    await waitFor(() =>
+      expect(
+        mockedAuthFetch.mock.calls.some(([input]) =>
+          String(input).includes('/page-image?page=73&redacted=true&preview=true'),
+        ),
+      ).toBe(true),
+    );
+    // 绝不出现全卷页码 86
+    expect(
+      mockedAuthFetch.mock.calls.some(([input]) => String(input).includes('/page-image?page=86')),
+    ).toBe(false);
   });
 
   it('子集口径下不渲染「对照｜成品」切换（识别在飞没有可对照的框）', () => {

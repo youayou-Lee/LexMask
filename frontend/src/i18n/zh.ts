@@ -156,6 +156,10 @@ const zhBase: Record<string, string> = {
     '已对 {done}/{total} 个已处理页生成预览，可返回编辑后重新生成',
   // Issue#327：识别在飞时的主按钮（子集口径）——「只要有已处理页就能先匿名化」
   'playground.subsetAction': '先匿名化已处理的 {done}/{total} 页',
+  // 结果页常驻提示（验收口径②：让用户看见「本次只含这批页」）
+  'playground.subsetBanner': '本次预览仅含已处理的 {done} 页（原卷共 {total} 页）',
+  // 子集框账合并失败：读不到服务端快照就必须中止（静默继续=漏打码）
+  'playground.subsetSnapshotUnavailable': '读取识别快照失败，为免漏打码本次未提交，请重试',
   'playground.title': '处理单个文件',
   'playground.recognizing': '正在识别...',
   'playground.redacting': '正在匿名化...',

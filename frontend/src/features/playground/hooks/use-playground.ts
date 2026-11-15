@@ -313,6 +313,14 @@ export function usePlayground() {
     setSubsetPreview(null);
   }, [subsetRunJobId]);
 
+  // 回到编辑页 ⇒ 子集预览回执作废（门⑥ 二段 N-7③）：回执只服务结果页；
+  // 滞留会让 awaiting_review 的「不抢 stage」判据长期半失效（他已经在编辑页，
+  // 回执还在，之后每次识别收尾都走「保持当前 stage」分支）。
+  useEffect(() => {
+    if (fileCtx.stage !== 'preview') return;
+    setSubsetPreview((prev) => (prev === null ? prev : null));
+  }, [fileCtx.stage]);
+
   // 子集入口候选：识别在飞 + 已处理页 < 总页数（否则等识别收尾走全卷链路）
   const subsetSelection = useMemo(
     () => subsetCandidates(subsetPageStatus, fileCtx.fileInfo?.page_count || 0),
@@ -647,16 +655,16 @@ export function usePlayground() {
   }, []);
 
   // Issue#327 门⑥ C-2：取服务端 file_store 框账快照（识别在飞时已边跑边写回逐页框）。
-  // 形状/网络异常一律当空集——调用方会把「画布也为空」的情况直接不发框（后端同样兜底），
-  // 不会因为一次读取失败就把子集预览打歪。
-  const fetchSnapshotBoxes = useCallback(async (fileId: string): Promise<BoundingBox[]> => {
+  // 返回 null = 读取失败（网络/5xx/形状异常）——调用方据此 fail-closed：绝不当成
+  // 「无框」继续（那会把画布没碰过的页变成零框，静默漏打码）。
+  const fetchSnapshotBoxes = useCallback(async (fileId: string): Promise<BoundingBox[] | null> => {
     try {
       const response = await authFetch(`/api/v1/files/${fileId}`);
-      if (!response.ok) return [];
+      if (!response.ok) return null;
       const info = await safeJson<Record<string, unknown>>(response);
       return boundingBoxesFromServerInfo(info?.bounding_boxes);
     } catch {
-      return [];
+      return null;
     }
   }, []);
 
@@ -784,10 +792,15 @@ export function usePlayground() {
         const canvasBoxes = imageCtx.boundingBoxes.filter((box) => box.selected !== false);
         let boxesPayload: unknown[] | undefined;
         if (canvasBoxes.length > 0) {
-          boxesPayload = mergeSubsetBoxes(
-            await fetchSnapshotBoxes(fileId),
-            canvasBoxes,
-          );
+          const snapshot = await fetchSnapshotBoxes(fileId);
+          if (!snapshot) {
+            // 门⑥ 二段 N-2：读不到快照就无法保留「画布没碰过的页」的框——继续发等于
+            // 只打码画布碰过的页、其余页零框进后端（脱敏漏打码）。fail-closed：不提交。
+            redactionInFlightRef.current = false;
+            showToast(t('playground.subsetSnapshotUnavailable'), 'error');
+            return;
+          }
+          boxesPayload = mergeSubsetBoxes(snapshot, canvasBoxes);
         }
         const receipt = await createSubsetPreview(jobId, itemId, {
           pages: donePages,
@@ -795,10 +808,17 @@ export function usePlayground() {
           // 前端实体为空（识别在飞时常见）⇒ 不发，后端吃 file_store 实体快照
           entities: selectedEntities.length > 0 ? selectedEntities : undefined,
         });
+        // 门⑥ 二段 N-1：同步子集打码是数十秒级操作——期间用户可能已切文件/复位。
+        // 与全卷链路同口径（提交后守卫 latestFileIdRef）：不比对就会把旧卷回执按到
+        // 新文件上（页数/页图/产物 id 全是旧卷），并把 latestFileIdRef 写回旧值。
+        if (latestFileIdRef.current !== fileId) {
+          redactionInFlightRef.current = false;
+          return;
+        }
         setSubsetPreview(receipt);
         setRedactedCount(receipt.redacted_count);
         latestFileIdRef.current = fileId;
-        setFileStage('result');
+        fileCtx.setStage('result');
         redactionInFlightRef.current = false;
         showToast(
           t('playground.subsetPreviewReady')

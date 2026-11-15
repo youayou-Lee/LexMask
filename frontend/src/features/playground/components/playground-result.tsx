@@ -131,6 +131,9 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   });
   // 翻页时按成品真实页数钳制（docx 回转后成品页数可能与原卷不同；页数未知
   // 时先按原文页数占位钳制，防止首帧前快速点页触发越界 400）
+  // 门⑥ 二段 N-3① 复核结论：子集口径首帧不会画成全卷页数——`useOutputPagePreview`
+  // 的 url 与 pageCount 同拍写入（同一份响应），而页轨只在 url 有值时才渲染，
+  // 故这里沿用既有口径即可，无需为子集单开占位上界。
   const handleOutputPageChange = useCallback(
     (page: number) => {
       const bound = outputPreview.pageCount ?? totalPages;
@@ -356,6 +359,18 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
           />
 
         </div>
+        {preview && (
+          // Issue#327 验收口径②：结果页必须让用户看见「本次只含这批页、其余页不在
+          // 本次范围」——仅一次性 toast 会被忽略，页轨又看着是全卷页数。
+          <span
+            className="flex shrink-0 items-center self-center whitespace-nowrap rounded-xl border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-700 dark:text-amber-400"
+            data-testid="playground-result-subset-banner"
+          >
+            {t('playground.subsetBanner')
+              .replace('{done}', String(previewPageCount ?? 0))
+              .replace('{total}', String(totalPages))}
+          </span>
+        )}
         {outputPreviewAvailable && !preview && (
           <div
             className="flex shrink-0 items-center gap-1 self-center rounded-2xl border border-border/60 bg-[var(--surface-control)] p-1 shadow-[var(--shadow-control)]"

@@ -21,6 +21,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { authFetch, downloadFile } from '@/services/api-client';
+import { showToast } from '@/components/Toast';
 import { getJob, type JobDetail, type JobSummary, getItemPageStatus } from '@/services/jobsApi';
 import {
   createSubsetPreview,
@@ -409,6 +410,113 @@ describe('Issue#327：识别在飞时的子集预览链路', () => {
     // 画布照常装全卷框（他「返回编辑」时需要完整画布，否则是空画布）
     await waitFor(() => expect(harness.pg!.boundingBoxes.length).toBe(3));
     expect(harness.pg!.boundingBoxes.map((box) => box.id).sort()).toEqual(['s1', 's2', 's3']);
+  });
+
+  it('(f) 画布有框但读不到服务端快照 ⇒ fail-closed：不发子集请求 + 报错提示（N-2，漏打码红线）', async () => {
+    await seedRecognizing();
+    // 画布有框（用户手改过）⇒ 走「快照 ∪ 画布」合并分支
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('set-boxes'));
+    });
+    // 服务端快照读取失败（5xx）
+    vi.mocked(authFetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/files/f1')) {
+        return { ok: false, status: 500 } as unknown as Response;
+      }
+      if (url.endsWith('/files/f1/parse')) {
+        return jsonResponse({
+          content: '',
+          file_type: 'pdf_scanned',
+          is_scanned: true,
+          page_count: TOTAL_PAGES,
+        });
+      }
+      throw new Error(`unexpected authFetch: ${url}`);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    // 绝不允许「只发画布框」——那会让画布没碰过的页零框进后端
+    expect(createSubsetPreview).not.toHaveBeenCalled();
+    expect(screen.getByTestId('stage').textContent).toBe('preview');
+    expect(showToast).toHaveBeenCalledWith(
+      expect.stringContaining('读取识别快照失败'),
+      'error',
+    );
+  });
+
+  it('(g) 同步子集打码期间用户切到另一份文件 ⇒ 旧卷回执作废，不落到新文件上（N-1）', async () => {
+    await seedRecognizing();
+    let resolveSubset!: (value: unknown) => void;
+    vi.mocked(createSubsetPreview).mockImplementation(
+      () => new Promise((resolve) => { resolveSubset = resolve; }) as never,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+    await waitFor(() => expect(createSubsetPreview).toHaveBeenCalledTimes(1));
+
+    // 同步打码还在飞：切到另一份文件（文件切换 ⇒ latestFileIdRef 前移）
+    vi.mocked(authFetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/files/f2/parse')) {
+        return jsonResponse({
+          content: '',
+          file_type: 'pdf_scanned',
+          is_scanned: true,
+          page_count: 3,
+        });
+      }
+      if (url.endsWith('/files/f2')) {
+        return jsonResponse({ original_filename: '卷2.pdf', file_size: 13, entities: [] });
+      }
+      if (url.includes('/preview-image')) {
+        return new Response(new Blob(['x']), {
+          status: 200,
+          headers: { 'Content-Type': 'image/png' },
+        });
+      }
+      throw new Error(`unexpected authFetch: ${url}`);
+    });
+    await act(async () => {
+      await harness.pg!.handleDecrypted('f2', '卷2.pdf', 20);
+    });
+    await waitFor(() => expect(harness.pg!.fileInfo?.file_id).toBe('f2'));
+
+    // 旧卷回执迟到 ⇒ 必须被守卫丢弃
+    await act(async () => {
+      resolveSubset({
+        file_id: 'f1',
+        processed_pages: [1, 2],
+        page_map: { '1': 1, '2': 2 },
+        page_count: 2,
+        redacted_count: 2,
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('subset-preview').textContent).toBe('no');
+    expect(screen.getByTestId('stage').textContent).not.toBe('result');
+  });
+
+  it('(h) 「返回编辑」⇒ 子集回执作废（N-7③：回执只服务结果页，滞留会让 awaiting_review 的守卫半失效）', async () => {
+    await seedRecognizing();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+    await waitFor(() => expect(screen.getByTestId('stage').textContent).toBe('result'));
+    expect(screen.getByTestId('subset-preview').textContent).toBe('yes');
+
+    await act(async () => {
+      harness.pg!.setStage('preview');
+    });
+
+    await waitFor(() => expect(screen.getByTestId('subset-preview').textContent).toBe('no'));
   });
 
   it('(d) 结果页下载带 preview=true（C-3：闭包依赖含 subsetPreview）', async () => {
