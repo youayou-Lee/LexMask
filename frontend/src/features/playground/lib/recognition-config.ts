@@ -3,18 +3,9 @@
 import { t } from '@/i18n';
 import { getScopedStorageItem, setScopedStorageItem } from '@/lib/storage';
 import { buildDefaultPipelineTypeIds } from '@/services/defaultRedactionPreset';
-import type { SelectionTone } from '@/ui/selectionPalette';
 import type { EntityTypeConfig, PipelineConfig, VisionTypeConfig } from '../types';
 
 export type ConfigLoadState = 'loading' | 'ready' | 'empty' | 'unavailable';
-export type PlaygroundTextGroupKey = 'regex' | 'semantic';
-
-export interface PlaygroundTextGroup {
-  key: PlaygroundTextGroupKey;
-  label: string;
-  tone: SelectionTone;
-  types: EntityTypeConfig[];
-}
 
 const entityNameCollator = new Intl.Collator('zh-Hans-CN', {
   numeric: true,
@@ -89,26 +80,6 @@ export function sortEntityTypes(types: EntityTypeConfig[]): EntityTypeConfig[] {
     if (leftRegex !== rightRegex) return leftRegex - rightRegex;
     return entityNameCollator.compare(left.name, right.name);
   });
-}
-
-export function buildPlaygroundTextGroups(types: EntityTypeConfig[]): PlaygroundTextGroup[] {
-  const regexTypes = types.filter((type) => Boolean(type.regex_pattern));
-  const semanticTypes = types.filter((type) => !type.regex_pattern);
-
-  return [
-    {
-      key: 'semantic',
-      label: t('playground.group.semantic'),
-      tone: 'semantic',
-      types: semanticTypes,
-    },
-    {
-      key: 'regex',
-      label: t('playground.group.regex'),
-      tone: 'regex',
-      types: regexTypes,
-    },
-  ];
 }
 
 export function normalizeVisionPipelines(pipelines: PipelineConfig[]): PipelineConfig[] {

@@ -177,8 +177,6 @@ function makeRec(overrides: RecOverrides = {}): RecognitionCtx {
     selectPlaygroundVisionPresetById: vi.fn(),
     clearPlaygroundTextPresetTracking: vi.fn(),
     clearPlaygroundVisionPresetTracking: vi.fn(),
-    sortedEntityTypes: entityTypes,
-    setPlaygroundTextTypeGroupSelection: vi.fn(),
     toggleVisionType: vi.fn(),
     updateOcrHasTypes: vi.fn(),
     updateVisualFeatureTypes: vi.fn(),
