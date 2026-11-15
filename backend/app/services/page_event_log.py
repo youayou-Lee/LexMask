@@ -59,7 +59,15 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     ),
     "ner_done": EventSchema(optional=("calls", "ms", "entities", "regions", "supplemented")),
     "ocr_done": EventSchema(optional=("ms", "regions", "source")),
-    "page_done": EventSchema(optional=("ms", "stage_ms", "regions", "source")),
+    "page_done": EventSchema(
+        optional=(
+            "ms", "stage_ms", "regions", "source",
+            # Issue#276：视觉列终态。source ∈ {la, none}；failed_reason 仅
+            # la_unavailable / visual_stage_error，无值省键（visual_types 是 list
+            # 不入事件，事件层只留标量位——visual_types 在页账里，不复制进 JSONL）。
+            "visual_source", "visual_failed_reason",
+        ),
+    ),
     "page_failed": EventSchema(
         required=("stage", "error_type"),
         optional=("message_sanitized", "traceback_frames", "attempts", "ms"),

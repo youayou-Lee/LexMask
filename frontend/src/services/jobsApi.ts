@@ -721,6 +721,31 @@ export type ItemRecognitionState = 'not_started' | 'running' | 'done' | 'failed'
 export type PageRouteVerdict = 'docline' | 'page_pipeline';
 
 /**
+ * 页视觉列四态（Issue#276）：done=LA 实跑（含零命中）；skipped=LA 不可用被剥离；
+ * failed=LA 实跑但阶段异常；absent=未勾选视觉项（显式缺席）。
+ * 「跑过且没找到」（zero_hit）≠「根本没跑」（skipped），两者不同字。
+ */
+export type PageVisualState = 'done' | 'skipped' | 'failed' | 'absent';
+
+/** 页记录的视觉列投影（旧后端无此键 → null）。 */
+export type ItemPageVisual = {
+  state: PageVisualState;
+  source: 'la' | 'none';
+  failed_reason?: 'la_unavailable' | 'visual_stage_error' | null;
+  /** LA 口径命中数（不含 MinerU seal / 专用检测器通道）。 */
+  region_count?: number;
+  zero_hit?: boolean;
+};
+
+/** 卷级视觉列汇总（Issue#276；旧后端无此键 → null）。 */
+export type ItemVisualSummary = {
+  done: number;
+  skipped: number;
+  failed: number;
+  absent: number;
+};
+
+/**
  * 「这页发生了什么」（Issue#279 后端投影扩展）：路由 / 各阶段耗时 / 失败类型 /
  * 尝试次数。字段缺省时后端省键（旧数据兼容），前端一律按可空处理。
  */
@@ -732,6 +757,8 @@ export type ItemPageDetail = {
   error_type?: string | null;
   attempts?: number | null;
   duration_ms?: number | null;
+  /** Issue#276：视觉列四态投影（旧后端无此键 → null）。 */
+  visual?: ItemPageVisual | null;
 };
 
 /** 卷级路由摘要：docline 接管 / 逐页 + 首个 fallback 码；毫无路由证据时为 null。 */
@@ -765,6 +792,8 @@ export type ItemPageStatus = {
   failed_pages: number[];
   /** Issue#279：卷头路由摘要（旧后端无此键 → null）。 */
   route_summary?: ItemPageRouteSummary | null;
+  /** Issue#276：卷级视觉列汇总（旧后端无此键 → null）。 */
+  visual_summary?: ItemVisualSummary | null;
 };
 
 export type BatchExportVolume = {
@@ -795,10 +824,47 @@ export type PartialExportTask = {
 
 const PAGE_CELL_STATES: ReadonlySet<string> = new Set(['success', 'failed', 'pending']);
 
+/** Issue#276：视觉列四态白名单——未知 state 视同无该键（fail-null，绝不猜）。 */
+const PAGE_VISUAL_STATES: ReadonlySet<string> = new Set(['done', 'skipped', 'failed', 'absent']);
+
 const PAGE_ROUTE_VERDICTS: ReadonlySet<string> = new Set(['docline', 'page_pipeline']);
 
 function asRouteVerdict(value: unknown): PageRouteVerdict {
   return PAGE_ROUTE_VERDICTS.has(asString(value)) ? (asString(value) as PageRouteVerdict) : 'page_pipeline';
+}
+
+/** Issue#276：visual 键投影（state 不在白名单内 / 形状异常一律 null）。 */
+function normalizePageVisual(raw: unknown): ItemPageVisual | null {
+  if (raw == null || !isRecord(raw)) return null;
+  const visual = raw as Record<string, unknown>;
+  const state = asString(visual.state);
+  if (!PAGE_VISUAL_STATES.has(state)) return null;
+  const out: ItemPageVisual = {
+    state: state as PageVisualState,
+    source: visual.source === 'la' ? 'la' : 'none',
+  };
+  if (visual.failed_reason != null) {
+    out.failed_reason = asNullableString(visual.failed_reason) as ItemPageVisual['failed_reason'];
+  }
+  if (visual.region_count != null) {
+    out.region_count = asNumber(visual.region_count, 0);
+  }
+  if (visual.state === 'done') {
+    out.zero_hit = asNumber(visual.region_count, 0) === 0;
+  }
+  return out;
+}
+
+/** Issue#276：卷级视觉列汇总（缺键/形状异常 → null）。 */
+function normalizeVisualSummary(raw: unknown): ItemVisualSummary | null {
+  if (raw == null || !isRecord(raw)) return null;
+  const summary = raw as Record<string, unknown>;
+  return {
+    done: asNumber(summary.done, 0),
+    skipped: asNumber(summary.skipped, 0),
+    failed: asNumber(summary.failed, 0),
+    absent: asNumber(summary.absent, 0),
+  };
 }
 
 /** Issue#279：页详情投影（后端缺键/形状异常一律回落 null，不给页格塞半截对象）。 */
@@ -806,6 +872,10 @@ function normalizePageDetail(raw: unknown): ItemPageDetail | null {
   if (raw == null || !isRecord(raw)) return null;
   const detail = raw as Record<string, unknown>;
   const stageMs = asNumberRecord(detail.stage_ms);
+  // Issue#276：本函数是 detail 进组件前的唯一闸口——只加类型不透传会让
+  // detail.visual 永远 undefined（r2 F7）。无视觉证据（旧数据/白名单外 state）
+  // 时省键，与后端「无字段省键」惯例对齐。
+  const visual = normalizePageVisual(detail.visual);
   return {
     route_verdict: asRouteVerdict(detail.route_verdict),
     fallback_reason_code: asNullableString(detail.fallback_reason_code),
@@ -814,6 +884,7 @@ function normalizePageDetail(raw: unknown): ItemPageDetail | null {
     error_type: asNullableString(detail.error_type),
     attempts: detail.attempts == null ? null : asNumber(detail.attempts, 1),
     duration_ms: nullableNumber(detail.duration_ms),
+    ...(visual ? { visual } : {}),
   };
 }
 
@@ -862,6 +933,7 @@ export function normalizeItemPageStatus(raw: unknown): ItemPageStatus {
       ? payload.failed_pages.map((value) => asNumber(value)).filter((value) => value > 0)
       : [],
     route_summary: normalizeRouteSummary(payload.route_summary),
+    visual_summary: normalizeVisualSummary(payload.visual_summary),
   };
 }
 

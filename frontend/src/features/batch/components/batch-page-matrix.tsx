@@ -20,7 +20,7 @@ import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
-import type { ItemPageStatus, PageCellState } from '@/services/jobsApi';
+import type { ItemPageStatus, ItemPageVisual, PageCellState } from '@/services/jobsApi';
 
 import { extendSelection, parsePageRangeInput, pruneSelection } from '../lib/page-range';
 
@@ -149,6 +149,17 @@ export function BatchPageMatrix({
     if (!key) return stage;
     const text = t(key);
     return text === key ? stage : text;
+  };
+
+  // Issue#276：视觉列四态人话（done 命中数为 LA 口径——不含 MinerU seal/专用检测器）。
+  const visualStateText = (visual: ItemPageVisual) => {
+    if (visual.state === 'done') {
+      return (visual.zero_hit ? t('pageDetail.visualDoneZeroHit') : t('pageDetail.visualDone'))
+        .replace('{count}', String(visual.region_count ?? 0));
+    }
+    if (visual.state === 'skipped') return t('pageDetail.visualSkippedLaUnavailable');
+    if (visual.state === 'failed') return t('pageDetail.visualFailedStage');
+    return t('pageDetail.visualAbsent');
   };
 
   const activate = (page: number, state: PageCellState, shiftKey = false) => {
@@ -413,6 +424,21 @@ export function BatchPageMatrix({
                 ? `（${humanizeFallback(expandedCell.detail.fallback_reason_code)}）`
                 : ''}
             </span>
+            {expandedCell.detail?.visual && (
+              <span
+                data-testid="page-detail-visual"
+                className={
+                  expandedCell.detail.visual.state === 'failed'
+                    || expandedCell.detail.visual.state === 'skipped'
+                    ? 'text-amber-600'
+                    : undefined
+                }
+              >
+                {t('pageDetail.visual')}
+                {'：'}
+                {visualStateText(expandedCell.detail.visual)}
+              </span>
+            )}
             {(expandedCell.duration_ms != null || expandedCell.detail?.duration_ms != null) && (
               <span data-testid="page-detail-duration">
                 {t('pageDetail.duration').replace(
@@ -471,6 +497,25 @@ export function BatchPageMatrix({
           )}
         </div>
       )}
+
+      {/* Issue#276：卷头视觉列缺失提示（琥珀）——skipped（LA 不可用）/ failed 页绿格
+          但非「完整完成」；不改变 failed 计数与重试逻辑。 */}
+      {(() => {
+        const summary = status.visual_summary;
+        if (!summary || (summary.skipped === 0 && summary.failed === 0)) return null;
+        const gapPages = status.pages
+          .filter(
+            (cell) =>
+              cell.detail?.visual?.state === 'skipped' || cell.detail?.visual?.state === 'failed',
+          )
+          .map((cell) => String(cell.page))
+          .join('、');
+        return (
+          <p className="text-xs text-amber-600" data-testid="page-matrix-visual-hint">
+            {t('batchWizard.pages.visualSkipHint').replace('{pages}', gapPages)}
+          </p>
+        );
+      })()}
 
       {counts.failed > 0 && (
         <p className="text-xs text-destructive" data-testid="page-matrix-failed-hint">

@@ -798,6 +798,18 @@ const enBase: Record<string, string> = {
   'pageDetail.fallbackReason.build_budget': 'Build exceeded budget',
   'pageDetail.fallbackReason.verdict_unusable': 'Text layer unusable',
   'pageDetail.fallbackReason.repeated_fragment_coverage': 'Repeated fragment coverage out of range',
+  // Issue#276: visual column states (page detail row). Hit counts are LA-scope
+  // (MinerU seal / dedicated detector channels not included).
+  'pageDetail.visual': 'Visual column',
+  'pageDetail.visualDone': 'Ran ({count} LA hits)',
+  'pageDetail.visualDoneZeroHit': 'Ran (0 LA hits)',
+  'pageDetail.visualSkippedLaUnavailable': 'Skipped (vision service unavailable)',
+  'pageDetail.visualFailedStage': 'Failed (visual stage error; text column unaffected)',
+  'pageDetail.visualAbsent': 'No visual types selected',
+  // Issue#276: volume-level visual gap hint (skipped/failed pages are green but
+  // not "fully complete").
+  'batchWizard.pages.visualSkipHint':
+    'Visual column gaps: pages {pages} skipped (LA unavailable) or failed; text results unaffected',
   'batchWizard.partialExport.title': 'Partial export (selected pages only)',
   'batchWizard.partialExport.loading': 'Loading per-page status…',
   'batchWizard.partialExport.unsupportedType':

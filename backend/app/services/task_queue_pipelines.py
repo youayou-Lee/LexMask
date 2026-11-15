@@ -192,6 +192,37 @@ def _routing_fields_from_file_store(file_id: str, page: int) -> dict:
                              "reason": pr["decision"]["reason"]}}
 
 
+def _visual_fields_from_quality(quality: dict) -> dict:
+    """Issue#276：成功页账本 visual 字段——从 ``pipeline_status["visual_column"]`` 提取。
+
+    无块（旧缓存/极端形态）⇒ 空 dict 零键，调用方 ``**`` 展开零噪声。
+    """
+    vc = (quality.get("pipeline_status") or {}).get("visual_column") or {}
+    if not vc:
+        return {}
+    fields = {"visual_source": vc.get("source"),
+              "visual_types": list(vc.get("types") or []),
+              "visual_region_count": int(vc.get("region_count") or 0)}
+    if vc.get("failed_reason"):
+        fields["visual_failed_reason"] = vc["failed_reason"]
+    return fields
+
+
+def _visual_fields_from_file_store(file_id: str, page: int) -> dict:
+    """Issue#276：visual 字段——file_store ``vision_quality`` 回读。
+
+    **调用点契约（r2 F1/F2 修订）**：只允许在「检测本次运行已成功整体返回」
+    的写点调用——目前唯一调用点是重试翻绿写点（成功 ⇒ orchestrator 写回已发生
+    ⇒ 回读到的是本次运行的新账）。run_page 的 timeout/异常分支**禁止**调用本函数：
+    那两形态检测未整体返回、无新账，回读会命中上一运行的陈旧账（reject→重跑同
+    file_id 时 file_store 持久）。无账 ⇒ 空 dict 零键。
+    """
+    from app.services.file_operations import get_file_info
+
+    info = get_file_info(file_id) or {}
+    return _visual_fields_from_quality(_page_vision_quality_from_file_info(info, page))
+
+
 class RecognitionPipelineMixin:
     """识别流水线：解析 -> NER/Vision -> 完成识别（可选入队匿名化）。"""
 
@@ -734,6 +765,12 @@ class RecognitionPipelineMixin:
                     "finished_at": _utc_iso(),
                     "duration_ms": elapsed,
                     "status": "completed",
+                    # Issue#276：重试翻绿写点补 fresh visual 账（r2 F2）。重试成功即
+                    # 本次检测整体成功返回 ⇒ orchestrator 写回已发生 ⇒ 回读 fresh；
+                    # 不补则翻绿页（实际跑过 LA）被整记录替换清零、静默退化 absent。
+                    # 不加 overlay：重试路径不做 #256 预检（LA down 时 detect_vision
+                    # 入口预检 fail-closed 直接页失败，走异常分支，不产生翻绿页）。
+                    **_visual_fields_from_file_store(task.file_id, page),
                 }
                 failed_map.pop(str(page), None)
                 turned_green.append(page)
@@ -1029,6 +1066,13 @@ class RecognitionPipelineMixin:
         # （空数组=显式不跑该段）+ 显式落账，OCR+HaS 成果照常交付；LA 在场（云端）
         # 探测即过，行为零变化。预检自身的意外异常不吞（fail-closed 不降级）。
         la_available: bool | None = None  # None=未勾选任何视觉要素（或显式空单），无需探测
+        # Issue#276：页级视觉列 overlay——只有队列层知道「#256 预检剥离」这个事实
+        # （剥离后 visual_feature_types=[] 与「用户没勾」在 pipeline_status 里同形）。
+        # 键集收窄为只含 visual_failed_reason（r2 F6）：单段剥离路径 quality 派生的
+        # visual_source 本来就是 "none"，overlay 不触碰其余 visual 字段；且只在
+        # run_page 的 completed 终态写入时 ** 展开（run_page 用 replace_paths 整记录
+        # 替换，提前写会被覆盖丢失）。预检判 LA 可用或未勾视觉时恒 {}。
+        page_visual_ledger: dict[str, dict] = {}
         if visual_feature_types is None or len(visual_feature_types) > 0:
             from app.core.errors import AppError
             from app.services.redaction_orchestrator import ensure_visual_service_available
@@ -1042,6 +1086,10 @@ class RecognitionPipelineMixin:
                 la_available = False
         if la_available is False:
             visual_feature_types = []
+            page_visual_ledger = {
+                str(p): {"visual_failed_reason": "la_unavailable"}
+                for p in range(1, max(1, pages) + 1)
+            }
             self._record_item_performance(
                 store,
                 task.item_id,
@@ -1345,6 +1393,11 @@ class RecognitionPipelineMixin:
                     quality = _page_vision_quality_from_result(result)
                     if not any(quality.values()):
                         quality = _page_vision_quality_from_file_info(get_file_info(task.file_id) or {}, p)
+                    # Issue#276：成功页账本 visual 字段——quality 派生在前、overlay 在后；
+                    # overlay 键集恒为 {visual_failed_reason}（r2 F6 收窄），quality 派生的
+                    # visual_source/visual_types/visual_region_count 不被触碰。
+                    _visual_fields = _visual_fields_from_quality(quality)
+                    _visual_overlay = page_visual_ledger.get(str(p)) or {}
                     self._record_item_performance(
                         store,
                         task.item_id,
@@ -1368,6 +1421,11 @@ class RecognitionPipelineMixin:
                                         # Issue#273：finalize 合成的路由块并入页账
                                         # （file 模式/无路由块 ⇒ 空 dict 零键，A5）。
                                         **_routing_fields_from_quality(quality),
+                                        # Issue#276：视觉列第二列记账（source/types/
+                                        # region_count 来自 visual_column；reason 由
+                                        # overlay 补 la_unavailable）。
+                                        **_visual_fields,
+                                        **_visual_overlay,
                                     }
                                 }
                             }
@@ -1400,12 +1458,24 @@ class RecognitionPipelineMixin:
                             ms=_safe_int(_ocr.get("duration_ms")),
                             regions=_ocr_regions,
                         )
+                    # Issue#276：视觉列终态事件（值与页账同源——已 overlay 后的字段；
+                    # visual_types 是 list 不入事件，事件层只留标量位）。
+                    _visual_event_kwargs: dict[str, Any] = {}
+                    if _visual_fields.get("visual_source") is not None:
+                        _visual_event_kwargs["visual_source"] = _visual_fields["visual_source"]
+                    _visual_failed_reason = (
+                        _visual_overlay.get("visual_failed_reason")
+                        or _visual_fields.get("visual_failed_reason")
+                    )
+                    if _visual_failed_reason:
+                        _visual_event_kwargs["visual_failed_reason"] = _visual_failed_reason
                     page_events.log_event(
                         "page_done",
                         ms=page_ms,
                         stage_ms=dict(_quality_ms) if isinstance(_quality_ms, dict) else {},
                         regions=_ocr_regions + _safe_int(_vis.get("region_count")),
                         source="docline" if _doc.get("ran") else "page_pipeline",
+                        **_visual_event_kwargs,
                     )
                     logger.info(
                         "[queue] item=%s %s page %d/%d DONE elapsed=%.2fs active_pages=%d",
