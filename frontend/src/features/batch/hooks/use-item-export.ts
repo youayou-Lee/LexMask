@@ -95,6 +95,12 @@ export function useItemExport({
   const initializedForRef = useRef<string | null>(null);
   const key = jobId && itemId ? `${jobId}:${itemId}` : null;
 
+  // Issue#313 门⑥ I-1：playground 宿主的 `enabled` 在挂载期恒为 true（`Boolean(itemId)`），
+  // Dialog 关闭是整棵子树卸载，走不到下面的 !enabled 分支 ⇒ 必须在卸载时把最新选择集
+  // 写回 cache，否则「回到编辑 → 重开导出」会回落成全选而不是用户选的那几页。
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+
   const pages = useMemo(() => status?.pages ?? [], [status]);
   // Issue#280 × #278 r2 F4：manual_verified 页与 success 页同口径进选择集
   // （exportable 谓词；后端只挡 failed——manual 页已物理移出失败清单）。
@@ -107,10 +113,18 @@ export function useItemExport({
     [pages],
   );
 
+  // 卸载 / 切换 (job,item) 时落 cache；覆盖 playground 宿主「关闭弹窗 = 整棵子树卸载」的路径。
+  useEffect(() => {
+    if (!key) return undefined;
+    return () => {
+      selectionCache.set(key, selectedRef.current);
+    };
+  }, [key]);
+
   useEffect(() => {
     if (!enabled) {
       // 关弹窗不清空选择：写 cache 供「回到编辑 → 回到导出」恢复（§3.3）。
-      if (key) selectionCache.set(key, selected);
+      if (key) selectionCache.set(key, selectedRef.current);
       initializedForRef.current = null;
       setActionError(null);
       setActiveTask(null);

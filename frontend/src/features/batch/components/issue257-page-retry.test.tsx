@@ -111,7 +111,7 @@ describe('单页重试（Issue#289 拆分后：格子只展开，重试在面板
     await waitFor(() => expect(refresh).toHaveBeenCalled());
   });
 
-  it('点成功页只改选择，不触发重试', async () => {
+  it('点成功页只改选择，不触发重试，不展开技术详情（Issue#314）', async () => {
     renderRows(pageStatus());
 
     await act(async () => {
@@ -120,6 +120,8 @@ describe('单页重试（Issue#289 拆分后：格子只展开，重试在面板
 
     expect(retryItemPages).not.toHaveBeenCalled();
     expect(screen.getByTestId('page-cell-1').getAttribute('data-selected')).toBe('false');
+    // 批量审阅 = detailPolicy="issues"：成功页点击只选择，不弹「第 N 页发生了什么」。
+    expect(screen.queryByTestId('page-detail-panel')).toBeNull();
   });
 
   it('识别进行中时红叉页面板可开但重试按钮禁用、批量按钮禁用', async () => {

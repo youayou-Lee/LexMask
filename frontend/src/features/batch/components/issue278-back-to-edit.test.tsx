@@ -91,6 +91,15 @@ async function renderDialog(props: { onBackToEdit: () => void }) {
   });
 }
 
+const nextFrame = () =>
+  new Promise<void>((resolve) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => resolve());
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+
 describe('回到编辑（Issue#278）', () => {
   it('batch：按钮触发 flush 草稿 + resolveExportIssue 带正确 fileId', async () => {
     const flush = vi.fn(async () => true);
@@ -145,9 +154,42 @@ describe('回到编辑（Issue#278）', () => {
     fireEvent.click(screen.getByTestId('playground-page-export-toggle'));
     const button = screen.getByTestId('export-back-to-edit');
     fireEvent.click(button);
+    // Issue#313：回到画布的动作延后一帧（等弹窗/滚动锁释放），测试等待 rAF。
+    await act(async () => {
+      await nextFrame();
+    });
     // 导出块收起（提交按钮消失）+ 锚点聚焦编辑器（scrollIntoView 被调）
     expect(screen.queryByTestId('playground-page-export-submit')).toBeNull();
     expect(scrollSpy).toHaveBeenCalledTimes(1);
+    editorHost.remove();
+  });
+
+  it('playground（bare 弹窗）：回到编辑通知宿主关闭弹窗，并在下一帧回到画布', async () => {
+    const onRequestClose = vi.fn();
+    const scrollSpy = vi.fn();
+    const editorHost = document.createElement('div');
+    editorHost.id = 'playground-bbox-editor';
+    editorHost.scrollIntoView = scrollSpy;
+    // 真实画布是 ImageBBoxEditor 的 div[role=application][tabIndex=0]（门⑥ M-4）。
+    const focusTarget = document.createElement('div');
+    focusTarget.setAttribute('role', 'application');
+    focusTarget.tabIndex = 0;
+    const focusSpy = vi.spyOn(focusTarget, 'focus');
+    editorHost.appendChild(focusTarget);
+    document.body.appendChild(editorHost);
+
+    render(<PlaygroundPageExport fileId="file-1" bare onRequestClose={onRequestClose} />);
+    expect(screen.getByTestId('playground-page-export-submit')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('export-back-to-edit'));
+    // bare 形态自己收不起来：必须把关闭动作交给宿主（父 Dialog）。
+    expect(onRequestClose).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await nextFrame();
+    });
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(focusSpy).toHaveBeenCalled();
     editorHost.remove();
   });
 });

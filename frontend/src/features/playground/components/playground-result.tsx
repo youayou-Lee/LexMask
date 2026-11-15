@@ -58,6 +58,7 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   content,
   entities,
   entityMap,
+  redactedCount,
   redactionReport,
   reportOpen,
   setReportOpen,
@@ -328,7 +329,12 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
         data-testid="playground-result-toolbar"
       >
         <div className="min-w-0 flex-1">
-          <PlaygroundPageExport fileId={fileInfo?.file_id ?? null} defaultCollapsed />
+          <PlaygroundPageExport
+            fileId={fileInfo?.file_id ?? null}
+            defaultCollapsed
+            onRequestClose={onBackToEdit}
+          />
+
         </div>
         {outputPreviewAvailable && (
           <div
@@ -410,6 +416,7 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
           visionTypes={visionTypes}
           getVisionTypeConfig={getVisionTypeConfig}
           entityMap={entityMap}
+          redactedCount={redactedCount}
           origToTypeId={origToTypeId}
           matchCounts={matchCounts}
           scrollToMatch={scrollToMatch}
@@ -424,6 +431,7 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
           renderRedacted={renderRedacted}
           content={displayContent}
           entityMap={displayEntityMap}
+          redactedCount={redactedCount}
           origToTypeId={origToTypeId}
           matchCounts={matchCounts}
           scrollToMatch={scrollToMatch}

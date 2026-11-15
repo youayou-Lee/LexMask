@@ -281,3 +281,37 @@ describe('normalizeItemPageStatus 透传 visual（r2 F7 吞字段回归钉）', 
     expect(normalized.pages[0].detail?.visual).toBeUndefined();
   });
 });
+
+describe('detailPolicy=none：视觉诊断只随详情面板出现（Issue#314）', () => {
+  it('点页不渲染详情面板/视觉行，但卷头视觉列缺失提示照常', () => {
+    useI18n.setState({ locale: 'zh' });
+    const status = makeStatus({
+      pages: [
+        {
+          page: 1,
+          state: 'success',
+          duration_ms: 100,
+          cache_hit: false,
+          detail: {
+            route_verdict: 'page_pipeline',
+            attempts: 1,
+            visual: visual({ state: 'skipped', source: 'none' }),
+          },
+        },
+      ],
+      page_count: 1,
+      visual_summary: { done: 0, skipped: 1, failed: 0, absent: 0 },
+    });
+    render(
+      <BatchPageMatrix status={status} selected={new Set()} onChange={vi.fn()} detailPolicy="none" />,
+    );
+
+    // 卷头提示属于「视觉列产线状态」，不是技术面板，导出场景仍保留。
+    expect(screen.getByTestId('page-matrix-visual-hint')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('page-cell-1'));
+    expect(screen.queryByTestId('page-detail-panel')).toBeNull();
+    expect(screen.queryByTestId('page-detail-visual')).toBeNull();
+    expect(screen.getByTestId('page-matrix-visual-hint')).toBeTruthy();
+  });
+});

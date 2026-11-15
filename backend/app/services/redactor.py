@@ -206,6 +206,10 @@ class Redactor(TextRedactorMixin, ImageRedactorMixin):
                 output_path,
                 config,
                 progress_cb=progress_cb,
+                # Issue#312：像素遮挡不产生替换词，但「哪些原文被遮挡」必须落
+                # entity_map——否则扫描件右栏「映射记录」永远 0 行（Issue 实证
+                # 1598 框 / 655 去重原文全丢）。与 redacted_count 同源同次计算。
+                entity_map_out=context.entity_map,
             )
 
         watermark_text = (getattr(config, "watermark_text", None) or "").strip()

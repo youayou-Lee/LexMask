@@ -405,6 +405,7 @@ def test_r5_redactor_dispatch_passes_cb_to_image_path_only(monkeypatch: pytest.M
         output_path: str,
         config: Any,
         progress_cb: Any = None,
+        entity_map_out: Any = None,  # Issue#312：图片链路新增的出参，fake 必须兼容
     ) -> int:
         image_cb_seen.append(progress_cb)
         return 0
