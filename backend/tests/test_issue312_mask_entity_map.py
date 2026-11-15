@@ -341,6 +341,8 @@ async def test_restore_does_not_consume_mask_map(_dirs, monkeypatch):
 
     # restore 的唯一输入是请求体 mapping（门⑥ M6 行为判据）：给编排层塞一份
     # 含冲突「已打码」映射的 store；若 restore 将来接上快照读取，下面的断言会立刻变红。
+    # 判据边界：只覆盖经 `orch._get_file_store()` 的快照读取入口；若将来改走别的
+    # 访问器/缓存读快照，本钉不会变红，需另加同源判据。
     import app.api.vlmd as vlmd
 
     class _StoreWithMaskMap:

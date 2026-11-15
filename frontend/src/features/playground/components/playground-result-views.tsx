@@ -15,7 +15,7 @@ export const TextResultView: FC<{
   renderRedacted: () => ReactNode[];
   content: string;
   entityMap: Record<string, string>;
-  redactedCount?: number;
+  redactedCount: number;
   origToTypeId: Map<string, string>;
   matchCounts: Map<string, number>;
   scrollToMatch: (orig: string) => void;
@@ -210,7 +210,7 @@ export const ImageResultView: FC<{
   visionTypes: VisionTypeConfig[];
   getVisionTypeConfig: (typeId: string) => { name: string; color: string };
   entityMap: Record<string, string>;
-  redactedCount?: number;
+  redactedCount: number;
   origToTypeId: Map<string, string>;
   matchCounts: Map<string, number>;
   scrollToMatch: (orig: string) => void;

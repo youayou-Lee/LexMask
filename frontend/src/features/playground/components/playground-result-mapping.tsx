@@ -10,7 +10,7 @@ import type { VersionHistoryEntry } from '@/types';
 
 export interface MappingColumnProps {
   entityMap: Record<string, string>;
-  /** 实际打码处数（Isssue#312 AC1）：与去重后的映射条数并列展示。 */
+  /** 实际打码处数（Issue#312 AC1）：与去重后的映射条数并列展示。 */
   redactedCount?: number;
   origToTypeId: Map<string, string>;
   matchCounts?: Map<string, number>;

@@ -3,7 +3,7 @@
 - Issue: [#312](https://github.com/youayou-Lee/LexMask/issues/312)
 - 分支: `feat/issue312-mask-entity-map`（从 `origin/preview` = `356d901` 切出）
 - 关联: #61（文本型 PDF MASK 真打码栅格化路由，本次不改其路由）、#66（预览定位与执行定位同源）、#57（MASK 仅对 PDF/图片有意义）、#275/#276/#278/#280（本轮相邻批次，无耦合）
-- 范围: **仅** `backend`；前端零改动（右栏「映射记录」Already 读 `GET /api/v1/files/{id}` 的 `entity_map`）
+- 范围: **backend 主链** + 前端映射栏表头双口径（门⑥ I1：`N 条 / M 处`）；数据源仍唯一是 `GET /api/v1/files/{id}` 的 `entity_map`
 
 ---
 
@@ -104,7 +104,7 @@ async def _redact_image(
 | 导出后自检 `_verify_export_residuals` | 不变：`verify_types` 只含文本型 PDF/DOCX/DOC/DOCX/TXT，图片链路本就不进自检 |
 | 文本替换链路（DOCX/TXT/文本 PDF 回转） | **零改动**：`text_redactor.py` 一字不动 |
 | `POST /redaction/preview-map`（预览口径） | 不变：仍是替换词预览，不在本单范围 |
-| 前端 | 零改动 |
+| 前端 | 映射栏表头从「N 条」升为「N 条 / M 处」（`redactedCount` 透传，i18n 双语）；不改数据源 |
 | 化名 CSV / `POST /vlmd/restore` | 不受影响（见 3.4，测试钉住） |
 
 ## 5. 验收标准
@@ -116,6 +116,7 @@ async def _redact_image(
 - **AC5 落库一致性**：`execute_redaction` 后 `file_store.info["entity_map"]` 与 `info["redaction_history"][-1]["entity_map"]` 与红色器返回值**同一 map**（刷新/任务中心回场一致，不依赖 live 会话内存）。
 - **AC6 安全性钉**：mask map 全值 = `已打码`（无化名/占位符形态）；restore 端点只消费请求体 `mapping`（结构钉 + 行为钉），mask map 不参与 restore。
 - **AC7 回归**：`tests/` 全量 0 新增失败（`redactor`/`orchestrator`/`image` 相关全文件必跑）。
+- **AC8 前端表头双口径（门⑥ I1）**：映射栏 `redactedCount` 提供且 >0 时显示「{keys} 条 / {total} 处」，未提供时保持单数字；zh/en 双键；映射行内容不变。
 
 ## 6. 测试计划（TDD：先红后绿）
 
@@ -144,7 +145,7 @@ async def _redact_image(
 
 1. **视觉类框的 label 文本入表**（`印章`/`签字`/`指纹`/`official_seal`）：这类框的 `text` 是标签而非被替换原文，入表后右栏会出现「印章 → 已打码」这类行。取舍：Issue 要求「以实际遮挡框为准」且不新增过滤维度（过滤会让 655 行口径对不上），语义解释为「该框已有遮挡」。若后续要按 `source`/`type` 分流，另立 Issue。
 2. **页号越界框**（`page > 页数`）：`VisionService._redact_pdf` 只遮挡实际存在的页，越界框从未真正上像素，但**既有** `redacted_count` 一直把它们计入。本单让 map 与 count 同源，故两者口径一致、不为越界框单独收紧（收紧 count 属行为变更，另立 Issue）。
-3. **右栏 655 行渲染性能/可读性**：Issue 边界明确「另立 UI 聚合 Issue」，本单不做前端。
+3. **右栏 655 行渲染性能/可读性**：Issue 边界明确「另立 UI 聚合 Issue」，本单前端只做表头双口径（AC8），不做映射行交互。
 4. **历史存量记录**：已落库的 `entity_map={}` 不会自动回填；需重跑执行才会出现映射记录（Issue 验收也以重跑为准）。
 5. **落点仍含原文**：`file_store` 与 `redaction_history` 本就在存原文→替换词（文本链路同样），本次不新增字段、不新增日志、不新增导出面。
 ---
@@ -157,7 +158,11 @@ async def _redact_image(
 |---|---|
 | `backend/app/services/redaction/image_redactor.py` | +`IMAGE_REDACTED_LABEL`、+`build_image_entity_map()`、`_redact_image` 增 `entity_map_out` 出参并在 `safe_boxes` 上写入（返回仍 `int`） |
 | `backend/app/services/redactor.py` | 图片分支一行：`entity_map_out=context.entity_map` |
-| `backend/tests/test_issue312_mask_entity_map.py` | 新增 10 例（R0-R9） |
+| `backend/tests/test_issue312_mask_entity_map.py` | 新增 12 例（R0-R11；R10 零面积框、R11 上像素框集同源） |
+| `frontend/src/features/playground/components/playground-result-mapping.tsx` | 表头双口径 `data-testid=mapping-count` |
+| `frontend/src/features/playground/components/playground-result-views.tsx` / `playground-result.tsx` | `redactedCount` 必填透传（Text/Image 两视图） |
+| `frontend/src/i18n/{zh,en}.ts` | `playground.mappingCountDual` 双键 |
+| `frontend/src/features/playground/components/playground-result-mapping.test.tsx` | 新增 2 例（双口径/回落） |
 | `backend/tests/test_issue238_progress_reporting.py` | `_fake_image` 补 `entity_map_out=None` 形参（该 fake 是仓内唯一 monkeypatch `Redactor._redact_image` 的点） |
 | `CHANGELOG.md` | 2026-11-15 条目 |
 
@@ -172,9 +177,10 @@ async def _redact_image(
 
 | 命令 | 结果 |
 |---|---|
-| `python -m pytest tests/test_issue312_mask_entity_map.py -q` | **10 passed** |
-| `python -m pytest tests/ -k "redact or entity_map or image" -q` | **138 passed, 3391 deselected** |
-| 受影响全文件 11 个（见 §6） | **184 passed, 1 skipped** |
+| `python -m pytest tests/test_issue312_mask_entity_map.py -q` | **12 passed** |
+| `python -m pytest tests/ -k "redact or entity_map or image" -q` | **140 passed, 3391 deselected** |
+| 受影响全文件 11 个（见 §6） | **186 passed, 1 skipped** |
+| 前端 `npx vitest run` | **87 files / 649 passed**；`npm run build` 4.68s；`tsc` rc=0 |
 | `python -m pytest tests/ -q`（全量） | **3430 passed, 42 failed, 57 skipped** |
 
 **全量 42 failed 的归因**：把本次两个生产文件 `git stash` 掉（回到 `origin/preview` 行为）后重跑同一批文件 → **42 failed / 72 passed**，失败文件分布逐个相同（`test_lb_least_inflight` 6、`test_evalng_participants` 8、`test_issue52_date_forms_guarantee` 8、`test_issue308_box_quality_pass` 5、`test_issue217_mineru_sidecar_contract` 4、`test_safe_regex_*` 8、其余 3），即**既有环境相关失败**（subprocess/spawn、httpx、paddle 等），非本单回归。
