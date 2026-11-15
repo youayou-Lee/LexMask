@@ -2099,14 +2099,24 @@ class RedactionPipelineMixin:
                 if isinstance(raw_pages, list) and raw_pages
                 else None
             )
-            await execute_redaction_request(
-                task.file_id,
-                entities,
-                boxes,
-                config,
-                progress_cb=redaction_progress_cb if redaction_pages > 0 else None,
-                pages=subset_pages,
-            )
+            progress_arg = redaction_progress_cb if redaction_pages > 0 else None
+            if subset_pages:
+                await execute_redaction_request(
+                    task.file_id,
+                    entities,
+                    boxes,
+                    config,
+                    progress_cb=progress_arg,
+                    pages=subset_pages,
+                )
+            else:
+                await execute_redaction_request(
+                    task.file_id,
+                    entities,
+                    boxes,
+                    config,
+                    progress_cb=progress_arg,
+                )
             self._record_item_performance(
                 store,
                 task.item_id,
