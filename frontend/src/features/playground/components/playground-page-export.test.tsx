@@ -15,9 +15,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ItemPageStatus } from '@/services/jobsApi';
 
 const statusBox = vi.hoisted(() => ({ current: null as ItemPageStatus | null }));
+// 选择集 cache 是模块级的：给每个用例独立 item，避免用例间互相污染。
+const idsBox = vi.hoisted(() => ({ jobId: 'job-1', itemId: 'item-1' }));
 
 vi.mock('../hooks/use-file-job-item', () => ({
-  useFileJobItem: () => ({ jobId: 'job-1', itemId: 'item-1' }),
+  useFileJobItem: () => ({ jobId: idsBox.jobId, itemId: idsBox.itemId }),
 }));
 
 vi.mock('@/features/batch/hooks/use-batch-page-status', () => ({
@@ -66,6 +68,8 @@ function makeStatus(overrides: Partial<ItemPageStatus> = {}): ItemPageStatus {
 }
 
 beforeEach(() => {
+  idsBox.jobId = 'job-1';
+  idsBox.itemId = 'item-1';
   statusBox.current = makeStatus();
   mockedStart.mockReset();
   mockedList.mockReset();
@@ -137,5 +141,24 @@ describe('单文件任务的逐页结果与选页导出（Issue#257 需求重对
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByTestId('page-matrix')).toBeTruthy();
+  });
+
+  it('回到编辑再重开：选择集按上次勾选恢复，不回落全选（Issue#313 门⑥ I-1）', async () => {
+    idsBox.itemId = 'item-cache';
+    const first = await renderSettled(<PlaygroundPageExport fileId="file-1" />);
+    // 默认全选 4 页可导出页（1、2、3、5）；取消 1、2 → 只剩 3、5。
+    fireEvent.click(screen.getByTestId('page-cell-1'));
+    fireEvent.click(screen.getByTestId('page-cell-2'));
+    expect(screen.getByTestId('page-cell-1').getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByTestId('page-cell-2').getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByTestId('page-cell-3').getAttribute('aria-pressed')).toBe('true');
+    first.unmount();
+
+    // 模拟 Dialog 关闭即卸载、再打开重新挂载。
+    await renderSettled(<PlaygroundPageExport fileId="file-1" />);
+    expect(screen.getByTestId('page-cell-1').getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByTestId('page-cell-2').getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByTestId('page-cell-3').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('page-cell-5').getAttribute('aria-pressed')).toBe('true');
   });
 });

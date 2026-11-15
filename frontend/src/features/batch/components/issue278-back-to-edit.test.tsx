@@ -91,6 +91,15 @@ async function renderDialog(props: { onBackToEdit: () => void }) {
   });
 }
 
+const nextFrame = () =>
+  new Promise<void>((resolve) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => resolve());
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+
 describe('回到编辑（Issue#278）', () => {
   it('batch：按钮触发 flush 草稿 + resolveExportIssue 带正确 fileId', async () => {
     const flush = vi.fn(async () => true);
@@ -147,7 +156,7 @@ describe('回到编辑（Issue#278）', () => {
     fireEvent.click(button);
     // Issue#313：回到画布的动作延后一帧（等弹窗/滚动锁释放），测试等待 rAF。
     await act(async () => {
-      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      await nextFrame();
     });
     // 导出块收起（提交按钮消失）+ 锚点聚焦编辑器（scrollIntoView 被调）
     expect(screen.queryByTestId('playground-page-export-submit')).toBeNull();
@@ -161,10 +170,12 @@ describe('回到编辑（Issue#278）', () => {
     const editorHost = document.createElement('div');
     editorHost.id = 'playground-bbox-editor';
     editorHost.scrollIntoView = scrollSpy;
-    const canvas = document.createElement('canvas');
-    canvas.tabIndex = 0;
-    const focusSpy = vi.spyOn(canvas, 'focus');
-    editorHost.appendChild(canvas);
+    // 真实画布是 ImageBBoxEditor 的 div[role=application][tabIndex=0]（门⑥ M-4）。
+    const focusTarget = document.createElement('div');
+    focusTarget.setAttribute('role', 'application');
+    focusTarget.tabIndex = 0;
+    const focusSpy = vi.spyOn(focusTarget, 'focus');
+    editorHost.appendChild(focusTarget);
     document.body.appendChild(editorHost);
 
     render(<PlaygroundPageExport fileId="file-1" bare onRequestClose={onRequestClose} />);
@@ -175,7 +186,7 @@ describe('回到编辑（Issue#278）', () => {
     expect(onRequestClose).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      await nextFrame();
     });
     expect(scrollSpy).toHaveBeenCalledTimes(1);
     expect(focusSpy).toHaveBeenCalled();

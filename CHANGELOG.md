@@ -3,6 +3,13 @@
 
 ## 2026-11-15
 
+### 修正（Issue#313）单文件导出弹窗「回到编辑」失效 + 产物文案回归 zip 口径
+
+- **为什么**：`PlaygroundPageExport` 在 bare（弹窗内）形态下 `expanded = bare || open` 恒真，`setOpen(false)` 收不起自己；宿主 Dialog 又没有关闭回调，点「回到编辑」只把背后的画布 scrollIntoView 一下，弹窗纹丝不动（用户实测无反应，只能去点「导出选中页」）。同时底栏仍写「产物 = 说明页 1 页 + N 页」，与 #278 已删除说明页插页、改 zip 的口径冲突。
+- **改了什么**：`PlaygroundPageExport` 新增 `onRequestClose`，bare 形态把关闭动作交给宿主；宿主抽成 `PlaygroundExportDialog`（playground-page.tsx 使用），回到编辑 → 关闭父 Dialog → 下一帧滚动画布并聚焦 `div[role=application][tabindex]`；`playground-result.tsx` 的导出块也接 `onRequestClose={onBackToEdit}`。Radix `onCloseAutoFocus` 仅在回到编辑路径 preventDefault，X/ESC 保持默认焦点归还。zh/en 的 `singleExportHint` / `exportSummary` 改为 zip 口径（脱敏 PDF + 映射清单 + 可选说明.txt）。
+- **选择集保持（门⑥ I-1）**：playground 宿主 `enabled` 恒 true、弹窗关闭是整棵子树卸载，原 cache 写入分支永不触发 → 重开回落全选。`use-item-export` 增加 `selectedRef` + `(job,item)` 卸载 cleanup 写 cache，重开按上次选择恢复。
+- **测试**：`issue278-back-to-edit.test.tsx` 新增 bare 契约用例（onRequestClose + 下一帧 scroll/focus，夹具改 `div[role=application][tabindex=0]`，rAF 等待替代 setTimeout）；新增 `playground-export-dialog.test.tsx` 钉住「点回到编辑 → 弹窗关闭」宿主接线；`playground-page-export.test.tsx` 钉 zip 文案与卸载/重挂选择集恢复。
+
 ### 修正（Issue#308）实体框质量打磨：标签双份/过度捕获/页脚页码误报/断行拆分框
 
 - **为什么**：#301 验收发现的实体框质量四类问题——①同案号值落 LEGAL_CASE_ID+CASE_NUMBER 双框（实体表重复、按类型停用语义混乱）；②NER/正则框吞叙述前缀（`防城区法院作出（2021）…` 整句成框，打码误伤旁文字）+ 碎片框（`事调解书》`）+ 金额框吞整句；③页脚页码 `3` 被误标 LEGAL_CASE_ID（打码涂掉页码）；④OCR 断行把同一案号拆两个残缺框。

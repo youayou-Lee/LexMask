@@ -184,9 +184,12 @@ export function PlaygroundPageExport({
                   const editor = document.getElementById('playground-bbox-editor');
                   if (!editor) return;
                   editor.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  // 画布本身是 tabIndex=0 的 canvas；找不到就退化为不做焦点转移。
+                  // 画布容器是 ImageBBoxEditor 的 div[role=application][tabIndex=0]
+                  // （门⑥ M-4）；兼容旧 canvas 形态，找不到就退化为不做焦点转移。
                   editor
-                    .querySelector<HTMLElement>('canvas[tabindex], [tabindex="0"]')
+                    .querySelector<HTMLElement>(
+                      '[role="application"][tabindex], canvas[tabindex], [tabindex="0"]',
+                    )
                     ?.focus({ preventScroll: true });
                 });
               }}

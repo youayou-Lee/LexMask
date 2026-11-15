@@ -8,7 +8,6 @@ import { ConfirmDialog } from '@/components/ConfirmDialog';
 import ImageBBoxEditor from '@/components/ImageBBoxEditor';
 import { PaginationRail } from '@/components/PaginationRail';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { EncryptedPdfDialog } from './components/encrypted-pdf-dialog';
 import { PlaygroundUpload } from './components/playground-upload';
 import { PlaygroundToolbar } from './components/playground-toolbar';
@@ -16,6 +15,7 @@ import { PlaygroundEntityPanel } from './components/playground-entity-panel';
 import { PlaygroundResult } from './components/playground-result';
 import { PlaygroundLoading } from './components/playground-loading';
 import { PlaygroundPageExport } from './components/playground-page-export';
+import { PlaygroundExportDialog } from './components/playground-export-dialog';
 import { PlaygroundTextSelectionPopover } from './components/playground-text-selection-popover';
 import { PlaygroundEntityPopover } from './components/playground-entity-popover';
 import {
@@ -660,19 +660,13 @@ const PlaygroundInner: FC = () => {
         onCancel={cancelReset}
       />
 
-      {/* Issue#257 需求重对齐：复核阶段「逐页结果与选页导出」弹窗（单文件任务）。 */}
-      <Dialog open={exportPagesOpen} onOpenChange={setExportPagesOpen}>
-        <DialogContent className="max-w-3xl" data-testid="playground-export-pages-dialog">
-          <DialogTitle>{t('batchWizard.pages.singleTitle')}</DialogTitle>
-          <div className="max-h-[70vh] overflow-y-auto">
-            <PlaygroundPageExport
-              fileId={fileInfo?.file_id ?? null}
-              bare
-              onRequestClose={() => setExportPagesOpen(false)}
-            />
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* Issue#257 需求重对齐：复核阶段「逐页结果与选页导出」弹窗（单文件任务）。
+          Issue#313：外壳独立成组件，回到编辑 → onRequestClose 关窗的接线有测试钉住。 */}
+      <PlaygroundExportDialog
+        open={exportPagesOpen}
+        onOpenChange={setExportPagesOpen}
+        fileId={fileInfo?.file_id ?? null}
+      />
 
       <EncryptedPdfDialog
         prompt={encryptedPrompt}
