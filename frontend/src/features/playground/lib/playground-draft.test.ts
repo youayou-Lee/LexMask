@@ -4,6 +4,7 @@ import {
   PLAYGROUND_DRAFT_VERSION,
   boundingBoxesFromServerInfo,
   buildDraftSnapshot,
+  draftStageForResume,
   needsSwitchConfirm,
   parseDraft,
   planResume,
@@ -244,5 +245,27 @@ describe('splitVirtualPages', () => {
       expect(content.slice(offset, offset + p.length)).toBe(p);
       offset += p.length;
     }
+  });
+});
+
+describe('draftStageForResume（Issue#327 门⑥ 三轮必修：子集结果页不落 stage=result）', () => {
+  it('子集口径一律降级为 preview（回执不落盘 ⇒ 恢复成全卷口径会拿到必 400 的下载）', () => {
+    expect(draftStageForResume('result', true)).toBe('preview');
+    expect(draftStageForResume('preview', true)).toBe('preview');
+  });
+
+  it('非子集口径逐字保持既有行为（result 仍是 result，preview 仍是 preview）', () => {
+    expect(draftStageForResume('result', false)).toBe('result');
+    expect(draftStageForResume('preview', false)).toBe('preview');
+  });
+
+  it('与 buildDraftSnapshot 组合：子集态落盘的 stage 永不为 result', () => {
+    const snapshot = buildDraftSnapshot({
+      ...baseInput,
+      stage: draftStageForResume('result', true),
+    });
+    expect(snapshot.stage).toBe('preview');
+    // 落盘后仍能通过解析（preview 口径要求正文非空——baseInput 满足）
+    expect(parseDraft(serializeDraft(snapshot))?.stage).toBe('preview');
   });
 });

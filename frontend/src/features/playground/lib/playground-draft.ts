@@ -50,6 +50,25 @@ export function buildDraftSnapshot(input: DraftSnapshotInput): PlaygroundDraftSn
   return { version: PLAYGROUND_DRAFT_VERSION, savedAt: new Date().toISOString(), ...input };
 }
 
+/**
+ * Issue#327 门⑥ 三轮必修：子集预览结果页**不落 stage='result'**。
+ *
+ * 子集预览回执是会话现场（`subsetPreview` 不进草稿），而子集口径下后端只有
+ * `preview_*` 产物、没有 `output_path`。若草稿把 `stage='result'` 落盘，刷新恢复后
+ * 结果页会退回「全卷口径」（本地画布渲染 + `download?redacted=true`），而后端并没有
+ * 全卷产物 ⇒ 下载必然 400：静默换源 + 必然失败的操作。
+ *
+ * 因此持久化时把该场景降级为 `preview`（画布/实体/映射照常落盘）——用户刷新后回到
+ * 编辑页，可以继续改框或再跑一次处理；想要那份子集产物请在结果页先下载。
+ */
+export function draftStageForResume(
+  stage: Stage,
+  subsetPreviewActive: boolean,
+): 'preview' | 'result' {
+  if (subsetPreviewActive) return 'preview';
+  return stage === 'result' ? 'result' : 'preview';
+}
+
 export function serializeDraft(snapshot: PlaygroundDraftSnapshot): string | null {
   try {
     const json = JSON.stringify(snapshot);

@@ -48,6 +48,9 @@ const PlaygroundInner: FC = () => {
     fileInfo,
     content,
     isImageMode,
+    subsetPreview,
+    subsetReadyCount,
+    subsetTotalPages,
     entities,
     setBoundingBoxes,
     boundingBoxes,
@@ -573,6 +576,9 @@ const PlaygroundInner: FC = () => {
               onToggleBox={toggleBox}
               onEntityClick={ui.handleEntityClick}
               onRemoveEntity={removeEntity}
+              // Issue#327：识别在飞时的子集入口（「先匿名化已处理的 N/M 页」）
+              subsetReadyCount={subsetReadyCount}
+              subsetTotalPages={subsetTotalPages}
             />
           </div>
         </div>
@@ -593,6 +599,9 @@ const PlaygroundInner: FC = () => {
             versionHistoryOpen={versionHistoryOpen}
             setVersionHistoryOpen={setVersionHistoryOpen}
             isImageMode={isImageMode}
+            preview={!!subsetPreview}
+            previewPageCount={subsetPreview?.page_count ?? null}
+            previewPageMap={subsetPreview?.page_map ?? null}
             imageUrl={imageUrl}
             redactedImageUrl={redactedImageUrl}
             redactedImageError={redactedImageError}

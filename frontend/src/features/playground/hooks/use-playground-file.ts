@@ -144,6 +144,11 @@ export interface UsePlaygroundFileOptions {
    * 不提供时维持旧行为（会落 rerun 自动重跑识别——扫描件无实体被误判未识别）。
    */
   resumeCompletedResult?: (fileId: string, info: Record<string, unknown>) => Promise<boolean>;
+  /**
+   * Issue#327：用户是否正看子集预览结果页。True 时识别收尾不把 stage 拉回 'preview'
+   * 也不把全卷框盖到画布上（他在看 54/86 的预览件，随时可「返回编辑」）。
+   */
+  isSubsetPreviewActive?: () => boolean;
 }
 
 export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
@@ -820,6 +825,11 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       const controller = new AbortController();
       abortRef.current = controller;
       const { signal } = controller;
+      // Issue#327：用户正看子集预览结果页时，识别收尾不抢焦点——不把 stage 拉回
+      // 'preview'（会中断他正在看的 54/86 预览）。画布照常装全卷框：识别期不允许
+      // 手改画布（lockDraw），不存在覆盖用户改动的问题，而他「返回编辑」时正需要
+      // 完整画布（否则会看到空画布）。
+      const keepResultStage = () => Boolean(optionsRef.current.isSubsetPreviewActive?.());
       void (async () => {
         try {
           const res = await authFetch(`/api/v1/files/${fileId}`, { signal });
@@ -842,10 +852,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
               opts.setBoundingBoxes(boundingBoxesFromServerInfo(info.bounding_boxes));
             }
           }
-          setStage('preview');
+          if (!keepResultStage()) setStage('preview');
         } catch {
           // 快照拉取失败不阻塞：实体可稍后经历史页/服务端缓存再取，识别确已完成
-          if (!signal.aborted) setStage('preview');
+          if (!signal.aborted && !keepResultStage()) setStage('preview');
         } finally {
           if (!signal.aborted && handledJobRef.current === jobId) {
             setTaskRecognitionJob(null);

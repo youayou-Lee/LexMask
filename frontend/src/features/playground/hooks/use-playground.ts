@@ -13,13 +13,28 @@ import {
   setScopedStorageItem,
 } from '@/lib/storage';
 import { authFetch, downloadFile } from '@/services/api-client';
-import { getJob } from '@/services/jobsApi';
-import { resolveAwaitingReviewTask, submitRedactionTask } from '@/services/singleTaskApi';
+import { fileApi } from '@/services/api';
+import { getItemPageStatus, getJob, type ItemPageStatus } from '@/services/jobsApi';
+import {
+  isRecognitionInFlight,
+  mergeSubsetBoxes,
+  pickSubsetPages,
+  subsetCandidates,
+} from '@/features/playground/lib/subset-pages';
+import {
+  createSubsetPreview,
+  resolveAwaitingReviewTask,
+  submitRedactionTask,
+  type SubsetPreviewReceipt,
+} from '@/services/singleTaskApi';
 import { useSingleTask } from '@/features/single-task/single-task-context';
 import type { VersionHistoryEntry } from '@/types';
+import type { BoundingBox } from '../types';
 import { localizeErrorMessage } from '@/utils/localizeError';
 import {
   buildDraftSnapshot,
+  boundingBoxesFromServerInfo,
+  draftStageForResume,
   parseDraft,
   planResume,
   serializeDraft,
@@ -47,6 +62,13 @@ import { usePlaygroundImage } from './use-playground-image';
 import { usePlaygroundRecognition } from './use-playground-recognition';
 
 type ServiceKey = keyof ServicesHealth['services'];
+
+/**
+ * Issue#327：识别在飞时轮询页账的间隔（子集入口的「已处理 N/总 M」必须跟得上识别推进）。
+ * 页账是后端 `page-status` 快照（读 recognition.performance.pages），3s 足够且比识别单页
+ * 耗时（数十秒）低一个数量级。
+ */
+const SUBSET_PAGE_POLL_MS = 3000;
 
 const BLOCKING_SERVICE_STATUSES = new Set(['offline', 'degraded']);
 
@@ -112,6 +134,20 @@ export function usePlayground() {
     /** 提交时前端点名的处理项数：快照不可用时兜底 redactedCount 展示。 */
     requestedCount: number;
   };
+  const [subsetPreview, setSubsetPreview] = useState<SubsetPreviewReceipt | null>(null);
+  // Issue#327：识别在飞时的子集口径状态。
+  // - subsetJob：识别任务的处理项定位（jobId + itemId）——itemId 必须跟 jobId 绑定，
+  //   否则新一轮识别会误用上一轮的 itemId（页账查错对象）；provider 占位视图首轮
+  //   轮询前 itemId 为空，故在页账轮询里补解析（解析失败下拍重试，不一次性放弃）。
+  // - subsetPageStatus：页账快照（轮询刷新，识别结束即清）。
+  // 两者共同决定「先匿名化已处理的 N/M 页」入口是否出现。
+  const [subsetJob, setSubsetJob] = useState<{ jobId: string; itemId: string | null } | null>(
+    null,
+  );
+  const [subsetPageStatus, setSubsetPageStatus] = useState<ItemPageStatus | null>(null);
+  // Issue#327：latest-ref——fileHook 的 awaiting_review 分支要据此判断「用户是否正看子集结果页」
+  const subsetPreviewRef = useRef<SubsetPreviewReceipt | null>(subsetPreview);
+  subsetPreviewRef.current = subsetPreview;
   const [pendingRedact, setPendingRedact] = useState<PendingRedact | null>(null);
   /**
    * Issue#238：打码段被动小卡数据（右下角，不遮挡预览页）。pendingRedact 在途时由
@@ -196,7 +232,104 @@ export function usePlayground() {
     getRecognitionBlocker,
     isVisualServiceBlocked,
     resumeCompletedResult: (fileId, info) => resumeCompletedResultRef.current(fileId, info),
+    // Issue#327：用户正看子集预览结果页时，识别收尾不得把他踢回确认页（见 awaiting_review 分支）
+    isSubsetPreviewActive: () => subsetPreviewRef.current !== null,
   });
+
+  // --- Issue#327：识别在飞时的子集预览入口（页账轮询） ---
+  // 需求：只要已有处理好的页，就能「先匿名化这批页」。识别在飞时后端的
+  // page-status 逐页记账（#257/#279），是唯一权威的「已处理页」来源。
+  // 入口不出现时（识别未开始/已终态/页账不可用）一切行为回落到既有全卷链路。
+  const subsetRecognitionJobId = fileCtx.taskRecognition?.jobId ?? null;
+  const subsetFileId = fileCtx.fileInfo?.file_id ?? null;
+
+  // 页账轮询（itemId 惰性解析）：识别结束（taskRecognition 转 null）即随 effect 清理停下。
+  const subsetItemId =
+    subsetJob && subsetJob.jobId === subsetRecognitionJobId ? subsetJob.itemId : null;
+  useEffect(() => {
+    if (!subsetRecognitionJobId) {
+      setSubsetJob(null);
+      setSubsetPageStatus(null);
+      return;
+    }
+    let cancelled = false;
+    let timer: number | undefined;
+    const tick = async () => {
+      let itemId = subsetItemId;
+      if (!itemId) {
+        const known = subsetFileId
+          ? getSingleTaskRef.current(subsetFileId)?.itemId ?? ''
+          : '';
+        if (known) {
+          itemId = known;
+        } else {
+          try {
+            const detail = await getJob(subsetRecognitionJobId);
+            const item =
+              detail.items.find((candidate) => candidate.file_id === subsetFileId) ??
+              detail.items[0];
+            itemId = item?.id ?? null;
+          } catch {
+            // 解析失败：下拍重试（不阻塞识别视图，也不伪造入口）
+            itemId = null;
+          }
+        }
+        if (cancelled) return;
+        if (!itemId) {
+          timer = window.setTimeout(tick, SUBSET_PAGE_POLL_MS);
+          return;
+        }
+        setSubsetJob({ jobId: subsetRecognitionJobId, itemId });
+      }
+      try {
+        const next = await getItemPageStatus(subsetRecognitionJobId, itemId);
+        if (!cancelled) setSubsetPageStatus(next);
+      } catch {
+        // 页账不可用：保留上一拍快照（不阻塞识别，也不伪造计数）
+      }
+      if (!cancelled) timer = window.setTimeout(tick, SUBSET_PAGE_POLL_MS);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [subsetRecognitionJobId, subsetFileId, subsetItemId]);
+
+  // 换文件 / 重置 ⇒ 子集预览回执作废（产物属于上一份文件）
+  const subsetFileKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const fileId = fileCtx.fileInfo?.file_id ?? null;
+    if (subsetFileKeyRef.current === fileId) return;
+    subsetFileKeyRef.current = fileId;
+    setSubsetPreview(null);
+  }, [fileCtx.fileInfo?.file_id]);
+
+  // 新一轮识别开始 ⇒ 上一轮的子集预览作废；识别**收尾**（job → null）不清——
+  // 用户正看的子集结果页必须继续可下载/可翻页（#327 验收路径）。
+  const subsetRunKeyRef = useRef<string | null>(null);
+  const subsetRunJobId = fileCtx.taskRecognition?.jobId ?? null;
+  useEffect(() => {
+    if (!subsetRunJobId || subsetRunKeyRef.current === subsetRunJobId) return;
+    subsetRunKeyRef.current = subsetRunJobId;
+    setSubsetPreview(null);
+  }, [subsetRunJobId]);
+
+  // 回到编辑页 ⇒ 子集预览回执作废（门⑥ 二段 N-7③）：回执只服务结果页；
+  // 滞留会让 awaiting_review 的「不抢 stage」判据长期半失效（他已经在编辑页，
+  // 回执还在，之后每次识别收尾都走「保持当前 stage」分支）。
+  useEffect(() => {
+    if (fileCtx.stage !== 'preview') return;
+    setSubsetPreview((prev) => (prev === null ? prev : null));
+  }, [fileCtx.stage]);
+
+  // 子集入口候选：识别在飞 + 已处理页 < 总页数（否则等识别收尾走全卷链路）
+  const subsetSelection = useMemo(
+    () => subsetCandidates(subsetPageStatus, fileCtx.fileInfo?.page_count || 0),
+    [subsetPageStatus, fileCtx.fileInfo?.page_count],
+  );
+  const subsetReadyCount = subsetSelection.pages.length;
+  const subsetTotalPages = subsetSelection.total;
 
   // Issue #83：预览范式由文件形态决定——文本型 PDF（不分打码/替换）都走页
   // 面视图，派生一次多处复用（评审 M7：工作台/历史语义/执行阈值必须同源）。
@@ -523,6 +656,20 @@ export function usePlayground() {
     }
   }, []);
 
+  // Issue#327 门⑥ C-2：取服务端 file_store 框账快照（识别在飞时已边跑边写回逐页框）。
+  // 返回 null = 读取失败（网络/5xx/形状异常）——调用方据此 fail-closed：绝不当成
+  // 「无框」继续（那会把画布没碰过的页变成零框，静默漏打码）。
+  const fetchSnapshotBoxes = useCallback(async (fileId: string): Promise<BoundingBox[] | null> => {
+    try {
+      const response = await authFetch(`/api/v1/files/${fileId}`);
+      if (!response.ok) return null;
+      const info = await safeJson<Record<string, unknown>>(response);
+      return boundingBoxesFromServerInfo(info?.bounding_boxes);
+    } catch {
+      return null;
+    }
+  }, []);
+
   const handleRedact = useCallback(async () => {
     if (!fileCtx.fileInfo) return;
     if (redactionInFlightRef.current) return;
@@ -625,6 +772,67 @@ export function usePlayground() {
         }
       }
 
+      // Issue#327 / #325：识别还没跑完但有已处理页——只对这批页做同步子集预览，
+      // 立即进结果页；不做整卷后台打码，也不迁移任务状态。
+      // 门⑥ I-1：只有识别**在飞**才允许子集口径。识别已终态（awaiting_review/
+      // completed/failed）时页账不再增长，必须走既有全卷链路——失败页由 #199 的
+      // 显式失败记账 + 知情确认覆盖，静默降级成「只处理前 N 页」= fail-open。
+      const totalPages = fileCtx.fileInfo.page_count || 0;
+      const pageStatus = await Promise.resolve()
+        .then(() => getItemPageStatus(jobId, itemId))
+        .catch(() => null);
+      const inFlight = pageStatus ? isRecognitionInFlight(pageStatus.recognition_state) : false;
+      const donePages = inFlight ? pickSubsetPages(pageStatus, totalPages).pages : [];
+      // donePages === totalPages（页账已全绿、识别在做最后收尾）不进子集口径：
+      // 此时等一拍走全卷链路更干净（面板的同款判定也不会让入口出现）。
+      if (donePages.length > 0 && donePages.length < totalPages) {
+        // 门⑥ C-2（返工）：画布框与服务端快照框的合并口径。
+        // 识别在飞时后端 file_store 已边跑边写回逐页框，但前端画布可能为空（未审完）
+        // 或只有用户手改/手拉的框。直接发画布框会把服务端框整份替换（丢页），直接不发
+        // 又丢掉手改结果——因此：**画布为空 → 不发框（后端从 file_store 兜底）**；
+        // **画布有框 → 画布碰过的页整页覆盖快照框**。
+        // 传**全量**画布框（含未勾选）：mergeSubsetBoxes 内部按 `selected` 过滤，但页覆盖
+        // 判定必须看得见未勾选框（否则「某页框全取消勾选」会回落到快照框 ⇒ 照样打码）。
+        const canvasBoxes = imageCtx.boundingBoxes;
+        let boxesPayload: unknown[] | undefined;
+        if (canvasBoxes.length > 0) {
+          const snapshot = await fetchSnapshotBoxes(fileId);
+          if (!snapshot) {
+            // 门⑥ 二段 N-2：读不到快照就无法保留「画布没碰过的页」的框——继续发等于
+            // 只打码画布碰过的页、其余页零框进后端（脱敏漏打码）。fail-closed：不提交。
+            redactionInFlightRef.current = false;
+            showToast(t('playground.subsetSnapshotUnavailable'), 'error');
+            return;
+          }
+          boxesPayload = mergeSubsetBoxes(snapshot, canvasBoxes);
+        }
+        const receipt = await createSubsetPreview(jobId, itemId, {
+          pages: donePages,
+          bounding_boxes: boxesPayload,
+          // 前端实体为空（识别在飞时常见）⇒ 不发，后端吃 file_store 实体快照
+          entities: selectedEntities.length > 0 ? selectedEntities : undefined,
+        });
+        // 门⑥ 二段 N-1：同步子集打码是数十秒级操作——期间用户可能已切文件/复位。
+        // 与全卷链路同口径（提交后守卫 latestFileIdRef）：不比对就会把旧卷回执按到
+        // 新文件上（页数/页图/产物 id 全是旧卷），并把 latestFileIdRef 写回旧值。
+        if (latestFileIdRef.current !== fileId) {
+          redactionInFlightRef.current = false;
+          return;
+        }
+        setSubsetPreview(receipt);
+        setRedactedCount(receipt.redacted_count);
+        latestFileIdRef.current = fileId;
+        fileCtx.setStage('result');
+        redactionInFlightRef.current = false;
+        showToast(
+          t('playground.subsetPreviewReady')
+            .replace('{done}', String(donePages.length))
+            .replace('{total}', String(totalPages)),
+          'info',
+        );
+        return;
+      }
+      setSubsetPreview(null);
       setPendingRedact({
         fileId,
         jobId,
@@ -674,6 +882,7 @@ export function usePlayground() {
     }
   }, [
     entityCtx.entities,
+    fetchSnapshotBoxes,
     fileCtx,
     imageCtx.boundingBoxes,
     recognition.processingMode,
@@ -908,6 +1117,10 @@ export function usePlayground() {
     imageCtx.imageHistory.reset();
     setVersionHistory([]);
     setVersionHistoryOpen(false);
+    // Issue#327：子集预览回执与页账状态属本会话现场，重置即清
+    setSubsetPreview(null);
+    setSubsetJob(null);
+    setSubsetPageStatus(null);
     removeStorageItem(scopedStorageKey(STORAGE_KEYS.PLAYGROUND_DRAFT, ownerKey));
   }, [entityCtx, fileCtx, imageCtx, ownerKey, pendingRedact, setRecognitionProcessingMode]);
 
@@ -917,7 +1130,8 @@ export function usePlayground() {
     if (!fileCtx.fileInfo) return;
     const timer = setTimeout(() => {
       const snapshot = buildDraftSnapshot({
-        stage: fileCtx.stage,
+        // Issue#327 门⑥ 三轮必修：子集回执不落盘 ⇒ 结果页降级为 preview（见 draftStageForResume）
+        stage: draftStageForResume(fileCtx.stage, subsetPreview !== null),
         fileInfo: fileCtx.fileInfo!,
         content: fileCtx.content,
         entities: entityCtx.entities,
@@ -961,6 +1175,8 @@ export function usePlayground() {
     entityMap,
     redactedCount,
     pendingRedact,
+    // Issue#327 门⑥ 三轮必修：子集回执决定 stage 降级 ⇒ 必须在依赖里
+    subsetPreview,
     ownerKey,
   ]);
 
@@ -1126,13 +1342,18 @@ export function usePlayground() {
   const handleDownload = useCallback(() => {
     if (!fileCtx.fileInfo) return;
     // Returns the promise so callers can show a busy state while fetching.
+    // Issue#327 门⑥ C-3（返工）：子集预览产物在 preview_output_path 上，必须带
+    // preview=true 才会读预览件；闭包依赖里必须含 subsetPreview（旧实现漏了，
+    // 恒不带 → 下载拿到的是整卷成品/404）。
     return downloadFile(
-      `/api/v1/files/${fileCtx.fileInfo.file_id}/download?redacted=true`,
+      // Issue#327 门⑥ 三轮必修：URL 构造收敛到 fileApi.getDownloadUrl 一份实现
+      // （上一轮只在 api.ts 加了 preview 形参却仍手写 URL ⇒ 两份实现 + 空转测试）
+      fileApi.getDownloadUrl(fileCtx.fileInfo.file_id, true, !!subsetPreview),
       `redacted_${fileCtx.fileInfo.filename}`,
     ).catch((err) => {
       showToast(localizeErrorMessage(err, 'common.downloadFailed'), 'error');
     });
-  }, [fileCtx.fileInfo]);
+  }, [fileCtx.fileInfo, subsetPreview]);
 
   // 化名对照表 csv（替换模式执行成功后可用）：用执行响应的 entity_map
   // （后端真实替换结果，含 coref 复用）生成，与成品天然一致
@@ -1168,6 +1389,9 @@ export function usePlayground() {
     boundingBoxes: imageCtx.boundingBoxes,
     setBoundingBoxes: imageCtx.setBoundingBoxes,
     visibleBoxes: imageCtx.visibleBoxes,
+    // Issue#327：子集预览入口候选（识别在飞 + 已处理页 < 总页数）
+    subsetReadyCount,
+    subsetTotalPages,
     isLoading: fileCtx.isLoading,
     loadingMessage: fileCtx.loadingMessage,
     visionStream: fileCtx.visionStream,
@@ -1231,6 +1455,7 @@ export function usePlayground() {
     imageUrl: imageCtx.imageUrl,
     staticPageUrl: imageCtx.staticPageUrl,
     previewPageLoading: imageCtx.previewPageLoading,
+    subsetPreview,
     redactedImageUrl: imageCtx.redactedImageUrl,
     redactedImageError: imageCtx.redactedImageError,
     currentPage: imageCtx.currentPage,

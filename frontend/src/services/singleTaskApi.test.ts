@@ -7,6 +7,7 @@ import { ApiError, apiClient } from './api-client';
 import {
   listActiveSingleJobs,
   resolveAwaitingReviewTask,
+  createSubsetPreview,
   submitRecognitionTask,
   submitRedactionTask,
 } from './singleTaskApi';
@@ -362,5 +363,20 @@ describe('Issue#194 T7：jobTypeForNav 导航边界（T8-T12 接管前的行为�
 
   it("'single' 显式落到 text_batch（沿用 normalizeJobType 的既有归一行为，单文件导航由 T8-T12 收口）", () => {
     expect(jobTypeForNav('single')).toBe('text_batch');
+  });
+});
+
+describe('createSubsetPreview (Issue#325)', () => {
+  it('posts pages/boxes/entities to the subset-preview endpoint', async () => {
+    const receipt = { file_id: 'f1', processed_pages: [1, 3], page_map: { '1': 1, '2': 3 }, page_count: 2 };
+    mockedPost.mockResolvedValueOnce(receipt);
+    await expect(
+      createSubsetPreview('job-1', 'item-1', { pages: [1, 3], bounding_boxes: [{ id: 'b1' }], entities: [] }),
+    ).resolves.toEqual(receipt);
+    expect(mockedPost).toHaveBeenCalledWith('/jobs/job-1/items/item-1/subset-preview', {
+      pages: [1, 3],
+      bounding_boxes: [{ id: 'b1' }],
+      entities: [],
+    });
   });
 });

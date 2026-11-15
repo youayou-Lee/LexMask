@@ -147,8 +147,8 @@ describe('Issue#123 接线契约：四处接线不得被静默摘掉', () => {
     // context 层：类型 + 映射 + 依赖数组（五字段缺一即测试红——防止三槽拆分漏搬）
     for (const field of ['taskSegment', 'taskInFlight', 'taskStartedAt', 'taskTextMode', 'redactProgress'] as const) {
       expect(context).toContain(`${field}: PlaygroundContextValue['${field}'];`);
-      expect(context).toMatch(new RegExp(`${field}: ctx\.${field},`));
-      expect(context).toMatch(new RegExp(`ctx\.${field},`));
+      expect(context).toMatch(new RegExp(`${field}: ctx\\.${field},`));
+      expect(context).toMatch(new RegExp(`ctx\\.${field},`));
     }
     // 页面层：loading 拿到四字段 + 打码小卡渲染 redactProgress
     expect(page).toMatch(/segment=\{taskRecognition \? taskSegment : null\}/);
@@ -157,5 +157,41 @@ describe('Issue#123 接线契约：四处接线不得被静默摘掉', () => {
     expect(page).toMatch(/textMode=\{taskRecognition \? taskTextMode : false\}/);
     expect(page).toMatch(/\{redactProgress && \(/);
     expect(page).toMatch(/variant="redaction"/);
+  });
+});
+
+// Issue#327（门⑥ 返工）：子集预览（识别在飞的「先匿名化已处理页」）的三处接线钉。
+// 评审 C-3/C-4 实证的两类缺陷都属于**表达式级**问题（tsc/单测都抓不住）：
+// - C-3：handleDownload 的 URL 里读 subsetPreview，但依赖数组漏了它 ⇒ 恒发全卷 URL；
+// - C-4：结果页把「子集序号」直接当原卷页号发给 page-image ⇒ 非前缀子集永久 404；
+// - 上下文白名单漏挂 subsetPreview ⇒ 页面层拿到的永远是 undefined（入口永不出现）。
+describe('Issue#327 子集预览接线契约：三处接线不得被静默摘掉', () => {
+  it('上下文投影白名单必须包含子集三字段（漏挂 ⇒ 页面层恒 undefined）', () => {
+    for (const field of ['subsetPreview', 'subsetReadyCount', 'subsetTotalPages'] as const) {
+      expect(context).toContain(`${field}: PlaygroundContextValue['${field}'];`);
+      expect(context).toMatch(new RegExp(`${field}: ctx\\.${field},`));
+      expect(context).toMatch(new RegExp(`ctx\\.${field},`));
+    }
+  });
+
+  it('下载/翻页：handleDownload 走唯一 URL 实现 + 依赖含 subsetPreview（C-3）；结果页把子集序号翻回原卷页号（C-4）', () => {
+    // C-3 ①：URL 构造收敛到 fileApi.getDownloadUrl 一份实现，生产侧不得再手写
+    // （二轮评审：api.ts 加了 preview 形参却仍手写 URL ⇒ 两份实现；旧判据 `/preview=true/`
+    //  被注释里的同名字面量满足，属假保证，本轮改掉）
+    expect(playgroundHook).toMatch(
+      /fileApi\.getDownloadUrl\(fileCtx\.fileInfo\.file_id, true, !!subsetPreview\)/,
+    );
+    expect(playgroundHook).not.toMatch(/download\?redacted=true/);
+    // C-3 ②：读 subsetPreview 的同一表达式必须在依赖数组里（漏了 ⇒ 恒发全卷 URL）
+    expect(playgroundHook).toMatch(/\[fileCtx\.fileInfo, subsetPreview\]/);
+    // C-4：子集序号 → 原卷页号的唯一换算函数（lib/subset-pages.ts）必须被结果页接线
+    expect(page).toMatch(/previewPageMap=\{subsetPreview\?\.page_map \?\? null\}/);
+    // 三轮必修2：子集回执不落盘 ⇒ 草稿阶段降级（否则刷新后结果页退回全卷口径）
+    expect(playgroundHook).toMatch(/draftStageForResume\(fileCtx\.stage, subsetPreview !== null\)/);
+  });
+
+  it('识别终态不得静默降级为子集（I-1 红线：只有识别在飞才允许子集口径）', () => {
+    expect(playgroundHook).toMatch(/import \{[^}]*isRecognitionInFlight[^}]*\} from '@\/features\/playground\/lib\/subset-pages';/);
+    expect(playgroundHook).toMatch(/isRecognitionInFlight\(pageStatus\.recognition_state\)/);
   });
 });

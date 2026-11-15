@@ -38,6 +38,11 @@ export interface PlaygroundResultProps {
   versionHistoryOpen: boolean;
   setVersionHistoryOpen: Dispatch<SetStateAction<boolean>>;
   isImageMode: boolean;
+  /** Issue#327：当前结果来自子集预览（preview=true 读预览产物，页数为子集页数）。 */
+  preview?: boolean;
+  previewPageCount?: number | null;
+  /** Issue#327 门⑥ C-4：子集 page_map（子集序号 → 原卷页号），page-image 端点按原卷页号取页。 */
+  previewPageMap?: Record<string, number> | null;
   imageUrl: string;
   redactedImageUrl?: string;
   redactedImageError?: string | null;
@@ -68,6 +73,9 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   versionHistoryOpen,
   setVersionHistoryOpen,
   isImageMode,
+  preview,
+  previewPageCount,
+  previewPageMap,
   imageUrl,
   redactedImageUrl,
   redactedImageError,
@@ -86,17 +94,25 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   const t = useT();
   const [mobileTab, setMobileTab] = useState<'original' | 'redacted' | 'mapping'>('original');
   // Issue #83：结果页「对照 | 成品」视图切换（成品=下载文件的实际渲染）
-  const [resultView, setResultView] = useState<'compare' | 'output'>('compare');
+  // Issue#327：子集预览恒为「成品」视图——对照视图是前端按框实时渲染的，
+  // 识别在飞时前端没有框（既看不到打码也没有页数语义），只有服务端预览产物可信。
+  const [resultView, setResultView] = useState<'compare' | 'output'>(preview ? 'output' : 'compare');
   const [outputPage, setOutputPage] = useState(1);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const clickCounterRef = useRef<Record<string, number>>({});
   const activeMarkTimeoutRef = useRef<number | null>(null);
   const activeMarksRef = useRef<HTMLElement[]>([]);
-  const resultReady = !isImageMode || Boolean(redactedImageUrl);
+  // 门⑥ 四段 R4-3：子集口径的成品就是「本次这批页」，首帧不依赖 redactedImageUrl
+  // （子集分支不 bump redactionVersion ⇒ 不会重新请求 redacted 预览图；扫描件下
+  // `resultReady` 恒 false ⇒ 下载按钮直接不渲染）。
+  const resultReady = preview || !isImageMode || Boolean(redactedImageUrl);
 
-  // 成品视图仅文本型 PDF 提供（扫描件/图片的结果页本就实时渲染成品；
-  // docx/txt 成品非 PDF 无页图，page-image 端点也不支持）
-  const outputPreviewAvailable = !isImageMode && fileInfo?.file_type === 'pdf';
+  // 成品视图：文本型 PDF 提供（扫描件/图片的结果页本就实时渲染成品；
+  // docx/txt 成品非 PDF 无页图，page-image 端点也不支持）。
+  // Issue#327：子集预览必须走服务端产物（扫描件也要）——预览件是后端切页+打码
+  // 出来的真 PDF，用 page-image?preview=true 逐页取；前端实时渲染的「成品」在
+  // 识别在飞时根本没有框，等于白页。
+  const outputPreviewAvailable = preview || (!isImageMode && fileInfo?.file_type === 'pdf');
 
   // Issue#311：处理详情解析上移到结果页——动作行告警点与「详情」弹窗共用同一份数据；
   // 默认视图不再挂载处理详情卡（DOM 不渲染）。
@@ -111,10 +127,16 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   const outputPreview = useOutputPagePreview({
     fileId: outputPreviewAvailable ? (fileInfo?.file_id ?? null) : null,
     page: outputPage,
+    preview,
+    pageCountOverride: previewPageCount ?? undefined,
+    pageMap: previewPageMap ?? null,
     enabled: outputPreviewAvailable && resultView === 'output',
   });
   // 翻页时按成品真实页数钳制（docx 回转后成品页数可能与原卷不同；页数未知
   // 时先按原文页数占位钳制，防止首帧前快速点页触发越界 400）
+  // 门⑥ 二段 N-3① 复核结论：子集口径首帧不会画成全卷页数——`useOutputPagePreview`
+  // 的 url 与 pageCount 同拍写入（同一份响应），而页轨只在 url 有值时才渲染，
+  // 故这里沿用既有口径即可，无需为子集单开占位上界。
   const handleOutputPageChange = useCallback(
     (page: number) => {
       const bound = outputPreview.pageCount ?? totalPages;
@@ -340,7 +362,19 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
           />
 
         </div>
-        {outputPreviewAvailable && (
+        {preview && (
+          // Issue#327 验收口径②：结果页必须让用户看见「本次只含这批页、其余页不在
+          // 本次范围」——仅一次性 toast 会被忽略，页轨又看着是全卷页数。
+          <span
+            className="flex shrink-0 items-center self-center whitespace-nowrap rounded-xl border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-700 dark:text-amber-400"
+            data-testid="playground-result-subset-banner"
+          >
+            {t('playground.subsetBanner')
+              .replace('{done}', String(previewPageCount ?? 0))
+              .replace('{total}', String(totalPages))}
+          </span>
+        )}
+        {outputPreviewAvailable && !preview && (
           <div
             className="flex shrink-0 items-center gap-1 self-center rounded-2xl border border-border/60 bg-[var(--surface-control)] p-1 shadow-[var(--shadow-control)]"
             data-testid="playground-result-view-toggle"

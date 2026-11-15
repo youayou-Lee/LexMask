@@ -15,6 +15,12 @@ export interface PlaygroundDataContextValue {
   entities: PlaygroundContextValue['entities'];
   boundingBoxes: PlaygroundContextValue['boundingBoxes'];
   visibleBoxes: PlaygroundContextValue['visibleBoxes'];
+  // Issue#327：子集预览（识别在飞时的「先匿名化已处理页」口径）。
+  // 这三个必须进白名单——`usePlaygroundContext()` 是 `{...data, ...actions}`，
+  // 漏挂则页面层拿到的 `subsetPreview` 恒 undefined（子集结果页静默失效）。
+  subsetPreview: PlaygroundContextValue['subsetPreview'];
+  subsetReadyCount: PlaygroundContextValue['subsetReadyCount'];
+  subsetTotalPages: PlaygroundContextValue['subsetTotalPages'];
   isLoading: PlaygroundContextValue['isLoading'];
   loadingMessage: PlaygroundContextValue['loadingMessage'];
   visionStream: PlaygroundContextValue['visionStream'];
@@ -118,6 +124,9 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       entities: ctx.entities,
       boundingBoxes: ctx.boundingBoxes,
       visibleBoxes: ctx.visibleBoxes,
+      subsetPreview: ctx.subsetPreview,
+      subsetReadyCount: ctx.subsetReadyCount,
+      subsetTotalPages: ctx.subsetTotalPages,
       isLoading: ctx.isLoading,
       loadingMessage: ctx.loadingMessage,
       visionStream: ctx.visionStream,
@@ -170,6 +179,9 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       ctx.entities,
       ctx.boundingBoxes,
       ctx.visibleBoxes,
+      ctx.subsetPreview,
+      ctx.subsetReadyCount,
+      ctx.subsetTotalPages,
       ctx.isLoading,
       ctx.loadingMessage,
       ctx.visionStream,

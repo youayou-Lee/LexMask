@@ -74,6 +74,34 @@ export function submitRedactionTask(
   );
 }
 
+/** Issue#325：子集预览回执（识别运行中可用，产物独立）。 */
+export interface SubsetPreviewReceipt {
+  file_id: string;
+  processed_pages: number[];
+  page_map: Record<string, number>;
+  page_count: number;
+  redacted_count: number;
+  preview_output_path?: string;
+}
+
+/**
+ * Issue#325：对「已处理页」生成子集预览打码产物。
+ *
+ * 与 ``submitRedactionTask`` 不同，这是一次同步调用：后端切片+打码后直接返回
+ * 预览产物元数据，不迁移 item 状态、不写主产物。页图/下载用 ``preview=true``
+ * 读 ``preview_output_path``。
+ */
+export function createSubsetPreview(
+  jobId: string,
+  itemId: string,
+  body: { pages: number[]; bounding_boxes?: unknown[]; entities?: unknown[] },
+): Promise<SubsetPreviewReceipt> {
+  return post<SubsetPreviewReceipt>(
+    `/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/subset-preview`,
+    body,
+  );
+}
+
 /** 活动中的单文件任务（守门冲突提示 / 断点恢复轮询用）。 */
 export function listActiveSingleJobs(): Promise<JobSummary[]> {
   return listJobs({ job_type: 'single', status: 'active' }).then((response) => response.jobs);
