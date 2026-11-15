@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-11-16
+
+### 修正（Issue#322）选页直接导出丢失手动拉框：导出请求携带画布框快照，权威次序「请求框 > 草稿 > file_store」
+
+- **为什么**：用户实测「手动画框后直接点导出选中页，产物里没有这个框」——`startItemExport` 请求不带框，后端只认 review 草稿 > file_store，playground 手改未落草稿时导出用旧框。
+- **改了什么**：`ItemExportRequest`（`backend/app/models/job_schemas.py`）增可选 `bounding_boxes`；`submit_item_export` 框权威次序改为 **请求框 > review 草稿 > file_store**（仅 partial；full 主产物直取仍按草稿 > file_store，请求框不参与）；前端 `ItemExportRequest.boundingBoxes` → `startItemExport` 只在 partial 且非空时发 `bounding_boxes`；`useItemExport`/`PlaygroundPageExport` 增 `boundingBoxes` 并透传，`playground-page` 与结果页均把当前画布框（含手拉框）传入。空框快照不发键，避免把框账覆盖成空。
+- **测试**：后端新增 `tests/test_issue322_export_request_boxes.py` 2 例（请求框只影响其覆盖页、未覆盖页逐像素不变、快照只读；full 忽略请求框逐字节等于主产物）；前端新增 `src/services/job-export-request.test.ts` 3 例（partial 携带 / 空不携带 / full 不带 pages 与框）；后端导出相关 31 例、ruff 绿；前端全量 93 文件 701 例、build 4.71s、tsc 绿。
+- **行为边界**：请求框是平铺 list（BoundingBox 对象或 dict 均吃）；只对 partial 生效；框仍经 `prepare_image_redaction` 过滤（未选中/零面积/越界按既有语义）；不含自动补框逻辑。
+
 
 ## 2026-11-15
 

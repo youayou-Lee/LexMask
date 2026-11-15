@@ -124,6 +124,7 @@ describe('result 阶段导出块接线（Issue#313 I-3）', () => {
           totalPages={2}
           onPageChange={vi.fn()}
           visibleBoxes={[]}
+          boundingBoxes={[]}
           visionTypes={[]}
           getVisionTypeConfig={() => ({ name: '', color: '' })}
           onBackToEdit={onBackToEdit}

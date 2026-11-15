@@ -45,6 +45,8 @@ export interface PlaygroundResultProps {
   totalPages: number;
   onPageChange: (page: number) => void;
   visibleBoxes: BoundingBox[];
+  /** Issue#322：当前画布全部框（含手动拉框），选页导出时随请求提交。 */
+  boundingBoxes: BoundingBox[];
   visionTypes: VisionTypeConfig[];
   getVisionTypeConfig: (typeId: string) => { name: string; color: string };
   onBackToEdit: () => void;
@@ -73,6 +75,7 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   totalPages,
   onPageChange,
   visibleBoxes,
+  boundingBoxes,
   visionTypes,
   getVisionTypeConfig,
   onBackToEdit,
@@ -333,6 +336,7 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
             fileId={fileInfo?.file_id ?? null}
             defaultCollapsed
             onRequestClose={onBackToEdit}
+            boundingBoxes={boundingBoxes}
           />
 
         </div>

@@ -443,6 +443,7 @@ async def export_item(
             kind=body.kind,
             pages=body.pages,
             include_summary=body.include_summary,
+            bounding_boxes=body.bounding_boxes,
         )
     except partial_export_service.PartialExportError as exc:
         # 409 = 可重试、需要用户动作（主产物未就绪 / 无可导出页）；参数错误 = 400。

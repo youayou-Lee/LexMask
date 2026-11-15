@@ -26,6 +26,7 @@ import {
 } from '@/services/jobsApi';
 
 import { useBatchPageStatus } from './use-batch-page-status';
+import type { BoundingBox } from '@/features/playground/types';
 
 const TASK_POLL_MS = 1500;
 const RUNNING_STATUSES: ReadonlySet<string> = new Set(['queued', 'running']);
@@ -47,6 +48,8 @@ interface UseItemExportArgs {
   kind?: ItemExportKind;
   /** 上游带下来的预选页号；与「当前可导出页」取交集，空则默认全选可导出页。 */
   initialSelected?: readonly number[] | null;
+  /** Issue#322：当前画布框快照（含手动拉框），partial 导出时随请求提交。 */
+  boundingBoxes?: readonly BoundingBox[] | null;
 }
 
 export interface ItemExportSelection {
@@ -76,6 +79,7 @@ export function useItemExport({
   enabled = true,
   kind: initialKind = 'partial',
   initialSelected = null,
+  boundingBoxes = null,
 }: UseItemExportArgs): ItemExportSelection {
   const t = useT();
   const { status, error: statusError, refresh: refreshStatus } = useBatchPageStatus({
@@ -223,6 +227,7 @@ export function useItemExport({
         kind,
         pages: kind === 'partial' ? orderedSelected : undefined,
         includeSummary,
+        boundingBoxes: boundingBoxes ? [...boundingBoxes] : undefined,
       });
       setActiveTask(task);
       void loadRecords();
@@ -249,7 +254,7 @@ export function useItemExport({
     } finally {
       setSubmitting(false);
     }
-  }, [itemId, jobId, loadRecords, orderedSelected, submitting, t, kind, includeSummary]);
+  }, [itemId, jobId, loadRecords, orderedSelected, submitting, t, kind, includeSummary, boundingBoxes]);
 
   return {
     status,
