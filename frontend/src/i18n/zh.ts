@@ -152,6 +152,8 @@ const zhBase: Record<string, string> = {
   'console.nextPage': '下一页',
   'console.pageOf': '第 {page} / {total} 页',
 
+  'playground.subsetPreviewReady':
+    '已对 {done}/{total} 个已处理页生成预览，可继续编辑后再处理',
   'playground.title': '处理单个文件',
   'playground.recognizing': '正在识别...',
   'playground.redacting': '正在匿名化...',

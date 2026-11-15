@@ -48,6 +48,7 @@ const PlaygroundInner: FC = () => {
     fileInfo,
     content,
     isImageMode,
+    subsetPreview,
     entities,
     setBoundingBoxes,
     boundingBoxes,
@@ -593,6 +594,8 @@ const PlaygroundInner: FC = () => {
             versionHistoryOpen={versionHistoryOpen}
             setVersionHistoryOpen={setVersionHistoryOpen}
             isImageMode={isImageMode}
+            preview={!!subsetPreview}
+            previewPageCount={subsetPreview?.page_count ?? null}
             imageUrl={imageUrl}
             redactedImageUrl={redactedImageUrl}
             redactedImageError={redactedImageError}

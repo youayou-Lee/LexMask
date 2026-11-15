@@ -80,6 +80,8 @@ export interface SubsetPreviewReceipt {
   processed_pages: number[];
   page_map: Record<string, number>;
   page_count: number;
+  redacted_count: number;
+  preview_output_path?: string;
 }
 
 /**

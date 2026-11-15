@@ -13,8 +13,14 @@ import {
   setScopedStorageItem,
 } from '@/lib/storage';
 import { authFetch, downloadFile } from '@/services/api-client';
-import { getJob } from '@/services/jobsApi';
-import { resolveAwaitingReviewTask, submitRedactionTask } from '@/services/singleTaskApi';
+import { getItemPageStatus, getJob } from '@/services/jobsApi';
+import { pickSubsetPages } from '@/features/playground/lib/subset-pages';
+import {
+  createSubsetPreview,
+  resolveAwaitingReviewTask,
+  submitRedactionTask,
+  type SubsetPreviewReceipt,
+} from '@/services/singleTaskApi';
 import { useSingleTask } from '@/features/single-task/single-task-context';
 import type { VersionHistoryEntry } from '@/types';
 import { localizeErrorMessage } from '@/utils/localizeError';
@@ -112,6 +118,7 @@ export function usePlayground() {
     /** 提交时前端点名的处理项数：快照不可用时兜底 redactedCount 展示。 */
     requestedCount: number;
   };
+  const [subsetPreview, setSubsetPreview] = useState<SubsetPreviewReceipt | null>(null);
   const [pendingRedact, setPendingRedact] = useState<PendingRedact | null>(null);
   /**
    * Issue#238：打码段被动小卡数据（右下角，不遮挡预览页）。pendingRedact 在途时由
@@ -625,6 +632,35 @@ export function usePlayground() {
         }
       }
 
+      // Issue#327 / #325：识别还没跑完但有已处理页——只对这批页做同步子集预览，
+      // 立即进结果页；不做整卷后台打码，也不迁移任务状态。
+      const pageStatus = await Promise.resolve()
+        .then(() => getItemPageStatus(jobId, itemId))
+        .catch(() => null);
+      const { pages: donePages, total: totalPages } = pickSubsetPages(
+        pageStatus,
+        fileCtx.fileInfo.page_count || 0,
+      );
+      if (donePages.length > 0) {
+        const receipt = await createSubsetPreview(jobId, itemId, {
+          pages: donePages,
+          bounding_boxes: fileCtx.isImageMode
+            ? imageCtx.boundingBoxes.filter((box) => box.selected !== false)
+            : undefined,
+          entities: selectedEntities,
+        });
+        setSubsetPreview(receipt);
+        setRedactedCount(receipt.redacted_count);
+        latestFileIdRef.current = fileId;
+        setFileStage('result');
+        redactionInFlightRef.current = false;
+        showToast(
+          t('playground.subsetPreviewReady').replace('{done}', String(donePages.length)).replace('{total}', String(totalPages)),
+          'info',
+        );
+        return;
+      }
+      setSubsetPreview(null);
       setPendingRedact({
         fileId,
         jobId,
@@ -1127,7 +1163,7 @@ export function usePlayground() {
     if (!fileCtx.fileInfo) return;
     // Returns the promise so callers can show a busy state while fetching.
     return downloadFile(
-      `/api/v1/files/${fileCtx.fileInfo.file_id}/download?redacted=true`,
+      `/api/v1/files/${fileCtx.fileInfo.file_id}/download?redacted=true${subsetPreview ? '&preview=true' : ''}`,
       `redacted_${fileCtx.fileInfo.filename}`,
     ).catch((err) => {
       showToast(localizeErrorMessage(err, 'common.downloadFailed'), 'error');
@@ -1231,6 +1267,7 @@ export function usePlayground() {
     imageUrl: imageCtx.imageUrl,
     staticPageUrl: imageCtx.staticPageUrl,
     previewPageLoading: imageCtx.previewPageLoading,
+    subsetPreview,
     redactedImageUrl: imageCtx.redactedImageUrl,
     redactedImageError: imageCtx.redactedImageError,
     currentPage: imageCtx.currentPage,

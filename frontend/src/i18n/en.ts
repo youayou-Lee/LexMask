@@ -153,6 +153,8 @@ const enBase: Record<string, string> = {
   'console.nextPage': 'Next',
   'console.pageOf': 'Page {page} of {total}',
 
+  'playground.subsetPreviewReady':
+    'Preview generated for {done}/{total} processed pages; keep editing and re-run anytime',
   'playground.title': 'Process One File',
   'playground.recognizing': 'Recognizing...',
   'playground.redacting': 'Redacting...',

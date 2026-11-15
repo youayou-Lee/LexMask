@@ -38,6 +38,9 @@ export interface PlaygroundResultProps {
   versionHistoryOpen: boolean;
   setVersionHistoryOpen: Dispatch<SetStateAction<boolean>>;
   isImageMode: boolean;
+  /** Issue#327：当前结果来自子集预览（preview=true 读预览产物，页数为子集页数）。 */
+  preview?: boolean;
+  previewPageCount?: number | null;
   imageUrl: string;
   redactedImageUrl?: string;
   redactedImageError?: string | null;
@@ -68,6 +71,8 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   versionHistoryOpen,
   setVersionHistoryOpen,
   isImageMode,
+  preview,
+  previewPageCount,
   imageUrl,
   redactedImageUrl,
   redactedImageError,
@@ -111,6 +116,8 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   const outputPreview = useOutputPagePreview({
     fileId: outputPreviewAvailable ? (fileInfo?.file_id ?? null) : null,
     page: outputPage,
+    preview,
+    pageCountOverride: previewPageCount ?? undefined,
     enabled: outputPreviewAvailable && resultView === 'output',
   });
   // 翻页时按成品真实页数钳制（docx 回转后成品页数可能与原卷不同；页数未知

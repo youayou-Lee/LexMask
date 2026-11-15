@@ -1,6 +1,9 @@
 # CHANGELOG
 
-## 2026-11-16
+### 2026-11-16
+
+- **Issue#327（前端）：识别期「已处理页」子集预览接线**——`pickSubsetPages` 取 success/manual_verified 页；点「开始匿名化」时若已处理页 ∈ (0, 全卷) → 同步 `POST /jobs/{id}/items/{id}/subset-preview`，结果页直接展示子集预览（`preview=true` 页图/下载、页数按回执钳制），不再等整卷识别完；全卷完成仍走原后台打码。测试 +4（`lib/subset-pages.test.ts`），全量 95 files / 708 passed，build 4.79s。
+
 
 ### 新增（Issue#325）子集预览打码：识别运行中即可对已处理页出预览，不迁移 item 生命周期
 

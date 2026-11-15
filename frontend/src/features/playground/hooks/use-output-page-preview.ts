@@ -10,6 +10,10 @@ const CACHE_LIMIT = 24;
 export interface UseOutputPagePreviewOptions {
   fileId: string | null;
   page: number;
+  /** Issue#327：读子集预览产物（preview=true），页码为子集内序号。 */
+  preview?: boolean;
+  /** 子集预览的总页数（覆盖 X-Page-Count 原卷口径）。 */
+  pageCountOverride?: number;
   /** false 时不发请求（成品视图切换为懒加载，回对照视图即停） */
   enabled: boolean;
 }
@@ -39,6 +43,8 @@ interface CacheEntry {
 export function useOutputPagePreview({
   fileId,
   page,
+  preview = false,
+  pageCountOverride,
   enabled,
 }: UseOutputPagePreviewOptions): OutputPagePreviewState {
   const cacheRef = useRef<Map<string, CacheEntry>>(new Map());
@@ -73,7 +79,7 @@ export function useOutputPagePreview({
     const key = activeKey;
     const epoch = ++epochRef.current;
     inflightRef.current.add(key);
-    authFetch(`/api/v1/files/${fileId}/page-image?page=${page}&redacted=true`)
+    authFetch(`/api/v1/files/${fileId}/page-image?page=${page}&redacted=true${preview ? '&preview=true' : ''}`)
       .then(async (res) => {
         if (!res.ok) {
           // 400=尚未匿名化（成品不存在）；其余按渲染失败兜底
@@ -84,7 +90,8 @@ export function useOutputPagePreview({
           );
         }
         const header = res.headers.get('X-Page-Count');
-        const count = header ? Math.max(1, Number(header) || 1) : null;
+        const effectiveCount = pageCountOverride ?? (header ? Number(header) : null);
+        const count = effectiveCount ? Math.max(1, effectiveCount) : null;
         const blob = await res.blob();
         return { objectUrl: URL.createObjectURL(blob), count };
       })
@@ -114,7 +121,7 @@ export function useOutputPagePreview({
       });
     // 缓存/在途/错误表都在 ref 里，key 已含 fileId 与页码
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeKey]);
+  }, [activeKey]); // preview/pageCountOverride 已并入 activeKey 之外的 URL 参数，见下方拼接；保持缓存键按 file+page
 
   return {
     url: cached?.url ?? '',
