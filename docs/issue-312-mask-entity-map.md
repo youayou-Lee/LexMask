@@ -44,8 +44,10 @@ def build_image_entity_map(safe_boxes: list[BoundingBox]) -> dict[str, str]:
     """已遮挡框 → 映射{原文: 已打码}。去重由 dict 键天然承担；空白原文跳过。"""
     mapping: dict[str, str] = {}
     for box in safe_boxes:
+        if not box.selected:
+            continue
         text = (box.text or "").strip()
-        if not text or not box.selected:
+        if not text:
             continue
         mapping[text] = IMAGE_REDACTED_LABEL
     return mapping
@@ -126,15 +128,17 @@ async def _redact_image(
 | R3 `test_mask_entity_map_skips_blank_text` | `None`/`""`/`"   "`/`"　"` 全跳过 | map 为空 |
 | R4 `test_mask_entity_map_excludes_unselected_boxes` | `selected=false` 不入表且不计入 count | map 为空 |
 | R5 `test_text_pdf_mask_rasterized_entity_map` | 文本型 PDF MASK 栅格化路径（`mask_boxes` 也入表）+ 原文不在成品文本层 | map 为空 |
-| R6 `test_text_path_entity_map_unchanged` | 文本 PDF 替换模式 map = 替换词，逐键断言且不含哨兵 | 已是绿（守不变） |
+| R6 `test_text_path_entity_map_unchanged` | 文本链路（TXT，smart）map 与 `build_preview_entity_map` **逐键相等**、不含哨兵 | 已是绿（守不变） |
 | R7 `test_redaction_history_carries_same_map`（编排层，真 Redactor + stub store） | 快照与 `redaction_history[-1]` 同一 map | map 为空 |
 | R8 `test_restore_does_not_consume_mask_map` | mask map 值无化名形态；`restore_text` 只吃 body.mapping（patch `normalize_mapping` 抓参 + 结构钉） | 已是绿（守不变） |
-| R9 `test_mask_pass_does_not_build_pseudonym_csv_shape` | 反向对照：pseudonym 模式 map 值≠哨兵（证明 CSV 门控源未被污染） | 已是绿（守不变） |
+| R9 `test_pseudonym_text_path_map_not_sentinel` | 反向对照：pseudonym 模式 map 值=化名词、≠哨兵（CSV 门控源未被污染） | 已是绿（守不变） |
+| R0 `test_sentinel_constant_matches_issue_contract` | 常量 `IMAGE_REDACTED_LABEL` 与 Issue 契约字面量一致（防另起字面量） | ImportError |
 
 命令与门限：
 - `cd backend && python -m pytest tests/ -k "redact or entity_map or image"`（本单主闸）
-- 受影响全文件：`tests/test_pdf_mode_routing.py tests/test_issue238_progress_reporting.py tests/test_mask_mode_gating.py tests/test_issue312_mask_entity_map.py`
-- 全量：`python -m pytest tests/`（零新增失败；失败集合与基线 `356d901` 逐 node-id 对拍）
+- 受影响全文件（11 个，含所有 import `Redactor`/`image_redactor`/`apply_redaction` 的用例）：
+  `tests/test_issue312_mask_entity_map.py tests/test_pdf_mode_routing.py tests/test_issue238_progress_reporting.py tests/test_mask_mode_gating.py tests/test_export_verify_contract.py tests/test_docx_nested_content_redaction.py tests/test_issue257_partial_export.py tests/test_pdf_encryption.py tests/test_pdf_replacement_render.py tests/test_text_redactor_layout_fidelity.py tests/test_watermark_overlay_strip.py`
+- 全量：`python -m pytest tests/`（零新增失败；失败集合与本机同环境基线逐文件对拍）
 
 ## 7. 风险与边界
 
@@ -143,3 +147,44 @@ async def _redact_image(
 3. **右栏 655 行渲染性能/可读性**：Issue 边界明确「另立 UI 聚合 Issue」，本单不做前端。
 4. **历史存量记录**：已落库的 `entity_map={}` 不会自动回填；需重跑执行才会出现映射记录（Issue 验收也以重跑为准）。
 5. **落点仍含原文**：`file_store` 与 `redaction_history` 本就在存原文→替换词（文本链路同样），本次不新增字段、不新增日志、不新增导出面。
+---
+
+## 8. 实现与验证记录（补记，实现完成后回填）
+
+### 8.1 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `backend/app/services/redaction/image_redactor.py` | +`IMAGE_REDACTED_LABEL`、+`build_image_entity_map()`、`_redact_image` 增 `entity_map_out` 出参并在 `safe_boxes` 上写入（返回仍 `int`） |
+| `backend/app/services/redactor.py` | 图片分支一行：`entity_map_out=context.entity_map` |
+| `backend/tests/test_issue312_mask_entity_map.py` | 新增 10 例（R0-R9） |
+| `backend/tests/test_issue238_progress_reporting.py` | `_fake_image` 补 `entity_map_out=None` 形参（该 fake 是仓内唯一 monkeypatch `Redactor._redact_image` 的点） |
+| `CHANGELOG.md` | 2026-11-15 条目 |
+
+### 8.2 TDD 红性证据（实现前）
+
+`python -m pytest tests/test_issue312_mask_entity_map.py -q` → **8 failed / 2 passed**：
+
+- 8 条红因均为「map 期望非空、实际 `{}`」——与 Issue 现场一致（不是夹具/环境问题；栅格化本身正常，断言才失败）；
+- 2 条绿是刻意的守不变钉（R6 文本链路 map = 预览口径、R9 化名 map 值非哨兵）。
+
+### 8.3 实现后测试
+
+| 命令 | 结果 |
+|---|---|
+| `python -m pytest tests/test_issue312_mask_entity_map.py -q` | **10 passed** |
+| `python -m pytest tests/ -k "redact or entity_map or image" -q` | **138 passed, 3391 deselected** |
+| 受影响全文件 11 个（见 §6） | **184 passed, 1 skipped** |
+| `python -m pytest tests/ -q`（全量） | **3430 passed, 42 failed, 57 skipped** |
+
+**全量 42 failed 的归因**：把本次两个生产文件 `git stash` 掉（回到 `origin/preview` 行为）后重跑同一批文件 → **42 failed / 72 passed**，失败文件分布逐个相同（`test_lb_least_inflight` 6、`test_evalng_participants` 8、`test_issue52_date_forms_guarantee` 8、`test_issue308_box_quality_pass` 5、`test_issue217_mineru_sidecar_contract` 4、`test_safe_regex_*` 8、其余 3），即**既有环境相关失败**（subprocess/spawn、httpx、paddle 等），非本单回归。
+
+### 8.4 字节级对照探针（`git stash` 前后各跑一次，同一输入文件）
+
+| 链路 | 产物 sha256(前 16) 基线 → 本次 | `redacted_count` | entity_map |
+|---|---|---|---|
+| TXT + smart | `f003ff481ccdd712` → `f003ff481ccdd712` | 2 → 2 | 全同（`[姓名一]`/`[身份证号一]`） |
+| IMAGE + mask | `e25a55d42a3ce637` → `e25a55d42a3ce637` | 2 → 2 | `{}` → `{"张三":"已打码","李四":"已打码"}` |
+| PDF_SCANNED + mask | 页面像素 sha `1558cd7b234c9bc9` → `1558cd7b234c9bc9`（PDF 整文件 sha 受 fitz 写入时间戳影响、逐次不同，故取页面 pixmap 字节） | 2 → 2 | `{}` → 同左 |
+
+结论：**像素与文本产物逐字节不变，唯一变化是映射多出了行**；文本链路 map 逐键不变。
