@@ -461,3 +461,112 @@ def test_clear_file_output_drops_preview_fields(tmp_path, monkeypatch):
     assert fms.clear_file_output("f1") is True
     assert not any(k.startswith("preview_") for k in fs.data["f1"])
     assert not preview.exists()
+
+
+def test_regenerate_subset_preview_removes_previous_file(env, tmp_path):
+    """Issue#332：重复生成子集预览必须删掉上一份 PDF，否则 OUTPUT_DIR 只增不减。
+
+    复现路径：识别中点一次「开始匿名化」→ 返回编辑改页 → 再点一次。旧产物若无人删，
+    每点一次就多留一份（本仓 OUTPUT_DIR 没有清扫器）。
+    """
+    store, job_id, item_id = _seed(tmp_path, 3)
+    src = _scanned_pdf(tmp_path / "src.pdf", 3)
+    info = _file_info(tmp_path, src, 3)
+    env["file-1"] = info
+
+    first = _call(env, store, job_id, item_id, info, pages=[1])
+    first_path = first["preview_output_path"]
+    assert Path(first_path).is_file()
+
+    second = _call(env, store, job_id, item_id, info, pages=[2, 3])
+    second_path = second["preview_output_path"]
+
+    assert second_path != first_path
+    assert Path(second_path).is_file(), "新预览必须存在"
+    assert not Path(first_path).exists(), "上一份预览必须被删（否则每次重生成都留孤儿）"
+    assert env["file-1"]["preview_output_path"] == second_path
+    leftovers = sorted(p.name for p in Path(settings.OUTPUT_DIR).glob("subset-preview-*.pdf"))
+    assert leftovers == [Path(second_path).name]
+
+
+def test_regenerate_keeps_preview_outside_output_dir(env, tmp_path):
+    """Issue#332 门⑥ I-1①：旧 preview_output_path 落在 OUTPUT_DIR 之外 ⇒ 不得删。"""
+    store, job_id, item_id = _seed(tmp_path, 3)
+    src = _scanned_pdf(tmp_path / "src.pdf", 3)
+    info = _file_info(tmp_path, src, 3)
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"%PDF-1.4\noutside\n")
+    info["preview_output_path"] = str(outside)
+    env["file-1"] = info
+
+    result = _call(env, store, job_id, item_id, info, pages=[1])
+
+    assert Path(result["preview_output_path"]).is_file()
+    assert outside.is_file(), "OUTPUT_DIR 之外的旧文件必须存活（防越界删除）"
+
+
+def test_regenerate_keeps_old_preview_when_store_write_fails(env, tmp_path):
+    """Issue#332 门⑥ I-1②：写元数据失败 ⇒ 旧预览必须仍在（失败偏向漏删，不偏向悬空）。"""
+
+    class _Boom(_FileStore):
+        def update_fields(self, file_id: str, updates: dict) -> None:
+            raise RuntimeError("db down")
+
+    store, job_id, item_id = _seed(tmp_path, 3)
+    src = _scanned_pdf(tmp_path / "src.pdf", 3)
+    info = _file_info(tmp_path, src, 3)
+    env["file-1"] = info
+
+    first = _call(env, store, job_id, item_id, info, pages=[1])
+    old_path = first["preview_output_path"]
+    assert Path(old_path).is_file()
+
+    boom = _Boom(env)
+    with pytest.raises(RuntimeError):
+        asyncio.run(
+            create_subset_preview(
+                file_store=boom,
+                store=store,
+                job_row=store.get_job(job_id),
+                item_row=store.get_item(item_id),
+                file_info=info,
+                config=_config(),
+                pages=[2],
+            )
+        )
+
+    assert Path(old_path).is_file(), "写元数据失败时不得删旧预览（先写后删的顺序）"
+
+
+def test_stale_preview_delete_failure_logs_warning(tmp_path, monkeypatch, caplog):
+    """Issue#332 门⑥ 二轮 I-2：删失败必须留 warning（否则孤儿无声堆积）。"""
+    from app.services import subset_preview_service as sps
+
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setattr(settings, "OUTPUT_DIR", str(out))
+    victim = out / "subset-preview-deadbeef.pdf"
+    victim.write_bytes(b"%PDF-1.4")
+
+    def _boom(_path):
+        raise PermissionError("disk readonly")
+
+    monkeypatch.setattr(sps.os, "remove", _boom)
+    with caplog.at_level("WARNING", logger=sps.logger.name):
+        sps._remove_stale_preview(str(victim), "file-1")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("Failed to delete stale subset preview" in m for m in warnings), warnings
+
+
+def test_missing_stale_preview_is_silent(tmp_path, monkeypatch, caplog):
+    """路径已不存在（并发/重试）= 正常，不得 warning。"""
+    from app.services import subset_preview_service as sps
+
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setattr(settings, "OUTPUT_DIR", str(out))
+    with caplog.at_level("WARNING", logger=sps.logger.name):
+        sps._remove_stale_preview(str(out / "subset-preview-gone.pdf"), "file-1")
+
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]

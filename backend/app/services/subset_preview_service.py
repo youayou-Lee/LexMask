@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 from collections.abc import Iterable, Sequence
@@ -28,6 +29,8 @@ from app.services.partial_export_service import (
     slice_pdf_pages,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _remove_quietly(path: str | None) -> None:
     if not path:
@@ -36,6 +39,33 @@ def _remove_quietly(path: str | None) -> None:
         os.remove(path)
     except OSError:
         pass
+
+
+def _remove_stale_preview(path: str, file_id: str = "") -> None:
+    """Issue#332：删上一份子集预览（路径必须在 OUTPUT_DIR 内，best-effort）。
+
+    失败口径（与 ``redaction_orchestrator._discard_subset_preview_file`` 相近但不完全一致——
+    那边用 ``os.path.exists`` 预判、不区分「已不存在」）：路径已不存在（并发/重试）静默，
+    其余 ``OSError`` 留 warning——否则孤儿文件无声堆积，运维无从发现。
+    """
+    try:
+        from app.core.file_validation import safe_path_in_dir
+
+        if not safe_path_in_dir(path, settings.OUTPUT_DIR):
+            logger.warning("Refuse to delete subset preview outside OUTPUT_DIR: %s", path)
+            return
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning(
+                "Failed to delete stale subset preview for %s: %s", file_id, path, exc_info=True
+            )
+    except Exception:  # 清理是 best-effort，任何异常都不得影响主流程
+        logger.warning(
+            "Unexpected error while deleting stale subset preview %s", path, exc_info=True
+        )
 
 
 def _has_selected_regions(
@@ -239,7 +269,18 @@ async def create_subset_preview(
         from app.services.file_management_service import get_file_store_lock
 
         async with get_file_store_lock():
+            # Issue#332：重复生成会覆盖 preview_output_path —— 上一份预览 PDF 必须跟着删，
+            # 否则每点一次「开始匿名化」就在 OUTPUT_DIR 里多留一份（无清扫器，只增不减）。
+            previous = file_store.get(fid)
+            stale_preview = (
+                previous.get("preview_output_path") if isinstance(previous, dict) else None
+            )
             file_store.update_fields(fid, payload)
+        if isinstance(stale_preview, str) and stale_preview.strip():
+            # Issue#332：按 realpath 比较——OUTPUT_DIR 可能是符号链接/历史拼写，
+            # 字符串比较相等即跳过删除（绝不误删刚写好的新产物）。
+            if os.path.realpath(stale_preview) != os.path.realpath(preview_path):
+                _remove_stale_preview(stale_preview, fid)
     return {
         "file_id": file_info.get("file_id") or file_info.get("id"),
         "processed_pages": normalized,
