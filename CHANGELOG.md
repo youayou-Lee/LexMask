@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-11-16
+
+### 新增（Issue#321）流式页子集匿名化：已处理页即可开始，产物只含这些页
+
+- **为什么**：识别整卷期间「开始匿名化」按钮禁用、画布只读，用户必须等 86 页全部跑完才能对已完成的页打码/复核；选页导出又能绕开编辑，流程割裂。
+- **改了什么**：后端 `RedactionRequest` 增 `pages`（1-based 升序去重；None=全卷）；`execute_redaction` 子集路径=切页（`slice_pdf_pages`，原卷升序）→ 框页号重映射（`remap_boxes_to_subset`）→ 按扫描件栅格化打码 → 临时子卷即时清理；落库新增 `processed_pages`/`page_map`（全卷运行时清空），`redaction_history` 条目同字段；仅 mask 模式 + pdf/pdf_scanned，空/越界/类型不符 → `AppError(400, subset_redaction_invalid)`；任务管线把 `config.pages` 透传给 `execute_redaction_request`。前端「开始匿名化」不再等待整卷识别（disabled 去掉 `isLoading`），提交前查一次 `getItemPageStatus`，把 success/manual_verified 页作为 `config.pages` 交后端；查询失败回退全卷。
+- **测试**：后端新增 `tests/test_issue321_subset_redaction.py` 4 例；前端 `singleTaskApi.test.ts` 增 pages 透传、`playground-entity-panel.simplified.test.tsx` 增「识别中也点得动」。
+- **行为边界**：只对 mask 模式生效；子集打码会栅格化子卷（文本层不保留，与扫描件既有语义一致）；对照视图/页格仍按整卷展示（子集页号映射 UI 另单跟进）；`processed_pages` 为空的历史记录行为不变。
+
 
 ## 2026-11-15
 
