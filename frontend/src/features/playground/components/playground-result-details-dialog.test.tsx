@@ -69,6 +69,34 @@ describe('Issue#311 详情弹窗', () => {
     }
   });
 
+  it('来源 llm 显示语义模型而非原始枚举（门⑥ M4 缺口回归钉）', () => {
+    render(
+      <PlaygroundResultDetailsDialog
+        open
+        onOpenChange={() => undefined}
+        report={{ ...REPORT, source_distribution: { llm: 2 } }}
+        processing={processingState()}
+      />,
+    );
+    const text = screen.getByTestId('playground-quality-report').textContent ?? '';
+    expect(text).toContain(t('playground.sourceAi'));
+    expect(text).not.toContain('llm');
+  });
+
+  it('redaction_mode 为空时处理方式整行不渲染（门⑥ M9 缺口回归钉）', () => {
+    render(
+      <PlaygroundResultDetailsDialog
+        open
+        onOpenChange={() => undefined}
+        report={{ ...REPORT, redaction_mode: undefined }}
+        processing={processingState()}
+      />,
+    );
+    expect(screen.getByTestId('playground-quality-report').textContent).not.toContain(
+      t('playground.processingMode'),
+    );
+  });
+
   it('来源 has 显示 HaS、类型标签走翻译而非原始键（门⑥ C2/I1）', () => {
     render(
       <PlaygroundResultDetailsDialog

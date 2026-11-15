@@ -1435,7 +1435,7 @@ const enOverrides: Record<string, string> = {
   'playground.detailsDialogDesc':
     'Quality metrics and per-stage processing live here, out of the default preview view.',
   'playground.detailsEmpty': 'No quality report or processing details yet.',
-  'playground.detailsAlert': 'Some pages failed or items are unprocessed',
+  'playground.detailsAlert': 'Some pages failed or the task failed',
   'playground.totalEntities': 'Total entities',
   'playground.redactedEntities': 'Redacted entities',
   'playground.unprocessedEntities': 'Unprocessed entities',

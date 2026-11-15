@@ -15,7 +15,7 @@
 5. 对照 / 成品切换条；
 6. 文件对比预览。
 
-横幅与两块诊断信息长期占据首屏，用户真正要看的对比预览被挤到首屏之下。Issue #311 要求默认视图只保留「动作条 + 逐页/导出块 + 预览」，把诊断信息收进按需打开的「详情」弹窗，同时保证失败页/未处理项不会被藏起来。
+横幅与两块诊断信息长期占据首屏，用户真正要看的对比预览被挤到首屏之下。Issue #311 要求默认视图只保留「动作条 + 逐页/导出块 + 预览」，把诊断信息收进按需打开的「详情」弹窗，同时保证失败页不会被藏起来（未处理数仍在详情报表面板展示）。
 
 ## 2. 目标与非目标
 
@@ -24,7 +24,7 @@
 - 删除深色完成横幅整块，只保留右上角一行动作按钮。
 - 水印 chip（如「已摘除 3 页」）降级为动作行内的小 badge，保持可见（合规证据）。
 - 质量报告与处理详情默认不进入 DOM；合并进一个「详情」弹窗（上半质量报告、下半处理详情，复用 `ProcessingRowsList`）。
-- 失败页 / 未处理项存在时，「详情」按钮带琥珀色告警点。
+- 失败页 / 任务失败时，「详情」按钮带琥珀色告警点（未处理数不算告警：其含用户主动取消勾选）。
 - 结果页容器保持 `flex-1 min-h-0`，默认视图给对比预览留出主要视口。
 - zh/en 文案同步；弹窗默认关闭，ESC / 遮罩可关，键盘可达。
 
@@ -85,11 +85,11 @@
 
 ### D4 告警点条件
 
-`alert = failedPages.length > 0 || unprocessed > 0 || task.failed`。
+`alert = failedPages.length > 0 || task.failed`。
 
 - 告警点：`span` 8px 圆点，`bg-amber-500` + `ring-2 ring-background`，绝对定位在按钮右上角；`aria-hidden="true"`，按钮 `aria-label` 追加 `playground.detailsAlert` 文案，保证读屏可达。
-- 未处理项由 `redactionReport` 计算：`Math.max(total_entities - redacted_entities, 0)`。
-- 信息不可被隐藏：只要有失败页/未处理项，告警点即出现，且点击详情可见完整清单。
+- 未处理数由 `redactionReport` 计算：`Math.max(total_entities - redacted_entities, 0)`，仅作为报告指标展示；`total` 含 `selected=false`，不作为告警条件（门⑥ I3）。
+- 信息不可被隐藏：只要有失败页/任务失败，告警点即出现，且点击详情可见完整清单与未处理数。
 
 ### D5 布局：预览占据主要视口
 
@@ -106,7 +106,7 @@
 - `playground.detailsDialogTitle`：质量报告与处理详情 / Quality report & processing details
 - `playground.detailsDialogDesc`：质量报告与逐阶段处理过程集中在这里，默认视图不占用预览空间。/ Quality metrics and per-stage processing live here, out of the default preview view.
 - `playground.detailsEmpty`：暂无质量报告或处理详情。/ No quality report or processing details yet.
-- `playground.detailsAlert`：有失败页或未处理项 / Some pages failed or items are unprocessed
+- `playground.detailsAlert`：有失败页或任务失败 / Some pages failed or the task failed
 
 ## 5. 改动文件
 
@@ -128,8 +128,8 @@
 2. **水印 badge**：存在水印摘除信息时 `playground-watermark-chip` 在动作行内可见，文案包含页数。
 3. **默认无诊断 DOM**：初始渲染不含 `playground-quality-report`、`processing-details-card` / `processing-details-title` / `processing-details-rows`。
 4. **详情弹窗**：点击 `playground-details-button` 后弹窗出现，含质量报告四项指标、分布块、总耗时、阶段 rows、失败页清单；ESC 与遮罩可关闭，焦点可达；关闭后 DOM 回到默认。
-5. **告警点**：存在失败页或未处理项时 `playground-details-alert` 出现，否则不存在。
-6. **布局**：结果页根容器保留 `flex-1 min-h-0`，预览容器保留 `flex-1 min-h-0`；1440×900、86 页完成态下，结果页内容区顶部到预览区顶部 chrome ≤ 120px，预览高度 ≥ 60% 视口（门④ Playwright 测量留档）。
+5. **告警点**：存在失败页或任务失败时 `playground-details-alert` 出现；仅有未处理数（用户取消勾选）时不出现。
+6. **布局**：结果页根容器保留 `flex-1 min-h-0`，预览容器保留 `flex-1 min-h-0`；1440×900、86 页完成态下，结果页内容区顶部到预览区顶部 chrome ≤ 120px，预览高度 ≥ 60% 视口；本仓无 Playwright 工程，门④用浏览器 DevTools 量取并截图留档（不含全局 76px 顶栏）。
 7. **门禁**：`npm run build`、`npm run lint`、`npx tsc -p tsconfig.test.json --noEmit`、`npx vitest run` 全绿；zh/en parity 通过。
 
 ## 7. 测试计划（TDD）
@@ -153,7 +153,7 @@
 2. **导出块收起属默认值变更**：`defaultCollapsed` 只影响结果页，用户仍可展开；若产品坚持默认展开，则第 6 条布局指标在 86 页卷下无法同时满足，需要另行拍板（例如把导出块移到预览下方）。
 3. **弹窗复用 `reportOpen`**：与既有宿主/上下文解耦，但语义从「报告折叠」变为「详情弹窗」；`use-playground.ts` 的状态名保留，避免扩大改动面。
 4. **处理详情 hook 抽取**：既有 `ProcessingDetailsCard` 测试与草稿回落逻辑必须保持字节级行为；先跑旧测试再改实现，避免解析链回归。
-5. **无 Playwright 工程**：仓库当前没有 Playwright 测试配置，门④测量以人工/脚本截图留档，RTL 覆盖交互与 DOM 判据。
+5. **无 Playwright 工程**：仓库当前没有 Playwright 测试配置，门④用 DevTools 量取 + 截图留档（内容区口径，不含全局 76px 顶栏），RTL 覆盖交互与 DOM 判据。
 
 ## 9. 实施顺序
 

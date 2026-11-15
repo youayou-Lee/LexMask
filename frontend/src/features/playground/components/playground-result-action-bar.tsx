@@ -19,7 +19,7 @@ import {
 export interface PlaygroundResultActionBarProps {
   fileInfo: FileInfo | null;
   canDownload?: boolean;
-  /** 有失败页/未处理项/任务失败时为 true——详情入口带琥珀色告警点，信息不可被隐藏。 */
+  /** 有失败页/任务失败时为 true——详情入口带琥珀色告警点；未处理数不算告警（含用户主动取消勾选）。 */
   detailsAlert?: boolean;
   onOpenDetails: () => void;
   onBackToEdit: () => void;

@@ -1383,7 +1383,7 @@ const zhOverrides: Record<string, string> = {
   'playground.detailsDialogTitle': '质量报告与处理详情',
   'playground.detailsDialogDesc': '质量报告与逐阶段处理过程集中在这里，默认视图不占用预览空间。',
   'playground.detailsEmpty': '暂无质量报告或处理详情。',
-  'playground.detailsAlert': '有失败页或未处理项',
+  'playground.detailsAlert': '有失败页或任务失败',
   'playground.totalEntities': '实体总数',
   'playground.redactedEntities': '已匿名化实体',
   'playground.unprocessedEntities': '未处理实体',
