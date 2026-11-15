@@ -196,12 +196,12 @@ async def create_subset_preview(
         }
         config_copy = _config_copy_keep(config)
         result = await Redactor().redact(effective_info, ents, remapped, config_copy)
+        redacted_output = str(result.get("output_path") or "")
         if int(result.get("redacted_count") or 0) == 0:
             raise PartialExportError(
                 "subset_no_regions",
                 "所选页没有任何实际打码命中，预览不会产生打码；请先补框或确认实体",
             )
-        redacted_output = str(result.get("output_path") or "")
         if not redacted_output or not os.path.isfile(redacted_output):
             raise PartialExportError("subset_preview_failed", "子集预览打码未产出文件")
 

@@ -302,6 +302,7 @@ async def execute_redaction(
             info["preview_entity_map"] = {}
             info["preview_redacted_count"] = 0
             info["preview_page_count"] = 0
+            info["preview_created_at"] = None
             # 版本历史追踪
             version_entry = {
                 "version": len(info.get("redaction_history", [])) + 1,

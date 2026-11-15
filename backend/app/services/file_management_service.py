@@ -303,6 +303,7 @@ _OUTPUT_ARTIFACT_FIELDS = (
     "preview_entity_map",
     "preview_redacted_count",
     "preview_page_count",
+    "preview_created_at",
 )
 
 

@@ -400,3 +400,64 @@ def test_full_redaction_clears_preview_fields(env, tmp_path, monkeypatch):
     assert info["processed_pages"] == []
     assert info["page_map"] == {}
     assert not any(str(k).startswith("preview_") for k in info["redaction_history"][-1])
+
+
+def test_unlocatable_entity_on_selected_page_is_rejected(env, tmp_path):
+    """I-2①：实体登记在所选页但切片上定位不到 → 400，不得 200 返回未打码产物。"""
+    store, job_id, item_id = _seed(tmp_path, 1)
+    src = _text_pdf(tmp_path / "abs.pdf", 1)
+    info = _file_info(tmp_path, src, 1, file_type="pdf")
+    info["bounding_boxes"] = {}
+    info["entities"] = [
+        {"id": "e1", "text": "ZEBRA-NOT-IN-PDF", "type": "PERSON", "start": 0, "end": 13,
+         "page": 1, "selected": True, "source": "manual"}
+    ]
+    env["file-1"] = info
+    before = set(tmp_path.glob("*.pdf"))
+    with pytest.raises(partial_export_service.PartialExportError) as exc:
+        _call(env, store, job_id, item_id, info, pages=[1], boxes=[])
+    assert exc.value.code == "subset_no_regions"
+    after = set(tmp_path.glob("*.pdf"))
+    assert after == before, "拒绝路径不得遗留零打码产物"
+
+
+def test_failed_pages_block_text_pdf_admission(env, tmp_path):
+    """I-2③：文本 PDF 有失败页时不得走整卷放行。"""
+    store, job_id, item_id = _seed(tmp_path, 2)
+    store.update_item_performance(item_id, {"recognition": {"mode": "text", "failed_pages": {"1": "ner_down"}}})
+    src = _text_pdf(tmp_path / "fail.pdf", 2)
+    info = _file_info(tmp_path, src, 2, file_type="pdf")
+    info["bounding_boxes"] = {}
+    info["entities"] = [{"id": "e1", "text": "ALICE", "type": "PERSON", "start": 0, "end": 5,
+                         "page": 1, "selected": True, "source": "manual"}]
+    env["file-1"] = info
+    with pytest.raises(partial_export_service.PartialExportError) as exc:
+        _call(env, store, job_id, item_id, info, pages=[1], boxes=[])
+    assert exc.value.code in {"subset_pages_not_ready", "subset_no_regions"}
+
+
+def test_clear_file_output_drops_preview_fields(tmp_path, monkeypatch):
+    """I-2④：清产必须同时清 preview_* 并删预览文件。"""
+    from app.services import file_management_service as fms
+
+    preview = tmp_path / "preview.pdf"
+    preview.write_bytes(b"%PDF-1.4\n")
+    info = {"id": "f1", "preview_output_path": str(preview), "processed_pages": [1],
+            "page_map": {1: 1}, "preview_page_count": 1, "preview_created_at": "x"}
+
+    class _FS:
+        def __init__(self):
+            self.data = {"f1": dict(info)}
+
+        def get(self, key):
+            return self.data.get(key)
+
+        def set(self, key, value):
+            self.data[key] = value
+
+    fs = _FS()
+    monkeypatch.setattr(fms, "file_store", fs)
+    monkeypatch.setattr(fms.settings, "OUTPUT_DIR", str(tmp_path))
+    assert fms.clear_file_output("f1") is True
+    assert not any(k.startswith("preview_") for k in fs.data["f1"])
+    assert not preview.exists()
