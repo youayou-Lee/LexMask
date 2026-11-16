@@ -496,7 +496,7 @@ class FileParser:
         多页扫描卷实测会把事件循环冻住 ~8.4s——识别提交 POST 的响应正是在
         worker 领任务开跑这段解析时被压在身后写不出去（预览页阻塞弹窗滞留
         ~9s 才翻 passive）。整体放线程池执行：doc 全生命周期封闭在本函数
-        单线程内，不跨线程（与 :654/:730 既有 to_thread 先例同构）。
+        单线程内，不跨线程（与 :665/:741 既有 to_thread 先例同构）。
         """
         _validate_path(file_path)
         return await asyncio.to_thread(self._parse_pdf_sync, file_path)
