@@ -162,6 +162,62 @@ async def test_parse_failure_never_caches_fingerprint(
 
 
 @pytest.mark.asyncio
+async def test_scanned_reuse_rebuild_branch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """扫描件重建分支（content=""、pages=[]、page_count 保留）的复用零漂移（门⑥ I-2）。"""
+    calls = _counting_parser(monkeypatch)
+    _seed("reuse_scan", FIXTURES / "scan.pdf")
+
+    first = await file_processing_service.parse_file("reuse_scan")
+    assert calls == [1]
+    assert first.is_scanned is True
+    assert first.content == "" and first.pages == []
+
+    second = await file_processing_service.parse_file("reuse_scan")
+    assert calls == [1]
+    assert second.is_scanned is True
+    assert second.content == ""
+    assert second.pages == []
+    assert second.page_count == first.page_count
+
+
+@pytest.mark.asyncio
+async def test_reuse_preserves_non_pdf_file_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """非 PDF（txt/image）复用时 file_type 必须保持首遍权威值（门⑥ I-1，修前红）。
+
+    image 快照若被推成 PDF_SCANNED，前端 isRawImageMode 会翻 false、
+    图片预览从 raw-image 分支掉进 scanned-pdf 页渲染分支。
+    """
+    from app.models.schemas import FileType
+
+    st = os.stat(FIXTURES / "text.pdf")
+    fingerprint = f"{st.st_size}:{st.st_mtime_ns}"
+    for file_id, stored_type, expected in [
+        ("reuse_txt", "txt", FileType.TXT),
+        ("reuse_img", "image", FileType.IMAGE),
+    ]:
+        file_store[file_id] = {
+            "file_id": file_id,
+            "file_path": str(FIXTURES / "text.pdf"),
+            "file_type": stored_type,
+            "original_filename": "x",
+            "owner_id": "diag",
+            "content": "abc",
+            "pages": ["abc"],
+            "page_count": 1,
+            "is_scanned": False,
+            "watermark_inline_filtered": 0,
+            "parse_fingerprint": fingerprint,
+        }
+        try:
+            result = await file_processing_service.parse_file(file_id)
+            assert result.file_type == expected, (
+                f"{stored_type} 复用后 file_type 漂成 {result.file_type}——非 PDF 契约回归"
+            )
+        finally:
+            file_store.pop(file_id, None)
+
+
+@pytest.mark.asyncio
 async def test_concurrent_first_parses_are_consistent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -75,13 +75,22 @@ def _parse_fingerprint(file_path: str) -> str | None:
     return f"{st.st_size}:{st.st_mtime_ns}"
 
 
-def _parse_result_from_snapshot(file_id: str, snapshot: dict[str, Any], parser_file_type) -> Any:
-    """用 file_store 快照里的首遍解析字段重建 ParseResult（Issue#342 复用路径）。"""
+def _parse_result_from_snapshot(file_id: str, snapshot: dict[str, Any]) -> Any:
+    """用 file_store 快照里的首遍解析字段重建 ParseResult（Issue#342 复用路径）。
+
+    门⑥ Important-1：file_type 必须用首遍真解析落库的权威值（快照 file_type）——
+    不能按 is_scanned 推导，否则 txt/image/docx 的复用会把 file_type 漂成
+    PDF/PDF_SCANNED（前端 raw-image / isPdfFamilyFileType 分支会被带偏）。
+    仅快照缺该字段（理论上不可达）时才按 is_scanned 兜底推导。
+    """
     from app.models.file_schemas import ParseResult
     from app.models.schemas import FileType
 
     is_scanned = bool(snapshot.get("is_scanned", False))
-    file_type = FileType.PDF_SCANNED if is_scanned else FileType.PDF
+    try:
+        file_type = FileType(str(snapshot.get("file_type") or ""))
+    except ValueError:
+        file_type = FileType.PDF_SCANNED if is_scanned else FileType.PDF
     pages = snapshot.get("pages") or []
     return ParseResult(
         file_id=file_id,
@@ -123,14 +132,16 @@ async def parse_file(file_id: str) -> dict[str, Any]:
         else file_type
     )
 
-    # Issue#342：同字节复用（存量文件无指纹/缺解析字段 ⇒ 走真解析并补指纹）
+    # Issue#342：同字节复用（存量文件无指纹/缺解析字段 ⇒ 走真解析并补指纹）。
+    # 门⑥ M3：page_count 与 content 双字段俱在才算有效解析快照。
     fingerprint = _parse_fingerprint(str(file_path))
     if (
         fingerprint is not None
         and snapshot.get("parse_fingerprint") == fingerprint
         and "page_count" in snapshot
+        and "content" in snapshot
     ):
-        return _parse_result_from_snapshot(file_id, snapshot, parser_file_type)
+        return _parse_result_from_snapshot(file_id, snapshot)
 
     parser = FileParser()
     result = await parser.parse(file_path, parser_file_type)
