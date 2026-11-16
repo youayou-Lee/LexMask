@@ -49,13 +49,13 @@ class TestAgeBareDigitDrop:
         assert bqp.drop_unanchored_number_regions(regions) == []
 
     def test_anchored_values_kept(self) -> None:
-        # 真值 1:1 保留（preset examples 形态）
+        # 个人年龄属性真值 1:1 保留（无情态前缀、无以上/以下后缀）；
+        # 条件短语（未满/…以上）自拍板 2026-11-17 起改判丢弃，
+        # 见 TestAgeConditionPhraseDrop。
         regions = [_region("35岁", "AGE", 300, 500, 24, 14),
-                   _region("未满18周岁", "AGE", 300, 500, 60, 14),
-                   _region("60岁以上", "AGE", 300, 500, 48, 14),
                    _region("41 岁", "AGE", 300, 500, 24, 14)]
         got = bqp.drop_unanchored_number_regions(regions)
-        assert [r.text for r in got] == ["35岁", "未满18周岁", "60岁以上", "41 岁"]
+        assert [r.text for r in got] == ["35岁", "41 岁"]
 
     def test_chinese_numeral_age_kept(self) -> None:
         regions = [_region("四十一", "AGE", 300, 500, 30, 14)]
@@ -132,6 +132,99 @@ class TestCaseNumberBareDrop:
         regions = [_region("500", "CASE_NUMBER", 300, 500, 18, 14, source="manual")]
         assert len(bqp.drop_unanchored_number_regions(regions)) == 1
 
+
+# ---------------------------------------------------------------------------
+# 拍板追加（2026-11-17 用户实测截图）：页码区间 + 年龄条件短语
+# ---------------------------------------------------------------------------
+
+class TestPageRangeDrop:
+    """卷内目录页次列（`002-013`）——连字符在此是页码分隔不是编号锚。"""
+
+    def test_page_range_dropped(self) -> None:
+        regions = [_region("002-013", "CASE_NUMBER", 400, 300, 60, 14),
+                   _region("050-053", "CASE_NUMBER", 400, 400, 60, 14),
+                   _region("1-3", "CASE_NUMBER", 400, 500, 24, 14)]
+        assert bqp.drop_unanchored_number_regions(regions) == []
+
+    def test_year_segment_range_kept(self) -> None:
+        # 4 位年份段是真编号形态（2026-0001）——页码区间规则不碰
+        regions = [_region("2026-0001", "CASE_NUMBER", 400, 300, 80, 14)]
+        assert len(bqp.drop_unanchored_number_regions(regions)) == 1
+
+    def test_long_segment_range_kept(self) -> None:
+        # 段长超 3 位（发票号/流水号区间形态）不在射程
+        regions = [_region("123-45678", "CASE_NUMBER", 400, 300, 80, 14)]
+        assert len(bqp.drop_unanchored_number_regions(regions)) == 1
+
+    def test_letter_prefix_range_kept(self) -> None:
+        regions = [_region("BH-2026-0001", "CASE_NUMBER", 400, 300, 90, 14)]
+        assert len(bqp.drop_unanchored_number_regions(regions)) == 1
+
+    def test_page_range_non_case_number_kept(self) -> None:
+        # LEGAL_CASE_ID 的连字符形态不在本闸射程（与裸数字闸同口径）
+        regions = [_region("002-013", "LEGAL_CASE_ID", 400, 300, 60, 14)]
+        assert len(bqp.drop_unanchored_number_regions(regions)) == 1
+
+    def test_page_range_manual_source_kept(self) -> None:
+        regions = [_region("002-013", "CASE_NUMBER", 400, 300, 60, 14, source="manual")]
+        assert len(bqp.drop_unanchored_number_regions(regions)) == 1
+
+
+class TestAgeConditionPhraseDrop:
+    """法律条件短语 ≠ 个人年龄属性（用户实测「未满18周岁」被打码）。"""
+
+    def test_condition_prefix_dropped(self) -> None:
+        regions = [_region("未满18周岁", "AGE", 300, 500, 60, 14),
+                   _region("已满16周岁", "AGE", 300, 500, 60, 14),
+                   _region("年满十八周岁", "AGE", 300, 500, 60, 14)]
+        assert bqp.drop_unanchored_number_regions(regions) == []
+
+    def test_condition_suffix_dropped(self) -> None:
+        regions = [_region("60岁以上", "AGE", 300, 500, 48, 14),
+                   _region("18周岁以下", "AGE", 300, 500, 48, 14)]
+        assert bqp.drop_unanchored_number_regions(regions) == []
+
+    def test_prefix_and_suffix_dropped(self) -> None:
+        regions = [_region("未满18周岁以上", "AGE", 300, 500, 72, 14)]
+        assert bqp.drop_unanchored_number_regions(regions) == []
+
+    def test_person_attribute_age_kept(self) -> None:
+        # 无情态前缀且无以上/以下后缀 = 个人年龄属性 → 照常保留打码
+        regions = [_region("41岁", "AGE", 300, 500, 24, 14),
+                   _region("41周岁", "AGE", 300, 500, 30, 14),
+                   _region("41 岁", "AGE", 300, 500, 24, 14)]
+        got = bqp.drop_unanchored_number_regions(regions)
+        assert [r.text for r in got] == ["41岁", "41周岁", "41 岁"]
+
+    def test_chinese_numeral_person_age_kept(self) -> None:
+        regions = [_region("四十一", "AGE", 300, 500, 30, 14)]
+        assert len(bqp.drop_unanchored_number_regions(regions)) == 1
+
+    def test_non_age_type_condition_kept(self) -> None:
+        # 射程仅 AGE：同形值落在家族外类型不碰
+        regions = [_region("未满18周岁", "PERSON", 300, 500, 60, 14)]
+        assert len(bqp.drop_unanchored_number_regions(regions)) == 1
+
+    def test_condition_manual_source_kept(self) -> None:
+        regions = [_region("未满18周岁", "AGE", 300, 500, 60, 14, source="manual")]
+        assert len(bqp.drop_unanchored_number_regions(regions)) == 1
+
+
+class TestPresetAgeGuidanceNarrowed:
+    """用户拍板的源头治理：preset 与 HaS builtin guidance 不再教条件短语。"""
+
+    def test_preset_age_examples_person_attribute_only(self) -> None:
+        import json
+        cfg = json.loads((Path(__file__).resolve().parents[1] / "config" / "preset_entity_types.json").read_text())
+        assert "未满18周岁" not in cfg["AGE"]["examples"]
+        assert "60岁以上" not in cfg["AGE"]["examples"]
+
+    def test_builtin_guidance_examples_person_attribute_only(self) -> None:
+        from app.services.has_service import HaSService
+        guidance = HaSService.BUILTIN_TYPE_GUIDANCE["AGE"]
+        assert "未满18周岁" not in guidance["examples"]
+        assert "60岁以上" not in guidance["examples"]
+        assert "未满" in guidance["description"]  # 负向指引写明条件短语不是年龄
 
 # ---------------------------------------------------------------------------
 # ⑤ 页眉带（几何，A）——与页脚 8% 带对称

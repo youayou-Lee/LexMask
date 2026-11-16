@@ -87,6 +87,22 @@ _CASE_NUMBER_ANCHOR_RE = re.compile(r"[A-Za-z]|[（(]\s*\d{4}\s*[）)]|[-–—]
 # 裸数字形状：只剩数字与千分位/小数分隔残段（`500`、`0. 00`、
 # `500, 0. 00`）。含 CJK（`第3页`、`100号`）不是裸数字形状，不进射程。
 _BARE_VALUE_SHAPE_RE = re.compile(r"^[\d,，.．、\s\u3000]+$")
+# 页码区间（拍板 2026-11-17）：两段各 1-3 位纯数字 + 单连字符
+# （卷内目录页次 `002-013`、`050-053`）。连字符在此是页码分隔而非编号
+# 锚——本规则优先于 _CASE_NUMBER_ANCHOR_RE 的连字符保护；4 位年份段
+# （`2026-0001`）与字母前缀（`BH-2026-0001`）不受影响。
+_PAGE_RANGE_RE = re.compile(r"^\d{1,3}[-–—]\d{1,3}$")
+# 年龄条件短语（拍板 2026-11-17）：`未满/已满/年满 X岁(周岁)`（可带
+# 以上/以下）与 `X岁(周岁) 以上/以下`——法律条件短语不是「是谁」的
+# 信息 ⇒ 不打码（丢框）。具体某个人的年龄属性（`41岁`/`41周岁`，
+# 无情态前缀且无以上/以下后缀）不在本判定内，照常保留打码。
+# 数字段支持 ASCII/全角与中文数字（`未满十八周岁`）。
+_AGE_CONDITION_RE = re.compile(
+    r"^(?:(?:未满|已满|年满)\s*(?:[0-9０-９]{1,3}|[一二两三四五六七八九十百]{1,4})"
+    r"\s*(?:周岁|岁)(?:\s*(?:以上|以下))?"
+    r"|(?:[0-9０-９]{1,3}|[一二两三四五六七八九十百]{1,4})"
+    r"\s*(?:周岁|岁)\s*(?:以上|以下))$"
+)
 
 
 def _has_numeric_content(text: str) -> bool:
@@ -375,11 +391,15 @@ def drop_unanchored_number_regions(regions: list[SensitiveRegion]) -> list[Sensi
     射程与判据（拍板 2026-11-17）：
     - `AGE`：值是 1–3 位纯数字（无「岁」锚）→ 丢。表格年龄列的裸数字
       （8 页样本 `'41'` 同值 ×12）是 HaS 把「数字+单位」示例泛化成了裸数；
-      带「岁/周岁」的真值、中文数字、4 位以上（年份残段）不进射程。
+      带「岁/周岁」的个人年龄属性（`41岁`/`41周岁`）、中文数字、4 位以上
+      （年份残段）不进射程；**年龄条件短语**（`未满/已满/年满 X岁(周岁)`
+      可带以上/以下、`X岁(周岁) 以上/以下`）≠ 个人年龄 → 同样丢框
+      （HaS guidance 同步收窄，此为确定性兜底）。
     - `CASE_NUMBER`：值无任何编号结构锚（字母 / （YYYY）/ 连字符）**且**
       是纯数字+分隔符形状，且数字 ≤4 位**或**含千分位/小数分隔残段
       （`500`、`0. 00`、`500, 0. 00`）→ 丢。5 位以上无结构纯数字可能是
-      发票号/流水号，保留（漏打面趋零）。
+      发票号/流水号，保留（漏打面趋零）。**页码区间**（两段各 1-3 位
+      纯数字 + 单连字符，`002-013`）优先于连字符锚保护 → 丢。
 
     source=visual_features 不参与值判据（0710 指纹实证保护，模块约束）；
     manual 框永存（#280）。AMOUNT 裸数字是合法金额真值，不在射程。
@@ -398,15 +418,25 @@ def drop_unanchored_number_regions(regions: list[SensitiveRegion]) -> list[Sensi
         if r.entity_type == "AGE":
             # 纯数字 fullmatch 通过即「无岁锚」（数字值不可能含「岁」）；
             # `41 岁` 经 _strip_ws 成 `41岁`，fullmatch 失败 → 真值保留。
-            dropped = bool(re.fullmatch(rf"[0-9]{{1,{_AGE_MAX_BARE_DIGITS}}}", value))
-        else:  # CASE_NUMBER
-            digit_count = sum(ch.isdigit() for ch in value)
-            has_separator = bool(re.search(r"[,，.．、]", value))
-            dropped = (
-                not _CASE_NUMBER_ANCHOR_RE.search(value)
-                and bool(_BARE_VALUE_SHAPE_RE.match(value))
-                and (digit_count <= _CASE_NUMBER_MAX_BARE_DIGITS or has_separator)
+            # 年龄条件短语（未满/已满/年满…周岁、…以上/以下）≠ 个人年龄
+            # 属性 → 照样丢框（拍板 2026-11-17；HaS 侧 guidance 同步收窄，
+            # 此闸是 HaS 仍回捞时的确定性兜底）。
+            dropped = bool(re.fullmatch(rf"[0-9]{{1,{_AGE_MAX_BARE_DIGITS}}}", value)) or bool(
+                _AGE_CONDITION_RE.match(value)
             )
+        else:  # CASE_NUMBER
+            # 页码区间（002-013）优先于连字符锚保护——两段各 1-3 位纯数字
+            # 的单连字符形态是页次不是编号。
+            if _PAGE_RANGE_RE.match(value):
+                dropped = True
+            else:
+                digit_count = sum(ch.isdigit() for ch in value)
+                has_separator = bool(re.search(r"[,，.．、]", value))
+                dropped = (
+                    not _CASE_NUMBER_ANCHOR_RE.search(value)
+                    and bool(_BARE_VALUE_SHAPE_RE.match(value))
+                    and (digit_count <= _CASE_NUMBER_MAX_BARE_DIGITS or has_separator)
+                )
         if dropped:
             dropped_by_type[r.entity_type] = dropped_by_type.get(r.entity_type, 0) + 1
             continue
