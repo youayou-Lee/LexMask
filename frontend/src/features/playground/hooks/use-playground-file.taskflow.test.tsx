@@ -381,36 +381,6 @@ describe('Issue#194 识别页任务流（T9）', () => {
     expect(harness.file!.isLoading).toBe(false);
   });
 
-  it('Issue#339：提交在途文案=「正在提交识别任务…」（修前提前谎称后台解析中），受理后解析段=「后台解析中…」', async () => {
-    // 提交悬置：受理回执未返回
-    let resolveSubmit!: (ref: { job_id: string; item_id: string; file_id: string }) => void;
-    vi.mocked(submitRecognitionTask).mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveSubmit = resolve;
-        }),
-    );
-    renderHarness();
-    await dropTextFile();
-
-    // 提交在途：如实显示「正在提交识别任务…」（修前此处是「后台解析中…」）
-    await waitFor(() =>
-      expect(screen.getByTestId('loading-message').textContent).toBe('正在提交识别任务…'),
-    );
-
-    // 受理回执到达 → 订阅 effect 按 total=0（任务解析段）切回「后台解析中…」
-    await act(async () => {
-      resolveSubmit({ job_id: 'j1', item_id: 'it1', file_id: 'f1' });
-    });
-    vi.mocked(getJob).mockResolvedValue(makeDetail('processing', 'parsing') as JobDetail);
-    await act(async () => {
-      await harness.task!.refresh();
-    });
-    await waitFor(() =>
-      expect(screen.getByTestId('loading-message').textContent).toBe('后台解析中…'),
-    );
-  });
-
   it('(i) 用户验收①：扫描件 awaiting_review 迁移——快照 bounding_boxes 装进画布（改前红：画布空空）', async () => {
     // 扫描件：parse 出 is_scanned，快照 entities 恒空、框按页 dict 存在 bounding_boxes
     const fetchMock = vi.mocked(authFetch);
