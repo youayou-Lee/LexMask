@@ -122,11 +122,22 @@ class TestCaseNumberBareDrop:
                    _region("100号", "CASE_NUMBER", 300, 500, 30, 14)]
         assert len(bqp.drop_unanchored_number_regions(regions)) == 2
 
-    def test_legal_case_id_out_of_scope_kept(self) -> None:
-        # LEGAL_CASE_ID 裸数字不在本闸射程（#308 页脚闸已覆盖带内形态；
-        # 8 页样本零取证，扩面无据）
-        regions = [_region("3", "LEGAL_CASE_ID", 300, 500, 8, 14)]
-        assert len(bqp.drop_unanchored_number_regions(regions)) == 1
+    def test_legal_case_id_pagenumber_dropped(self) -> None:
+        # 86 页卷目录页实证（2026-11-17）：HaS 把页次列标成 LEGAL_CASE_ID
+        # ——页码区间与 ≤4 位裸数字规则扩到该类型（原拍板以「零取证」划
+        # 出射程，证据成立后扩面）
+        regions = [_region("002-013", "LEGAL_CASE_ID", 400, 300, 60, 14),
+                   _region("001", "LEGAL_CASE_ID", 400, 400, 30, 14),
+                   _region("3", "LEGAL_CASE_ID", 300, 500, 8, 14)]
+        assert bqp.drop_unanchored_number_regions(regions) == []
+
+    def test_legal_case_id_real_values_kept(self) -> None:
+        # 真案号（（YYYY）…号）与长流水号（≥5 位）保留
+        regions = [_region("（2021）桂0603民初2237号", "LEGAL_CASE_ID", 400, 300, 150, 14),
+                   _region("1000050001202008100703315460294", "LEGAL_CASE_ID", 400, 400, 200, 14)]
+        got = bqp.drop_unanchored_number_regions(regions)
+        assert [r.text for r in got] == ["（2021）桂0603民初2237号",
+                                         "1000050001202008100703315460294"]
 
     def test_manual_source_never_dropped(self) -> None:
         regions = [_region("500", "CASE_NUMBER", 300, 500, 18, 14, source="manual")]
@@ -160,10 +171,10 @@ class TestPageRangeDrop:
         regions = [_region("BH-2026-0001", "CASE_NUMBER", 400, 300, 90, 14)]
         assert len(bqp.drop_unanchored_number_regions(regions)) == 1
 
-    def test_page_range_non_case_number_kept(self) -> None:
-        # LEGAL_CASE_ID 的连字符形态不在本闸射程（与裸数字闸同口径）
+    def test_page_range_legal_case_id_dropped(self) -> None:
+        # 86 页卷目录页实证：页次区间被标 LEGAL_CASE_ID → 同规则拦截
         regions = [_region("002-013", "LEGAL_CASE_ID", 400, 300, 60, 14)]
-        assert len(bqp.drop_unanchored_number_regions(regions)) == 1
+        assert bqp.drop_unanchored_number_regions(regions) == []
 
     def test_page_range_manual_source_kept(self) -> None:
         regions = [_region("002-013", "CASE_NUMBER", 400, 300, 60, 14, source="manual")]
@@ -287,7 +298,8 @@ class TestCompositePass:
         regions = [_region("41", "AGE", 300, 500, 12, 14),
                    _region("3", "LEGAL_CASE_ID", 497, 30, 3, 13)]
         got = bqp.drop_edge_and_unanchored_number_regions(regions, 0, 0)
-        assert [r.text for r in got] == ["3"]
+        # 值闸对 LEGAL_CASE_ID 裸数字同样生效（86 页卷扩面）
+        assert got == []
 
 
 # ---------------------------------------------------------------------------

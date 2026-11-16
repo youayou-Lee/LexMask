@@ -70,11 +70,13 @@ _FOOTER_DROP_TYPES = _QUALITY_PASS_TYPES
 # ⑤ 页眉带（#335）：页顶 8%，与页脚带对称——页码可能在页首。
 _HEADER_BOTTOM_FRACTION = 0.08
 
-# ⑥ 无锚裸数字闸（#335）：AGE / CASE_NUMBER 的裸短纯数字是误打
-# （8 页样本实证：AGE 18 / CASE_NUMBER 6，仅 1 个在页脚带内）。
+# ⑥ 无锚裸数字闸（#335）：AGE / CASE_NUMBER / LEGAL_CASE_ID 的裸短纯
+# 数字是误打（AGE/CASE_NUMBER：8 页样本实证 AGE 18 / CASE_NUMBER 6；
+# LEGAL_CASE_ID：86 页卷目录页次列实证——HaS 把页次 `001`/`002-013`
+# 标成 LEGAL_CASE_ID，页眉带纯数字框 53→0 后它是目录页唯一残留）。
 # 拍板（2026-11-17）：裸数字直接丢框；CASE_NUMBER 丢弃线 ≤4 位
 # （5 位以上可能是发票号/流水号，保留）。
-_BARE_NUMBER_DROP_TYPES = frozenset({"AGE", "CASE_NUMBER"})
+_BARE_NUMBER_DROP_TYPES = frozenset({"AGE", "CASE_NUMBER", "LEGAL_CASE_ID"})
 # AGE 射程为 ASCII 数字 [0-9]（门⑥ Minor 挂账：全角 `４１` 保留；全角在
 # OCR 输出罕见，且 #308 页脚/页眉闸同为 [0-9]，取证到全角形态再扩
 # [0-9０-９]。CASE_NUMBER 形状正则用 Unicode \d 口径，两侧不对称是
@@ -400,6 +402,9 @@ def drop_unanchored_number_regions(regions: list[SensitiveRegion]) -> list[Sensi
       （`500`、`0. 00`、`500, 0. 00`）→ 丢。5 位以上无结构纯数字可能是
       发票号/流水号，保留（漏打面趋零）。**页码区间**（两段各 1-3 位
       纯数字 + 单连字符，`002-013`）优先于连字符锚保护 → 丢。
+    - `LEGAL_CASE_ID`：86 页卷目录页实证，页次列 `001`/`002-013` 被标成
+      LEGAL_CASE_ID ⇒ 页码区间与 ≤4 位裸数字规则同样适用（真案号必有
+      （YYYY）…号 形态）；长流水号（≥5 位纯数字）保留。
 
     source=visual_features 不参与值判据（0710 指纹实证保护，模块约束）；
     manual 框永存（#280）。AMOUNT 裸数字是合法金额真值，不在射程。
@@ -423,6 +428,14 @@ def drop_unanchored_number_regions(regions: list[SensitiveRegion]) -> list[Sensi
             # 此闸是 HaS 仍回捞时的确定性兜底）。
             dropped = bool(re.fullmatch(rf"[0-9]{{1,{_AGE_MAX_BARE_DIGITS}}}", value)) or bool(
                 _AGE_CONDITION_RE.match(value)
+            )
+        elif r.entity_type == "LEGAL_CASE_ID":
+            # 86 页卷目录页实证（2026-11-17）：HaS 把卷内目录页次列
+            # `001`/`002-013` 标成 LEGAL_CASE_ID——页码区间规则与 ≤4 位
+            # 裸数字规则同样适用（真案号必有（YYYY）…号 形态，纯短数字
+            # 不可能是真案号；长流水号 ≥5 位仍保留）。
+            dropped = bool(_PAGE_RANGE_RE.match(value)) or bool(
+                re.fullmatch(rf"[0-9]{{1,{_CASE_NUMBER_MAX_BARE_DIGITS}}}", value)
             )
         else:  # CASE_NUMBER
             # 页码区间（002-013）优先于连字符锚保护——两段各 1-3 位纯数字
