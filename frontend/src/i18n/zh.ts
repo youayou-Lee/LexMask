@@ -169,6 +169,11 @@ const zhBase: Record<string, string> = {
   'playground.subsetPickerEmpty': '还没有已处理的页，请稍候再试。',
   // 选页提交前页账已变（识别继续推进）——作废本次选择，让用户重选
   'playground.subsetPagesStale': '页账已更新，请重新选择要匿名化的页',
+  // 门⑥ r1 M4：页账读取失败与「选择已过期」是两种病，文案分开。
+  'playground.subsetPagesUnknown': '页账读取失败，请稍后重试',
+  'playground.subsetPagesEmpty': '请先选择要匿名化的页',
+  // 门⑥ r1 M5：弹窗打开期间识别收尾 ⇒ 候选页清空，但「还没有已处理的页」是错的说法。
+  'playground.subsetPickerFinished': '识别已结束，请关闭弹窗后使用「开始匿名化」处理全卷。',
   'playground.title': '处理单个文件',
   'playground.recognizing': '正在识别...',
   // 识别在飞时的主按钮文案（带上任务进度，避免与右下角进度卡对不上）

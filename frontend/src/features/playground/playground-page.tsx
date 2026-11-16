@@ -692,6 +692,7 @@ const PlaygroundInner: FC = () => {
         onOpenChange={setSubsetPickerOpen}
         pages={subsetPages}
         total={subsetTotalPages}
+        recognitionActive={Boolean(taskRecognition)}
         onConfirm={(pages) => void handleRedact(pages)}
       />
 

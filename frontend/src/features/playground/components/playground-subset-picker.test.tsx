@@ -92,21 +92,38 @@ describe('PlaygroundSubsetPicker（2026-11-16 子集选页）', () => {
   });
 
   it('重开时按最新页账重置（识别推进后旧选择不残留）', () => {
-    renderPicker();
+    // 门⑥ r1 M8：必须走真正的 close → open（同树 rerender），而不是 cleanup + 重挂载。
+    // 实现依赖 Radix DialogContent 关闭时卸载，forceMount/关闭动画窗口下重开会漏。
+    const props = {
+      open: true,
+      onOpenChange: vi.fn(),
+      pages: [1, 3, 4],
+      total: 6,
+      onConfirm: vi.fn(),
+    };
+    const { rerender } = render(<PlaygroundSubsetPicker {...props} />);
     fireEvent.click(screen.getByTestId('playground-subset-page-4'));
 
-    // 模拟关闭后重开，页账已增长到 5 页
-    cleanup();
-    render(
-      <PlaygroundSubsetPicker
-        open
-        onOpenChange={vi.fn()}
-        pages={[1, 3, 4, 5]}
-        total={6}
-        onConfirm={vi.fn()}
-      />,
-    );
+    // 关闭（页账仍是旧的），再用更大的页账重开
+    rerender(<PlaygroundSubsetPicker {...props} open={false} />);
+    rerender(<PlaygroundSubsetPicker {...props} pages={[1, 3, 4, 5]} />);
 
     expect(screen.getByTestId('playground-subset-page-5').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('识别刚收尾（候选页清空）时文案指向全卷入口', () => {
+    renderPicker({ pages: [], total: 86, recognitionActive: false });
+
+    expect(screen.getByTestId('playground-subset-picker-empty').textContent).toContain(
+      '识别已结束',
+    );
+  });
+
+  it('识别在飞但还没有页完成时保持「稍候再试」文案', () => {
+    renderPicker({ pages: [], total: 86, recognitionActive: true });
+
+    expect(screen.getByTestId('playground-subset-picker-empty').textContent).toContain(
+      '还没有已处理的页',
+    );
   });
 });

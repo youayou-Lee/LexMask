@@ -31,6 +31,12 @@ export interface PlaygroundSubsetPickerProps {
   pages: readonly number[];
   /** 原卷总页数（页账 page_count 优先，退化到 file_info.page_count）。 */
   total: number;
+  /**
+   * 识别是否仍在进行（宿主传 `Boolean(taskRecognition)`）。
+   * 门⑥ r1 M5：`total > 0` 但候选为空时，要靠它区分「刚开跑还没页」与
+   * 「识别刚收尾（候选被清空）」——两者文案不同。
+   */
+  recognitionActive?: boolean;
   onConfirm: (pages: number[]) => void;
 }
 
@@ -47,6 +53,7 @@ export function PlaygroundSubsetPicker({ open, ...rest }: PlaygroundSubsetPicker
 function PickerBody({
   pages,
   total,
+  recognitionActive,
   onOpenChange,
   onConfirm,
 }: Omit<PlaygroundSubsetPickerProps, 'open'>) {
@@ -117,8 +124,13 @@ function PickerBody({
       </div>
 
       {readyPages.length === 0 ? (
+        // 门⑥ r1 M5：`total > 0` 却「没有已处理页」且识别已不在飞 = 识别刚收尾
+        // （页账删成空），此时说「还没有已处理的页」与事实相反，得指回全卷入口。
+        // 识别仍在进行（刚开跑、0 页完成）⇒ 保持原「稍候再试」文案。
         <p className="text-xs text-muted-foreground" data-testid="playground-subset-picker-empty">
-          {t('playground.subsetPickerEmpty')}
+          {!recognitionActive && total > 0
+            ? t('playground.subsetPickerFinished')
+            : t('playground.subsetPickerEmpty')}
         </p>
       ) : (
         <div

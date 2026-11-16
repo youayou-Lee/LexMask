@@ -791,19 +791,38 @@ export function usePlayground() {
       // 合法集：不在其中的页一律剔除，剔除后与选择不一致就作废本次提交（页账在识别
       // 推进中会涨，旧选择可能已过期；静默按实际页打码 = 与用户所见不一致）。
       const processedPages = inFlight ? pickSubsetPages(pageStatus, totalPages).pages : [];
-      const requestedPages = pagesOverride
-        ? Array.from(new Set(pagesOverride.filter((page) => Number.isFinite(page))))
+      // 门⑥ r1 M3：显式选择以 `!== undefined` 判定（不是真值）——`[]` 是「用户明确
+      // 选了零页」，绝不能退化成「没传」进而走全卷链路（UI 已禁用空集 confirm，这层
+      // 是宿主 API 的兜底）。
+      const hasExplicitSelection = pagesOverride !== undefined;
+      const requestedPages = hasExplicitSelection
+        ? Array.from(new Set((pagesOverride ?? []).filter((page) => Number.isFinite(page))))
         : processedPages;
       const donePages = requestedPages.filter((page) => processedPages.includes(page));
-      if (pagesOverride && donePages.length !== requestedPages.length) {
+      if (hasExplicitSelection) {
         // 早退必须解锁 redactionInFlightRef（上面已置位）——否则本次作废后主按钮永远不可点。
         redactionInFlightRef.current = false;
-        showToast(t('playground.subsetPagesStale'), 'error');
-        return;
+        if (requestedPages.length === 0) {
+          showToast(t('playground.subsetPagesEmpty'), 'error');
+          return;
+        }
+        if (donePages.length !== requestedPages.length) {
+          // 门⑥ r1 M4：页账查不到（网络/后端异常）与「选择已过期」是两种病，别把
+          // 前者说成后者——排障方向会被带偏。
+          showToast(
+            pageStatus === null ? t('playground.subsetPagesUnknown') : t('playground.subsetPagesStale'),
+            'error',
+          );
+          return;
+        }
       }
-      // donePages === totalPages（页账已全绿、识别在做最后收尾）不进子集口径：
-      // 此时等一拍走全卷链路更干净（面板的同款判定也不会让入口出现）。
-      if (donePages.length > 0 && donePages.length < totalPages) {
+      // 门⑥ r1 M2：显式选择（子集弹窗）→ 即使覆盖全部页也走子集口径（用户点的是
+      // 「生成预览」，回落全卷会把「预览」变成后台打码）。未显式选择（面板主按钮直传）
+      // 才沿用旧口径：页账全绿时等一拍走全卷链路。
+      const subsetEligible = hasExplicitSelection
+        ? donePages.length > 0
+        : donePages.length > 0 && donePages.length < subsetTotalPages;
+      if (subsetEligible) {
         // 门⑥ C-2（返工）：画布框与服务端快照框的合并口径。
         // 识别在飞时后端 file_store 已边跑边写回逐页框，但前端画布可能为空（未审完）
         // 或只有用户手改/手拉的框。直接发画布框会把服务端框整份替换（丢页），直接不发
@@ -845,7 +864,7 @@ export function usePlayground() {
         showToast(
           t('playground.subsetPreviewReady')
             .replace('{done}', String(donePages.length))
-            .replace('{total}', String(totalPages)),
+            .replace('{total}', String(subsetTotalPages)),
           'info',
         );
         return;
@@ -908,6 +927,7 @@ export function usePlayground() {
     recognition.watermarkDelivery,
     pseudonymMap,
     replaceUnready,
+    subsetTotalPages,
     textPdfMaskMode,
     recoverCompletedRedact,
   ]);

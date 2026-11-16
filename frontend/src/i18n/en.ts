@@ -173,6 +173,10 @@ const enBase: Record<string, string> = {
   'playground.subsetPickerEmpty': 'No page has been processed yet. Please try again shortly.',
   // 选页提交前页账已变（识别继续推进）——作废本次选择，让用户重选
   'playground.subsetPagesStale': 'The page ledger changed; please pick the pages again.',
+  'playground.subsetPagesUnknown': 'Failed to read the page ledger. Please try again later.',
+  'playground.subsetPagesEmpty': 'Select at least one page to anonymize.',
+  'playground.subsetPickerFinished':
+    'Recognition has finished. Close this dialog and use "Start anonymization" for the whole file.',
   'playground.title': 'Process One File',
   'playground.recognizing': 'Recognizing...',
   // 识别在飞时的主按钮文案（带上任务进度，避免与右下角进度卡对不上）

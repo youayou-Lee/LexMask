@@ -1,6 +1,6 @@
 // Copyright 2026 LexMask Contributors
 
-import { type FC, type ReactNode, memo, useEffect, useRef, useState } from 'react';
+import { type FC, memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -60,11 +60,6 @@ export interface PlaygroundLoadingProps {
   /** Issue#238 redaction = 打码段被动小卡（右下角，无清单/提示/取消，可离开本页语义）。 */
   variant?: 'recognition' | 'redaction';
   /**
-   * Issue#257 需求重对齐：识别中就要能看逐页结果、选页导出——投在收尾的
-   * 槽位里（页格自带宽高限制，遮罩面板不会被撑爆）。
-   */
-  children?: ReactNode;
-  /**
    * Issue#274 三段式阶段条视图（stages 账派生，或乐观①）。
    * null/缺省 = 无阶段语义语境（parse 窗口/旧任务/文本件）——不渲染阶段行，
    * 既有渲染逐字节不变（AC6 零回归面）。
@@ -118,7 +113,6 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
     textMode = false,
     variant = 'recognition',
     stagesView = null,
-    children,
   }) => {
     const t = useT();
     const panelRef = useRef<HTMLDivElement>(null);
@@ -311,7 +305,7 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
           className={
             overlay === 'passive'
               ? 'pointer-events-auto w-full max-w-xs animate-scale-in cursor-default rounded-[20px] border border-border/70 bg-[var(--surface-overlay)] px-4 py-3.5 text-left shadow-[var(--shadow-floating)] outline-none'
-              : `w-full ${children ? 'max-w-xl' : 'max-w-md'} animate-scale-in cursor-default rounded-[20px] border border-border/70 bg-[var(--surface-overlay)] px-4 py-3.5 text-left shadow-[var(--shadow-floating)] outline-none`
+              : `w-full max-w-md animate-scale-in cursor-default rounded-[20px] border border-border/70 bg-[var(--surface-overlay)] px-4 py-3.5 text-left shadow-[var(--shadow-floating)] outline-none`
           }
         >
           <div className="mb-3 flex items-start gap-3">
@@ -464,8 +458,6 @@ export const PlaygroundLoading: FC<PlaygroundLoadingProps> = memo(
               {t('common.cancel')}
             </Button>
           )}
-
-          {children && <div className="mt-3">{children}</div>}
         </div>
       </div>,
       document.body,
