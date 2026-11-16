@@ -1357,6 +1357,8 @@ const enOverrides: Record<string, string> = {
   'playground.parsing': 'Parsing file...',
   // Issue#194: stage messages for background-task recognition (numbers from task polling)
   'playground.taskParsing': 'Parsing in background…',
+  // Issue#339: submit-in-flight (no acceptance receipt yet) != background parse (accepted, task parse segment)
+  'playground.taskSubmitting': 'Submitting recognition task…',
   'playground.taskRecognizing': 'Recognizing in background {current}/{total}…',
   // Issue#194 user acceptance #4: waiting-view top line (filename composed by the hook)
   'playground.identifying': 'Recognizing "{filename}"',
