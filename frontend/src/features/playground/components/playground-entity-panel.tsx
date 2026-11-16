@@ -63,6 +63,11 @@ export interface PlaygroundEntityPanelProps {
   presetQuickSwitch?: ReactNode;
   onRerunNer: () => void;
   onRedact: () => void;
+  /**
+   * 子集口径主按钮的点击（Issue#327 + 2026-11-16 选页）：打开选页弹窗，
+   * 由宿主选定页后调 `handleRedact(pages)`。缺省（不设）时沿用 onRedact。
+   */
+  onSubsetAction?: () => void;
   onSelectAll: () => void;
   onDeselectAll: () => void;
   onToggleBox: (id: string) => void;
@@ -75,6 +80,14 @@ export interface PlaygroundEntityPanelProps {
    */
   subsetReadyCount?: number;
   subsetTotalPages?: number;
+  /**
+   * 识别在飞时的任务进度（`taskRecognition.current/total`）。有值时主按钮显示
+   * 「识别中 n/m」而不是笼统的「处理中...」——2026-11-16 用户实测：右下角进度卡在
+   * 跳、按钮却一直“处理中”，看起来像状态没对齐。
+   */
+  recognitionProgress?: { current: number; total: number } | null;
+  /** 识别任务已在飞（即使还没有页级进度，也不能显示笼统的「处理中...」）。 */
+  recognitionActive?: boolean;
 }
 
 export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
@@ -111,6 +124,7 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
     presetQuickSwitch,
     onRerunNer,
     onRedact,
+    onSubsetAction,
     onSelectAll,
     onDeselectAll,
     onToggleBox,
@@ -118,6 +132,8 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
     onRemoveEntity,
     subsetReadyCount = 0,
     subsetTotalPages = 0,
+    recognitionProgress = null,
+    recognitionActive = false,
   }) => {
     const t = useT();
     // Issue#262 A2：复核态右栏精简——细粒度操作（逐类型统计/逐框逐实体列表/
@@ -289,7 +305,7 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
           />
         )}
         <Button
-          onClick={onRedact}
+          onClick={subsetAction && onSubsetAction ? onSubsetAction : onRedact}
           disabled={
             subsetAction
               ? Boolean(replaceUnready)
@@ -309,7 +325,13 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
                 .replace('{done}', String(subsetReadyCount))
                 .replace('{total}', String(subsetTotalPages))
             : isLoading
-              ? t('playground.processing')
+              ? recognitionProgress && recognitionProgress.total > 0
+                ? t('playground.recognizingProgress')
+                    .replace('{done}', String(recognitionProgress.current))
+                    .replace('{total}', String(recognitionProgress.total))
+                : recognitionActive
+                  ? t('playground.recognizing')
+                  : t('playground.processing')
               : `${t('playground.startRedact')} (${shownSelectedCount})`}
         </Button>
 

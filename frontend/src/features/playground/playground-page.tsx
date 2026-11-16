@@ -14,8 +14,8 @@ import { PlaygroundToolbar } from './components/playground-toolbar';
 import { PlaygroundEntityPanel } from './components/playground-entity-panel';
 import { PlaygroundResult } from './components/playground-result';
 import { PlaygroundLoading } from './components/playground-loading';
-import { PlaygroundPageExport } from './components/playground-page-export';
 import { PlaygroundExportDialog } from './components/playground-export-dialog';
+import { PlaygroundSubsetPicker } from './components/playground-subset-picker';
 import { PlaygroundTextSelectionPopover } from './components/playground-text-selection-popover';
 import { PlaygroundEntityPopover } from './components/playground-entity-popover';
 import {
@@ -51,6 +51,7 @@ const PlaygroundInner: FC = () => {
     subsetPreview,
     subsetReadyCount,
     subsetTotalPages,
+    subsetPages,
     entities,
     setBoundingBoxes,
     boundingBoxes,
@@ -180,6 +181,8 @@ const PlaygroundInner: FC = () => {
   const [replacePreviewView, setReplacePreviewView] = useState<'page' | 'text'>('page');
   // Issue#257 需求重对齐：复核阶段也要能选页导出（单文件任务的第二层入口）。
   const [exportPagesOpen, setExportPagesOpen] = useState(false);
+  // 2026-11-16：识别中「先匿名化已处理的 N/M 页」先弹选页，再生成子集预览。
+  const [subsetPickerOpen, setSubsetPickerOpen] = useState(false);
   // 换文件回到默认页面视图：视图偏好不跨文件携带，保证新会话口径一致
   const lastPreviewFileIdRef = useRef<string | null>(null);
   useEffect(() => {
@@ -571,6 +574,13 @@ const PlaygroundInner: FC = () => {
               }
               onRerunNer={handleRerunNer}
               onRedact={handleRedact}
+              onSubsetAction={() => setSubsetPickerOpen(true)}
+              recognitionProgress={
+                visionStream && visionStream.total > 0
+                  ? { current: visionStream.completed, total: visionStream.total }
+                  : null
+              }
+              recognitionActive={Boolean(taskRecognition)}
               onSelectAll={selectAll}
               onDeselectAll={deselectAll}
               onToggleBox={toggleBox}
@@ -635,16 +645,7 @@ const PlaygroundInner: FC = () => {
           textMode={taskRecognition ? taskTextMode : false}
           stagesView={taskRecognition ? taskStages : null}
           overlay={overlayModeFor(progressiveRecognition)}
-        >
-          {/* Issue#257 需求重对齐：识别中就能看到逐页结果并选页导出（快照产物）。 */}
-          {taskRecognition && fileInfo?.file_id && (
-            <PlaygroundPageExport
-              fileId={fileInfo.file_id}
-              compact
-              boundingBoxes={boundingBoxes}
-            />
-          )}
-        </PlaygroundLoading>
+        />
       )}
 
       {/* Issue#238：打码段被动小卡——pendingRedact 在途时右下角浮出，预览页保持可操作 */}
@@ -682,6 +683,16 @@ const PlaygroundInner: FC = () => {
         open={exportPagesOpen}
         onOpenChange={setExportPagesOpen}
         fileId={fileInfo?.file_id ?? null}
+        boundingBoxes={boundingBoxes}
+      />
+
+      {/* 2026-11-16：识别中「先匿名化」先选页（默认全选已处理页）。 */}
+      <PlaygroundSubsetPicker
+        open={subsetPickerOpen}
+        onOpenChange={setSubsetPickerOpen}
+        pages={subsetPages}
+        total={subsetTotalPages}
+        onConfirm={(pages) => void handleRedact(pages)}
       />
 
       <EncryptedPdfDialog

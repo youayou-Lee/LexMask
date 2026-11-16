@@ -2,6 +2,9 @@
 
 ## 2026-11-16
 
+- **Issue#327 追加（2026-11-16 用户实测反馈三项）：识别中「先匿名化」先选页 + 主按钮状态对齐 + 识别期浮窗精简 + 编辑页导出弹窗携带手拉框**——① 识别中入口从「直接生成已处理页的子集」改为**先弹选页**（`PlaygroundSubsetPicker`：默认全选已处理页、未处理页置灰、全选/清空、只回吐升序原卷页号），`handleRedact(pages?)` 收选页并以「当前页账已处理页」为唯一合法集，选择含未处理页（识别推进导致旧选择过期）⇒ fail-closed 中止 + 提示重选并解锁在飞闸；② 主按钮文案与状态对齐——拿到任务页进度显示「识别中 12/86」、只有任务无页进度（NER/解析段）显示「正在识别...」，仅解析阶段（无任务）才回落「处理中...」；③ 删除识别期右下角浮窗里的紧凑页格导出（`PlaygroundPageExport compact`），选页导出统一收口到结果页顶部与编辑页底部；④ **编辑页「逐页结果与选页导出」弹窗补传 `boundingBoxes`**（用户实测「手拉框后导出没包含手改结果」：结果页顶部链路本就传，弹窗这条漏了 ⇒ 后端回落草稿/file_store ⇒ 手动框丢失）。
+  - **测试**：新增 `components/playground-subset-picker.test.tsx` 7 例（未处理页 disabled / 默认全选 / 取消后只回吐剩余升序 / 清空后确认禁用 / 全选 / 无已处理页空态 / 重开按最新页账重置）、`components/playground-export-dialog.boxes.test.tsx` 2 例（透传 + 未传时不伪造空数组）、`components/playground-entity-panel.subset.test.tsx` +6 例（识别中 12/86 / 有任务无页进度 / 无任务回落处理中 / 子集点击改走 `onSubsetAction` / 未提供 `onSubsetAction` 旧行为 / 清空后确认禁用），`hooks/use-playground.subset-preview.test.tsx` +4 例（`handleRedact([2,3,4])` 只发三页 / 选择含未处理页 fail-closed 且解锁在飞闸 / 第一参是事件对象时视为未选页走默认全量 / 变异自证）；前端全量 **100 files / 771 passed**，`tsc`（app+test）绿，`npm run build` 绿，`eslint src/features/playground` **0 error**（余 8 warning 全在未触碰文件）。
+
 - **Issue#332：重复生成子集预览不再漏下上一份 PDF**——`subset_preview_service.create_subset_preview` 覆写 `preview_output_path` 前先读出旧路径，写完后删旧文件（路径须在 `OUTPUT_DIR` 内，best-effort）。复现路径＝识别中「开始匿名化」→ 返回编辑改页 → 再点一次；本仓 OUTPUT_DIR 无清扫器，旧实现每点一次就多留一份孤儿（本地实测单份 7.7 MB）。新增判据 3 例（两份预览只存一份、旧路径落在 OUTPUT_DIR 之外必须存活、写元数据失败必须保留旧预览）+ 变异 4 条（删清理调用 / 删错对象 / 去掉 OUTPUT_DIR 守卫 / 先删后写）均 KILLED；删旧文件失败改留 warning（与 `redaction_orchestrator` 同口径；路径不存在静默、其余 OSError 才 warning，避免噪音），路径比较改 `os.path.realpath`；门⑥ 二轮补 2 例钉 warning 口径（删失败必留 / 路径不存在必静默），变异 6 条全 KILLED。
 
 - **Issue#330：子集预览产物在识别收尾（item → `awaiting_review`）时被误清**——`clear_file_output` 拆分全卷产物字段与预览字段（新增 `include_preview` 开关），`job_store.update_item_status` 在目标状态为 `AWAITING_REVIEW`（识别收尾）时只清全卷产物、保留子集预览；重跑（PENDING 等）/打码开始（PROCESSING）/失败/取消仍连预览一起清。

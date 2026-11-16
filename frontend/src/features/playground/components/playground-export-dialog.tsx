@@ -12,17 +12,24 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { useT } from '@/i18n';
 
 import { PlaygroundPageExport } from './playground-page-export';
+import type { BoundingBox } from '../types';
 
 export interface PlaygroundExportDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   fileId: string | null;
+  /**
+   * 当前画布框快照（含手动拉框）。2026-11-16 用户实测缺陷：弹窗漏传这个 prop，
+   * 导出请求里就少了手动框，后端只能回落到草稿/file_store ⇒「手拉框后导出没效果」。
+   */
+  boundingBoxes?: readonly BoundingBox[];
 }
 
 export const PlaygroundExportDialog: FC<PlaygroundExportDialogProps> = ({
   open,
   onOpenChange,
   fileId,
+  boundingBoxes,
 }) => {
   const t = useT();
   // 只有「回到编辑」这条路径要阻止 Radix 关闭时把焦点还给触发按钮——画布已由导出块
@@ -54,7 +61,12 @@ export const PlaygroundExportDialog: FC<PlaygroundExportDialogProps> = ({
       >
         <DialogTitle>{t('batchWizard.pages.singleTitle')}</DialogTitle>
         <div className="max-h-[70vh] overflow-y-auto">
-          <PlaygroundPageExport fileId={fileId} bare onRequestClose={handleBackToEdit} />
+          <PlaygroundPageExport
+            fileId={fileId}
+            bare
+            boundingBoxes={boundingBoxes}
+            onRequestClose={handleBackToEdit}
+          />
         </div>
       </DialogContent>
     </Dialog>

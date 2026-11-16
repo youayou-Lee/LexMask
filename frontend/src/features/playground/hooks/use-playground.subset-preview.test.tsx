@@ -186,6 +186,29 @@ function Probe() {
       <button type="button" data-testid="redact-btn" onClick={() => void pg.handleRedact()}>
         redact
       </button>
+      <button
+        type="button"
+        data-testid="redact-pages-btn"
+        onClick={() => void pg.handleRedact([2, 3, 4])}
+      >
+        redact-pages
+      </button>
+      <button
+        type="button"
+        data-testid="redact-stale-btn"
+        onClick={() => void pg.handleRedact([DONE_PAGES + 1])}
+      >
+        redact-stale
+      </button>
+      {/* 面板是直传接线（onClick={handleRedact}），React 会把 MouseEvent 当第一参——
+          这里钉住宿主必须把它当「未选页」处理，不能误判成页号列表。 */}
+      <button
+        type="button"
+        data-testid="redact-event-btn"
+        onClick={(event) => void pg.handleRedact(event as unknown as number[])}
+      >
+        redact-event
+      </button>
       <button type="button" data-testid="download-btn" onClick={() => pg.handleDownload()}>
         download
       </button>
@@ -593,5 +616,57 @@ describe('Issue#327：识别在飞时的子集预览链路', () => {
     const [url] = vi.mocked(downloadFile).mock.calls[0] as [string, string];
     expect(url).toContain('redacted=true');
     expect(url).toContain('preview=true');
+  });
+});
+describe('2026-11-16：手动选页（子集弹窗）', () => {
+  it('handleRedact([2,3,4]) ⇒ createSubsetPreview 只收这三页', async () => {
+    await seedRecognizing();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-pages-btn'));
+    });
+
+    await waitFor(() => expect(createSubsetPreview).toHaveBeenCalledTimes(1));
+    const [, , body] = vi.mocked(createSubsetPreview).mock.calls[0] as [
+      string,
+      string,
+      { pages: number[] },
+    ];
+    expect(body.pages).toEqual([2, 3, 4]);
+  });
+
+  it('第一参不是数组（React 事件对象）⇒ 视为未选页，走默认全量子集', async () => {
+    await seedRecognizing();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-event-btn'));
+    });
+
+    await waitFor(() => expect(createSubsetPreview).toHaveBeenCalledTimes(1));
+    const [, , body] = vi.mocked(createSubsetPreview).mock.calls[0] as [
+      string,
+      string,
+      { pages: number[] },
+    ];
+    expect(body.pages).toEqual(Array.from({ length: DONE_PAGES }, (_, i) => i + 1));
+  });
+
+  it('选择里含未处理页（页账已推进）⇒ fail-closed 不提交，提示重选', async () => {
+    await seedRecognizing();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-stale-btn'));
+    });
+
+    expect(createSubsetPreview).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith(
+      expect.stringContaining('页账已更新'),
+      'error',
+    );
+    // 解锁 redactionInFlightRef：作废后主按钮仍可再点
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+    await waitFor(() => expect(createSubsetPreview).toHaveBeenCalledTimes(1));
   });
 });

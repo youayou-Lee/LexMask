@@ -146,17 +146,6 @@ describe('单文件任务的逐页结果与选页导出（Issue#257 需求重对
     );
   });
 
-  it('compact（识别浮层）默认收起，点标题展开', async () => {
-    await renderSettled(<PlaygroundPageExport fileId="file-1" compact />);
-
-    const toggle = screen.getByTestId('playground-page-export-toggle');
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByTestId('page-matrix')).toBeNull();
-
-    fireEvent.click(toggle);
-    expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    expect(screen.getByTestId('page-matrix')).toBeTruthy();
-  });
 });
 
 describe('单文件导出场景：点页只改选择（Issue#314）', () => {

@@ -8,7 +8,9 @@
 //  - 不需要「我已了解失败页」勾选：底栏一行汇总，说明页里逐条列明；
 //  - 支持 100-150 这类范围选择（页格里的范围输入 + Shift 连选）。
 //
-// `compact` 用于识别中的浮层（遮罩里空间有限，默认收起、展开后页格内部滚动）。
+// 选页导出的唯一宿主是结果页顶部工具条（inline / bare 弹窗）与编辑页底部的
+// 「逐页结果与选页导出」弹窗；识别中的右下角浮窗不再放选页（2026-11-16 用户裁定：
+// 浮窗只保留进度，选页统一在结果页做）。
 
 import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
@@ -24,8 +26,6 @@ import type { BoundingBox } from '../types';
 
 interface PlaygroundPageExportProps {
   fileId: string | null;
-  /** 浮层里的紧凑形态（默认收起、不展示历史记录）。 */
-  compact?: boolean;
   /** 弹窗/卡片里已经自带容器：不再套外框与折叠头。 */
   bare?: boolean;
   /** Issue#311：结果页默认收起（保留 summary 与展开能力），把视口让给对比预览。 */
@@ -53,7 +53,6 @@ function scheduleAfterDialogClose(task: () => void): void {
 
 export function PlaygroundPageExport({
   fileId,
-  compact = false,
   bare = false,
   defaultCollapsed = false,
   onRequestClose,
@@ -74,7 +73,7 @@ export function PlaygroundPageExport({
     actionError,
     submit,
   } = useItemExport({ jobId, itemId, enabled: Boolean(itemId), boundingBoxes });
-  const [open, setOpen] = useState(!compact && !defaultCollapsed);
+  const [open, setOpen] = useState(!defaultCollapsed);
 
   const counts = useMemo(() => {
     // Issue#280 × #278：manual_verified 并入 success 桶展示（exportable 谓词，该页已可导出）。
@@ -117,7 +116,6 @@ export function PlaygroundPageExport({
     <div
       className={bare ? '' : 'rounded-xl border border-border/70 bg-card px-3 py-2.5'}
       data-testid="playground-page-export"
-      data-compact={compact ? 'true' : 'false'}
       data-bare={bare ? 'true' : 'false'}
     >
       {/* bare（弹窗内）不渲染折叠头：`hidden` 属性会被 Tailwind 的 `flex` 覆盖，
@@ -156,7 +154,7 @@ export function PlaygroundPageExport({
             </p>
           )}
 
-          <div className={compact ? 'max-h-44 overflow-y-auto' : undefined}>
+          <div>
             {/* Issue#314：单文件选页导出点页只切换选择，不弹技术详情。 */}
             <BatchPageMatrix
               status={status}
@@ -270,7 +268,7 @@ export function PlaygroundPageExport({
             </div>
           )}
 
-          {!compact && records.length > 0 && (
+          {records.length > 0 && (
             <ul className="flex flex-col gap-1" data-testid="playground-page-export-records">
               {records.slice(0, 3).map((record) => (
                 <li

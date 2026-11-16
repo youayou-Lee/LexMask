@@ -330,6 +330,8 @@ export function usePlayground() {
   );
   const subsetReadyCount = subsetSelection.pages.length;
   const subsetTotalPages = subsetSelection.total;
+  // 选页弹窗的候选页（原卷页号，升序）——与 subsetReadyCount 同源，不另算一遍。
+  const subsetPages = subsetSelection.pages;
 
   // Issue #83：预览范式由文件形态决定——文本型 PDF（不分打码/替换）都走页
   // 面视图，派生一次多处复用（评审 M7：工作台/历史语义/执行阈值必须同源）。
@@ -670,7 +672,10 @@ export function usePlayground() {
     }
   }, []);
 
-  const handleRedact = useCallback(async () => {
+  const handleRedact = useCallback(async (overridePages?: number[]) => {
+    // 防御：某些调用点会把事件对象当第一参传进来（onClick={handleRedact} 等），
+    // 这里只认真正的页号数组。
+    const pagesOverride = Array.isArray(overridePages) ? overridePages : undefined;
     if (!fileCtx.fileInfo) return;
     if (redactionInFlightRef.current) return;
     // 替换模式映射未确认完（生成中/失败/有空值）不允许执行，保证成品即所见
@@ -782,7 +787,20 @@ export function usePlayground() {
         .then(() => getItemPageStatus(jobId, itemId))
         .catch(() => null);
       const inFlight = pageStatus ? isRecognitionInFlight(pageStatus.recognition_state) : false;
-      const donePages = inFlight ? pickSubsetPages(pageStatus, totalPages).pages : [];
+      // 识别在飞时的已处理页（子集口径的合法集）。手动选页（子集弹窗）也以此为唯一
+      // 合法集：不在其中的页一律剔除，剔除后与选择不一致就作废本次提交（页账在识别
+      // 推进中会涨，旧选择可能已过期；静默按实际页打码 = 与用户所见不一致）。
+      const processedPages = inFlight ? pickSubsetPages(pageStatus, totalPages).pages : [];
+      const requestedPages = pagesOverride
+        ? Array.from(new Set(pagesOverride.filter((page) => Number.isFinite(page))))
+        : processedPages;
+      const donePages = requestedPages.filter((page) => processedPages.includes(page));
+      if (pagesOverride && donePages.length !== requestedPages.length) {
+        // 早退必须解锁 redactionInFlightRef（上面已置位）——否则本次作废后主按钮永远不可点。
+        redactionInFlightRef.current = false;
+        showToast(t('playground.subsetPagesStale'), 'error');
+        return;
+      }
       // donePages === totalPages（页账已全绿、识别在做最后收尾）不进子集口径：
       // 此时等一拍走全卷链路更干净（面板的同款判定也不会让入口出现）。
       if (donePages.length > 0 && donePages.length < totalPages) {
@@ -1392,6 +1410,7 @@ export function usePlayground() {
     // Issue#327：子集预览入口候选（识别在飞 + 已处理页 < 总页数）
     subsetReadyCount,
     subsetTotalPages,
+    subsetPages,
     isLoading: fileCtx.isLoading,
     loadingMessage: fileCtx.loadingMessage,
     visionStream: fileCtx.visionStream,

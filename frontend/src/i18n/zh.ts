@@ -160,8 +160,19 @@ const zhBase: Record<string, string> = {
   'playground.subsetBanner': '本次预览仅含已处理的 {done} 页（原卷共 {total} 页）',
   // 子集框账合并失败：读不到服务端快照就必须中止（静默继续=漏打码）
   'playground.subsetSnapshotUnavailable': '读取识别快照失败，为免漏打码本次未提交，请重试',
+  // 子集选页弹窗（2026-11-16）：识别中先匿名化指定页
+  'playground.subsetPickerTitle': '选择要匿名化的页',
+  'playground.subsetPickerHint': '只有已处理的 {done} 页可选（原卷共 {total} 页），未处理页本次不参与。',
+  'playground.subsetPickerCount': '已选 {count} / {total} 页',
+  'playground.subsetPickerPage': '第 {page} 页',
+  'playground.subsetPickerConfirm': '生成预览 ({count})',
+  'playground.subsetPickerEmpty': '还没有已处理的页，请稍候再试。',
+  // 选页提交前页账已变（识别继续推进）——作废本次选择，让用户重选
+  'playground.subsetPagesStale': '页账已更新，请重新选择要匿名化的页',
   'playground.title': '处理单个文件',
   'playground.recognizing': '正在识别...',
+  // 识别在飞时的主按钮文案（带上任务进度，避免与右下角进度卡对不上）
+  'playground.recognizingProgress': '识别中 {done}/{total}',
   'playground.redacting': '正在匿名化...',
   'playground.reupload': '重新上传',
   'playground.undo': '撤销',
