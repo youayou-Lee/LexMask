@@ -367,9 +367,10 @@ class TestWiringNails:
         assert src.count("from app.services.vision import box_quality_pass") == 4
 
     def test_vision_service_wires_footer_pass(self) -> None:
-        # 页脚闸两处：_filter_ocr_has_regions（图像线）+ _detect_with_pdf_text_layer
+        # 页脚闸随 #335 收敛进组合入口（页脚+页眉+裸数字三闸一次接线），
+        # 两处调用点不变：_filter_ocr_has_regions（图像线）+ _detect_with_pdf_text_layer
         src = self._source("vision_service.py")
-        assert src.count("box_quality_pass.drop_footer_pagenumber_regions(") == 2
+        assert src.count("box_quality_pass.drop_edge_and_unanchored_number_regions(") == 2
 
     def test_passes_registered_in_module(self) -> None:
         # 五个 pass 都在 box_quality_pass 公开面（防实现被静默改名悬空接线）
