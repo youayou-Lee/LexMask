@@ -671,7 +671,10 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
       setVisualSkippedNotice(null);
       setVisionStream(null);
       setIsLoading(true);
-      setLoadingMessage(t('playground.taskParsing'));
+      // Issue#339：此刻任务尚未提交成功，「后台解析中…」是提前撒谎——
+      // 受理回执回来前如实显示「正在提交识别任务…」；受理后由订阅 effect
+      // 按 total=0（任务解析段）切回「后台解析中…」。
+      setLoadingMessage(t('playground.taskSubmitting'));
       try {
         // Issue#194 终审 B：扫描件/图片的视觉要素选择随任务透传（写进 job config，
         // 识别工人视觉段按 ocr_has_types/visual_feature_types 读取）——不传则编排器
