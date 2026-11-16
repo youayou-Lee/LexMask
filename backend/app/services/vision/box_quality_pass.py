@@ -75,6 +75,10 @@ _HEADER_BOTTOM_FRACTION = 0.08
 # 拍板（2026-11-17）：裸数字直接丢框；CASE_NUMBER 丢弃线 ≤4 位
 # （5 位以上可能是发票号/流水号，保留）。
 _BARE_NUMBER_DROP_TYPES = frozenset({"AGE", "CASE_NUMBER"})
+# AGE 射程为 ASCII 数字 [0-9]（门⑥ Minor 挂账：全角 `４１` 保留；全角在
+# OCR 输出罕见，且 #308 页脚/页眉闸同为 [0-9]，取证到全角形态再扩
+# [0-9０-９]。CASE_NUMBER 形状正则用 Unicode \d 口径，两侧不对称是
+# 已知边界——与既有页脚闸口径对齐优先）。
 _AGE_MAX_BARE_DIGITS = 3
 _CASE_NUMBER_MAX_BARE_DIGITS = 4
 # CASE_NUMBER 编号结构锚：字母前缀 / （YYYY）括号年 / 连字符。
