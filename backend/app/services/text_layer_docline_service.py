@@ -62,6 +62,11 @@ class TextLayerPage:
     width: float
     height: float
     words: list[TextLayerWord] = field(default_factory=list)
+    # Issue#338：页级水印过滤账（`words_raw` = `get_text("words")` 原始词数，
+    # `words_dropped` = 因行归属命中覆盖水印行而剔除的词数）。默认 0 ⇒ 既有构造点
+    # （测试里大量 `TextLayerPage(no=..., words=...)`）一行不改。
+    words_raw: int = 0
+    words_dropped: int = 0
 
     @property
     def text(self) -> str:
@@ -92,6 +97,10 @@ class DocLineResult:
     seconds: float
     failed_chunks: int = 0
     map_failures: list[dict] = field(default_factory=list)
+    # Issue#338：inline 覆盖水印过滤账（卷级聚合；`overlay_pages` = 有剔除的页数）
+    words_raw: int = 0
+    words_dropped: int = 0
+    overlay_pages: int = 0
 
     @property
     def map_failure_ratio(self) -> float:
@@ -111,47 +120,96 @@ class DocLineResult:
             return 0.0
         return self.covered_chars / self.stream_chars
 
+    @property
+    def drop_ratio(self) -> float:
+        """Issue#338：覆盖水印词占原始词的比例（`words_raw == 0` ⇒ 0.0，不抛）。
+
+        只作**审计信号**，不是质量闸：真卷水印占比 35–90% 都合法，
+        拿它做阈值会把水印卷判成异常（见 Issue#338 方案 §1「不做什么」）。
+        """
+        if self.words_raw <= 0:
+            return 0.0
+        return self.words_dropped / self.words_raw
+
 
 # --------------------------------------------------------------------------- 抽取
 
 
-def _word_boxes(page: fitz.Page) -> list[TextLayerWord]:
-    """词框，按旋转校正后归一化前的「页面坐标」（与 `page.rect` 同空间）。"""
+def _word_boxes(page: fitz.Page) -> tuple[list[TextLayerWord], int, int]:
+    """词框，按旋转校正后归一化前的「页面坐标」（与 `page.rect` 同空间）。
+
+    返回 `(词表, 原始词数, 被剔除的覆盖水印词数)`。
+
+    **Issue#338 判据修正（行归属，不是外接矩形）**：
+
+    旧判据是「词中心是否落在覆盖 span 的**外接矩形**内」。45° 水印 span 的外接框很大，
+    会把同区的正文词一起圈进去（真卷 149 页实测误删 3,226 个正文词，占 40.6%）。
+    现改为**行归属**：词取自 `get_text("words")`（自带 `(block_no, line_no)`），
+    覆盖行集合取自 `get_text("dict")` 里**先滤 `type == 0` 文本块再枚举**的 `(block_no, line_no)`；
+    两者同键即剔除。这样正文（水平不透明）天然不命中，而 45° 覆盖行的全部词
+    （含被正文框压住的混合词）都会按行剔除。
+
+    ⚠️ **块编号口径**：`get_text("words")` 的 `block_no` 是「只数文本块」的编号
+    （真卷 149 页逐页验证 `max(block_no) == 文本块数 − 1`）⇒ 枚举时**必须先滤掉
+    `type != 0` 的块再 `enumerate`**。按 dict 原始下标枚举会错位（真卷实测少剔 149 词、
+    泄漏 148 词），是个「看起来也能跑」的错误实现。
+    """
     rotation = int(getattr(page, "rotation", 0) or 0)
     matrix = page.rotation_matrix if rotation % 360 else None
-    out: list[TextLayerWord] = []
+    overlay_line_keys: set[tuple[int, int]] = set()
     # Issue#250：inline 水印卷 probe 不 hit ⇒ #243 闸放行 ⇒ docline 会吃到主流里
-    # 的倾斜半透明水印词。词中心点落在覆盖 span 外接框内 ⇒ 剔（识别面净化，
-    # 不动原件；正文词中心不在覆盖框内，无误伤面）。
-    from app.core.config import settings as _settings
-    if bool(getattr(_settings, "WATERMARK_OVERLAY_STRIP_ENABLED", False)):
+    # 的倾斜半透明水印词。识别面净化，不动原件。
+    if bool(getattr(settings, "WATERMARK_OVERLAY_STRIP_ENABLED", False)):
         from app.services.watermark_overlay import is_overlay_line
-        overlay_rects: list[tuple[float, float, float, float]] = []
+
         raw = page.get_text("dict")
-        for block in raw.get("blocks", []):
-            if block.get("type") != 0:
-                continue
-            for line in block.get("lines", []) or []:
+        text_blocks = [b for b in raw.get("blocks", []) if b.get("type") == 0]
+        for block_no, block in enumerate(text_blocks):
+            for line_no, line in enumerate(block.get("lines", []) or []):
                 if is_overlay_line(line):
-                    for span in line.get("spans", []) or []:
-                        if span.get("bbox"):
-                            b = span["bbox"]
-                            overlay_rects.append((float(b[0]), float(b[1]), float(b[2]), float(b[3])))
-    else:
-        overlay_rects = []
-    for x0, y0, x1, y1, text, *_rest in page.get_text("words"):
+                    overlay_line_keys.add((block_no, line_no))
+    out: list[TextLayerWord] = []
+    raw_count = 0
+    dropped = 0
+    for x0, y0, x1, y1, text, block_no, line_no, *_rest in page.get_text("words"):
+        raw_count += 1
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            continue
+        if overlay_line_keys and (int(block_no), int(line_no)) in overlay_line_keys:
+            dropped += 1
+            continue
         rect = fitz.Rect(x0, y0, x1, y1)
         if matrix is not None:
             rect = rect * matrix
-        cleaned = str(text or "").strip()
-        if cleaned:
-            if overlay_rects:
-                cx, cy = (rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2
-                if any(bx0 <= cx <= bx1 and by0 <= cy <= by1 for bx0, by0, bx1, by1 in overlay_rects):
-                    continue
-            out.append(TextLayerWord(rect.x0, rect.y0, rect.x1, rect.y1, cleaned))
+        out.append(TextLayerWord(rect.x0, rect.y0, rect.x1, rect.y1, cleaned))
     out.sort(key=lambda w: (round(w.y0, 1), w.x0))
-    return out
+    return out, raw_count, dropped
+
+
+def _log_overlay_filter(
+    *,
+    file_id: str,
+    pages: int | None,
+    words_raw: int | None,
+    words_dropped: int | None,
+    overlay_pages: int | None,
+) -> None:
+    """Issue#338：一行 INFO 审计信号（fail-open，绝不影响识别主链）。
+
+    `file_id` 截断到 8 位（日志不落全 id）；任何异常只告警一次。
+    """
+    try:
+        raw = int(words_raw or 0)
+        dropped = int(words_dropped or 0)
+        ratio = (dropped / raw) if raw > 0 else 0.0
+        logger.info(
+            "text_layer overlay filter file=%s pages=%s pages_with_drop=%s "
+            "words_raw=%d words_dropped=%d drop_ratio=%.3f",
+            str(file_id)[:8], pages, overlay_pages, raw, dropped, ratio,
+        )
+    except Exception:  # noqa: BLE001 - fail-open：审计信号不得影响主链
+        logger.warning("text_layer overlay filter log failed", exc_info=True)
 
 
 def extract_text_layer_pages(
@@ -173,12 +231,15 @@ def extract_text_layer_pages(
             rect = page.rect
             if rect.width <= 0 or rect.height <= 0:
                 continue
+            words, words_raw, words_dropped = _word_boxes(page)
             pages.append(
                 TextLayerPage(
                     no=index + 1,
                     width=float(rect.width),
                     height=float(rect.height),
-                    words=_word_boxes(page),
+                    words=words,
+                    words_raw=words_raw,
+                    words_dropped=words_dropped,
                 )
             )
     return pages
@@ -620,6 +681,7 @@ async def run_document_ner(
     concurrency: int | None = None,
     residual_pass: bool = True,
     regex_types: list[tuple[str, str]] | None = None,
+    file_id: str = "",
 ) -> DocLineResult:
     """文档级 NER 主入口。`labels` 是 HaS 提示词标签（中文，见 has_text_payload）。"""
     started = time.perf_counter()
@@ -818,6 +880,19 @@ async def run_document_ner(
     ok_chunks = [c for c in chunks if (c[1], c[2]) not in failed_set]
     covered = _union_coverage(ok_chunks, len(stream))
     layer_chars = sum(len(w.text) for span in word_spans for w in [span.word])
+    # Issue#338：inline 覆盖水印过滤账（卷级聚合）——只做审计信号，不参与路由。
+    words_raw = sum(int(getattr(page_meta, "words_raw", 0)) for page_meta in pages)
+    words_dropped = sum(int(getattr(page_meta, "words_dropped", 0)) for page_meta in pages)
+    overlay_pages = sum(
+        1 for page_meta in pages if int(getattr(page_meta, "words_dropped", 0)) > 0
+    )
+    _log_overlay_filter(
+        file_id=str(file_id or ""),
+        pages=len(pages),
+        words_raw=words_raw,
+        words_dropped=words_dropped,
+        overlay_pages=overlay_pages,
+    )
     return DocLineResult(
         # Issue#165：`failed_chunks` 的**唯一真源**就是这里（`len(failed_set)`）——
         # 卷级门读的也是它。此前另有一个 `stats["failed_chunks"]` 计数器，全仓无读者，
@@ -836,6 +911,9 @@ async def run_document_ner(
         http_errors=stats["http_errors"],
         seconds=time.perf_counter() - started,
         map_failures=failures,
+        words_raw=words_raw,
+        words_dropped=words_dropped,
+        overlay_pages=overlay_pages,
     )
 
 

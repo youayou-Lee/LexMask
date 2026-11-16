@@ -50,7 +50,11 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
         required=("source", "gate", "verdict"),
         optional=("signals", "thresholds_snapshot", "config_hash"),
     ),
-    "text_layer_extracted": EventSchema(optional=("chars", "blocks", "pages", "ms")),
+    # Issue#338：words_raw/words_dropped/overlay_pages = 覆盖水印过滤账（单位=词/页）
+    "text_layer_extracted": EventSchema(
+        optional=("chars", "blocks", "pages", "ms",
+                  "words_raw", "words_dropped", "overlay_pages")
+    ),
     "chunk_failed": EventSchema(
         required=("stage", "chunk_index", "error_type"),
         # Issue#279 Task5：kind 回补白名单（main/residual 标注调用趟次；

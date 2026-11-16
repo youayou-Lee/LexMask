@@ -1819,6 +1819,8 @@ Object.assign(zhOverrides, {
   'batchHub.demoCta': '打开示例数据演示',
   'batchHub.liveDisabledBackend': '后端离线时不能创建批量任务。',
   'batchHub.liveDisabledModels': '请先启动识别模型服务，再创建批量任务。',
+  'playground.inlineWatermarkNotice':
+    '已从文档结构层剔除 {count} 行平铺水印文本（正文内容不受影响）',
   'playground.visualSkippedNotice':
     '视觉服务未启动，本次已跳过印章/签名检测（启动服务后重新识别即可恢复）。',
   'playground.recognitionPausedModelServices':

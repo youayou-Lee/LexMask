@@ -31,6 +31,12 @@ export interface FileInfo {
    * 用来在结果页报「水印预处理 已摘除 N 页」。仅在回场/识别后填充。
    */
   vision_quality?: Record<string, unknown>;
+  /**
+   * Issue#338：解析期（文档结构构建）剔除的内嵌平铺水印**行数**（真源
+   * `GET /files/{id}/parse` 的 `watermark_inline_filtered`）。单位=行；
+   * 缺失/`null` = 「没测到」（不得当 0 行），`0` 才是真·零水印。
+   */
+  watermark_inline_filtered?: number | null;
 }
 
 export interface Entity {
@@ -121,6 +127,11 @@ export interface ParseResponse {
   page_count?: number;
   file_type?: string;
   pages?: string[];
+  /**
+   * Issue#338：解析期按行剔除的内嵌平铺水印行数（`ParseResult.watermark_inline_filtered`）。
+   * 单位=**行**（不是词、不是页）；`0`/缺失 = 没剔或没测到，两者都不该出提示。
+   */
+  watermark_inline_filtered?: number | null;
 }
 
 /** POST /api/v1/files/:id/ner/hybrid */

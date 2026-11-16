@@ -1448,6 +1448,8 @@ export function usePlayground() {
     uploadIssue: fileCtx.uploadIssue,
     recognitionIssue: fileCtx.recognitionIssue,
     visualSkippedNotice: fileCtx.visualSkippedNotice,
+    // Issue#338：解析期剔除的内嵌平铺水印提示（文件层派生，换文件自动归零）
+    inlineWatermarkNotice: fileCtx.inlineWatermarkNotice,
     entityMap,
     redactedCount,
     processingMode: recognition.processingMode,

@@ -37,6 +37,10 @@ export interface PlaygroundDataContextValue {
   redactProgress: PlaygroundContextValue['redactProgress'];
   uploadIssue: PlaygroundContextValue['uploadIssue'];
   recognitionIssue: PlaygroundContextValue['recognitionIssue'];
+  // Issue#338：解析期剔除的内嵌平铺水印行数提示。与 #327 的 subsetPreview 同一类坑——
+  // `usePlaygroundContext()` 是「白名单 + {...data, ...actions}」，键不进白名单则
+  // 页面层拿到的恒为 undefined（E2E 实测：fileInfo 里已有值、页面层仍 undefined）。
+  inlineWatermarkNotice: PlaygroundContextValue['inlineWatermarkNotice'];
   entityMap: PlaygroundContextValue['entityMap'];
   redactedCount: PlaygroundContextValue['redactedCount'];
   redactionReport: PlaygroundContextValue['redactionReport'];
@@ -144,6 +148,7 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       redactProgress: ctx.redactProgress,
       uploadIssue: ctx.uploadIssue,
       recognitionIssue: ctx.recognitionIssue,
+      inlineWatermarkNotice: ctx.inlineWatermarkNotice,
       entityMap: ctx.entityMap,
       redactedCount: ctx.redactedCount,
       redactionReport: ctx.redactionReport,
@@ -200,6 +205,7 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       ctx.redactProgress,
       ctx.uploadIssue,
       ctx.recognitionIssue,
+      ctx.inlineWatermarkNotice,
       ctx.entityMap,
       ctx.redactedCount,
       ctx.redactionReport,

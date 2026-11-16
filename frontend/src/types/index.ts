@@ -38,6 +38,12 @@ export interface FileInfo {
   pages?: string[];
   is_scanned?: boolean;
   created_at?: string;
+  /**
+   * Issue#338：解析期（文档结构构建）剔除的内嵌平铺水印**行数**（后端真源
+   * `GET /files/{id}/parse`）。单位=行，不是词、不是实体；缺失/`null` 表示
+   * 「没测到」，不能当 0 行（`0` 才是真·零水印）。
+   */
+  watermark_inline_filtered?: number | null;
 }
 
 export interface JobItemMini {
