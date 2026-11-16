@@ -1314,8 +1314,6 @@ const zhOverrides: Record<string, string> = {
   'playground.parsing': '正在解析文件...',
   // Issue#194：后台任务识别的阶段人话（进度数字来自任务轮询）
   'playground.taskParsing': '后台解析中…',
-  // Issue#339：提交在途（任务尚未受理回执）≠ 后台解析中（已受理、任务解析段）
-  'playground.taskSubmitting': '正在提交识别任务…',
   'playground.taskRecognizing': '后台识别中 {current}/{total}…',
   // Issue#194 用户验收④：等待视图顶部行（文件名由 hook 组装；拿不到回落既有文案）
   'playground.identifying': '正在识别「{filename}」',

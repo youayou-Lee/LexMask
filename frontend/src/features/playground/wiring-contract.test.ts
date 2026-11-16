@@ -86,8 +86,6 @@ describe('Issue#123 接线契约：四处接线不得被静默摘掉', () => {
     // provider watch 注册（占位视图即刻可被 taskForFile 命中）
     expect(fileHook).toMatch(/watch\(ref\.job_id, fileId,/);
     // 阶段人话 + 真进度映射（字段换源：任务轮询的 progress_current/total → visionStream）
-    // Issue#339：提交在途（未受理）必须是 taskSubmitting，受理后解析段才是 taskParsing
-    expect(fileHook).toContain("setLoadingMessage(t('playground.taskSubmitting'));");
     expect(fileHook).toContain("setLoadingMessage(t('playground.taskParsing'));");
     expect(fileHook).toContain("t('playground.taskRecognizing')");
     expect(fileHook).toMatch(/setVisionStream\(\{ completed: task\.current, total: task\.total \}\);/);
