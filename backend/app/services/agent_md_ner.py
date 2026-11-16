@@ -25,6 +25,9 @@ _TYPE_ZH = {
     "BANK_CARD": "银行卡", "PHONE": "电话", "PLATE": "车牌", "ADDRESS": "地址",
     "ORG": "机构", "CASE_NUMBER": "案号", "ID_CARD": "证件号",
     "LICENSE_PLATE": "车牌", "WECHAT_ALIPAY": "支付账号",
+    # Issue#286：校验层新增的两个落点——缺省/降级与提升后的类型。
+    # 缺失会回落英文 type id，供料产物里出现「GEN_NUMBER_CODE1」是事故。
+    "GEN_NUMBER_CODE": "编号", "LEGAL_CASE_ID": "案号",
 }
 
 # Issue#281 续：模型召回兜底（正则优先占 span）。真卷 86 页扫描件验收时
@@ -210,37 +213,54 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
     变形（丢括号），映射表精确反查就断了。该姓唯一实体 → 廖某；同姓多个 →
     汉字序号 廖某一/廖某二…（≥100 回退阿拉伯数字）。其余类型 中文短名+序号
     （案号1/银行卡2）——同 reason，`类型_N` 括号形态一并废弃。
+
+    Issue#286：类型先做校验（``agent_md_type_guard.identify``），编号/占位符/映射表
+    一律按**校验后**类型走（声明类型留在 ``declared_type`` 供追溯）。去重键随之改为
+    (原文, 校验后类型)：同一原文经两种声明落到同一实际类型时只出一行。
     """
-    # 第一遍：按 (原文, 类型) 去重，首次出现顺序做类型内全局编号。
+    from app.services.agent_md_type_guard import identify
+
+    # 第零遍：逐 (原文, 声明类型) 校验，结果按 key 缓存（同值只校验一次）。
+    checks: dict[tuple[str, str], object] = {}
+    for ent in entities:
+        key = (ent.text, ent.type)
+        if key not in checks:
+            checks[key] = identify(ent.text, ent.type)
+
+    def _final(ent: Entity) -> str:
+        return checks[(ent.text, ent.type)].final  # type: ignore[attr-defined]
+
+    # 第一遍：按 (原文, 校验后类型) 去重，首次出现顺序做类型内全局编号。
     numbers: dict[tuple[str, str], int] = {}
     per_type: dict[str, int] = {}
     for ent in entities:
-        key = (ent.text, ent.type)
+        key = (ent.text, _final(ent))
         if key in numbers:
             continue
-        per_type[ent.type] = per_type.get(ent.type, 0) + 1
-        numbers[key] = per_type[ent.type]
+        per_type[key[1]] = per_type.get(key[1], 0) + 1
+        numbers[key] = per_type[key[1]]
     # 同姓 PERSON 实体总数（按唯一 (text,type) 计数），决定唯一不加序号还是加汉字序号。
     # 姓氏取字前先剥包裹性引号（Issue#88 防御）：「“李四”」取到引号会退化「[“某]」。
     surname_totals: dict[str, int] = {}
     seen_keys: set[tuple[str, str]] = set()
     for ent in entities:
-        key = (ent.text, ent.type)
+        key = (ent.text, _final(ent))
         if key in seen_keys:
             continue
         seen_keys.add(key)
-        if ent.type == "PERSON":
+        if key[1] == "PERSON":
             surname0 = ent.text.strip(WRAPPING_QUOTE_CHARS)[:1]
             surname_totals[surname0] = surname_totals.get(surname0, 0) + 1
     items: list[MappingItem] = []
     seen: set[tuple[str, str]] = set()
     per_surname: dict[str, int] = {}
     for ent in entities:
-        key = (ent.text, ent.type)
+        ft = _final(ent)
+        key = (ent.text, ft)
         if key in seen:
             continue
         seen.add(key)
-        if ent.type == "PERSON":
+        if ft == "PERSON":
             surname = ent.text.strip(WRAPPING_QUOTE_CHARS)[:1]
             per_surname[surname] = per_surname.get(surname, 0) + 1
             if surname_totals[surname] == 1:
@@ -248,7 +268,7 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
             else:
                 replacement = f"{surname}某{_cn_numeral(per_surname[surname])}"
         else:
-            replacement = f"{_type_label(ent.type)}{numbers[key]}"
+            replacement = f"{_type_label(ft)}{numbers[key]}"
         # 门④真机事故修复（用户 UI 确认默认路径，2026-11-06）：单字符原文
         # （退化检测如 CASE_NUMBER:'0'）整文 replace 会命中全卷高频字符——
         # 页标记 `<!-- page 8**0** -->` 全灭、数字全毁，结构对账 src=80/out=0。
@@ -262,15 +282,19 @@ def build_mapping_draft(entities: list[Entity]) -> list[MappingItem]:
         )
         # 策略表（用户定稿）：机构名保留原文——ORG 默认 excluded=True（泛词
         # 「证券/保险/支行」整文替换还会毁掉列头）；律师可逐条改 keep。
-        if ent.type == "ORG":
+        if ft == "ORG":
             excluded = True
+        chk = checks[(ent.text, ent.type)]
         items.append(
             MappingItem(
                 id=f"e{len(items) + 1}",
                 original_text=ent.text,
-                entity_type=ent.type,
+                entity_type=ft,
                 replacement=replacement,
                 excluded=excluded,
+                declared_type=ent.type,
+                type_status=chk.status,  # type: ignore[attr-defined]
+                type_reason=chk.reason,  # type: ignore[attr-defined]
             )
         )
     return items

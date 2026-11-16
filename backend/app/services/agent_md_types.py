@@ -33,6 +33,11 @@ class MappingItem:
     entity_type: str
     replacement: str
     excluded: bool = False
+    # Issue#286 类型校验：declared=模型/正则给的声明类型；entity_type=校验后最终类型；
+    # type_status ∈ pass|downgraded|format_error；type_reason=机器可读原因码。
+    declared_type: str = ""
+    type_status: str = ""
+    type_reason: str = ""
 
 
 @dataclass
