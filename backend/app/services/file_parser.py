@@ -490,8 +490,19 @@ class FileParser:
         )
 
     async def _parse_pdf(self, file_path: str) -> ParseResult:
-        """解析 PDF 文档"""
+        """解析 PDF 文档。
+
+        Issue#339：逐页工作（inline 水印探针 + 扫描页检测）是纯同步 CPU/IO，
+        多页扫描卷实测会把事件循环冻住 ~8.4s——识别提交 POST 的响应正是在
+        worker 领任务开跑这段解析时被压在身后写不出去（预览页阻塞弹窗滞留
+        ~9s 才翻 passive）。整体放线程池执行：doc 全生命周期封闭在本函数
+        单线程内，不跨线程（与 :665/:741 既有 to_thread 先例同构）。
+        """
         _validate_path(file_path)
+        return await asyncio.to_thread(self._parse_pdf_sync, file_path)
+
+    def _parse_pdf_sync(self, file_path: str) -> ParseResult:
+        """`_parse_pdf` 的同步实现（只在 worker 线程里跑，禁止直接在事件循环调用）。"""
         # 加密 PDF 前置检测（Issue #30）：需打开密码抛结构化异常（不再以
         # 「页数 0 → is_scanned 误判」进入视觉链路）；仅权限密码自动解密落盘。
         ensure_pdf_accessible(file_path)
