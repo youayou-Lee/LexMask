@@ -51,8 +51,11 @@ function PickerBody({
   onConfirm,
 }: Omit<PlaygroundSubsetPickerProps, 'open'>) {
   const t = useT();
-  const ready = useMemo(() => new Set(pages), [pages]);
-  const [selected, setSelected] = useState<Set<number>>(() => new Set(pages));
+  // 防御：上游白名单漏挂时 pages 会是 undefined——这里退化成空态而不是整页崩
+  // （本轮实测过这个坑：`Cannot read properties of undefined (reading 'length')`）。
+  const readyPages = useMemo(() => (Array.isArray(pages) ? pages : []), [pages]);
+  const ready = useMemo(() => new Set(readyPages), [readyPages]);
+  const [selected, setSelected] = useState<Set<number>>(() => new Set(readyPages));
 
   const allPages = useMemo(
     () => Array.from({ length: Math.max(0, Math.floor(total)) }, (_, i) => i + 1),
@@ -75,7 +78,7 @@ function PickerBody({
         <DialogTitle>{t('playground.subsetPickerTitle')}</DialogTitle>
         <DialogDescription data-testid="playground-subset-picker-hint">
           {t('playground.subsetPickerHint')
-            .replace('{done}', String(pages.length))
+            .replace('{done}', String(readyPages.length))
             .replace('{total}', String(Math.max(0, Math.floor(total))))}
         </DialogDescription>
       </DialogHeader>
@@ -95,7 +98,7 @@ function PickerBody({
             size="sm"
             variant="outline"
             className="h-7"
-            onClick={() => setSelected(new Set(pages))}
+            onClick={() => setSelected(new Set(readyPages))}
             data-testid="playground-subset-picker-all"
           >
             {t('playground.selectAll')}
@@ -113,7 +116,7 @@ function PickerBody({
         </span>
       </div>
 
-      {pages.length === 0 ? (
+      {readyPages.length === 0 ? (
         <p className="text-xs text-muted-foreground" data-testid="playground-subset-picker-empty">
           {t('playground.subsetPickerEmpty')}
         </p>
