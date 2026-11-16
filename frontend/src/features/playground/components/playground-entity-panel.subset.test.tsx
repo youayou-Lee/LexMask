@@ -109,3 +109,63 @@ describe('Issue#327：识别在飞时的子集入口（门⑥ C-1）', () => {
     expect(screen.queryByTestId('playground-redact-disabled-reason')).toBeNull();
   });
 });
+describe('2026-11-16：主按钮文案与状态对齐 + 子集选页入口', () => {
+  it('识别在飞且拿到任务进度 ⇒ 文案是「识别中 12/86」而不是笼统的「处理中...」', () => {
+    const props = {
+      ...baseProps,
+      recognitionProgress: { current: 12, total: 86 },
+    };
+    render(<PlaygroundEntityPanel {...props} />);
+
+    const btn = screen.getByTestId('playground-redact-btn');
+    expect(btn.textContent).toContain('识别中 12/86');
+    expect(btn.textContent).not.toContain('处理中');
+  });
+
+  it('子集口径点击改走 onSubsetAction（宿主弹选页），onRedact 不被直接调用', () => {
+    const props = {
+      ...baseProps,
+      subsetReadyCount: 54,
+      subsetTotalPages: 86,
+      onSubsetAction: vi.fn(),
+    };
+    render(<PlaygroundEntityPanel {...props} />);
+
+    fireEvent.click(screen.getByTestId('playground-redact-btn'));
+    expect(props.onSubsetAction).toHaveBeenCalledTimes(1);
+    expect(props.onRedact).not.toHaveBeenCalled();
+  });
+
+  it('未提供 onSubsetAction 时保持旧行为（直接 onRedact）', () => {
+    const props = { ...baseProps, subsetReadyCount: 54, subsetTotalPages: 86 };
+    render(<PlaygroundEntityPanel {...props} />);
+
+    fireEvent.click(screen.getByTestId('playground-redact-btn'));
+    expect(props.onRedact).toHaveBeenCalledTimes(1);
+  });
+
+  it('无任务进度时回落「处理中...」（解析阶段）——不伪造进度数字', () => {
+    const props = { ...baseProps, recognitionProgress: null };
+    render(<PlaygroundEntityPanel {...props} />);
+
+    expect(screen.getByTestId('playground-redact-btn').textContent).toContain('处理中');
+  });
+});
+
+describe('2026-11-16：识别在飞但无页级进度（NER/解析段）', () => {
+  it('有识别任务 ⇒ 「正在识别...」，不显示笼统的「处理中...」', () => {
+    const props = { ...baseProps, recognitionActive: true };
+    render(<PlaygroundEntityPanel {...props} />);
+
+    const label = screen.getByTestId('playground-redact-btn').textContent ?? '';
+    expect(label).toContain('正在识别');
+    expect(label).not.toContain('处理中');
+  });
+
+  it('无识别任务（解析阶段）⇒ 回落「处理中...」', () => {
+    const props = { ...baseProps, recognitionActive: false };
+    render(<PlaygroundEntityPanel {...props} />);
+
+    expect(screen.getByTestId('playground-redact-btn').textContent).toContain('处理中');
+  });
+});

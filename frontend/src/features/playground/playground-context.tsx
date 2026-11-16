@@ -21,6 +21,8 @@ export interface PlaygroundDataContextValue {
   subsetPreview: PlaygroundContextValue['subsetPreview'];
   subsetReadyCount: PlaygroundContextValue['subsetReadyCount'];
   subsetTotalPages: PlaygroundContextValue['subsetTotalPages'];
+  /** 子集选页弹窗的候选页（原卷页号，升序）。 */
+  subsetPages: PlaygroundContextValue['subsetPages'];
   isLoading: PlaygroundContextValue['isLoading'];
   loadingMessage: PlaygroundContextValue['loadingMessage'];
   visionStream: PlaygroundContextValue['visionStream'];
@@ -127,6 +129,7 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       subsetPreview: ctx.subsetPreview,
       subsetReadyCount: ctx.subsetReadyCount,
       subsetTotalPages: ctx.subsetTotalPages,
+      subsetPages: ctx.subsetPages,
       isLoading: ctx.isLoading,
       loadingMessage: ctx.loadingMessage,
       visionStream: ctx.visionStream,
@@ -182,6 +185,7 @@ export const PlaygroundProvider: FC<{ children: ReactNode }> = ({ children }) =>
       ctx.subsetPreview,
       ctx.subsetReadyCount,
       ctx.subsetTotalPages,
+      ctx.subsetPages,
       ctx.isLoading,
       ctx.loadingMessage,
       ctx.visionStream,

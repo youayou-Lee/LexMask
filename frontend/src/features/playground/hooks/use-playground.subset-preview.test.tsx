@@ -186,6 +186,43 @@ function Probe() {
       <button type="button" data-testid="redact-btn" onClick={() => void pg.handleRedact()}>
         redact
       </button>
+      <button
+        type="button"
+        data-testid="redact-pages-btn"
+        onClick={() => void pg.handleRedact([2, 3, 4])}
+      >
+        redact-pages
+      </button>
+      <button
+        type="button"
+        data-testid="redact-stale-btn"
+        onClick={() => void pg.handleRedact([DONE_PAGES + 1])}
+      >
+        redact-stale
+      </button>
+      {/* 门⑥ r1 M2：显式选择覆盖全部页 ⇒ 仍走子集（用户点的是「生成预览」）。 */}
+      <button
+        type="button"
+        data-testid="redact-all-btn"
+        onClick={() =>
+          void pg.handleRedact(Array.from({ length: TOTAL_PAGES }, (_, i) => i + 1))
+        }
+      >
+        redact-all
+      </button>
+      {/* 门⑥ r1 M3：显式空集 ⇒ 不回落全卷（空集是「选了零页」，不是「没传」）。 */}
+      <button type="button" data-testid="redact-empty-btn" onClick={() => void pg.handleRedact([])}>
+        redact-empty
+      </button>
+      {/* 面板是直传接线（onClick={handleRedact}），React 会把 MouseEvent 当第一参——
+          这里钉住宿主必须把它当「未选页」处理，不能误判成页号列表。 */}
+      <button
+        type="button"
+        data-testid="redact-event-btn"
+        onClick={(event) => void pg.handleRedact(event as unknown as number[])}
+      >
+        redact-event
+      </button>
       <button type="button" data-testid="download-btn" onClick={() => pg.handleDownload()}>
         download
       </button>
@@ -593,5 +630,103 @@ describe('Issue#327：识别在飞时的子集预览链路', () => {
     const [url] = vi.mocked(downloadFile).mock.calls[0] as [string, string];
     expect(url).toContain('redacted=true');
     expect(url).toContain('preview=true');
+  });
+});
+describe('2026-11-16：手动选页（子集弹窗）', () => {
+  it('handleRedact([2,3,4]) ⇒ createSubsetPreview 只收这三页', async () => {
+    await seedRecognizing();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-pages-btn'));
+    });
+
+    await waitFor(() => expect(createSubsetPreview).toHaveBeenCalledTimes(1));
+    const [, , body] = vi.mocked(createSubsetPreview).mock.calls[0] as [
+      string,
+      string,
+      { pages: number[] },
+    ];
+    expect(body.pages).toEqual([2, 3, 4]);
+  });
+
+  it('第一参不是数组（React 事件对象）⇒ 视为未选页，走默认全量子集', async () => {
+    await seedRecognizing();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-event-btn'));
+    });
+
+    await waitFor(() => expect(createSubsetPreview).toHaveBeenCalledTimes(1));
+    const [, , body] = vi.mocked(createSubsetPreview).mock.calls[0] as [
+      string,
+      string,
+      { pages: number[] },
+    ];
+    expect(body.pages).toEqual(Array.from({ length: DONE_PAGES }, (_, i) => i + 1));
+  });
+
+  it('选择里含未处理页（页账已推进）⇒ fail-closed 不提交，提示重选', async () => {
+    await seedRecognizing();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-stale-btn'));
+    });
+
+    expect(createSubsetPreview).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith(
+      expect.stringContaining('页账已更新'),
+      'error',
+    );
+    // 解锁 redactionInFlightRef：作废后主按钮仍可再点
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-btn'));
+    });
+    await waitFor(() => expect(createSubsetPreview).toHaveBeenCalledTimes(1));
+  });
+
+  // 门⑥ r1 M2（评审）：显式选择覆盖全部页时不能静默回落全卷。
+  it('显式选择覆盖全部页（86/86）⇒ 仍走子集预览，不启后台全卷打码', async () => {
+    await seedRecognizing();
+    // 页账刚涨到 86/86，但轮询快照仍是 running（弹窗未关）——用户此时点全选。
+    vi.mocked(getItemPageStatus).mockResolvedValue(pageStatus(TOTAL_PAGES, 'running') as never);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-all-btn'));
+    });
+
+    await waitFor(() => expect(createSubsetPreview).toHaveBeenCalledTimes(1));
+    expect(submitRedactionTask).not.toHaveBeenCalled();
+    const [, , body] = vi.mocked(createSubsetPreview).mock.calls[0] as [
+      string,
+      string,
+      { pages: number[] },
+    ];
+    expect(body.pages).toEqual(Array.from({ length: TOTAL_PAGES }, (_, i) => i + 1));
+  });
+
+  // 门⑥ r1 M3（评审）：空集不得被当成「未选页」。
+  it('显式空集（[]）⇒ fail-closed，既不提交子集也不走全卷', async () => {
+    await seedRecognizing();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-empty-btn'));
+    });
+
+    expect(createSubsetPreview).not.toHaveBeenCalled();
+    expect(submitRedactionTask).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('请先选择'), 'error');
+  });
+
+  // 门⑥ r1 M4（评审）：页账读取失败 ≠ 选择过期，文案必须分开（否则排障方向被带偏）。
+  it('页账查询抛错 ⇒ 报「页账读取失败」而不是「页账已更新」', async () => {
+    await seedRecognizing();
+    vi.mocked(getItemPageStatus).mockRejectedValue(new Error('network'));
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('redact-pages-btn'));
+    });
+
+    expect(createSubsetPreview).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('页账读取失败'), 'error');
   });
 });

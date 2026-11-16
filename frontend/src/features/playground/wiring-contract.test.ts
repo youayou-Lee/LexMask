@@ -22,7 +22,7 @@ import { describe, expect, it } from 'vitest';
 // （类型门不该改产品类型面）。
 // 注意：`eager: true` 是本用例的前提——空集时下面的 `read()` 守卫必须能报到，勿删。
 const sources = import.meta.glob(
-  './{hooks/use-playground-file.ts,hooks/use-playground-image.ts,hooks/use-playground.ts,playground-page.tsx,playground-context.tsx}',
+  './{hooks/use-playground-file.ts,hooks/use-playground-image.ts,hooks/use-playground.ts,playground-page.tsx,playground-context.tsx,components/playground-page-export.tsx}',
   { query: '?raw', import: 'default', eager: true },
 ) as Record<string, string>;
 
@@ -39,6 +39,8 @@ const imageHook = read('./hooks/use-playground-image.ts');
 const playgroundHook = read('./hooks/use-playground.ts');
 const page = read('./playground-page.tsx');
 const context = read('./playground-context.tsx');
+// 2026-11-16：识别期浮窗紧凑页格已删——钉住 `compact` 不得复活。
+const pageExport = read('./components/playground-page-export.tsx');
 
 describe('Issue#123 接线契约：四处接线不得被静默摘掉', () => {
   it('第一层根因：多页扫描在识别期即进入 preview（M15 若删掉，这里红）', () => {
@@ -167,11 +169,28 @@ describe('Issue#123 接线契约：四处接线不得被静默摘掉', () => {
 // - 上下文白名单漏挂 subsetPreview ⇒ 页面层拿到的永远是 undefined（入口永不出现）。
 describe('Issue#327 子集预览接线契约：三处接线不得被静默摘掉', () => {
   it('上下文投影白名单必须包含子集三字段（漏挂 ⇒ 页面层恒 undefined）', () => {
-    for (const field of ['subsetPreview', 'subsetReadyCount', 'subsetTotalPages'] as const) {
+    for (const field of [
+      'subsetPreview',
+      'subsetReadyCount',
+      'subsetTotalPages',
+      'subsetPages',
+    ] as const) {
       expect(context).toContain(`${field}: PlaygroundContextValue['${field}'];`);
       expect(context).toMatch(new RegExp(`${field}: ctx\\.${field},`));
       expect(context).toMatch(new RegExp(`ctx\\.${field},`));
     }
+  });
+
+  // 2026-11-16 追加：识别中「先选页」与「编辑页导出带手拉框」的接线钉。
+  // 这两条都是**表达式级**问题——漏传 prop 时 tsc/单测全绿，只有真跑才炸
+  // （本轮实测：上下文白名单漏 subsetPages ⇒ 选页弹窗一打开就
+  //  `TypeError: Cannot read properties of undefined (reading 'length')`）。
+  it('2026-11-16：选页弹窗吃 subsetPages、导出弹窗吃 boundingBoxes、浮窗紧凑页格已删', () => {
+    expect(page).toMatch(/<PlaygroundSubsetPicker[\s\S]*?pages=\{subsetPages\}/);
+    expect(page).toMatch(/<PlaygroundExportDialog[\s\S]*?boundingBoxes=\{boundingBoxes\}/);
+    // 识别期右下角浮窗里的紧凑页格（PlaygroundPageExport compact）必须删干净
+    expect(page).not.toMatch(/<PlaygroundPageExport/);
+    expect(pageExport).not.toMatch(/compact/);
   });
 
   it('下载/翻页：handleDownload 走唯一 URL 实现 + 依赖含 subsetPreview（C-3）；结果页把子集序号翻回原卷页号（C-4）', () => {
