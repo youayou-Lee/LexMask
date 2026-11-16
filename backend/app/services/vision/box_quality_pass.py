@@ -3,7 +3,7 @@
 视觉线（OCR+HaS）识别结果的五个纯函数 pass，分两层：
 - L1 值级（匹配前，动 entities）：2b 编号/金额核心提取、2c 碎片值过滤；
 - L2 框级（匹配后，动 regions）：① 同值跨类型消解、④ 断行拆分并值、
-  ③ 页脚页码过滤。
+  ③ 页脚页码过滤、⑤ 页眉页码过滤（#335）、⑥ 无锚裸数字闸（#335）。
 
 设计约束（底稿：LexMask-workspace/github-issues/2026-11-15-issue308-box-quality-polish.md）：
 - 全部 pass 同页作用域（跨页同值是合法重复），跨页永不合并；
@@ -66,6 +66,45 @@ _FOOTER_TOP_FRACTION = 0.92
 _FOOTER_MAX_WIDTH_FRACTION = 0.05
 _FOOTER_MAX_DIGITS = 3
 _FOOTER_DROP_TYPES = _QUALITY_PASS_TYPES
+
+# ⑤ 页眉带（#335）：页顶 8%，与页脚带对称——页码可能在页首。
+_HEADER_BOTTOM_FRACTION = 0.08
+
+# ⑥ 无锚裸数字闸（#335）：AGE / CASE_NUMBER / LEGAL_CASE_ID 的裸短纯
+# 数字是误打（AGE/CASE_NUMBER：8 页样本实证 AGE 18 / CASE_NUMBER 6；
+# LEGAL_CASE_ID：86 页卷目录页次列实证——HaS 把页次 `001`/`002-013`
+# 标成 LEGAL_CASE_ID，页眉带纯数字框 53→0 后它是目录页唯一残留）。
+# 拍板（2026-11-17）：裸数字直接丢框；CASE_NUMBER 丢弃线 ≤4 位
+# （5 位以上可能是发票号/流水号，保留）。
+_BARE_NUMBER_DROP_TYPES = frozenset({"AGE", "CASE_NUMBER", "LEGAL_CASE_ID"})
+# AGE 射程为 ASCII 数字 [0-9]（门⑥ Minor 挂账：全角 `４１` 保留；全角在
+# OCR 输出罕见，且 #308 页脚/页眉闸同为 [0-9]，取证到全角形态再扩
+# [0-9０-９]。CASE_NUMBER 形状正则用 Unicode \d 口径，两侧不对称是
+# 已知边界——与既有页脚闸口径对齐优先）。
+_AGE_MAX_BARE_DIGITS = 3
+_CASE_NUMBER_MAX_BARE_DIGITS = 4
+# CASE_NUMBER 编号结构锚：字母前缀 / （YYYY）括号年 / 连字符。
+# 有任一锚即真编号形状；全无锚才进裸数字判定。
+_CASE_NUMBER_ANCHOR_RE = re.compile(r"[A-Za-z]|[（(]\s*\d{4}\s*[）)]|[-–—]")
+# 裸数字形状：只剩数字与千分位/小数分隔残段（`500`、`0. 00`、
+# `500, 0. 00`）。含 CJK（`第3页`、`100号`）不是裸数字形状，不进射程。
+_BARE_VALUE_SHAPE_RE = re.compile(r"^[\d,，.．、\s\u3000]+$")
+# 页码区间（拍板 2026-11-17）：两段各 1-3 位纯数字 + 单连字符
+# （卷内目录页次 `002-013`、`050-053`）。连字符在此是页码分隔而非编号
+# 锚——本规则优先于 _CASE_NUMBER_ANCHOR_RE 的连字符保护；4 位年份段
+# （`2026-0001`）与字母前缀（`BH-2026-0001`）不受影响。
+_PAGE_RANGE_RE = re.compile(r"^\d{1,3}[-–—]\d{1,3}$")
+# 年龄条件短语（拍板 2026-11-17）：`未满/已满/年满 X岁(周岁)`（可带
+# 以上/以下）与 `X岁(周岁) 以上/以下`——法律条件短语不是「是谁」的
+# 信息 ⇒ 不打码（丢框）。具体某个人的年龄属性（`41岁`/`41周岁`，
+# 无情态前缀且无以上/以下后缀）不在本判定内，照常保留打码。
+# 数字段支持 ASCII/全角与中文数字（`未满十八周岁`）。
+_AGE_CONDITION_RE = re.compile(
+    r"^(?:(?:未满|已满|年满)\s*(?:[0-9０-９]{1,3}|[一二两三四五六七八九十百]{1,4})"
+    r"\s*(?:周岁|岁)(?:\s*(?:以上|以下))?"
+    r"|(?:[0-9０-９]{1,3}|[一二两三四五六七八九十百]{1,4})"
+    r"\s*(?:周岁|岁)\s*(?:以上|以下))$"
+)
 
 
 def _has_numeric_content(text: str) -> bool:
@@ -310,3 +349,128 @@ def drop_footer_pagenumber_regions(
             "box_quality_pass: dropped %d footer page-number box(es)", dropped
         )
     return kept
+
+
+def drop_header_pagenumber_regions(
+    regions: list[SensitiveRegion],
+    page_width: int,
+    page_height: int,
+) -> list[SensitiveRegion]:
+    """⑤（#335）：页眉带的孤立纯短数字（页码）不是实体 → 丢框。
+
+    与 ③ 页脚带对称（#308 只拦页底 8% 带，页眉页码穿透）：四条件合取
+    同构——家族类型 + 值纯数字 ≤3 位 + 框顶进入页顶 8% 带 + 框宽
+    ≤5% 页宽。首页页眉的完整案号（含非数字字符）天然不触发；页面尺寸
+    不可得（0,0）时 fail-open 不丢框。
+    """
+    if page_height <= 0 or page_width <= 0:
+        return list(regions)
+    header_bottom = page_height * _HEADER_BOTTOM_FRACTION
+    max_width = page_width * _FOOTER_MAX_WIDTH_FRACTION
+    kept: list[SensitiveRegion] = []
+    dropped = 0
+    for r in regions:
+        value = (r.text or "").strip()
+        if (
+            r.entity_type in _FOOTER_DROP_TYPES
+            and re.fullmatch(rf"[0-9]{{1,{_FOOTER_MAX_DIGITS}}}", value)
+            and r.top <= header_bottom
+            and r.width <= max_width
+        ):
+            dropped += 1
+            continue
+        kept.append(r)
+    if dropped:
+        logger.info(
+            "box_quality_pass: dropped %d header page-number box(es)", dropped
+        )
+    return kept
+
+
+def drop_unanchored_number_regions(regions: list[SensitiveRegion]) -> list[SensitiveRegion]:
+    """⑥（#335）：无锚裸数字不是实体 → 丢框（值形状闸，与几何无关）。
+
+    射程与判据（拍板 2026-11-17）：
+    - `AGE`：值是 1–3 位纯数字（无「岁」锚）→ 丢。表格年龄列的裸数字
+      （8 页样本 `'41'` 同值 ×12）是 HaS 把「数字+单位」示例泛化成了裸数；
+      带「岁/周岁」的个人年龄属性（`41岁`/`41周岁`）、中文数字、4 位以上
+      （年份残段）不进射程；**年龄条件短语**（`未满/已满/年满 X岁(周岁)`
+      可带以上/以下、`X岁(周岁) 以上/以下`）≠ 个人年龄 → 同样丢框
+      （HaS guidance 同步收窄，此为确定性兜底）。
+    - `CASE_NUMBER`：值无任何编号结构锚（字母 / （YYYY）/ 连字符）**且**
+      是纯数字+分隔符形状，且数字 ≤4 位**或**含千分位/小数分隔残段
+      （`500`、`0. 00`、`500, 0. 00`）→ 丢。5 位以上无结构纯数字可能是
+      发票号/流水号，保留（漏打面趋零）。**页码区间**（两段各 1-3 位
+      纯数字 + 单连字符，`002-013`）优先于连字符锚保护 → 丢。
+    - `LEGAL_CASE_ID`：86 页卷目录页实证，页次列 `001`/`002-013` 被标成
+      LEGAL_CASE_ID ⇒ 页码区间与 ≤4 位裸数字规则同样适用（真案号必有
+      （YYYY）…号 形态）；长流水号（≥5 位纯数字）保留。
+
+    source=visual_features 不参与值判据（0710 指纹实证保护，模块约束）；
+    manual 框永存（#280）。AMOUNT 裸数字是合法金额真值，不在射程。
+    """
+    kept: list[SensitiveRegion] = []
+    dropped_by_type: dict[str, int] = {}
+    for r in regions:
+        if r.source in ("visual_features", "manual"):
+            kept.append(r)
+            continue
+        if r.entity_type not in _BARE_NUMBER_DROP_TYPES:
+            kept.append(r)
+            continue
+        value = _strip_ws(r.text)
+        dropped = False
+        if r.entity_type == "AGE":
+            # 纯数字 fullmatch 通过即「无岁锚」（数字值不可能含「岁」）；
+            # `41 岁` 经 _strip_ws 成 `41岁`，fullmatch 失败 → 真值保留。
+            # 年龄条件短语（未满/已满/年满…周岁、…以上/以下）≠ 个人年龄
+            # 属性 → 照样丢框（拍板 2026-11-17；HaS 侧 guidance 同步收窄，
+            # 此闸是 HaS 仍回捞时的确定性兜底）。
+            dropped = bool(re.fullmatch(rf"[0-9]{{1,{_AGE_MAX_BARE_DIGITS}}}", value)) or bool(
+                _AGE_CONDITION_RE.match(value)
+            )
+        elif r.entity_type == "LEGAL_CASE_ID":
+            # 86 页卷目录页实证（2026-11-17）：HaS 把卷内目录页次列
+            # `001`/`002-013` 标成 LEGAL_CASE_ID——页码区间规则与 ≤4 位
+            # 裸数字规则同样适用（真案号必有（YYYY）…号 形态，纯短数字
+            # 不可能是真案号；长流水号 ≥5 位仍保留）。
+            dropped = bool(_PAGE_RANGE_RE.match(value)) or bool(
+                re.fullmatch(rf"[0-9]{{1,{_CASE_NUMBER_MAX_BARE_DIGITS}}}", value)
+            )
+        else:  # CASE_NUMBER
+            # 页码区间（002-013）优先于连字符锚保护——两段各 1-3 位纯数字
+            # 的单连字符形态是页次不是编号。
+            if _PAGE_RANGE_RE.match(value):
+                dropped = True
+            else:
+                digit_count = sum(ch.isdigit() for ch in value)
+                has_separator = bool(re.search(r"[,，.．、]", value))
+                dropped = (
+                    not _CASE_NUMBER_ANCHOR_RE.search(value)
+                    and bool(_BARE_VALUE_SHAPE_RE.match(value))
+                    and (digit_count <= _CASE_NUMBER_MAX_BARE_DIGITS or has_separator)
+                )
+        if dropped:
+            dropped_by_type[r.entity_type] = dropped_by_type.get(r.entity_type, 0) + 1
+            continue
+        kept.append(r)
+    if dropped_by_type:
+        breakdown = ", ".join(f"{t}={n}" for t, n in sorted(dropped_by_type.items()))
+        logger.info("box_quality_pass: dropped bare unanchored number box(es): %s", breakdown)
+    return kept
+
+
+def drop_edge_and_unanchored_number_regions(
+    regions: list[SensitiveRegion],
+    page_width: int,
+    page_height: int,
+) -> list[SensitiveRegion]:
+    """③+⑤+⑥ 组合入口（#308 页脚 + #335 页眉 + #335 裸数字闸）。
+
+    两条视觉线调用点（vision_service 文本层线与图像线）的单接线点：
+    几何两闸在页面尺寸不可得（0,0）时 fail-open，值形状闸不受尺寸影响
+    照常生效。
+    """
+    regions = drop_footer_pagenumber_regions(regions, page_width, page_height)
+    regions = drop_header_pagenumber_regions(regions, page_width, page_height)
+    return drop_unanchored_number_regions(regions)

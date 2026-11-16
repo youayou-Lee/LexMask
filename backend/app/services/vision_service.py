@@ -2252,9 +2252,9 @@ class VisionService:
             )
 
         regions = await self.ocr_has_service.detect_from_text_blocks(blocks, pipeline_types)
-        # Issue#308：页脚页码过滤与图像线同口径（width/height 在 scope，
-        # 与 _filter_ocr_has_regions 的接线对称）。
-        regions = box_quality_pass.drop_footer_pagenumber_regions(regions, width, height)
+        # Issue#308+#335：页脚/页眉页码过滤与无锚裸数字闸，与图像线同口径
+        # （width/height 在 scope，与 _filter_ocr_has_regions 的接线对称）。
+        regions = box_quality_pass.drop_edge_and_unanchored_number_regions(regions, width, height)
         # This page's text blocks (local, off the singleton) for the same per-call
         # hallucinated-card gate the image path feeds.
         self._page_ocr_blocks = list(blocks)
@@ -2366,9 +2366,10 @@ class VisionService:
         page: int,
     ) -> list[BoundingBox]:
         width, height = img.size
-        # Issue#308：页脚带孤立纯短数字（页码）不是实体——位置+形状+家族
-        # 四条件合取，页面尺寸不可得时 pass 内部 fail-open。
-        regions = box_quality_pass.drop_footer_pagenumber_regions(regions, width, height)
+        # Issue#308+#335：页脚/页眉带孤立纯短数字（页码）与无锚裸数字
+        # （表格年龄列/编号列）不是实体——几何两闸页面尺寸不可得时
+        # fail-open，值形状闸不受尺寸影响。
+        regions = box_quality_pass.drop_edge_and_unanchored_number_regions(regions, width, height)
         # Self-calibrate the page body extent from the regions that decoded real
         # text; the edge filter judges margin artifacts against this hull rather
         # than a fixed normalized offset.
