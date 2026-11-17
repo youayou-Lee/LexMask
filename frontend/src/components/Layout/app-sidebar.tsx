@@ -2,6 +2,7 @@
 
 import { NavLink, useLocation } from 'react-router-dom';
 import {
+  BookOpen,
   Database,
   Eraser,
   FileSpreadsheet,
@@ -147,6 +148,14 @@ export function AppSidebar() {
       icon: JobsCenterIcon,
       // Issue#262：非终态计数（进行中 + 待复核），零新请求——复用账本 tasks。
       badgeCount: nonTerminalCount,
+    },
+    {
+      // Issue#348：文档中心入口——放在工作流组末位，与「任务中心」同族的一级导航。
+      path: '/docs',
+      label: t('nav.docs'),
+      sublabel: t('nav.docs.sub'),
+      icon: BookOpen,
+      end: true,
     },
   ];
 

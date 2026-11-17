@@ -26,6 +26,8 @@ const enBase: Record<string, string> = {
   'nav.visionModel': 'Image Service',
   'nav.restore': 'Restore',
   'nav.restore.sub': 'Redacted text + mapping → original',
+  'nav.docs': 'Documentation',
+  'nav.docs.sub': 'Product guide & how-to',
 
   'restore.kicker': 'Restore',
   'restore.title': 'Restore Tool',
