@@ -606,6 +606,9 @@ const enBase: Record<string, string> = {
   'batchHub.recentTitle': 'Resume Recent Tasks',
   'batchHub.recentDesc':
     'Jump to configuration, upload, monitoring, or review based on task status.',
+  // Issue#351 P1-B2: button text differs from card title (title=info, button=action).
+  'batchHub.primary.cta': 'Start batch',
+  'batchHub.mode.agent.cta': 'Start feed',
   'batchHub.jobCenter': 'Job Center',
   'batchHub.noActiveJobs': 'No active tasks to resume. Create a new batch job to get started.',
   'batchHub.batch': 'Batch',
@@ -615,8 +618,9 @@ const enBase: Record<string, string> = {
   'batchHub.viewDetail': 'View Details',
   'batchHub.previewDesc':
     'The backend is unavailable. You can inspect the preview flow, but regular work should start from Single File after services recover.',
+  // Issue#351 P1-B3: ops-speak → user-speak (mirrors zh).
   'batchHub.modelPreviewDesc':
-    'The app is connected, but one or more recognition model services are offline or degraded. Validate one file after recovery before creating a batch job.',
+    'Some recognition services are temporarily unavailable; batch results may be incomplete. Try a single file first, then come back for the batch.',
   'batchHub.previewCta': 'Open preview flow',
   'batchHub.history': 'History',
 
@@ -628,8 +632,8 @@ const enBase: Record<string, string> = {
   'batchWizard.step5': 'Export',
   'batchWizard.stepLocked': 'Complete the previous steps first',
   'batchWizard.step1.title': '1. Choose a Recognition List',
-  'batchWizard.step1.desc':
-    'A recognition list combines recognition items and defines what each file in this batch should find by fixed-format detection and semantics. Changes sync to the draft automatically.',
+  // Issue#351 P1-C2: long sentence slimmed (mirrors zh).
+  'batchWizard.step1.desc': 'Configure recognition items and handling for this batch; changes save automatically.',
   'batchWizard.step1.lockedHint':
     'Recognition has already started, so this recognition list is read-only for this batch.',
   'batchWizard.step1.textPreset': 'Text Recognition List',
@@ -1221,7 +1225,6 @@ const enOverrides: Record<string, string> = {
     'Upload PDF, Word, text and scanned files. Each becomes sanitized Markdown plus a mapping table for cloud AI.',
   'batchHub.mode.agent.tag1': 'For cloud AI',
   'batchHub.mode.agent.summaryValue': 'Sanitized MD + mapping + retained list',
-  'batchHub.mode.agent.journeyNote': 'Feed material for AI starts here',
   'batchWizard.step1Agent.modeLabel': 'Placeholder replacement',
   'batchWizard.step1Agent.placeholderNote':
     'Sensitive entities become [TYPE_N] placeholders; a mapping table and retained list ship with the deliverable for round-trip restore.',

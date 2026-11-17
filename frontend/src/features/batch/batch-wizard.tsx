@@ -52,12 +52,8 @@ export function BatchWizard() {
             </Alert>
           )}
 
-          {w.step !== 4 && (
-            <p className="mb-0.5 shrink-0 text-[11px] leading-tight text-muted-foreground">
-              {t('batchWizard.stepsOverview')}
-            </p>
-          )}
-
+          {/* Issue#351 P1-C1：文字步骤行删除——图形步骤条（BatchStepProgress，
+              aria-label 仍用 stepsOverview）承载全部步骤信息，同屏不再两遍。 */}
           <BatchStepProgress currentStep={w.step} canGoStep={w.canGoStep} goStep={w.goStep} />
 
           {w.msg && (

@@ -1,6 +1,7 @@
 // Copyright 2026 LexMask Contributors
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { showToast } from '@/components/Toast';
 import { STORAGE_KEYS } from '@/constants/storage-keys';
 import { useAuth } from '@/features/auth/auth-context';
@@ -1326,17 +1327,32 @@ export function usePlayground() {
   // URL 带 ?file_id=（历史页「回到现场」的明确意图）时跳过：避免先展示旧草稿现场
   // 再弹「切换处理文件」确认框——用户点 A 却先看到 B，观感即「跳错文件」。
   const draftRestoreDoneRef = useRef(false);
+  const location = useLocation();
   useEffect(() => {
     if (draftRestoreDoneRef.current) return;
+    if (new URLSearchParams(window.location.search).get('file_id')) {
+      // 深链协议（resumeFromFile）接管，挂载恢复永不重试。
+      draftRestoreDoneRef.current = true;
+      return;
+    }
+    // Issue#351 P1-A：Provider 常驻 Layout，恢复与 toast 只在单文件工作台路由生效——
+    // 在 /batch、/jobs 等页面刷新弹「已恢复上次单文件处理现场」是与当前页无关的噪音。
+    // 门⑥ Critical-1：路由闸拒绝时**不烧**一次性 ref——Provider 不随路由重建，
+    // effect 因 pathname 依赖重跑；若此时已置位，用户从 /jobs 点回 /single（或首页
+    // 重定向 / → /single）将永不恢复草稿。语义=「每次成功恢复至多一次」。
+    // Minor-7：/playground 是 /single 的同页别名（router.tsx 注册），一并放行；
+    // 用相等比较而非 startsWith（不误伤未来 /single* 新路由）。
+    const isPlaygroundRoute =
+      location.pathname === '/single' || location.pathname === '/playground';
+    if (!isPlaygroundRoute) return;
     draftRestoreDoneRef.current = true;
-    if (new URLSearchParams(window.location.search).get('file_id')) return;
     const snapshot = parseDraft(
       getScopedStorageItem<string | null>(STORAGE_KEYS.PLAYGROUND_DRAFT, null, ownerKey),
     );
     if (!snapshot) return;
     applyDraftSnapshot(snapshot);
     showToast(t('playground.restored'), 'info');
-  }, [applyDraftSnapshot, ownerKey]);
+  }, [applyDraftSnapshot, location.pathname, ownerKey]);
 
   // 历史页「回到现场」入口（R2 + 草稿恢复）：?file_id= 协议统一走这里。
   // 有本文件的草稿 → 直接恢复现场；无草稿 → 重置后按当前识别配置重新识别。

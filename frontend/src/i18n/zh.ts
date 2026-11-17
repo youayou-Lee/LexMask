@@ -582,6 +582,9 @@ const zhBase: Record<string, string> = {
   'batchHub.desc': '批量默认面向混合文件。先用单文件确认策略，再进入配置、上传、识别和复核。',
   'batchHub.recentTitle': '继续最近任务',
   'batchHub.recentDesc': '按任务状态跳转到配置、上传、监控或审阅。',
+  // Issue#351 P1-B2：按钮与卡标题差异化（标题=信息，按钮=动作）。
+  'batchHub.primary.cta': '开始批量处理',
+  'batchHub.mode.agent.cta': '开始供料',
   'batchHub.jobCenter': '任务中心',
   'batchHub.noActiveJobs': '暂无可恢复的活跃任务。可以直接新建一个批量工单。',
   'batchHub.batch': '批量',
@@ -601,8 +604,8 @@ const zhBase: Record<string, string> = {
   'batchWizard.step5': '导出',
   'batchWizard.stepLocked': '请先完成前面的步骤',
   'batchWizard.step1.title': '① 选择配置清单',
-  'batchWizard.step1.desc':
-    '配置清单由不同识别项组成，用来定义本批次每份数据要根据固定格式和语义识别哪些东西；修改会自动同步到任务草稿。',
+  // Issue#351 P1-C2：长句瘦身为短句（删「固定格式和语义识别」内部实现叙述）。
+  'batchWizard.step1.desc': '配置本批次的识别项与处理方式，修改会自动保存。',
   'batchWizard.step1.lockedHint': '识别已经开始，本批次的配置清单已转为只读。',
   'batchWizard.step1.textPreset': '文本配置清单',
   'batchWizard.step1.textPresetDesc':
@@ -1185,7 +1188,6 @@ const zhOverrides: Record<string, string> = {
   'batchHub.mode.agent.desc': '上传 PDF、Word、文本与扫描件，逐份转成脱敏 Markdown，确认映射表后整批导出，附还原映射表。',
   'batchHub.mode.agent.tag1': '供云端 AI',
   'batchHub.mode.agent.summaryValue': '脱敏 MD + 映射表 + 保留清单',
-  'batchHub.mode.agent.journeyNote': '要喂 AI 的材料从这里进',
   'batchWizard.step1Agent.modeLabel': '占位符替换',
   'batchWizard.step1Agent.placeholderNote': '敏感信息将替换为 [类型_N] / [姓某] 占位符，并随成品附映射表与保留清单，可在还原工具中回溯。',
   'batchWizard.step4Agent.hint': '逐份确认映射表：可保留原文、自定义替换值；缺省按占位符替换。确认后生成脱敏 Markdown。',
@@ -1808,8 +1810,9 @@ Object.assign(zhOverrides, {
 });
 
 Object.assign(zhOverrides, {
+  // Issue#351 P1-B3：运维视角（模型服务离线或降级）→ 用户视角（暂不可用/可能不完整）。
   'batchHub.modelPreviewDesc':
-    '应用已连接，但一个或多个识别模型服务离线或降级。请在服务恢复后先用单文件确认效果，再创建批量任务。',
+    '部分识别服务暂不可用，批量效果可能不完整。建议先用单文件确认效果，稍后再来批量处理。',
 });
 
 Object.assign(zhOverrides, {
