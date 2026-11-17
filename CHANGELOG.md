@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-11-17（Issue#338）
+
+- **fix：docline 内嵌文本层 overlay 过滤改「行归属」——修前 45° 水印外接框误删正文词（真卷 149 页 3,226 词，占正文 40.6%）**——`text_layer_docline_service._word_boxes` 的旧判据是「词中心落在覆盖 span 的外接矩形内」；45° 平铺水印 span 的外接框近满页 ⇒ 同区正文词与 `alpha=0` 不可见 OCR 层词被成批误删，且全链零信号。新判据用 `get_text("words")` 自带的 `(block_no, line_no)` 与「先滤 `type==0` 文本块再枚举」的 overlay 行集合求交（块编号口径见函数 docstring；按 dict 原始下标枚举会少剔 149 词、泄漏 148，是「看起来也能跑」的错实现）。
+  - **信号面**：`TextLayerPage`/`DocLineResult` 增 `words_raw`/`words_dropped`/`overlay_pages`；`pipeline_status.text_layer_doc.overlay_filter`（未接管落 `None`，键不省略）；`text_layer_extracted` 页事件三字段；`route_decided.signals` 带 `words_raw`/`words_dropped`；一行 INFO 审计日志（fail-open）；解析回执 `watermark_inline_filtered`（单位=**行**）前端提示「已从文档结构层剔除 N 行平铺水印文本（正文内容不受影响）」（`data-testid="watermark-inline-notice"`，缺失/0/脏数据不渲染）。
+  - **实测（真实 base/fix 代码对跑）**：第四卷 149 页误删 3,226 → **0**、真水印 2,743 全剔、混合归属词剔除 1,970（含 1,078 条错位）→ 839（0 条错位）、泄漏 0；页级账低于阈值页数 101 → 63、总字 12,043 → 40,999；零 overlay 扫描型 6 页词流逐词相同；canary 3 页 docline 由「层不可用弃权」恢复为 coverage 1.0。
+  - **测试**：新增 `backend/tests/test_issue338_docline_overlay_linefilter.py` 15 例（T1/T2/T4/T5/T6/T7/T8/T9/T10/T11 契约）+ 前端 `lib/inline-watermark-notice.test.ts` 19 例（脏数据：0/负数/非整数/NaN/Infinity/字符串/布尔/对象/null/undefined）+ `playground-entity-panel.inline-watermark.test.tsx` 7 例 + `wiring-contract.test.ts` 接线钉；后端全量 **3591 passed**、前端 **786 passed**、`tsc`（app+test）绿、build 绿；变异自证：改回外接矩形判据 4 例红 / 删 `overlay_filter` 键 2 例红 / `words_dropped` 恒 0 1 例红 / 删脏数据守卫 15 例红，全部 KILLED。
+
 ## 2026-11-17（Issue#342）
 
 - **perf：识别任务复用上传解析结果——同一文件字节不再重解析（省 ~8.4s/次）**——同一份文件此前被完整解析两遍（上传时 GET /parse 一遍 + 识别任务 worker `_parse_file` 又一遍，86 页扫描卷每遍 ~8.4s，结果逐字段相同）。`parse_file`（GET /parse 端点与任务 worker 共用入口）增加解析指纹复用：file_store 快照已含解析字段且指纹（`size + mtime_ns`）与当前文件一致 ⇒ 用快照字段重建 ParseResult 返回；解析完成后指纹随解析字段一起落库。字节变化（解密落盘/摘水印替换等一切 `os.replace` 写入必改 mtime）⇒ 指纹失配 ⇒ 真重解析；解析失败不落指纹（失败态不可缓存）。

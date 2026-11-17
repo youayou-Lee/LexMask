@@ -1401,6 +1401,8 @@ const enOverrides: Record<string, string> = {
   'playground.encryptedPdf.decrypting': 'Decrypting...',
   'playground.cancelled': 'Processing cancelled.',
   'playground.recognizeFailed': 'Recognition failed.',
+  'playground.inlineWatermarkNotice':
+    'Removed {count} tiled watermark lines from the document text layer (body content is unaffected).',
   'playground.visualSkippedNotice':
     'Visual service is unavailable; seal/signature detection was skipped for this run. Start the service and re-recognize to include it.',
   'playground.recognitionPausedModelServices':

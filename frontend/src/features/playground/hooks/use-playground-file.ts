@@ -1,6 +1,6 @@
 // Copyright 2026 LexMask Contributors
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useDropzone, type FileRejection } from 'react-dropzone';
 import { ApiError, authFetch } from '@/services/api-client';
 import { cancelJob } from '@/services/jobsApi';
@@ -19,6 +19,7 @@ import {
 import { notifyWatermarkUploadStatus } from '@/features/watermark-tool/upload-notify';
 import { safeJson } from '../utils';
 import { boundingBoxesFromServerInfo, planServerCachedResume } from '../lib/playground-draft';
+import { inlineWatermarkNoticeText } from '../lib/inline-watermark-notice';
 import {
   currentSegmentFromPerformance,
   inFlightPages,
@@ -239,6 +240,17 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
 
   const isImageMode = !!fileInfo && (fileInfo.file_type === 'image' || !!fileInfo.is_scanned);
 
+  /**
+   * Issue#338：解析期剔除的内嵌平铺水印行数 → 一句显式提示（真源 `fileInfo.watermark_inline_filtered`）。
+   * 派生而不用 state：`fileInfo` 一变（换文件/重新上传）提示自然归零，不会把上一份文件的
+   * 水印数带到新文件上。脏数据口径（0/负数/非整数/NaN/字符串…）收口在纯函数
+   * `inlineWatermarkNoticeText`，由 `lib/inline-watermark-notice.test.ts` 直接钉住。
+   */
+  const inlineWatermarkNotice = useMemo(
+    () => inlineWatermarkNoticeText(fileInfo?.watermark_inline_filtered, (key) => t(key)),
+    [fileInfo?.watermark_inline_filtered, t],
+  );
+
   // --- Cleanup abort on unmount ---
   useEffect(() => {
     return () => {
@@ -312,6 +324,9 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         is_scanned: isScanned,
         page_count: pageCount,
         pages: parsedPages,
+        // Issue#338：不带上这一行，inlineWatermarkNotice 永远是 null（E2E 实测踩到：
+        // 组件测试直接传 prop，测不到这条接线）。
+        watermark_inline_filtered: parseData.watermark_inline_filtered ?? null,
       });
       setContent(parsedContent);
       const opts = optionsRef.current;
@@ -458,6 +473,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
         page_count: pageCount,
         pages: Array.isArray(parseData.pages) ? parseData.pages : undefined,
         vision_quality: info.vision_quality as Record<string, unknown> | undefined,
+        watermark_inline_filtered: parseData.watermark_inline_filtered ?? null,
       });
       setContent(parseData.content || '');
       opts.setBoundingBoxes([]);
@@ -562,6 +578,7 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
           page_count: pageCount,
           pages: parsedPages,
           vision_quality: info.vision_quality as Record<string, unknown> | undefined,
+          watermark_inline_filtered: parseData.watermark_inline_filtered ?? null,
         });
         setContent(parsedContent);
         opts.setBoundingBoxes([]);
@@ -1025,6 +1042,8 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
     setRecognitionIssue,
     visualSkippedNotice,
     setVisualSkippedNotice,
+    // Issue#338：解析期剔除的内嵌平铺水印提示（单位=行；换文件自动归零）
+    inlineWatermarkNotice,
     isImageMode,
     dropzone,
     encryptedPrompt,

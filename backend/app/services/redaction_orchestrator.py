@@ -496,6 +496,10 @@ def _text_layer_doc_status(doc_boxes, doc_memo: dict, page: int) -> dict:
         "fallback_failed_chunks": doc_detail.get("failed_chunks"),
         "fallback_chunks": doc_detail.get("chunks"),
         "fallback_page": page,
+        # Issue#338：inline 覆盖水印过滤账。未接管/失败卷由 `doc_memo.get` 落 None
+        # ——键必须存在（#165「失败卷也要写块」口径），前端/运维才能区分
+        # 「没测到」与「0 行」。
+        "overlay_filter": doc_memo.get("overlay_filter"),
     }
 
 

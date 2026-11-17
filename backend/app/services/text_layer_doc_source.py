@@ -221,6 +221,10 @@ async def _build(
         "text_layer_extracted", page=None,
         chars=sum(len(w.text) for p_ in pages for w in p_.words),
         blocks=len(pages), pages=len(pages),
+        # Issue#338：覆盖水印过滤账（页级聚合，单位=词）
+        words_raw=sum(int(getattr(p_, "words_raw", 0)) for p_ in pages),
+        words_dropped=sum(int(getattr(p_, "words_dropped", 0)) for p_ in pages),
+        overlay_pages=sum(1 for p_ in pages if int(getattr(p_, "words_dropped", 0)) > 0),
         ms=int((time.perf_counter() - started) * 1000),
     )
     if not pages:
@@ -329,7 +333,7 @@ async def _build(
         )
 
     result = await docline.run_document_ner(
-        pages, labels, has_client=has_client, regex_types=regex_types
+        pages, labels, has_client=has_client, regex_types=regex_types, file_id=file_id
     )
     # **卷级合格门**（门⑥ 二轮 Important#5）：失败块/回映失败率/覆盖率任一越界即整卷
     # 放弃走文档级链、回落旧路径。这些门以前不存在，或只在**任何值**下都成立。
@@ -414,7 +418,10 @@ async def _build(
     _route(
         "coverage", "accepted",
         {"coverage": coverage, "chunks": int(result.chunks),
-         "entities": len(result.entities)},
+         "entities": len(result.entities),
+         # Issue#338：接管卷把水印过滤账也带进 signals（复盘「这卷剔了多少水印词」）
+         "words_raw": int(getattr(result, "words_raw", 0)),
+         "words_dropped": int(getattr(result, "words_dropped", 0))},
         ("TEXT_LAYER_MIN_COVERAGE",),
     )
     label_to_id = build_label_to_type_id(ocr_has_types)
@@ -443,6 +450,15 @@ async def _build(
         "http_errors": result.http_errors,
         "truncated_chunks": result.truncated_chunks,
         "uncovered_pages": sorted(set(page_chars) - covered_pages),
+        # Issue#338：inline 覆盖水印过滤账（审计信号，不参与路由）。失败卷/未接管卷
+        # 由 `_text_layer_doc_status` 补 None（键不省略，保持 #165 口径）。
+        "overlay_filter": {
+            "pages": int(result.pages),
+            "pages_with_drop": int(getattr(result, "overlay_pages", 0)),
+            "words_raw": int(getattr(result, "words_raw", 0)),
+            "words_dropped": int(getattr(result, "words_dropped", 0)),
+            "drop_ratio": round(getattr(result, "drop_ratio", 0.0), 4),
+        },
         "verdict": verdict.severity,
         "ink_alignment": metrics.ink_alignment,
         "seconds": round(time.perf_counter() - started, 3),

@@ -71,6 +71,7 @@ const PlaygroundInner: FC = () => {
     redactProgress,
     recognitionIssue,
     visualSkippedNotice,
+    inlineWatermarkNotice,
     entityMap,
     redactedCount,
     processingMode,
@@ -526,6 +527,7 @@ const PlaygroundInner: FC = () => {
               isLoading={isLoading}
               recognitionIssue={recognitionIssue}
               visualSkippedNotice={visualSkippedNotice}
+              inlineWatermarkNotice={inlineWatermarkNotice}
               entities={pageFilteredEntities}
               mappingEntities={entities}
               entityTypes={entityTypes}

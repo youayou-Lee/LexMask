@@ -211,6 +211,37 @@ describe('Issue#327 子集预览接线契约：三处接线不得被静默摘掉
     expect(playgroundHook).toMatch(/draftStageForResume\(fileCtx\.stage, subsetPreview !== null\)/);
   });
 
+  // Issue#338：E2E 实测抓到的接线缺口——`watermark_inline_filtered` 从后端到了
+  // `fileInfo.watermark_inline_filtered`（3），但页面层拿到的 `inlineWatermarkNotice` 恒
+  // undefined，提示永远不渲染。根因是 `usePlaygroundContext()` 走**白名单**：
+  // 键不进 `PlaygroundDataContextValue` + dataValue 就永远缺席（#327 subsetPreview 同族）。
+  // 组件单测（直接传 prop）测不到这条链，故在此钉四处表达式。
+  it('Issue#338：parse.watermark_inline_filtered → fileInfo → 页面层提示（四处接线）', () => {
+    // ① 上传/解析落位必须把 parse 回执里的字段带进 fileInfo（漏了 ⇒ 恒 null）
+    expect(fileHook).toMatch(
+      /watermark_inline_filtered:\s*parseData\.watermark_inline_filtered \?\? null/,
+    );
+    // ② 文件层派生提示（单位=行，≤0/缺失/脏数据 ⇒ 不提示）；脏数据口径收口在纯函数，
+    //    不得绕过它直接格式化（绕过 ⇒ lib 用例全绿但生产暴露脏值）
+    expect(fileHook).toMatch(/const inlineWatermarkNotice = useMemo\(/);
+    expect(fileHook).toMatch(
+      /inlineWatermarkNoticeText\(\s*fileInfo\?\.watermark_inline_filtered/,
+    );
+    expect(fileHook).toMatch(
+      /import \{ inlineWatermarkNoticeText \} from '\.\.\/lib\/inline-watermark-notice';/,
+    );
+    // ③ 组合层把它挂进返回值
+    expect(playgroundHook).toContain('inlineWatermarkNotice: fileCtx.inlineWatermarkNotice,');
+    // ④ 数据上下文白名单必须含它，否则页面层恒 undefined（本用例的根因）
+    expect(context).toMatch(
+      /inlineWatermarkNotice: PlaygroundContextValue\['inlineWatermarkNotice'\]/,
+    );
+    expect(context).toContain('inlineWatermarkNotice: ctx.inlineWatermarkNotice,');
+    expect(context).toContain('ctx.inlineWatermarkNotice,');
+    // ⑤ 页面层把它交给面板
+    expect(page).toMatch(/inlineWatermarkNotice=\{inlineWatermarkNotice\}/);
+  });
+
   it('识别终态不得静默降级为子集（I-1 红线：只有识别在飞才允许子集口径）', () => {
     expect(playgroundHook).toMatch(/import \{[^}]*isRecognitionInFlight[^}]*\} from '@\/features\/playground\/lib\/subset-pages';/);
     expect(playgroundHook).toMatch(/isRecognitionInFlight\(pageStatus\.recognition_state\)/);

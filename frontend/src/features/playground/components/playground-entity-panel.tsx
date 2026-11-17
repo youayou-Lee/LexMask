@@ -33,6 +33,9 @@ export interface PlaygroundEntityPanelProps {
   recognitionIssue?: string | null;
   /** 本次识别跳过了视觉段（LA 未启动）的显式提示；非 null 时面板顶部展示 */
   visualSkippedNotice?: string | null;
+  /** Issue#338：解析期剔除的内嵌平铺水印行数提示（后端 parse.watermark_inline_filtered）；
+   *  非 null 时与视觉段提示并列展示。单位=行，与识别期「词」账不是一回事。 */
+  inlineWatermarkNotice?: string | null;
   entities: Entity[];
   /** 化名映射区用全量实体（跨页）：执行门槛按全文档判定，映射行必须同源，否则多页文档会出现"看不见的被阻塞" */
   mappingEntities?: Entity[];
@@ -97,6 +100,7 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
     isLoading,
     recognitionIssue,
     visualSkippedNotice,
+    inlineWatermarkNotice,
     entities,
     mappingEntities,
     entityTypes = [],
@@ -191,6 +195,15 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
                 data-testid="visual-skipped-notice"
               >
                 {visualSkippedNotice}
+              </p>
+            )}
+            {/* Issue#338：文档结构层剔掉的平铺水印行（静默误删正文的可见化）。 */}
+            {inlineWatermarkNotice && (
+              <p
+                className="rounded-md border border-sky-300 bg-sky-50 px-2.5 py-1.5 text-xs leading-5 text-sky-800 dark:border-sky-700 dark:bg-sky-950 dark:text-sky-300"
+                data-testid="watermark-inline-notice"
+              >
+                {inlineWatermarkNotice}
               </p>
             )}
             <div className="space-y-0.5">
