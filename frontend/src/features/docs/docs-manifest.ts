@@ -108,5 +108,7 @@ export async function getAllDocsEntries(): Promise<DocsEntry[]> {
       return { slug: entry.slug, ...parseDocsFrontmatter(raw, entry.file) };
     }),
   );
-  return entries.sort((a, b) => a.order - b.order);
+  // 返回顺序 = DOCS_MANIFEST 登记顺序（= 阅读顺序）。order 是「分类内序号」，
+  // 全局按 order 排序会打乱分类（各分类都从 1 起 ⇒ 变成跨分类交错）。
+  return entries;
 }

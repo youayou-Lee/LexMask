@@ -37,6 +37,12 @@ describe('parseDocsFrontmatter', () => {
     const raw = '---\ntitle: 只有标题\n---\n\n正文';
     expect(() => parseDocsFrontmatter(raw, 'bad.md')).toThrow(/category/);
   });
+
+  it('order 非整数（类型错误）时抛错', () => {
+    const raw =
+      '---\ntitle: 标题\ncategory: 新手必读\norder: abc\nupdated: 2026-11-17\n---\n\n正文';
+    expect(() => parseDocsFrontmatter(raw, 'bad.md')).toThrow(/order/);
+  });
 });
 
 describe('buildDocsNav', () => {
@@ -67,6 +73,13 @@ describe('内容清单（manifest）', () => {
     const entries = await getAllDocsEntries();
     const testDoc = entries.find((e) => e.slug === 'test-doc');
     expect(testDoc).toMatchObject({ title: '测试文档', category: '新手必读', order: 1 });
+  });
+
+  // order 是「分类内序号」，全局按 order 排序会打乱分类（product-intro → single-file →
+  // account-login → faq → quick-start…），而下游（默认页 / 上一篇下一篇）要的是阅读顺序。
+  it('getAllDocsEntries 返回顺序 = DOCS_MANIFEST 登记顺序（不按 order 全局排序）', async () => {
+    const entries = await getAllDocsEntries();
+    expect(entries.map((e) => e.slug)).toEqual(DOCS_MANIFEST.map((entry) => entry.slug));
   });
 
   it('DOCS_MANIFEST 与磁盘文件一一对应（无漏登记 / 无缺失）', async () => {
