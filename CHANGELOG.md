@@ -29,6 +29,13 @@
   - **访问控制**：复用既有登录守卫，未登录访问跳登录页并在登录后回跳；文档内容不含案卷、凭据与内部架构。未知 slug 重定向回文档中心首页，不渲染空正文。
   - **测试**：前端全量 837 例通过（含文档清单 / 导航树 / 路由接线 / 页面渲染用例），`tsc`（app+test）绿、`npm run build` 绿。
 
+## 2026-11-18（Issue#347）
+
+- **fix：扫描对账单 ±90° 旋转页打码覆盖不全——OCR 前方向归一 try-and-pick + 金额紧裁 `len(None)` 崩溃修复**——真卷巡检（6号案卷前 80 页）发现三类系统性漏打：①少数页整页 0 框（户名/证件号/账号全裸）；②偶数页表头整行漏打（同页正文有框）；③证件号只遮前段、尾段 9 位（含出生日期）可见。
+  - **根因①（整页 0 框）**：`ocr_entity_match._crop_amount_block_region`（#308 金额紧裁）对 `_entity_char_box_line_rects` 的返回值直接 `len(rects)`，该函数契约允许返回 `None`（跨行/零宽 rect）⇒ 旋转页竖排行字符几何触发 `TypeError`，异常逃出 `detect_and_draw` 被 stage 层降级为 warning（fail-open）⇒ 整页 0 框照常落库。修复：`rects is None` 按既有契约回退整块罩（never-uncover 不变），同文件其余 5 个调用点核查均已有守卫。
+  - **根因②（表头漏打/证号半遮）**：双面扫描正反面进纸方向相反，奇偶页交替 ±90° 躺倒且 PDF 无 `/Rotate`（全部 rotate=0）；OCR 服务端方向分类全关（`use_doc_orientation_classify/use_textline_orientation/use_doc_unwarping=False`）⇒ 横躺输入下 PaddleOCR-VL 退化（0 框/巨型表格 blob/乱码），竖排文本行在「横排行」字符框假设下被截断。修复：`ocr_has_vision_service.detect_and_draw` 在 OCR 段后、NER 前插入方向归一——as-is 块评分（竖排行占比/巨型 blob/CJK 存活/≥6 位数字游程，参数用 10 组真卷夹具校准：横躺 0.703–0.733 vs 转正 0.0），出现旋转签名时把页图转 90°/270° 各补一次**纯 OCR**（不跑 NER），比较制择优且胜者须显著优于 as-is（1.2× 边际，否则保持原样）；NER/匹配/正则兜底全部在胜者空间只跑一次；`vision_service._detect_with_ocr_has` 出口单点把归一化框映射回原页坐标（ink 检查同步改用胜者图），下游落库/渲染/预览/人工框合并零改动。好页零额外开销；坏页 +2 次纯 OCR；`duration_ms["ocr_orientation"]`（chosen/scores/signals）自动流入 pipeline_status 观测面。
+  - **实测（6号案卷前 80 页真卷复跑，隔离栈）**：修前 A-p8/A-p14 `ocr_has.failed=true`（崩溃态）0 框 → 修后正常出框且证件号码/户名/账号/对方账号字段命中；修前偶数页表头字段乱码（`45108710132a`/`21:0:42`）→ 修后干净可识别；烟测页 region_count 209 → 279。80 页 + 泛化 40 页（p81–120）复跑与冷审对照见验收记录。
+  - **测试**：新增 `tests/test_issue347_ocr_orientation.py` 23 例（评分器四类夹具分离 / 90°-270° 映射 round-trip 含真卷数值锚 / PIL 与页面渲染方向语义钉 / 择优与 1.2× 边际回退 / `detect_and_draw` 接线钉含好页零开销 / `_detect_with_ocr_has` 出口映射正反向）+ `tests/test_issue347_amount_crop_none_guard.py` 3 例（None 契约回退 / 零宽字符框几何真实形态 / 正常单游程紧裁行为不回归）；后端全量 **3617 passed / 0 failed** 零回归。
 
 ## 2026-11-17（Issue#338）
 
