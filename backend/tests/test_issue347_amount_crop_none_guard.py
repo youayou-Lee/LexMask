@@ -25,8 +25,12 @@ class TestCropAmountBlockRegionNoneGuard:
         from app.services.vision import ocr_entity_match as m
         # 契约允许 _entity_char_box_line_rects 返回 None——必须按"收不出"回退整块，
         # 而不是 len(None) 崩溃（修前：整页 ocr_has 阶段炸掉、fail-open 0 框）。
+        # chars 必须非空，才能穿过「无 chars 早退」分支真正走到防御点。
+        text = "金额：1431400.00元整"
+        chars = [{"c": ch, "x1": float(i * 12), "y1": 0.0, "x2": float(i * 12 + 12), "y2": 24.0}
+                 for i, ch in enumerate(text)]
         monkeypatch.setattr(m, "_entity_char_box_line_rects", lambda *a, **k: None)
-        out = m._crop_amount_block_region(self._amount_block([]), "金额：1431400.00元整", "1431400.00", 30.0)
+        out = m._crop_amount_block_region(self._amount_block(chars), text, "1431400.00", 30.0)
         assert out is None
 
     def test_zero_width_char_boxes_return_none_not_crash(self):
