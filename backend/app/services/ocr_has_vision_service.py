@@ -141,7 +141,9 @@ class OcrHasVisionService:
         self.last_ocr_blocks: list[OCRTextBlock] = []
         # Issue#347：本调用最终采用的 OCR 输入方向（0=原样/90=顺时针转正/270=逆时针
         # 转正）与各候选评分。_detect_with_ocr_has 读取它把归一化框映射回原页坐标。
-        self.last_ocr_orientation: dict[str, Any] = {"angle": 0, "retried": False, "scores": {}}
+        self.last_ocr_orientation: dict[str, Any] = {
+            "angle": 0, "retried": False, "resolved": True, "scores": {},
+        }
         self.current_owner_id: str | None = None
         # 正则兜底超时事件计数（Issue#65 / 冷审 I2）：vision 链的失效面是
         # 「整页该类型失效」，比文本链更值得可观测。
@@ -209,16 +211,19 @@ class OcrHasVisionService:
         """Issue#347：±90° 扫描页的 OCR 前方向归一（try-and-pick）。
 
         as-is 块评分出现旋转签名（竖排行块占比高 / 巨型 blob）时，把页图转
-        90°/270° 各补一次**纯 OCR**（NER 在胜者空间只跑一次），比较制择优；
-        胜者必须显著优于 as-is（``WINNER_MARGIN_RATIO``）否则保持原样——宁可
-        维持现状，不把正常页转歪。好页（无签名）零额外开销。返回值是最终采用
-        的 (image, width, height, blocks, visual_regions)；方向与评分写进
-        ``last_ocr_orientation`` 与 ``duration_ms["ocr_orientation"]``（自动
-        流入 pipeline_status / page_event_log 观测面）。
+        90°/270° 各补一次**纯 OCR**（NER 在胜者空间只跑一次），按「关键词
+        清醒判别」择优：表单关键词命中（``KEYWORD_HITS_MIN``）对 VL 输出波动
+        免疫，取代比较制分数（复跑实证批量波动能把倒置乱码帧抬过真转正帧、
+        as-is 边际压死真候选）；as-is 清醒则保持原样（不引入转歪风险）。好页
+        （无签名）零额外开销。返回值是最终采用的 (image, width, height,
+        blocks, visual_regions)；方向与评分写进 ``last_ocr_orientation`` 与
+        ``duration_ms["ocr_orientation"]``（自动流入 pipeline_status /
+        page_event_log 观测面）。所有候选都不清醒 ⇒ ``OrientationUnresolvedError``
+        按 #199 语义升级页级显式失败（``is_page_fatal_stage_error`` 接收）。
         """
         from app.services.vision.ocr_orientation import (
-            ORIENTATION_EARLY_EXIT_FLOOR,
-            WINNER_MARGIN_RATIO,
+            KEYWORD_HITS_MIN,
+            OrientationUnresolvedError,
             choose_orientation,
             rotate_image_for_ocr,
             score_ocr_blocks,
@@ -226,7 +231,7 @@ class OcrHasVisionService:
 
         as_is = score_ocr_blocks(ocr_blocks, width, height)
         candidates: dict[int, tuple[Image.Image, list[OCRTextBlock], list[SensitiveRegion], dict]] = {}
-        candidate_scores: dict[int, float] = {}
+        candidate_scores: dict[int, dict] = {}
         retried = as_is.rotation_suspect
         if retried:
             for angle in (90, 270):
@@ -241,39 +246,50 @@ class OcrHasVisionService:
                         stage_status=stage_status,
                     )
                 except Exception:
-                    # 候选方向 OCR 失败不致命：该角弃权，决策只在可用候选里做。
+                    # 候选方向 OCR 失败不致命：该角弃权，决策只在可用候选里做；
+                    # 若全部候选都失败/不清醒 ⇒ 未决 ⇒ 页级显式失败。
                     logger.warning("orientation candidate %d° OCR failed", angle, exc_info=True)
                     continue
                 score_a = score_ocr_blocks(blocks_a, rotated.width, rotated.height)
                 candidates[angle] = (rotated, blocks_a, visuals_a, stage_status)
-                candidate_scores[angle] = score_a.score
-                # 置信早退（Issue#347 性能）：候选「明显正常且显著胜出」即收，省掉
-                # 剩余候选的一次纯 OCR。三条件缺一不可——①横排乱码页（180° 相对
-                # 形态）文本仍水平、clearly_fine 可能为真，但分数不达边际照样继续
-                # 试下一个角；②稀疏页的边际基数太小（如 as-is 64×1.2≈77），倒置读
-                # 数拿个低分也能过边际（复跑实测 p39：108 分早退选错向、户名/账号
-                # 漏打），故再加绝对下限——真 upright 页的评分远高于此（复跑 83 页
-                # 胜者分布 294–463，唯一 108 即选错向页，天然空隙取 200）。
-                if (
-                    score_a.clearly_fine
-                    and score_a.score >= as_is.score * WINNER_MARGIN_RATIO
-                    and score_a.score >= ORIENTATION_EARLY_EXIT_FLOOR
-                ):
+                candidate_scores[angle] = {
+                    "score": score_a.score,
+                    "keyword_hits": score_a.keyword_hits,
+                }
+                # 置信早退（Issue#347 性能）：候选「结构正常且关键词清醒」即收，
+                # 省掉剩余候选的一次纯 OCR——清醒候选是决定性判别（对 VL 波动
+                # 免疫），另一向必为其 180° 倒置乱码，无信息可补。历史：比较制
+                # 早退（clearly_fine + 分数边际 + 绝对下限）被批量 VL 波动击穿
+                # （p10 真候选 227 < 垃圾 as-is 241×1.2），由关键词门控取代。
+                if score_a.clearly_fine and score_a.keyword_hits >= KEYWORD_HITS_MIN:
                     break
 
         decision = choose_orientation(as_is, candidate_scores)
         angle = int(decision["angle"])
+        resolved = bool(decision["resolved"])
         duration_ms["ocr_orientation"] = {
             "chosen": angle,
             "retried": retried,
+            "resolved": resolved,
             "scores": decision["scores"],
             "signals": as_is.signals,
         }
         self.last_ocr_orientation = {
             "angle": angle,
             "retried": retried,
+            "resolved": resolved,
             "scores": decision["scores"],
         }
+        if not resolved:
+            # 无清醒候选 ⇒ 任选一向都是赌博：按 #199 语义升级页级显式失败
+            # （failed_pages 记账、交付闸 409），而非静默按垃圾 OCR 放行（漏打）。
+            # raise 前先落观测：失败页的 stage_duration_ms 还能读到 ocr_orientation。
+            cand_kw = ", ".join(f"{a}:{d['keyword_hits']}" for a, d in candidate_scores.items())
+            raise OrientationUnresolvedError(
+                f"ocr orientation unresolved: as-is kw={as_is.keyword_hits} "
+                f"(cjk={as_is.signals.get('cjk')}, vertical={as_is.signals.get('vertical_share')}); "
+                f"candidate kw={{{cand_kw}}}"
+            )
         if angle == 0:
             return image, width, height, ocr_blocks, visual_regions
 
@@ -662,8 +678,8 @@ class OcrHasVisionService:
         # Issue#347：±90° 躺倒的扫描页（双面扫描奇偶交替、PDF 无 /Rotate）在方向
         # 分类全关的 OCR 下退化——表头字段读不出 → 整行漏打，竖排行被横排行假设
         # 截断 → 证号只遮前段。as-is 块出现旋转签名时，转 90°/270° 各补一次纯
-        # OCR（不跑 NER），比较制择优；好页零额外开销，坏页不浪费 NER。坐标留在
-        # 胜者空间，由 _detect_with_ocr_has 出口单点映射回原页。
+        # OCR（不跑 NER），按关键词清醒判别择优；好页零额外开销，坏页不浪费 NER。
+        # 坐标留在胜者空间，由 _detect_with_ocr_has 出口单点映射回原页。
         image, width, height, ocr_blocks, visual_regions = await self._normalize_ocr_orientation(
             image,
             width,

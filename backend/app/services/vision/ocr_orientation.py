@@ -6,9 +6,17 @@
 假设的字符框逻辑下被截断 → 证件号只遮前段。
 
 修法：OCR 前不假设方向——as-is 块评分，出现「旋转签名」（竖排行块占比高或
-巨型 blob）时把页图转 90°/270° 各补一次纯 OCR，比较制择优；胜者空间做 NER/
-匹配，归一化框在 `_detect_with_ocr_has` 出口单点映射回原页坐标。好页零额外
-开销（不触发重试），坏页不浪费 NER（重试只跑 OCR）。
+巨型 blob）时把页图转 90°/270° 各补一次纯 OCR，按「关键词清醒判别」择优；
+胜者空间做 NER/匹配，归一化框在 `_detect_with_ocr_has` 出口单点映射回原页
+坐标。好页零额外开销（不触发重试），坏页不浪费 NER（重试只跑 OCR）。
+
+判别器演进（Issue#347 复跑实证）：比较制分数择优被批量 VL 输出波动击穿——
+同一张图三次 OCR 评分 450/463/450，批内真转正候选被压低到 227、倒置乱码
+帧反超到 344，as-is 241×1.2 边际同时压死真候选 ⇒ 错向帧出框 ⇒ NER 锚点
+错乱、表头裸露。表单关键词命中数对 VL 波动免疫（真 upright kw=46 vs
+as-is/错向 kw=0），取代分数成为决定性判别器；所有候选都不清醒 ⇒
+`OrientationUnresolvedError` 页级显式失败（#199 语义，宁可显式失败不可
+静默少打码）。
 
 方向语义（与 PyMuPDF `page.set_rotation` 渲染语义对齐，单测钉死）：
 - angle=90：把原页**顺时针**转 90° 得到 OCR 输入（偶数页的转正方向）；
@@ -37,10 +45,15 @@ _MIN_CJK_FINE = 30                 # CJK 存活数下限（与长数字游程二
 _MIN_LONG_RUNS_FINE = 5            # ≥6 位数字游程数下限
 _VERTICAL_SHARE_WEIGHT = 150.0     # 竖排占比的评分惩罚
 _LONG_RUN_WEIGHT = 2.0             # 长数字游程权重（账号/日期是打码主目标）
-WINNER_MARGIN_RATIO = 1.2          # 胜者必须显著优于 as-is，否则保持原样
-# 置信早退的绝对下限：稀疏页边际基数太小，倒置低分读数也能过相对边际（复跑
-# 83 页胜者分布 294–463、唯一低分 108 即选错向页），天然空隙取 200。
-ORIENTATION_EARLY_EXIT_FLOOR = 200.0
+
+# Issue#347 关键词清醒判别：对账单类表单页的真 upright 帧必然读出成串表单
+# 词（真卷实证 kw=46），横躺/倒置帧读不出（kw=0），且对 VL 输出波动免疫。
+FORM_KEYWORDS = (
+    "账号", "卡号", "户名", "证件", "查询", "余额", "金额", "摘要", "序号",
+    "交易日期", "交易时间", "交易类型", "交易地点", "打印", "币种",
+    "Account", "Date", "Amount", "Query",
+)
+KEYWORD_HITS_MIN = 3               # 候选方向「清醒」的命中下限（46 vs 0 天然空隙）
 
 # 面积在此窗口内的块才参与竖排统计：过小的（标点/水印碎片）与过大的（整页
 # blob）都不是「文本行」。
@@ -56,9 +69,10 @@ class OrientationScore:
     """一次 OCR 块集的方向质量评分。"""
 
     angle: int                       # 该块集对应的输入旋转角（0=原样）
-    score: float                     # 比较制分数，越高越好
+    score: float                     # 比较制分数，越高越好（清醒候选间排序用）
     clearly_fine: bool               # 无需重试即可收
     rotation_suspect: bool           # 出现旋转签名 → 值得试转正
+    keyword_hits: int = 0            # 表单关键词命中数（清醒判别，对 VL 波动免疫）
     signals: dict = field(default_factory=dict)
 
 
@@ -72,6 +86,8 @@ def score_ocr_blocks(blocks: list, width: int, height: int) -> OrientationScore:
       表格块时此值逼近 1。
     - ``cjk`` / ``long_digit_runs``：内容存活量（CJK 字符数、≥6 位数字游程数）；
       乱码页 CJK 掉底，转正后显著回升。
+    - ``keyword_hits``：表单关键词命中数（``FORM_KEYWORDS``，ASCII 词大小写
+      不敏感）——决定性判别器，对 VL 输出波动免疫（真 upright 46 vs 乱码 0）。
     """
     page_area = max(width * height, 1)
     text_blocks = [b for b in blocks if str(getattr(b, "text", "") or "").strip()]
@@ -79,12 +95,15 @@ def score_ocr_blocks(blocks: list, width: int, height: int) -> OrientationScore:
 
     cjk = 0
     long_runs = 0
+    keyword_hits = 0
     blob_area = 0.0
     vertical = 0
     for b in text_blocks:
         text = str(getattr(b, "text", "") or "")
         cjk += len(_CJK_RE.findall(text))
         long_runs += len(_LONG_DIGIT_RUN_RE.findall(text))
+        lowered = text.lower()
+        keyword_hits += sum(lowered.count(kw.lower()) for kw in FORM_KEYWORDS)
         xs = [p[0] for p in (getattr(b, "polygon", None) or [])]
         ys = [p[1] for p in (getattr(b, "polygon", None) or [])]
         if not xs or not ys:
@@ -110,38 +129,60 @@ def score_ocr_blocks(blocks: list, width: int, height: int) -> OrientationScore:
         score=score,
         clearly_fine=clearly_fine,
         rotation_suspect=rotation_suspect,
+        keyword_hits=keyword_hits,
         signals={
             "blocks": n,
             "cjk": cjk,
             "long_digit_runs": long_runs,
+            "keyword_hits": keyword_hits,
             "vertical_share": round(vertical_share, 3),
             "blob_area": round(blob_area, 3),
         },
     )
 
 
-def choose_orientation(as_is: OrientationScore, candidate_scores: dict[int, float]) -> dict:
-    """纯决策：给定 as-is 评分与各候选角的分数，返回 {"angle", "retried", "scores"}。
+class OrientationUnresolvedError(RuntimeError):
+    """Issue#347：旋转嫌疑页的所有候选方向都读不出表单文本（关键词不清醒）。
 
-    规则：
-    - as-is 无旋转签名 → 0（好页零开销，绝不重试）；
-    - 有签名 → 取分数最高的候选角；但胜者必须比 as-is 高出
-      ``WINNER_MARGIN_RATIO`` 倍以上，否则保持 0（宁可维持现状，不引入
-      「把正常页转歪」的新风险）。
+    专类参照 ``RoutingEvidenceTimeout`` 先例：``vision_service.
+    is_page_fatal_stage_error`` 把本类升级为页级失败（#199 语义——
+    ``recognition.failed_pages`` 记账、交付闸 409），而非「stage failed + 页
+    completed」的静默放行。产生形态：as-is 竖排/巨型 blob 签名 + 候选方向 OCR
+    失败或全部乱码（关键词全灭）——此时比较制分数已被证明不可信（批量 VL
+    波动可让倒置乱码帧反超真转正帧），任选一向都是赌博。
     """
+
+
+def choose_orientation(as_is: OrientationScore, candidates: dict[int, dict]) -> dict:
+    """纯决策：as-is 评分 + 各候选 ``{angle: {"score", "keyword_hits"}}``。
+
+    返回 ``{"angle", "retried", "resolved", "scores"}``。规则（关键词清醒
+    判别取代比较制分数择优，Issue#347 复跑实证）：
+
+    - as-is 无旋转签名 → 0（好页零开销，绝不重试）；
+    - as-is 关键词清醒（kw ≥ ``KEYWORD_HITS_MIN``）→ 0：原样已读出真表单
+      文本，再旋转只会引入「把可读页转歪」的新风险；
+    - 存在清醒候选 → 取分数最高的清醒候选。**不再要求跨 as-is 分数边际**
+      ——真转正候选的批内评分可被 VL 波动压低到垃圾 as-is 之下（复跑实证
+      p10：90° 真候选 227 < as-is 241×1.2），边际判据会把可救页推向误回退；
+      分数仅在多个清醒候选间排序（实际近不存在——另一向必为倒置乱码）；
+    - 无清醒候选且 as-is 旋转嫌疑 → ``resolved=False``：调用方按 #199 语义
+      升级页级显式失败（宁可显式失败，不可静默少打码）。
+    """
+    scores = {"0": as_is.score}
     if not as_is.rotation_suspect:
-        return {"angle": 0, "retried": False, "scores": {"0": as_is.score}}
-    best_angle, best_score = 0, as_is.score
-    for angle, s in candidate_scores.items():
-        if s > best_score:
-            best_angle, best_score = int(angle), float(s)
-    if best_angle != 0 and best_score < as_is.score * WINNER_MARGIN_RATIO:
-        best_angle = 0
-    return {
-        "angle": best_angle,
-        "retried": True,
-        "scores": {"0": as_is.score, **{str(k): v for k, v in candidate_scores.items()}},
+        return {"angle": 0, "retried": False, "resolved": True, "scores": scores}
+    scores.update({str(a): float(d["score"]) for a, d in candidates.items()})
+    if as_is.keyword_hits >= KEYWORD_HITS_MIN:
+        return {"angle": 0, "retried": True, "resolved": True, "scores": scores}
+    sober = {
+        a: d for a, d in candidates.items()
+        if int(d.get("keyword_hits", 0) or 0) >= KEYWORD_HITS_MIN
     }
+    if sober:
+        best = max(sober, key=lambda a: float(sober[a]["score"]))
+        return {"angle": int(best), "retried": True, "resolved": True, "scores": scores}
+    return {"angle": 0, "retried": True, "resolved": False, "scores": scores}
 
 
 # ---------------------------------------------------------------- 图像旋转

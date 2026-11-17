@@ -11,7 +11,8 @@ from PIL import Image
 
 from app.services.ocr_has_vision_service import OCRTextBlock
 from app.services.vision.ocr_orientation import (
-    WINNER_MARGIN_RATIO,
+    KEYWORD_HITS_MIN,
+    OrientationUnresolvedError,
     choose_orientation,
     map_bounding_box_to_page,
     map_normalized_box_to_page,
@@ -45,10 +46,11 @@ PAGE_W, PAGE_H = 2584, 3655
 
 
 def _horizontal_page_blocks(page_w: int = PAGE_W, page_h: int = PAGE_H) -> list[OCRTextBlock]:
-    """正常横向页：多行宽扁块、CJK 充足。"""
+    """正常横向表单页：多行宽扁块、CJK 充足、表单关键词成串（ sober 判别锚）。"""
     blocks = []
     for i in range(12):
-        blocks.append(_block("合同编号：二〇二四年三月签订于南宁市青秀区", 0.05, 0.05 + i * 0.08, 0.6, 0.03, page_w, page_h))
+        blocks.append(_block("账号：6222021234567890 户名：李某某 交易日期：2024年3月15日 金额：3000.00",
+                             0.05, 0.05 + i * 0.08, 0.6, 0.03, page_w, page_h))
     return blocks
 
 
@@ -93,6 +95,18 @@ class TestScoreOcrBlocks:
         lying = score_ocr_blocks(_rotated_page_blocks(), PAGE_W, PAGE_H)
         upright = score_ocr_blocks(_horizontal_page_blocks(), PAGE_W, PAGE_H)
         assert upright.score > lying.score
+
+    def test_keyword_hits_counted(self):
+        # 关键词清醒判别（Issue#347 根因②演进）：表单词成串命中 vs 乱码页全灭
+        upright = score_ocr_blocks(_horizontal_page_blocks(), PAGE_W, PAGE_H)
+        lying = score_ocr_blocks(_rotated_page_blocks(), PAGE_W, PAGE_H)
+        assert upright.signals["keyword_hits"] >= KEYWORD_HITS_MIN
+        assert lying.signals["keyword_hits"] == 0
+
+    def test_keyword_hits_ascii_case_insensitive(self):
+        blocks = [_block("ACCOUNT 6222021234567890 AMOUNT 3000.00", 0.05, 0.05, 0.6, 0.03, PAGE_W, PAGE_H)]
+        s = score_ocr_blocks(blocks, PAGE_W, PAGE_H)
+        assert s.signals["keyword_hits"] >= 2
 
 
 # ---------------------------------------------------------------- 坐标映射
@@ -166,39 +180,68 @@ class TestRotateImageForOcr:
 
 # ---------------------------------------------------------------- 方向决策
 
+def _cand(score: float, keyword_hits: int) -> dict:
+    return {"score": score, "keyword_hits": keyword_hits}
+
+
 class TestChooseOrientation:
     def test_fine_page_short_circuits(self):
         as_is = score_ocr_blocks(_horizontal_page_blocks(), PAGE_W, PAGE_H)
         d = choose_orientation(as_is, {})
         assert d["angle"] == 0
         assert d["retried"] is False
+        assert d["resolved"] is True
 
-    def test_suspect_page_picks_best_upright(self):
+    def test_suspect_page_picks_sober_upright(self):
         as_is = score_ocr_blocks(_rotated_page_blocks(), PAGE_W, PAGE_H)
-        # 模拟 rot90 候选分数更高
-        d = choose_orientation(as_is, {90: 467.0, 270: 350.0})
+        # 模拟 rot90 候选清醒（kw=46）、rot270 倒置乱码（kw=0）
+        d = choose_orientation(as_is, {90: _cand(467.0, 46), 270: _cand(350.0, 0)})
         assert d["angle"] == 90
         assert d["retried"] is True
+        assert d["resolved"] is True
 
-    def test_margin_fallback_keeps_as_is(self):
+    def test_sober_candidate_beats_volatile_score_p10_regression(self):
+        """p10 复现实证（根因②演进的核心回归钉）：批量 VL 波动把真转正候选压到
+        227、倒置乱码帧抬到 344，as-is 241——比较制择优（含 1.2× 边际）全部
+        指向错向/回退 ⇒ 乱码帧出框 ⇒ 表头裸露。关键词清醒判别下 90°（kw=46）
+        直接胜出，分数再高的乱码帧（kw=0）也不选。"""
         as_is = score_ocr_blocks(_rotated_page_blocks(), PAGE_W, PAGE_H)
-        # 候选仅高出 5%（< WINNER_MARGIN_RATIO）：宁可保持原样，不引入旋转错位风险
-        d = choose_orientation(as_is, {90: as_is.score * 1.05, 270: as_is.score * 1.02})
-        assert d["angle"] == 0
-        assert d["retried"] is True
+        d = choose_orientation(
+            as_is,
+            {90: _cand(227.0, 46), 270: _cand(344.0, 0)},
+        )
+        assert d["angle"] == 90
+        assert d["resolved"] is True
 
-    def test_wrong_rotation_loses_to_as_is(self):
-        # 错向（180°）候选分数低于横躺 as-is：必须回退 0
+    def test_as_is_sober_keeps_zero(self):
+        """as-is 有旋转签名但关键词清醒（原样已读出真表单文本）：保持 0，
+        不信任任何候选——不引入「把可读页转歪」的新风险。"""
+        blocks = _rotated_page_blocks()
+        blocks[0] = _vertical_block("账号：6222021234567890 户名：李某某 交易日期：2024年3月15日",
+                                    0.1, 0.1, 0.022, 0.12, PAGE_W, PAGE_H)
+        as_is = score_ocr_blocks(blocks, PAGE_W, PAGE_H)
+        assert as_is.rotation_suspect is True
+        assert as_is.keyword_hits >= KEYWORD_HITS_MIN
+        d = choose_orientation(as_is, {90: _cand(500.0, 46)})
+        assert d["angle"] == 0
+        assert d["resolved"] is True
+
+    def test_all_garbage_resolved_false(self):
+        """无清醒候选且 as-is 旋转嫌疑 ⇒ resolved=False（调用方升级页级显式失败，
+        宁可显式失败不可静默少打码）。"""
         as_is = score_ocr_blocks(_rotated_page_blocks(), PAGE_W, PAGE_H)
-        d = choose_orientation(as_is, {90: as_is.score * 0.5, 270: as_is.score * 0.6})
+        d = choose_orientation(as_is, {90: _cand(344.0, 0), 270: _cand(350.0, 0)})
         assert d["angle"] == 0
+        assert d["resolved"] is False
 
-    def test_margin_constant(self):
-        assert WINNER_MARGIN_RATIO == 1.2
+    def test_missing_keyword_key_treated_garbage(self):
+        """候选字典缺 keyword_hits 键（旧调用形态）按 0 处理 = 不清醒。"""
+        as_is = score_ocr_blocks(_rotated_page_blocks(), PAGE_W, PAGE_H)
+        d = choose_orientation(as_is, {90: {"score": 500.0}})
+        assert d["resolved"] is False
 
-    def test_early_exit_floor_importable(self):
-        from app.services.vision.ocr_orientation import ORIENTATION_EARLY_EXIT_FLOOR
-        assert ORIENTATION_EARLY_EXIT_FLOOR == 200.0
+    def test_keyword_hits_min_constant(self):
+        assert KEYWORD_HITS_MIN == 3
 
 
 # ---------------------------------------------------------------- 映射接线（BoundingBox 层）
@@ -253,11 +296,12 @@ class TestDetectAndDrawOrientationSeam:
         monkeypatch.setattr(svc, "_invoke_has_text_analysis", fake_ner)
         monkeypatch.setattr(svc, "_apply_regex_fallback", lambda *a, **k: [])
         regions, _ = await svc.detect_and_draw(_png_bytes(400, 800), vision_types=None, draw_result=False)
-        assert svc.last_ocr_orientation["angle"] == 90  # 并列时取先试的 90
+        assert svc.last_ocr_orientation["angle"] == 90  # 90° 候选关键词清醒 ⇒ 早退胜出
         assert svc.last_ocr_orientation["retried"] is True
-        assert calls == [(400, 800), (800, 400)]  # as-is + rot90（置信早退，rot270 免跑）
+        assert svc.last_ocr_orientation["resolved"] is True
+        assert calls == [(400, 800), (800, 400)]  # as-is + rot90（关键词清醒早退，rot270 免跑）
         # NER/匹配吃的是胜者（横排）块
-        assert svc.last_ocr_blocks[0].text.startswith("合同")
+        assert svc.last_ocr_blocks[0].text.startswith("账号")
         assert regions == []
 
     @pytest.mark.asyncio
@@ -279,6 +323,7 @@ class TestDetectAndDrawOrientationSeam:
         await svc.detect_and_draw(_png_bytes(800, 400), vision_types=None, draw_result=False)
         assert svc.last_ocr_orientation["angle"] == 0
         assert svc.last_ocr_orientation["retried"] is False
+        assert svc.last_ocr_orientation["resolved"] is True
         assert calls == [(800, 400)]  # 好页零额外 OCR 开销
 
 
@@ -333,14 +378,14 @@ class TestDetectWithOcrHasExitMapping:
 
     @pytest.mark.asyncio
     async def test_not_confident_first_still_evaluates_second(self, monkeypatch):
-        """第一个候选「明显正常但分数不达边际」（横排乱码形态）⇒ 必须继续试 270。"""
+        """第一个候选「结构正常但关键词不清醒」（横排乱码形态，kw=0）⇒ 早退闸
+        不开、必须继续试 270；270 清醒 ⇒ 胜出。"""
         from app.services.ocr_has_vision_service import get_ocr_has_vision_service
         svc = get_ocr_has_vision_service()
         calls: list[tuple[int, int]] = []
 
         def _garbage_horizontal(page_w: int, page_h: int) -> list[OCRTextBlock]:
-            # 横排（vertical_share=0 → clearly_fine 走 cjk 门）但文本稀碎、分数低：
-            # 5 块 × 8 CJK = 40 ≥ 30 → clearly_fine True；score 40 < as-is 70×1.2
+            # 横排（vertical_share=0 → clearly_fine 走 cjk 门）但无表单词：kw=0
             return [_block("杂读碎符碎片乱块文本", 0.05 + i * 0.18, 0.1 + (i % 2) * 0.5, 0.15, 0.04, page_w, page_h)
                     for i in range(5)]
 
@@ -359,35 +404,38 @@ class TestDetectWithOcrHasExitMapping:
         monkeypatch.setattr(svc, "_invoke_has_text_analysis", fake_ner)
         monkeypatch.setattr(svc, "_apply_regex_fallback", lambda *a, **k: [])
         await svc.detect_and_draw(_png_bytes(400, 800), vision_types=None, draw_result=False)
-        assert calls == [(400, 800), (800, 400), (800, 400)]  # 90° 不达边际 ⇒ 270° 照跑
+        assert calls == [(400, 800), (800, 400), (800, 400)]  # 90° 乱码 kw=0 ⇒ 270° 照跑
         assert svc.last_ocr_orientation["angle"] == 270
 
 
-class TestEarlyExitFloor:
-    """Issue#347 复跑实证：稀疏页（as-is 64）倒置读数 108 过相对边际选错向，
-    户名/账号漏打。早退须同时过绝对下限（胜者分布 294–463，空隙取 200）。"""
+class TestKeywordSoberGate:
+    """Issue#347 根因②演进：关键词清醒判别取代比较制分数（批量 VL 波动击穿
+    比较制的复现实证见 test_sober_candidate_beats_volatile_score_p10_regression）。"""
 
     @pytest.mark.asyncio
-    async def test_low_score_confident_candidate_still_evaluates_second(self, monkeypatch):
+    async def test_garbage_candidate_still_evaluates_second(self, monkeypatch):
+        """错向候选（倒置乱码，kw=0）无论结构多「正常」、分数多高，都不得早退；
+        真 upright（kw≥3）在第二个候选才被评到 ⇒ 胜出。复跑 p39 实证的泛化形态
+        （修前：倒置低分读数过相对边际早退选错向）。"""
         from app.services.ocr_has_vision_service import get_ocr_has_vision_service
         svc = get_ocr_has_vision_service()
         calls: list[tuple[int, int]] = []
 
         def _sparse_upside(page_w: int, page_h: int) -> list[OCRTextBlock]:
-            # 倒置但横排、clearly_fine（cjk 40≥30）、score 108 < 200 下限
+            # 倒置但横排、clearly_fine（cjk 40≥30）、无表单词：kw=0
             return [_block("末页汇总行数字零星", 0.08 + i * 0.16, 0.1 + (i % 2) * 0.4, 0.14, 0.035, page_w, page_h)
                     for i in range(5)]
 
         def fake_run_paddle_ocr(image, require_visual_regions=False, selected_entity_types=None, stage_status=None):
             calls.append((image.width, image.height))
             if image.width < image.height:
-                # as-is：稀疏竖排（suspect）
+                # as-is：稀疏竖排（suspect、kw=0）
                 blocks = [_vertical_block("李某某20100424自助", 0.1 + i * 0.2, 0.1, 0.02, 0.1, image.width, image.height)
                           for i in range(6)]
                 return blocks, []
             if len(calls) == 2:
                 return _sparse_upside(image.width, image.height), []
-            # 270 候选：真 upright，分数更高
+            # 270 候选：真 upright（表单词清醒）
             return _horizontal_page_blocks(image.width, image.height), []
 
         async def fake_ner(blocks, vision_types=None, stage_status=None, page_deadline=None):
@@ -397,11 +445,13 @@ class TestEarlyExitFloor:
         monkeypatch.setattr(svc, "_invoke_has_text_analysis", fake_ner)
         monkeypatch.setattr(svc, "_apply_regex_fallback", lambda *a, **k: [])
         await svc.detect_and_draw(_png_bytes(400, 800), vision_types=None, draw_result=False)
-        assert calls == [(400, 800), (800, 400), (800, 400)]  # 108 < 200 ⇒ 不早退，270 照评
+        assert calls == [(400, 800), (800, 400), (800, 400)]  # 90° kw=0 ⇒ 不早退，270° 照评
         assert svc.last_ocr_orientation["angle"] == 270
+        assert svc.last_ocr_orientation["resolved"] is True
 
     @pytest.mark.asyncio
-    async def test_strong_confident_candidate_still_early_exits(self, monkeypatch):
+    async def test_sober_candidate_early_exits(self, monkeypatch):
+        """关键词清醒的候选（kw≥3 且结构正常）⇒ 早退，省第二次纯 OCR。"""
         from app.services.ocr_has_vision_service import get_ocr_has_vision_service
         svc = get_ocr_has_vision_service()
         calls: list[tuple[int, int]] = []
@@ -419,5 +469,49 @@ class TestEarlyExitFloor:
         monkeypatch.setattr(svc, "_invoke_has_text_analysis", fake_ner)
         monkeypatch.setattr(svc, "_apply_regex_fallback", lambda *a, **k: [])
         await svc.detect_and_draw(_png_bytes(400, 800), vision_types=None, draw_result=False)
-        assert calls == [(400, 800), (800, 400)]  # 450 ≥ 200 ⇒ 照常早退
+        assert calls == [(400, 800), (800, 400)]  # 90° 清醒 ⇒ 照常早退
         assert svc.last_ocr_orientation["angle"] == 90
+
+    @pytest.mark.asyncio
+    async def test_all_garbage_raises_unresolved(self, monkeypatch):
+        """所有方向都不清醒（候选 OCR 乱码/关键词全灭）⇒ OrientationUnresolvedError
+        从 detect_and_draw 上抛（vision_service 按 #199 语义升级页级显式失败）。"""
+        from app.services.ocr_has_vision_service import get_ocr_has_vision_service
+        svc = get_ocr_has_vision_service()
+
+        def _garbage_horizontal(page_w: int, page_h: int) -> list[OCRTextBlock]:
+            return [_block("杂读碎符碎片乱块文本", 0.05 + i * 0.18, 0.1 + (i % 2) * 0.5, 0.15, 0.04, page_w, page_h)
+                    for i in range(5)]
+
+        def fake_run_paddle_ocr(image, require_visual_regions=False, selected_entity_types=None, stage_status=None):
+            if image.width < image.height:
+                return _rotated_page_blocks(image.width, image.height), []  # as-is 竖排 kw=0
+            return _garbage_horizontal(image.width, image.height), []      # 候选横排乱码 kw=0
+
+        async def fake_ner(blocks, vision_types=None, stage_status=None, page_deadline=None):
+            return []
+
+        monkeypatch.setattr(svc, "_run_paddle_ocr", fake_run_paddle_ocr)
+        monkeypatch.setattr(svc, "_invoke_has_text_analysis", fake_ner)
+        monkeypatch.setattr(svc, "_apply_regex_fallback", lambda *a, **k: [])
+        with pytest.raises(OrientationUnresolvedError, match="orientation unresolved"):
+            await svc.detect_and_draw(_png_bytes(400, 800), vision_types=None, draw_result=False)
+        # 观测先行落盘（失败页的 stage_duration_ms 仍能读到 ocr_orientation）
+        assert svc.last_ocr_orientation["resolved"] is False
+        assert svc.last_ocr_orientation["angle"] == 0
+
+
+class TestOrientationFatalWiring:
+    """页级失败接线钉：is_page_fatal_stage_error 必须认 OrientationUnresolvedError
+    （否则方向未决被降级为 stage warning、页照常 completed = 静默漏打放行）。"""
+
+    def test_unresolved_is_page_fatal(self):
+        from app.services.vision_service import is_page_fatal_stage_error
+
+        assert is_page_fatal_stage_error(OrientationUnresolvedError("x")) is True
+
+    def test_plain_runtime_error_stays_non_fatal(self):
+        # 普通 RuntimeError（如一般 OCR 抖动）维持「stage failed + 页 completed」
+        from app.services.vision_service import is_page_fatal_stage_error
+
+        assert is_page_fatal_stage_error(RuntimeError("boom")) is False

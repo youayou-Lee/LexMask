@@ -100,7 +100,7 @@ def is_page_fatal_stage_error(result) -> bool:
     只扫了一部分」的交付面（云实测 2026-10-29：页 133 撞预算 179.7s ⇒
     status=completed、failed_pages={}、ocr_has 区域数 0）。
 
-    本函数把三类异常升级为页级失败：
+    本函数把四类异常升级为页级失败：
 
     1. 「页级 NER 预算 strict 失败」（``HasTextNerPageBudgetExceeded``）——
        `task_queue_pipelines` 的 `except Exception` 会把它写进
@@ -114,13 +114,19 @@ def is_page_fatal_stage_error(result) -> bool:
        后上抛）或负健康 TTL 内跳过 ⇒ 该页**没被 NER 扫过**，静默零实体放行即
        漏打码（fail-open），升格页级失败（#199 语义）。受
        ``HAS_NER_UNAVAILABLE_PAGE_FAIL`` 门控（False=运维回落阀，此时
-       `run_has_text_analysis` 不抛，本分支为双保险）。其它阶段异常（OCR 服务
-       抖动、视觉通道故障）维持既有「降级 + warning」语义不变。
+       `run_has_text_analysis` 不抛，本分支为双保险）。
+    4. Issue#347 方向未决（``OrientationUnresolvedError``）——旋转嫌疑页的所有
+       候选方向都读不出表单文本（关键词不清醒），任选一向都是赌博 ⇒ 页级显式
+       失败（#199 语义），而非静默按垃圾 OCR 放行（表头/账号整行漏打）。
+
+    其它阶段异常（OCR 服务抖动、视觉通道故障）维持既有「降级 + warning」语义
+    不变。
     """
     from app.services.vision.has_text_analysis import (
         HasTextNerPageBudgetExceeded,
         HasTextNerUnavailable,
     )
+    from app.services.vision.ocr_orientation import OrientationUnresolvedError
 
     if isinstance(result, HasTextNerPageBudgetExceeded):
         return bool(getattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True))
@@ -133,6 +139,9 @@ def is_page_fatal_stage_error(result) -> bool:
     # 即代表用户显式要求过该类型。
     if isinstance(result, VisualStageError):
         return bool(getattr(settings, "VISUAL_EXPLICIT_TYPE_PAGE_FAIL", False))
+    # Issue#347：方向未决专类（无门控，正确性 fail-closed，参照 RoutingEvidenceTimeout）。
+    if isinstance(result, OrientationUnresolvedError):
+        return True
     return isinstance(result, RoutingEvidenceTimeout)
 
 from PIL import Image, ImageOps
