@@ -252,10 +252,6 @@ const enBase: Record<string, string> = {
   'playground.processingModeReplace': 'Replace (Pseudonym)',
   'playground.processingModeReplaceDesc': 'Replace text, keep it readable',
   'playground.processingModeReplaceUnavailable': 'Unavailable for scanned files / images',
-  'playground.processingModeScannedNotice':
-    'Replacement (pseudonym) is not yet available for scanned PDFs / images; only masking is supported for now.',
-  'playground.processingModeMaskPdfNotice':
-    'Mask (redaction) supports PDF files only; use Replace for this file.',
   'playground.pseudonymMap': 'Pseudonym Mapping',
   'playground.pseudonymMapDesc':
     'Confirm the replacement for each item before running; the output is exactly what you see. A mapping table is available for download.',
@@ -460,8 +456,18 @@ const enBase: Record<string, string> = {
   'jobs.updatedAt': 'Updated',
   'jobs.deleteAction': 'Delete',
   'jobs.noRecords': 'No task records',
+  // Issue#351 B1: drop internal "job ticket" jargon from the empty state.
   'jobs.noRecordsHint':
-    'After creating from the batch entry, you can manage progress, expand file trees, and delete jobs here',
+    'Once created from the batch entry, progress, files, and export records are managed here',
+  // Issue#351 B2: filtered-empty state — tell users what other states hold and
+  // where to go. Job-unit numbers only (must reconcile with landing row count).
+  'jobs.emptyFiltered': 'No tasks under the current filter',
+  'jobs.emptyFilteredHint': 'Other statuses: {parts}',
+  'jobs.emptyPart.active': '{n} running',
+  'jobs.emptyPart.review': '{n} awaiting review',
+  'jobs.emptyPart.completed': '{n} completed',
+  'jobs.emptyPart.risk': '{n} with issues',
+  'jobs.emptyGoReview': 'View awaiting review',
   'jobs.gotoBatch': 'Go to Batch',
   'jobs.viewDetail': 'View Details',
   'jobs.processingEllipsis': 'Processing…',
@@ -810,7 +816,9 @@ const enBase: Record<string, string> = {
   'batchWizard.pages.singleExpand': 'Per-page results & page export',
   'batchWizard.pages.singleRunning': 'Recognizing · page {page}',
   'batchWizard.pages.singleExportHint': 'Selected pages are packed into a zip (redacted PDF + mapping list + optional 说明.txt). Failed / not-yet-recognized pages are not selectable and never shipped.',
-  'batchWizard.pages.exportSummary': '{count} pages selected ({range}) · {excludedCount} failed page(s) excluded · package = zip (redacted PDF + mapping list + optional 说明.txt)',
+  // Issue#351 A6: the package composition lives in the canvas banner only
+  // (singleExportHint); the dialog footer keeps the counts.
+  'batchWizard.pages.exportSummary': '{count} pages selected ({range}) · {excludedCount} failed page(s) excluded',
   'batchWizard.pages.exportEmpty': 'No page selected yet (try a range such as 100-150)',
   'batchWizard.pages.stateSuccess': 'success',
   'batchWizard.pages.stateFailed': 'failed',
@@ -1219,14 +1227,13 @@ const enOverrides: Record<string, string> = {
     'Confirm the mapping per file: keep original text or set custom replacements; unset rows use placeholders. Confirming generates sanitized Markdown.',
   'batchWizard.step4Agent.confirmGenerate': 'Confirm & generate',
   'batchWizard.step4Agent.bulkFlushFailed': 'Failed to sync unsaved edits before bulk confirm. Retry or confirm per item.',
-  'jobs.filters.kicker': 'Operations',
+  // Issue#351 B3: drop the kicker chip; keep only the two metric cards that do
+  // not duplicate the tab badges (total / problem). Running/review/completed
+  // counts live in the tabs (each piece of information appears once).
   'jobs.filters.title': 'Jobs Console',
   'jobs.filters.desc': 'Keep queue progress, review backlog, and completed runs in one place.',
   'jobs.cleanupButton': 'Clear all data',
   'jobs.metric.totalJobs': 'Total jobs',
-  'jobs.metric.activeJobs': 'Active jobs',
-  'jobs.metric.awaitingReviewFiles': 'Review files',
-  'jobs.metric.completedFiles': 'Completed files',
   'jobs.metric.riskFiles': 'Problem files',
   'jobs.tab.all': 'All',
   'jobs.statusLabel': 'Status',
@@ -1340,15 +1347,14 @@ const enOverrides: Record<string, string> = {
   'playground.popout': 'Pop out',
   'playground.reRecognize': 'Run recognition again',
   'playground.reconfigTypes': 'Adjust recognition items',
-  'playground.reconfigHint': 'Go back to the upload page to pick a preset or tick recognition items, then upload the file to recognize.',
   'playground.feedAgent': 'Feed cloud AI (generate redacted MD)',
   'playground.feedAgentHint': 'Switch to AI feed mode: MinerU parsing → mapping review → redacted Markdown (no re-upload needed)',
   'playground.recognitionSection': 'Recognition',
-  'playground.recognitionSectionDesc':
-    'Refresh detection after updating the recognition list or item settings.',
-  'playground.rerunHint': 'This refresh only applies to the current file.',
+  // Issue#351 A4: three grey hint paragraphs collapse into one merged line that
+  // also discloses the "current file is cleared" consequence up front.
+  'playground.rerunHint':
+    'Re-running only refreshes the current file; adjusting recognition items goes back to the upload page and clears it.',
   'playground.results': 'Detection results',
-  'playground.selectionSummary': '{selected} selected out of {total}',
   'playground.reviewSelection': 'Review selection',
   'playground.regionList': 'Regions',
   'playground.clickToEdit': 'Select any item to refine, remove, or review before export.',
@@ -2349,9 +2355,10 @@ Object.assign(enOverrides, {
   // Issue#244 Task C: delivery watermark option (next to masking; hidden in replace mode)
   'playground.watermarkDeliveryLabel': 'Watermark',
   'playground.watermarkDeliveryKeep': 'Keep original watermark',
-  'playground.watermarkDeliveryKeepDesc': 'The output keeps the file\'s original watermark',
+  // Issue#351 A3: short option-card descriptions that never truncate mid-sentence.
+  'playground.watermarkDeliveryKeepDesc': 'Keeps the original watermark',
   'playground.watermarkDeliveryStrip': 'Remove watermark',
-  'playground.watermarkDeliveryStripDesc': 'Standalone-layer watermarks are stripped before recognition; the output has no original watermark',
+  'playground.watermarkDeliveryStripDesc': 'Stripped before recognition',
   'playground.watermarkLabel': 'Delivery watermark (optional)',
   'batchWizard.step1.watermarkLabel': 'Delivery watermark (optional)',
   'batchWizard.step1.watermarkDeliveryLabel': 'Watermark',

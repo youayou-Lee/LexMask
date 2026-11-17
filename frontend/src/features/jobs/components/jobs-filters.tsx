@@ -1,14 +1,12 @@
 ﻿// Copyright 2026 LexMask Contributors
 
-import { RefreshCw, Sparkles, Trash2 } from 'lucide-react';
+import { RefreshCw, Trash2 } from 'lucide-react';
 import { useT } from '@/i18n';
 import { Button } from '@/components/ui/button';
 
+// Issue#351 B3：本组件只消费与页签口径不重叠的两项（其余口径由页签徽标承载）。
 type PageMetrics = {
   totalJobs: number;
-  activeJobs: number;
-  awaitingReviewItems: number;
-  completedItems: number;
   riskItems: number;
 };
 
@@ -32,24 +30,15 @@ export function JobsFilters({
   return (
     <section className="saas-panel mb-2 grid shrink-0 gap-2.5 rounded-[20px] border-border/70 bg-card/95 p-2.5 shadow-[var(--shadow-control)] xl:grid-cols-[minmax(260px,0.7fr)_minmax(520px,1fr)_auto] xl:items-center 2xl:p-3">
       <div className="flex min-w-0 flex-col gap-1">
-        <div className="flex min-w-0 flex-nowrap items-center gap-x-2">
-          <span className="saas-kicker inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap !px-2 !py-1">
-            <Sparkles className="size-3.5" />
-            {t('jobs.filters.kicker')}
-          </span>
-          <h2 className="page-title truncate text-base">{t('jobs.filters.title')}</h2>
-        </div>
+        {/* Issue#351 B3：删「操作」kicker chip（对用户零信息量） */}
+        <h2 className="page-title truncate text-base">{t('jobs.filters.title')}</h2>
         <p className="page-copy truncate text-xs leading-4">{t('jobs.filters.desc')}</p>
       </div>
 
-      <div className="grid min-w-0 grid-cols-2 gap-1.5 sm:grid-cols-3 xl:grid-cols-5">
+      {/* Issue#351 B3：统计卡只留与页签徽标口径不重叠的两张——
+          运行/待复核/已完成由页签承载（同一信息只出现一次）。 */}
+      <div className="grid min-w-0 grid-cols-2 gap-1.5 xl:max-w-[280px]">
         <MetricPill label={t('jobs.metric.totalJobs')} value={metrics.totalJobs} />
-        <MetricPill label={t('jobs.metric.activeJobs')} value={metrics.activeJobs} />
-        <MetricPill
-          label={t('jobs.metric.awaitingReviewFiles')}
-          value={metrics.awaitingReviewItems}
-        />
-        <MetricPill label={t('jobs.metric.completedFiles')} value={metrics.completedItems} />
         <MetricPill label={t('jobs.metric.riskFiles')} value={metrics.riskItems} tone="alert" />
       </div>
 

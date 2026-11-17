@@ -206,13 +206,9 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
                 {inlineWatermarkNotice}
               </p>
             )}
-            <div className="space-y-0.5">
-              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                {t('playground.recognitionSection')}
-              </div>
-              <p className="line-clamp-2 text-sm leading-5 text-foreground">
-                {t('playground.recognitionSectionDesc')}
-              </p>
+            {/* Issue#351 A4：识别卡灰字说明收敛为一行（rerunHint 合并版，见 i18n） */}
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {t('playground.recognitionSection')}
             </div>
             {presetQuickSwitch}
             <Button
@@ -231,16 +227,12 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
 
         <Card className="overflow-hidden">
           <CardHeader className="p-3.5 pb-2.5">
+            {/* Issue#351 A1：计数只保留右上 Badge 一处（删「已选 N / M」副文案） */}
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <CardTitle className="truncate text-sm">
                   {t('playground.reviewSelection')}
                 </CardTitle>
-                <p className="mt-1 truncate text-xs text-muted-foreground">
-                  {t('playground.selectionSummary')
-                    .replace('{selected}', String(shownSelectedCount))
-                    .replace('{total}', String(totalCount))}
-                </p>
               </div>
               <Badge variant="outline" className="shrink-0 rounded-full px-2.5 py-1">
                 {shownSelectedCount}/{totalCount}
@@ -557,22 +549,8 @@ const ProcessingModeSelector: FC<{
           );
         })}
       </div>
-      {maskDisabled && (
-        <p
-          className="text-[11px] leading-4 text-muted-foreground"
-          data-testid="playground-processing-mode-mask-notice"
-        >
-          {t('playground.processingModeMaskPdfNotice')}
-        </p>
-      )}
-      {replaceDisabled && (
-        <p
-          className="text-[11px] leading-4 text-muted-foreground"
-          data-testid="playground-processing-mode-scanned-notice"
-        >
-          {t('playground.processingModeScannedNotice')}
-        </p>
-      )}
+      {/* Issue#351 A2：不可用原因只在选项卡 desc 内说明（恰好一处），
+          原两行常驻 notice（maskPdf/scanned）删除——desc 文案由 i18n 承载完整原因 */}
     </div>
   );
 };
@@ -799,17 +777,24 @@ const BoxList: FC<{
     return <EmptyDetectionState mode="image" />;
   }
 
+  // Issue#351 A7：来源标签只在混合来源时对少数派行标注（同源全隐），
+  // 消除「逐行重复同一标签、扫读零信息量」的噪音；首行来源为锚。
+  const boxSourceLabel = (box: BoundingBox) =>
+    box.source === 'ocr_has'
+      ? t('playground.sourceOcr')
+      : box.source === 'visual_features'
+        ? t('playground.sourceImage')
+        : box.source === 'ner'
+          ? t('playground.sourceNer')
+          : t('playground.sourceManual');
+  const anchorSource = boxSourceLabel(boxes[0]);
+  const mixedSource = new Set(boxes.map(boxSourceLabel)).size > 1;
+
   return (
     <>
       {boxes.map((box) => {
-        const sourceLabel =
-          box.source === 'ocr_has'
-            ? t('playground.sourceOcr')
-            : box.source === 'visual_features'
-              ? t('playground.sourceImage')
-              : box.source === 'ner'
-                ? t('playground.sourceNer')
-                : t('playground.sourceManual');
+        const sourceLabel = boxSourceLabel(box);
+        const showSource = mixedSource && sourceLabel !== anchorSource;
 
         return (
           <div
@@ -839,7 +824,7 @@ const BoxList: FC<{
                 <Badge variant="secondary">
                   {typeNameById.get(box.type) ?? getEntityTypeName(box.type)}
                 </Badge>
-                <Badge variant="outline">{sourceLabel}</Badge>
+                {showSource && <Badge variant="outline">{sourceLabel}</Badge>}
               </div>
               <p className="truncate text-sm text-foreground">
                 {box.text || t('playground.imageRegion')}
@@ -852,19 +837,23 @@ const BoxList: FC<{
   );
 };
 
+// Issue#351 A7：实体来源标签的唯一映射点（原始 source 字段 → 语义分组标签）。
+// 注意 has/llm 等都归「语义模型」——混合判定按标签而非原始字段。
+function entitySourceLabel(entity: Entity, t: (key: string) => string): string {
+  if (entity.source === 'regex') return t('playground.sourceRegex');
+  if (entity.source === 'manual') return t('playground.sourceManual');
+  return t('playground.sourceAi');
+}
+
 const EntityRow: FC<{
   entity: Entity;
   typeNameById: Map<string, string>;
+  showSource: boolean;
   onClick: (entity: Entity, event: ReactMouseEvent) => void;
   onRemove: (id: string) => void;
-}> = ({ entity, typeNameById, onClick, onRemove }) => {
+}> = ({ entity, typeNameById, showSource, onClick, onRemove }) => {
   const t = useT();
-  const sourceLabel =
-    entity.source === 'regex'
-      ? t('playground.sourceRegex')
-      : entity.source === 'manual'
-        ? t('playground.sourceManual')
-        : t('playground.sourceAi');
+  const sourceLabel = entitySourceLabel(entity, t);
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -888,7 +877,7 @@ const EntityRow: FC<{
           <Badge variant="secondary">
             {typeNameById.get(entity.type) ?? getEntityTypeName(entity.type)}
           </Badge>
-          <Badge variant="outline">{sourceLabel}</Badge>
+          {showSource && <Badge variant="outline">{sourceLabel}</Badge>}
         </div>
         <p className="truncate text-sm text-foreground">{entity.text}</p>
       </div>
@@ -932,6 +921,26 @@ const EntityList: FC<{
     ENTITY_GROUPS.flatMap((group) => group.types.map((type) => type.id)),
   );
   const customEntities = entities.filter((entity) => !groupedTypeIds.has(entity.type));
+  // Issue#351 A7：同源列表不渲染来源标签；混合来源只标注少数派行。
+  // 锚=多数派标签（频次最高；平票取数据序首个）——渲染按组序重排，
+  // 用数据序首行当锚会与用户看到的首行错位（门⑥ Minor-4）。
+  const labelCounts = new Map<string, number>();
+  for (const entity of entities) {
+    const label = entitySourceLabel(entity, t);
+    labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
+  }
+  const mixedSource = labelCounts.size > 1;
+  let dominantLabel = '';
+  let dominantCount = 0;
+  for (const entity of entities) {
+    const label = entitySourceLabel(entity, t);
+    const count = labelCounts.get(label) ?? 0;
+    if (count > dominantCount) {
+      dominantCount = count;
+      dominantLabel = label;
+    }
+  }
+  const sourceMarking = (entity: Entity) => mixedSource && entitySourceLabel(entity, t) !== dominantLabel;
 
   return (
     <>
@@ -957,6 +966,7 @@ const EntityList: FC<{
                 key={entity.id}
                 entity={entity}
                 typeNameById={typeNameById}
+                showSource={sourceMarking(entity)}
                 onClick={onClick}
                 onRemove={onRemove}
               />
@@ -980,6 +990,7 @@ const EntityList: FC<{
               key={entity.id}
               entity={entity}
               typeNameById={typeNameById}
+              showSource={sourceMarking(entity)}
               onClick={onClick}
               onRemove={onRemove}
             />

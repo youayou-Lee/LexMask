@@ -13,6 +13,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, useLocation } from 'react-router-dom';
+import { zh } from '@/i18n/zh';
 
 import { TasksPage } from './tasks-page';
 
@@ -51,6 +52,10 @@ const { mockedJobs, mockedUseJobs, resetMockedJobsState } = vi.hoisted(() => {
       awaitingReviewItems: 3,
       completedItems: 40,
       riskItems: 1,
+      // Issue#351 B2：工单单位口径（mock 与 use-jobs.ts 返回形状逐键对齐，门⑥ Minor-7）
+      awaitingReviewJobs: 3,
+      completedJobs: 40,
+      riskJobs: 1,
     },
     changeTab: vi.fn(),
     refreshList: vi.fn(),
@@ -323,5 +328,42 @@ describe('Issue#282：供料任务并入任务中心', () => {
   it('无进行中供料任务时不渲染面板', () => {
     renderTasks('/jobs');
     expect(screen.queryByTestId('agent-md-task-panel')).toBeNull();
+  });
+});
+
+// Issue#351 B1/B3：任务中心术语统一「复核」族 + 顶部堆叠收敛。
+// 冷审纪律：旧变体「清零」必须是负向断言（正则一次扫三个变体），
+// 且与「新词在场」的正向断言成对，防选择器打空恒绿。
+describe('Issue#351 B1：任务中心术语统一「复核」族', () => {
+  it('旧变体（待审核/待审阅/继续审阅）在 /jobs 页清零，新词在位', () => {
+    renderTasks('/jobs');
+    // 负向：三个旧变体一次扫空
+    expect(screen.queryByText(/待审核|待审阅|继续审阅/)).toBeNull();
+    // 正向：统一后的词确实渲染（列头待复核 + 操作列继续复核）
+    expect(screen.getAllByText(/待复核/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/继续复核/).length).toBeGreaterThan(0);
+  });
+
+  it('门⑥ Critical-1：动态 key redactionState.awaiting_review（任务详情页可达）也是待复核', () => {
+    // 该 key 经 utils/redactionState.getRedactionStateLabel 渲染于 /jobs「查看详情」
+    // 详情页——字符串值级钉（渲染面走 job-detail，此处钉字典防回归）
+    expect(zh['redactionState.awaiting_review']).toBe('待复核');
+    expect(zh['job.status.awaiting_review']).toBe('待复核');
+    expect(zh['jobDetail.progressAwaiting']).toBe('待复核 {n}');
+    expect(zh['history.metric.awaitingReview']).toBe('待复核');
+  });
+});
+
+describe('Issue#351 B3：统计卡收敛（与页签口径去重）', () => {
+  it('只留任务总数/异常文件两张卡，无「操作」kicker、无重叠口径卡', () => {
+    renderTasks('/jobs');
+    // 正向：保留的两张卡在位
+    expect(screen.getByText('任务总数')).not.toBeNull();
+    expect(screen.getByText('异常文件')).not.toBeNull();
+    // 负向：与页签口径重叠的三张卡 + 「操作」kicker 清零
+    expect(screen.queryByText('运行任务')).toBeNull();
+    expect(screen.queryByText(/待审核文件|待复核文件/)).toBeNull();
+    expect(screen.queryByText('已完成文件')).toBeNull();
+    expect(screen.queryByText('操作')).toBeNull();
   });
 });

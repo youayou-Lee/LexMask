@@ -85,6 +85,15 @@ function formatUpdatedAt(value: string): string {
   return date.toLocaleString(locale === 'en' ? 'en-US' : 'zh-CN');
 }
 
+// Issue#351 B2：空态分流所需的全局口径（工单单位，与表体行数可对账）。
+export type JobsTableStats = {
+  totalJobs: number;
+  activeJobs: number;
+  awaitingReviewJobs: number;
+  completedJobs: number;
+  riskJobs: number;
+};
+
 type JobsTableProps = {
   rows: JobSummary[];
   loading: boolean;
@@ -96,6 +105,7 @@ type JobsTableProps = {
   onDelete: (job: JobSummary) => void;
   tab?: JobsStatusFilter;
   onTabChange?: (tab: JobsStatusFilter) => void;
+  stats?: JobsTableStats;
 };
 
 const jobsGridStyle: CSSProperties = {
@@ -173,6 +183,7 @@ export function JobsTable({
   onDelete,
   tab,
   onTabChange,
+  stats,
 }: JobsTableProps) {
   const t = useT();
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -193,6 +204,34 @@ export function JobsTable({
   };
   const hardLoading = loading && rows.length === 0;
   const showJobType = rows.length > 0 && rows.some((job) => job.job_type !== rows[0].job_type);
+
+  // Issue#351 B2：空态分流。页签徽标/统计卡为全局口径、表体按 tab 过滤——过滤态
+  // 0 行但其他状态有任务时，空态必须告知数量并给出去处（修「徽标 7 vs 空表」困惑）。
+  // 数字口径=工单（与落地行数可对账）；Number.isFinite 兼容未传全字段的旧调用方。
+  const isFilteredTab = Boolean(tab) && tab !== 'all';
+  const finite = (n: number | undefined): n is number =>
+    typeof n === 'number' && Number.isFinite(n);
+  const emptyParts: string[] = [];
+  if (stats && finite(stats.totalJobs) && stats.totalJobs > 0 && isFilteredTab) {
+    const partDefs = [
+      { include: tab !== 'active', n: stats.activeJobs, key: 'jobs.emptyPart.active' },
+      { include: tab !== 'awaiting_review', n: stats.awaitingReviewJobs, key: 'jobs.emptyPart.review' },
+      { include: tab !== 'completed', n: stats.completedJobs, key: 'jobs.emptyPart.completed' },
+      { include: tab !== 'risk', n: stats.riskJobs, key: 'jobs.emptyPart.risk' },
+    ] as const;
+    for (const def of partDefs) {
+      if (def.include && finite(def.n) && def.n > 0) {
+        emptyParts.push(t(def.key).replace('{n}', String(def.n)));
+      }
+    }
+  }
+  const showFilteredEmpty = rows.length === 0 && emptyParts.length > 0;
+  const canGoReview =
+    showFilteredEmpty &&
+    Boolean(onTabChange) &&
+    tab !== 'awaiting_review' &&
+    finite(stats?.awaitingReviewJobs) &&
+    (stats?.awaitingReviewJobs ?? 0) > 0;
 
   return (
     <div
@@ -250,21 +289,41 @@ export function JobsTable({
             </div>
           }
           emptyContent={
-            <div
-              className="flex min-h-full items-center justify-center px-4"
-              data-testid="jobs-table-empty"
-            >
-              <EmptyState
-                title={t('jobs.noRecords')}
-                description={t('jobs.noRecordsHint')}
-                action={{
-                  label: t('jobs.gotoBatch'),
-                  onClick: () => {
-                    window.location.href = '/batch';
-                  },
-                }}
-              />
-            </div>
+            showFilteredEmpty ? (
+              <div
+                className="flex min-h-full items-center justify-center px-4"
+                data-testid="jobs-table-empty-filtered"
+              >
+                <EmptyState
+                  title={t('jobs.emptyFiltered')}
+                  description={t('jobs.emptyFilteredHint').replace('{parts}', emptyParts.join(' · '))}
+                  action={
+                    canGoReview
+                      ? {
+                          label: t('jobs.emptyGoReview'),
+                          onClick: () => onTabChange?.('awaiting_review'),
+                        }
+                      : undefined
+                  }
+                />
+              </div>
+            ) : (
+              <div
+                className="flex min-h-full items-center justify-center px-4"
+                data-testid="jobs-table-empty"
+              >
+                <EmptyState
+                  title={t('jobs.noRecords')}
+                  description={t('jobs.noRecordsHint')}
+                  action={{
+                    label: t('jobs.gotoBatch'),
+                    onClick: () => {
+                      window.location.href = '/batch';
+                    },
+                  }}
+                />
+              </div>
+            )
           }
         >
           <ul className="jobs-table-list flex min-h-full min-w-full flex-col divide-y divide-border/70">

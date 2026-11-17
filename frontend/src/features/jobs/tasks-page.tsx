@@ -103,6 +103,7 @@ function JobsLedgerView({
         onDelete={s.requestDelete}
         tab={s.tab}
         onTabChange={s.changeTab}
+        stats={s.pageMetrics}
       />
       <div className="mt-2 shrink-0">
         <JobsPagination
