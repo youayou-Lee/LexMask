@@ -17,9 +17,9 @@
 // 钉法（冷审）：toast 断言用 showToast mock 调用计数（非 /single=0 / /single=1），
 // 不靠人眼看页面；负向断言均配正向。
 
-import { act, cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useEffect, useRef } from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -31,7 +31,6 @@ import { SingleTaskProvider } from '@/features/single-task/single-task-context';
 import type { FileInfo } from '@/features/playground/types';
 
 import { usePlayground } from './use-playground';
-import hookRaw from './use-playground.ts?raw';
 
 vi.mock('@/services/singleTaskApi', () => ({
   submitRecognitionTask: vi.fn(),
@@ -161,7 +160,9 @@ describe('Issue#351 P1-A：恢复 toast 收口 /single 路由', () => {
     const still = localStorage.getItem(scopedStorageKey(STORAGE_KEYS.PLAYGROUND_DRAFT, 'tester'));
     expect(still).not.toBeNull();
     expect(JSON.parse(JSON.parse(still as string)).version).toBe(PLAYGROUND_DRAFT_VERSION);
-    // 状态未被恢复：fileInfo 为空（恢复会把 file_id=f1 灌进来）
+    // 状态未被恢复：fileInfo 为空（恢复会把 file_id=f1 灌进来）。
+    // 挂载证明（门⑥ Minor-5）：pg 非 null，否则本用例在 provider 抛错时也恒绿。
+    expect(harness.pg).not.toBeNull();
     expect(harness.pg?.fileInfo?.file_id ?? null).toBeNull();
   });
 
@@ -176,6 +177,46 @@ describe('Issue#351 P1-A：恢复 toast 收口 /single 路由', () => {
     expect(mockedShowToast).toHaveBeenCalledTimes(1);
     expect(mockedShowToast.mock.calls[0][0]).toBe('已恢复上次单文件处理现场');
     expect(mockedShowToast.mock.calls[0][1]).toBe('info');
+  });
+
+  it('(c2) 生产拓扑回归（门⑥ Critical-1）：/jobs 起步不烧 ref → 应用内切 /single 仍恢复', async () => {
+    // Provider 常驻、不随路由重建——冷审用探针证实旧实现在此拓扑下草稿永不恢复。
+    // 用 Routes+Navigate 探针在**同一挂载**内切路由，复刻生产拓扑。
+    seedDraft();
+    function NavProbe() {
+      const nav = useNavigate();
+      return (
+        <button
+          type="button"
+          data-testid="nav-to-single"
+          onClick={() => nav('/single')}
+        >
+          go
+        </button>
+      );
+    }
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/jobs']}>
+          <Routes>
+            <Route path="/jobs" element={<NavProbe />} />
+            <Route path="/single" element={<SingleTaskProvider><Probe /></SingleTaskProvider>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    // /jobs 挂载：不恢复不弹
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockedShowToast).not.toHaveBeenCalled();
+    // 应用内切到 /single（同 Provider 实例，不 unmount）
+    fireEvent.click(screen.getByTestId('nav-to-single'));
+    await waitFor(() => expect(harness.pg?.fileInfo?.file_id).toBe('f1'));
+    expect(mockedShowToast).toHaveBeenCalledTimes(1);
   });
 
   it('(c) 切走再回：/single 恢复 → 非 single 不弹 → 回 /single 再恢复（每挂载≤1 次）', async () => {
@@ -197,27 +238,23 @@ describe('Issue#351 P1-A：恢复 toast 收口 /single 路由', () => {
     await waitFor(() => expect(mockedShowToast).toHaveBeenCalledTimes(2));
   });
 
-  it('(d) ?file_id= 深链：挂载恢复的 file_id 闸语义钉（jsdom 无真 URL，钉表达式契约）', async () => {
-    // 背景：挂载 effect 的 file_id 闸读 window.location.search——jsdom 下该值恒空
-    // （MemoryRouter 不改 window.location），直接测深链行为会假绿/假红。生产语义
-    // =「URL 带 ?file_id= 时跳过挂载恢复（走 resumeFromFile 协议）」由代码走查钉：
-    // 这里钉闸的表达式本身——含 file_id 参数即 return，防止闸被顺手删除。
-    const hookSource = hookRaw;
-    // 闸仍在：file_id 查询参数 → return（挂载恢复被跳过）
-    expect(hookSource).toMatch(
-      /if \(new URLSearchParams\(window\.location\.search\)\.get\('file_id'\)\) return;/,
-    );
-    // 正向对照：/single 闸在 file_id 之后（顺序钉——file_id 先判，路由闸后判）
-    const fileIdIdx = hookSource.indexOf("get('file_id')");
-    const routeIdx = hookSource.indexOf("location.pathname.startsWith('/single')");
-    expect(fileIdIdx).toBeGreaterThan(-1);
-    expect(routeIdx).toBeGreaterThan(fileIdIdx);
-    // 行为对照（同文件既有协议测试已覆盖 resumeFromFile 分流）：本用例渲染不炸
+  it('(d) ?file_id= 深链：挂载恢复被跳过（真行为断言，history.replaceState 改 search）', async () => {
+    // 门⑥ Minor-3：jsdom 支持同源 history.replaceState ⇒ window.location.search 可写，
+    // 不需要 ?raw 表达式契约钉——直接断言组合行为。
     seedDraft();
-    renderAt('/single?file_id=f9');
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(harness.pg).not.toBeNull();
+    window.history.replaceState({}, '', '/single?file_id=f9');
+    try {
+      renderAt('/single');
+      await act(async () => {
+        await Promise.resolve();
+      });
+      // 深链协议接管：挂载恢复不弹「已恢复」（负向）
+      expect(mockedShowToast).not.toHaveBeenCalledWith('已恢复上次单文件处理现场', 'info');
+      // 正向对照：草稿未被挂载恢复（fileInfo 空）——闸生效的直接证据
+      expect(harness.pg).not.toBeNull();
+      expect(harness.pg?.fileInfo?.file_id ?? null).toBeNull();
+    } finally {
+      window.history.replaceState({}, '', '/single');
+    }
   });
 });

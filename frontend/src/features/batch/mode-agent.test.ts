@@ -106,7 +106,6 @@ describe('供料模式改名（Issue#196 D1）：用户可见文案旧词清零'
       'batchHub.mode.agent.desc',
       'batchHub.mode.agent.tag1',
       'batchHub.mode.agent.summaryValue',
-      'batchHub.mode.agent.journeyNote',
       'batchWizard.step1Agent.modeLabel',
       'batchWizard.step1Agent.placeholderNote',
       'batchWizard.step4Agent.hint',

@@ -1186,7 +1186,6 @@ const zhOverrides: Record<string, string> = {
   'batchHub.mode.agent.desc': '上传 PDF、Word、文本与扫描件，逐份转成脱敏 Markdown，确认映射表后整批导出，附还原映射表。',
   'batchHub.mode.agent.tag1': '供云端 AI',
   'batchHub.mode.agent.summaryValue': '脱敏 MD + 映射表 + 保留清单',
-  'batchHub.mode.agent.journeyNote': '要喂 AI 的材料从这里进',
   'batchWizard.step1Agent.modeLabel': '占位符替换',
   'batchWizard.step1Agent.placeholderNote': '敏感信息将替换为 [类型_N] / [姓某] 占位符，并随成品附映射表与保留清单，可在还原工具中回溯。',
   'batchWizard.step4Agent.hint': '逐份确认映射表：可保留原文、自定义替换值；缺省按占位符替换。确认后生成脱敏 Markdown。',

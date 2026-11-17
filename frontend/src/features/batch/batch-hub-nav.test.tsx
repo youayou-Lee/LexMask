@@ -21,8 +21,12 @@ const wizardState = vi.hoisted(() => ({
   mode: 'smart',
 }));
 
+const healthState = vi.hoisted(() => ({
+  health: null as { all_online: boolean } | null,
+  checking: false,
+}));
 vi.mock('@/hooks/use-service-health', () => ({
-  useServiceHealth: () => ({ health: null, checking: false }),
+  useServiceHealth: () => healthState,
 }));
 vi.mock('./hooks/use-batch-hub', () => ({
   useBatchHub: () => ({
@@ -102,6 +106,8 @@ import { BatchWizard } from './batch-wizard';
 beforeEach(() => {
   // locale 锁 zh：测试环境默认 locale=en（resolveInitialLocale），标题走 en fallback
   useI18n.setState({ locale: 'zh' });
+  healthState.health = null;
+  healthState.checking = false;
 });
 
 afterEach(() => {
@@ -128,6 +134,22 @@ describe('Issue#351 P1-B：批量中转页导航收敛', () => {
     // 正向：入口卡主内容仍在（收敛≠功能删减）
     expect(screen.getByText('处理多个文件')).toBeTruthy();
     expect(screen.getByText('供料模式')).toBeTruthy();
+  });
+
+  it('B3：服务离线时警示条用新用户话术（旧运维腔清零）', () => {
+    healthState.health = { all_online: false };
+    const view = render(
+      <MemoryRouter>
+        <BatchHub />
+      </MemoryRouter>,
+    );
+    // 正向：新话术在
+    expect(
+      screen.getByText(/部分识别服务暂不可用，批量效果可能不完整/),
+    ).toBeTruthy();
+    // 负向：旧运维腔清零
+    expect(screen.queryByText(/离线或降级/)).toBeNull();
+    view.unmount();
   });
 
   it('B2：按钮文案与卡标题差异化（按钮=开始批量处理 ≠ 标题=处理多个文件）', () => {
@@ -163,14 +185,19 @@ describe('Issue#351 P1-C：向导步骤条与长句', () => {
   });
 
   it('C2：step1 说明为新短句（容器内钉，无「固定格式和语义识别」技术叙述）', () => {
-    render(
+    const view = render(
       <MemoryRouter initialEntries={['/batch/smart?jobId=j-1&step=1']}>
         <BatchWizard />
       </MemoryRouter>,
     );
-    // 负向：旧长句片段清零
-    expect(screen.queryByText(/固定格式和语义识别哪些东西/)).toBeNull();
-    // 正向：新短句在场
-    expect(screen.getByText('配置本批次的识别项与处理方式，修改会自动保存。')).toBeTruthy();
+    // 负向：旧长句片段清零（容器范围，防其他 step 组件同名文案误绿）
+    expect(view.container).not.toBeNull();
+    expect(
+      view.container.textContent?.includes('固定格式和语义识别哪些东西') ?? true,
+    ).toBe(false);
+    // 正向：新短句在容器内
+    expect(
+      view.container.textContent?.includes('配置本批次的识别项与处理方式，修改会自动保存。'),
+    ).toBe(true);
   });
 });

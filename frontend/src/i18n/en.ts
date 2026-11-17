@@ -1223,7 +1223,6 @@ const enOverrides: Record<string, string> = {
     'Upload PDF, Word, text and scanned files. Each becomes sanitized Markdown plus a mapping table for cloud AI.',
   'batchHub.mode.agent.tag1': 'For cloud AI',
   'batchHub.mode.agent.summaryValue': 'Sanitized MD + mapping + retained list',
-  'batchHub.mode.agent.journeyNote': 'Feed material for AI starts here',
   'batchWizard.step1Agent.modeLabel': 'Placeholder replacement',
   'batchWizard.step1Agent.placeholderNote':
     'Sensitive entities become [TYPE_N] placeholders; a mapping table and retained list ship with the deliverable for round-trip restore.',

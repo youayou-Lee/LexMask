@@ -1330,12 +1330,22 @@ export function usePlayground() {
   const location = useLocation();
   useEffect(() => {
     if (draftRestoreDoneRef.current) return;
-    draftRestoreDoneRef.current = true;
-    if (new URLSearchParams(window.location.search).get('file_id')) return;
+    if (new URLSearchParams(window.location.search).get('file_id')) {
+      // 深链协议（resumeFromFile）接管，挂载恢复永不重试。
+      draftRestoreDoneRef.current = true;
+      return;
+    }
     // Issue#351 P1-A：Provider 常驻 Layout，恢复与 toast 只在单文件工作台路由生效——
-    // 在 /batch、/jobs 等页面刷新弹「已恢复上次单文件处理现场」是与当前页无关的噪音；
-    // 草稿本身留在 localStorage，下次进 /single 照常恢复（恢复动作在其他页无意义）。
-    if (!location.pathname.startsWith('/single')) return;
+    // 在 /batch、/jobs 等页面刷新弹「已恢复上次单文件处理现场」是与当前页无关的噪音。
+    // 门⑥ Critical-1：路由闸拒绝时**不烧**一次性 ref——Provider 不随路由重建，
+    // effect 因 pathname 依赖重跑；若此时已置位，用户从 /jobs 点回 /single（或首页
+    // 重定向 / → /single）将永不恢复草稿。语义=「每次成功恢复至多一次」。
+    // Minor-7：/playground 是 /single 的同页别名（router.tsx 注册），一并放行；
+    // 用相等比较而非 startsWith（不误伤未来 /single* 新路由）。
+    const isPlaygroundRoute =
+      location.pathname === '/single' || location.pathname === '/playground';
+    if (!isPlaygroundRoute) return;
+    draftRestoreDoneRef.current = true;
     const snapshot = parseDraft(
       getScopedStorageItem<string | null>(STORAGE_KEYS.PLAYGROUND_DRAFT, null, ownerKey),
     );
