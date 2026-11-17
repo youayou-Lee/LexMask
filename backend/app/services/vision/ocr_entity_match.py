@@ -398,8 +398,11 @@ def _crop_amount_block_region(block, block_text: str, entity_text: str, document
     rects = _entity_char_box_line_rects(
         block, block_text, run.start(), run.end(), document_line_height
     )
-    if len(rects) != 1:
-        return None  # 跨行或多段：无法单框紧裁，保持整块
+    # rects=None 是本函数契约内的"收不出"（跨行/零宽 rect——旋转页竖排行的字符
+    # 几何就会触发，Issue#347 修前在 A-p8/p14 上 len(None) 炸掉整个 ocr_has
+    # 阶段 → 整页 fail-open 0 框）。与其他调用点同口径：None ⇒ 保持整块。
+    if rects is None or len(rects) != 1:
+        return None  # 跨行/多段/几何退化：无法单框紧裁，保持整块
     x1, y1, x2, y2 = rects[0]
     return SensitiveRegion(
         text=run.group(0),
