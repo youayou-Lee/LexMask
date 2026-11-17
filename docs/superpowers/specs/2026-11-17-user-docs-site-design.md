@@ -95,6 +95,13 @@ updated: 2026-11-17
 
 构建时扫描 `frontend/docs/**/*.md`，按 `category` 分组、`order` 排序，生成导航树 JSON；无 frontmatter 的文件构建报错（fail-closed，防漏配）。
 
+> **实现口径（2026-11-18 Task 8 对齐，落地与上述设想的三处差异）**：
+> 1. 内容目录是 `frontend/src/features/docs-content/<分类>/<中文篇名>.md`（随前端源码走 vite `?raw` glob），不是 `frontend/docs/`；
+> 2. 「文件 → URL slug」由**注册表** `DOCS_MANIFEST`（`{ file, slug }[]`）显式承载，导航树在**运行期**由「注册表顺序 + frontmatter」构建，不产出构建期 JSON（slug 取自注册表，不从中文文件名推导，URL 保持英文短名）；
+> 3. 因此加一篇文档 = 加 md **+ 加一行注册**（数据表，非逻辑代码）；漏登记/文件缺失由 `docs-manifest.test.ts` 的「注册表 ↔ 磁盘文件一一对应」用例判红（CI fail-closed），不会出现「有文件但导航里没有」的静默漏配。
+>
+> frontmatter 校验的 fail-closed 落点同理：`parseDocsFrontmatter` 抛错 ⇒ 文档页显式报错不静默渲染；CI 侧由「全量解析」用例判红——**判红发生在 vitest 而非 `vite build`**（build 只读原文、不解析 frontmatter，属已知口径，见 AC5）。
+
 ### 4.3 路由与守卫
 
 - `/docs` → 文档站首页（重定向到第一篇「产品简介」或带欢迎页）；
@@ -120,7 +127,7 @@ updated: 2026-11-17
 
 ### 4.5 渲染管线
 
-1. 构建期：扫描 md → 校验 frontmatter → 渲染 HTML → 生成导航树 JSON；
+1. 构建期：扫描 md（vite `?raw` glob 读原文）；frontmatter 校验与导航树构建在运行期完成（见 §4.2 实现口径）；
 2. 运行期：纯静态消费，无用户输入 → 无 XSS 面；
 3. 更新：改 md → PR → CI（vitest/tsc/build）→ 合入 preview → 随版本部署。
 
@@ -152,8 +159,8 @@ updated: 2026-11-17
 - AC1：登录后侧边栏出现「文档中心」，点击进入 `/docs`，看到完整目录树（≥4 分类、全部首批篇目可点）；
 - AC2：未登录直接访问 `/docs/xxx` → 跳登录页 → 登录后回到该文档；
 - AC3：每篇文档有面包屑、本页目录锚点、上一篇/下一篇；链接零死链；
-- AC4：目录树与 md 文件一一对应——加一篇 md（带 frontmatter）后重新构建，导航自动出现该篇，无需改代码；
-- AC5：frontmatter 缺失/非法的 md 导致构建失败（fail-closed）；
+- AC4：目录树与 md 文件一一对应——加一篇 md（带 frontmatter）**并在 `DOCS_MANIFEST` 登记一行**后，导航自动出现该篇，无需改渲染/路由代码；漏登记或文件缺失由「注册表 ↔ 磁盘文件一一对应」守卫用例判红（2026-11-18 对齐，见 §4.2 实现口径）；
+- AC5：frontmatter 缺失/非法的 md 判红（fail-closed）——文档页显式报错、不静默渲染，且 CI 的「全量解析」用例失败；判红落点是 **vitest 而非 `vite build`**（build 不解析 frontmatter，2026-11-18 对齐，见 §4.2 实现口径）；
 - AC6：现有 5 篇文档内容全部有唯一归属，无遗漏、无双份；
 - AC7：CI 全绿（含新增用例）；`/docs` 在窄屏可用（抽屉导航）；
 - AC8：更新日志条目与 CHANGELOG 用户可感知条目对得上。
