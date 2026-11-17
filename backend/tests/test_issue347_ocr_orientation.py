@@ -196,6 +196,10 @@ class TestChooseOrientation:
     def test_margin_constant(self):
         assert WINNER_MARGIN_RATIO == 1.2
 
+    def test_early_exit_floor_importable(self):
+        from app.services.vision.ocr_orientation import ORIENTATION_EARLY_EXIT_FLOOR
+        assert ORIENTATION_EARLY_EXIT_FLOOR == 200.0
+
 
 # ---------------------------------------------------------------- 映射接线（BoundingBox 层）
 
@@ -357,3 +361,63 @@ class TestDetectWithOcrHasExitMapping:
         await svc.detect_and_draw(_png_bytes(400, 800), vision_types=None, draw_result=False)
         assert calls == [(400, 800), (800, 400), (800, 400)]  # 90° 不达边际 ⇒ 270° 照跑
         assert svc.last_ocr_orientation["angle"] == 270
+
+
+class TestEarlyExitFloor:
+    """Issue#347 复跑实证：稀疏页（as-is 64）倒置读数 108 过相对边际选错向，
+    户名/账号漏打。早退须同时过绝对下限（胜者分布 294–463，空隙取 200）。"""
+
+    @pytest.mark.asyncio
+    async def test_low_score_confident_candidate_still_evaluates_second(self, monkeypatch):
+        from app.services.ocr_has_vision_service import get_ocr_has_vision_service
+        svc = get_ocr_has_vision_service()
+        calls: list[tuple[int, int]] = []
+
+        def _sparse_upside(page_w: int, page_h: int) -> list[OCRTextBlock]:
+            # 倒置但横排、clearly_fine（cjk 40≥30）、score 108 < 200 下限
+            return [_block("末页汇总行数字零星", 0.08 + i * 0.16, 0.1 + (i % 2) * 0.4, 0.14, 0.035, page_w, page_h)
+                    for i in range(5)]
+
+        def fake_run_paddle_ocr(image, require_visual_regions=False, selected_entity_types=None, stage_status=None):
+            calls.append((image.width, image.height))
+            if image.width < image.height:
+                # as-is：稀疏竖排（suspect）
+                blocks = [_vertical_block("李某某20100424自助", 0.1 + i * 0.2, 0.1, 0.02, 0.1, image.width, image.height)
+                          for i in range(6)]
+                return blocks, []
+            if len(calls) == 2:
+                return _sparse_upside(image.width, image.height), []
+            # 270 候选：真 upright，分数更高
+            return _horizontal_page_blocks(image.width, image.height), []
+
+        async def fake_ner(blocks, vision_types=None, stage_status=None, page_deadline=None):
+            return []
+
+        monkeypatch.setattr(svc, "_run_paddle_ocr", fake_run_paddle_ocr)
+        monkeypatch.setattr(svc, "_invoke_has_text_analysis", fake_ner)
+        monkeypatch.setattr(svc, "_apply_regex_fallback", lambda *a, **k: [])
+        await svc.detect_and_draw(_png_bytes(400, 800), vision_types=None, draw_result=False)
+        assert calls == [(400, 800), (800, 400), (800, 400)]  # 108 < 200 ⇒ 不早退，270 照评
+        assert svc.last_ocr_orientation["angle"] == 270
+
+    @pytest.mark.asyncio
+    async def test_strong_confident_candidate_still_early_exits(self, monkeypatch):
+        from app.services.ocr_has_vision_service import get_ocr_has_vision_service
+        svc = get_ocr_has_vision_service()
+        calls: list[tuple[int, int]] = []
+
+        def fake_run_paddle_ocr(image, require_visual_regions=False, selected_entity_types=None, stage_status=None):
+            calls.append((image.width, image.height))
+            if image.width < image.height:
+                return _rotated_page_blocks(image.width, image.height), []
+            return _horizontal_page_blocks(image.width, image.height), []
+
+        async def fake_ner(blocks, vision_types=None, stage_status=None, page_deadline=None):
+            return []
+
+        monkeypatch.setattr(svc, "_run_paddle_ocr", fake_run_paddle_ocr)
+        monkeypatch.setattr(svc, "_invoke_has_text_analysis", fake_ner)
+        monkeypatch.setattr(svc, "_apply_regex_fallback", lambda *a, **k: [])
+        await svc.detect_and_draw(_png_bytes(400, 800), vision_types=None, draw_result=False)
+        assert calls == [(400, 800), (800, 400)]  # 450 ≥ 200 ⇒ 照常早退
+        assert svc.last_ocr_orientation["angle"] == 90

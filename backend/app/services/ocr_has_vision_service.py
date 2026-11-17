@@ -217,6 +217,7 @@ class OcrHasVisionService:
         流入 pipeline_status / page_event_log 观测面）。
         """
         from app.services.vision.ocr_orientation import (
+            ORIENTATION_EARLY_EXIT_FLOOR,
             WINNER_MARGIN_RATIO,
             choose_orientation,
             rotate_image_for_ocr,
@@ -247,12 +248,16 @@ class OcrHasVisionService:
                 candidates[angle] = (rotated, blocks_a, visuals_a, stage_status)
                 candidate_scores[angle] = score_a.score
                 # 置信早退（Issue#347 性能）：候选「明显正常且显著胜出」即收，省掉
-                # 剩余候选的一次纯 OCR。双条件缺一不可——横排乱码页（180° 相对形态）
-                # 文本仍水平、clearly_fine 可能为真，但分数不达边际照样继续试下一
-                # 个角；真正 upright 的候选两者皆满足。
+                # 剩余候选的一次纯 OCR。三条件缺一不可——①横排乱码页（180° 相对
+                # 形态）文本仍水平、clearly_fine 可能为真，但分数不达边际照样继续
+                # 试下一个角；②稀疏页的边际基数太小（如 as-is 64×1.2≈77），倒置读
+                # 数拿个低分也能过边际（复跑实测 p39：108 分早退选错向、户名/账号
+                # 漏打），故再加绝对下限——真 upright 页的评分远高于此（复跑 83 页
+                # 胜者分布 294–463，唯一 108 即选错向页，天然空隙取 200）。
                 if (
                     score_a.clearly_fine
                     and score_a.score >= as_is.score * WINNER_MARGIN_RATIO
+                    and score_a.score >= ORIENTATION_EARLY_EXIT_FLOOR
                 ):
                     break
 
