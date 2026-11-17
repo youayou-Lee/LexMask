@@ -2379,7 +2379,6 @@ Object.assign(enOverrides, {
   'singleTask.notify.failed': 'Processing failed: {name}',
   'singleTask.phase.recognizing': 'Recognizing',
   'singleTask.phase.redacting': 'Redacting',
-  'singleTask.phase.awaiting_review': 'Awaiting review',
   'singleTask.offline': 'Connection lost — tasks keep running in the background',
   // Issue#194 Task 11: processing details card (shared row builder for result page / loading view)
   'processingDetails.title': 'Processing details',
@@ -2854,7 +2853,7 @@ Object.assign(enOverrides, {
 // Issue#75 Feed Agent (/agent-md four-step flow); useT has no interpolation, progress copy is concatenated
 Object.assign(enOverrides, {
   'nav.agentMd': 'AI feed mode',
-  'nav.agentMd.sub': 'Case files to sanitized Markdown, safely supplied to cloud AI',
+  'nav.agentMd.sub': 'Case files to sanitized Markdown',
   'agentMd.title': 'AI feed mode — Case File to Redacted Markdown',
   'agentMd.uploadHint': 'Upload a PDF case file to produce redacted Markdown and a mapping table ready to feed cloud legal AI',
   'agentMd.uploadFailed': 'Upload failed',

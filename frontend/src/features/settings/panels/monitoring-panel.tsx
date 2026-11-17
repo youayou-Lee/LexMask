@@ -16,10 +16,20 @@ export function AdminMonitoringPanel() {
     <section className="surface-subtle space-y-4 p-4" data-testid="admin-monitoring-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <PanelHeading title="服务监控" description="查看模型服务、GPU 显存和健康探测状态。" />
-        <Button variant="outline" size="sm" onClick={refresh}>
-          <RefreshCw className={cn('mr-2 size-4', checking && 'animate-spin')} />
-          刷新
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* Issue#351 P2-D1：版本行从侧边栏挪入（构建信息归诊断面）。 */}
+          <span
+            className="text-xs text-muted-foreground"
+            data-testid="monitoring-build-info"
+            title={`v${__APP_VERSION__} · ${__BUILD_TIME__}`}
+          >
+            {`v${__APP_VERSION__} · ${__BUILD_TIME__}`}
+          </span>
+          <Button variant="outline" size="sm" onClick={refresh}>
+            <RefreshCw className={cn('mr-2 size-4', checking && 'animate-spin')} />
+            刷新
+          </Button>
+        </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-4">
         <MetricCard label="整体状态" value={checking ? '检测中' : allOnline ? '全部在线' : '需处理'} />

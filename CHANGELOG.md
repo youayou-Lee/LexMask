@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 2026-11-18（Issue#351 P2）
+
+- **fix：侧边栏服务面板降级 + 术语残留清零（P2，#351 走查收官批）**——① **服务面板降级**（`app-sidebar.tsx`）：SidebarFooter 常驻卡（三服务明细+GPU 显存+版本行，约 150px，窄栏挤成竖排断字）降级为「本地服务」标题+刷新按钮一行；总体状态点删除（AppHeader 已有 health-indicator，同一信息只出现一次）；明细的正规归宿=系统设置→服务监控（管理员）；版本行挪入 monitoring-panel（`monitoring-build-info`）。冷审实证 `/settings?tab=monitoring` 目的地不存在（hub 只认 types/redaction/words）⇒ 状态行**不做链接**（点击落错页比不能点更糟），刷新按钮保留。② **供料副标题缩短**（`nav.agentMd.sub`）：「案卷转脱敏 Markdown，安全供给云端 AI」（240px 栏宽必截断）→「案卷转脱敏 Markdown」。③ **术语残留**：`batchWizard.status.awaitingReview` 待审阅→待复核（P1 统一复核族时 /batch 向导边界外漏网）；`singleTask.phase.awaiting_review`（待确认）**死键删除**（zh/en 缺席断言钉——tsc/parity 对删键零判别力，冷审 C1 实证）。
+  - **测试**：新增 `app-sidebar.service-downgrade.test.tsx` 2 例（完整 health 夹具三服务+2 卡显存——health:null 下负向恒真；明细/显存/版本行清零+标题/刷新正向+状态行无链接+refresh 调用；供料短句 zh/en 双钉）、`issue351-p2-terms.test.ts` 2 例（E1 值钉 zh+en 不变；E2 缺席断言+活键正向对照）；既有 3 个 sidebar 测试不受影响（均不断言服务卡）；前端全量 **874 passed（111 files）**、tsc（app+test）绿、build 绿、lint 触碰文件 0 问题。
+  - **门⑥ 冷审处置（With fixes → 全闭环）**：**I-1 版本行负向断言 CI 盲区**——`not.toContain('v0.0.0')` 在 CI `npm test` 下 `__APP_VERSION__=npm_package_version=1.0.0`，版本行回归会恒绿；改 testid 配对（`app-version` 缺席断言，版本无关任何 runner）。**I-2 版本行正向缺口**——补 `AdminMonitoringPanel` 渲染用例（`monitoring-build-info` 在场），版本行迁移两端配对钉死。**Minor-3** en 副标题值钉（I6 双钉闭合）。Minor-4 tooltip 简化留痕（有意偏离，非缺失）；Minor-5 死键兄弟 recognizing/redacting 亦零引用（信息项，另立跟踪）。修后全量 **876 passed**、tsc/build/lint 绿。
+  - **门④ 浏览器实测**（:5180 dev 栈）：侧边栏底部只剩「本地服务」+刷新（服务明细/GPU 显存/版本行清零）、供料副标题完整不截断（截图留痕）；向导「待复核」措辞组件级钉（batch-step3/4 消费点）。
+  - **环境注记**：preview 新合入的 #348（文档中心）引入 react-markdown/remark-gfm 新依赖，本地 node_modules 补装后 tsc/build 恢复。
+
 ## 2026-11-18（Issue#351 P1）
 
 - **fix：恢复现场 toast 收口 /single + 批量中转页导航收敛 + 向导双步骤条去重（P1）**——① **恢复 toast 跟弹**（用户走查发现）：PlaygroundProvider 常驻 Layout、`usePlayground` 挂载 effect 无条件恢复草稿+弹「已恢复上次单文件处理现场」⇒ 任何页面刷新都弹。修法=挂载 effect 加路由闸（`location.pathname.startsWith('/single')`），非 /single 不恢复不弹（草稿留 localStorage，下次进 /single 照常恢复）；`?file_id=` 深链走 resumeFromFile 协议不受影响。② **批量中转页三套导航竞争**：删 JourneyRail 三步引导卡（`batch-journey-rail` 整组件+copy 表+专有文案键，与页头描述/主入口信息完全重叠）；主入口卡 journeyNote 徽标删除（「大多数用户…」引导噪音）、按钮与标题差异化（「开始批量处理」/「开始供料」，标题=信息按钮=动作）；警示条话术去运维腔（`batchHub.modelPreviewDesc`「识别模型服务离线或降级」→「部分识别服务暂不可用，批量效果可能不完整…」）。③ **向导双步骤条**：删文字行「五步：选择清单 → …」（batch-wizard.tsx），图形步骤条（BatchStepProgress，aria-label 同文案）承载全部步骤信息；step1 说明 52 字技术长句瘦身为「配置本批次的识别项与处理方式，修改会自动保存。」
