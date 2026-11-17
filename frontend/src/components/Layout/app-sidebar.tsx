@@ -151,11 +151,12 @@ export function AppSidebar() {
     },
     {
       // Issue#348：文档中心入口——放在工作流组末位，与「任务中心」同族的一级导航。
+      // 不带 end：`/docs` 只是重定向入口（→ /docs/:slug），等值匹配会让菜单项
+      // 在文档中心内永不高亮（同族先例：/batch 有子路由也不带 end）。
       path: '/docs',
       label: t('nav.docs'),
       sublabel: t('nav.docs.sub'),
       icon: BookOpen,
-      end: true,
     },
   ];
 

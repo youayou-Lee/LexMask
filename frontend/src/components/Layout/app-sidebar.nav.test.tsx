@@ -39,9 +39,9 @@ vi.mock('@/services/jobsApi', () => ({ getJob: vi.fn() }));
 vi.mock('@/lib/notifications', () => ({ notifyDone: vi.fn() }));
 vi.mock('@/components/Toast', () => ({ showToast: vi.fn() }));
 
-function renderSidebar() {
+function renderSidebar(initialPath = '/') {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialPath]}>
       <SidebarProvider>
         <SingleTaskProvider>
           <AppSidebar />
@@ -92,5 +92,27 @@ describe('Issue#262：侧边栏法律默认档收敛', () => {
     );
     expect(navTestIds.indexOf('nav-docs')).toBe(navTestIds.indexOf('nav-jobs') + 1);
     expect(navTestIds.indexOf('nav-docs')).toBeLessThan(navTestIds.indexOf('nav-settings'));
+  });
+
+  // Issue#348（fix r1）：/docs 是「重定向入口 + /docs/:slug 子路由」——
+  // 入口不能带 end，否则 pathname=/docs/test-doc 时 isNavActive 的等值判断失败，
+  // 用户进了文档中心菜单项反而永不高亮。高亮断言双轨：aria-current（语义）
+  // + data-active（sidebar 的 isActive 入参，真正驱动高亮 class 的那个属性）。
+  it('文档中心入口在 /docs 与 /docs/:slug 下均高亮（Issue#348）', () => {
+    vi.mocked(listActiveSingleJobs).mockResolvedValue([]);
+    for (const path of ['/docs', '/docs/test-doc']) {
+      const { unmount } = renderSidebar(path);
+      const link = document.querySelector<HTMLAnchorElement>('a[href="/docs"]');
+      expect(link, `pathname=${path}：应渲染 /docs 入口`).not.toBeNull();
+      expect(link?.getAttribute('aria-current'), `pathname=${path}：aria-current`).toBe('page');
+      expect(link?.getAttribute('data-active'), `pathname=${path}：data-active`).toBe('true');
+      // 对照组：/docs 前缀匹配不得外溢到同组其它入口（任务中心保持非高亮）。
+      const jobsLink = document.querySelector<HTMLAnchorElement>('a[href="/jobs"]');
+      expect(jobsLink?.getAttribute('aria-current'), `pathname=${path}：/jobs 不应高亮`).toBeNull();
+      expect(jobsLink?.getAttribute('data-active'), `pathname=${path}：/jobs data-active`).toBe(
+        'false',
+      );
+      unmount();
+    }
   });
 });
