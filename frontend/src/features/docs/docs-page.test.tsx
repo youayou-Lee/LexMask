@@ -1,7 +1,7 @@
 // Copyright 2026 LexMask Contributors
 
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -24,23 +24,51 @@ vi.mock('./docs-manifest', async (importOriginal) => {
   };
 });
 
+/**
+ * 夹具刻意让「数组顺序 ≠ order 升序」：
+ * - 数组顺序 = 登记/阅读顺序（`getAllDocsEntries()` 的契约），上下篇必须按它取相邻；
+ * - order = 分类内序号，导航树按它排序。
+ * 两者不同，才能把「上下篇取数组下标」与「导航树按 order 排」分别钉死。
+ */
 const entries: DocsEntry[] = [
-  { slug: 'test-doc', title: '测试文档', category: '新手必读', order: 1, updated: '2026-11-17' },
-  { slug: 'other-doc', title: '另一篇', category: '操作指南', order: 2, updated: '2026-11-17' },
+  { slug: 'doc-b', title: '乙篇', category: '新手必读', order: 2, updated: '2026-11-17' },
+  { slug: 'doc-a', title: '甲篇', category: '新手必读', order: 1, updated: '2026-11-17' },
+  { slug: 'doc-c', title: '丙篇', category: '操作指南', order: 1, updated: '2026-11-17' },
 ];
 
-const DOC_RAW = [
-  '---',
-  'title: 测试文档',
-  'category: 新手必读',
-  'order: 1',
-  'updated: 2026-11-17',
-  '---',
-  '',
+const DOC_BODY = [
   '# 你好',
   '',
   '这是 **测试** 内容。',
+  '',
+  '## 快速开始',
+  '',
+  '第一段。',
+  '',
+  '### 安装依赖',
+  '',
+  '第二段。',
+  '',
+  '## 常见问题',
+  '',
+  '第三段。',
 ].join('\n');
+
+/** `loadDocRaw` 的真实契约：返回**含 frontmatter** 的原文（页面负责剥离）。 */
+function rawForSlug(slug: string): string {
+  const entry = entries.find((e) => e.slug === slug);
+  if (!entry) throw new Error(`未注册的文档 slug：${slug}`);
+  return [
+    '---',
+    `title: ${entry.title}`,
+    `category: ${entry.category}`,
+    `order: ${entry.order}`,
+    'updated: 2026-11-17',
+    '---',
+    '',
+    DOC_BODY,
+  ].join('\n');
+}
 
 function LocationProbe() {
   const location = useLocation();
@@ -62,7 +90,7 @@ function renderAt(path: string) {
 
 beforeEach(() => {
   mocks.getAllDocsEntries.mockReset().mockResolvedValue(entries);
-  mocks.loadDocRaw.mockReset().mockResolvedValue(DOC_RAW);
+  mocks.loadDocRaw.mockReset().mockImplementation(async (slug: string) => rawForSlug(slug));
 });
 
 afterEach(() => {
@@ -71,58 +99,133 @@ afterEach(() => {
 });
 
 describe('resolveAdjacentSlug', () => {
-  it('中间篇返回前后', () => {
-    expect(resolveAdjacentSlug('test-doc', entries)).toEqual({ prev: null, next: 'other-doc' });
+  it('首篇 prev 为 null、next 为数组下一位', () => {
+    expect(resolveAdjacentSlug('doc-b', entries)).toEqual({ prev: null, next: 'doc-a' });
+  });
+  it('中间篇 prev 与 next 同时非空', () => {
+    expect(resolveAdjacentSlug('doc-a', entries)).toEqual({ prev: 'doc-b', next: 'doc-c' });
   });
   it('末篇 next 为 null', () => {
-    expect(resolveAdjacentSlug('other-doc', entries)).toEqual({ prev: 'test-doc', next: null });
+    expect(resolveAdjacentSlug('doc-c', entries)).toEqual({ prev: 'doc-a', next: null });
   });
   it('未知 slug 前后均为 null', () => {
     expect(resolveAdjacentSlug('ghost', entries)).toEqual({ prev: null, next: null });
+  });
+  it('不按 order 重排：数组顺序与 order 顺序不同时仍取数组相邻元素', () => {
+    expect(entries.map((e) => e.slug)).toEqual(['doc-b', 'doc-a', 'doc-c']);
+    // 乙篇 order=2 > 甲篇 order=1，但数组里乙在甲之前 ⇒ 乙的下一篇是甲（不是丙）。
+    expect(resolveAdjacentSlug('doc-b', entries).next).toBe('doc-a');
+    expect(resolveAdjacentSlug('doc-a', entries).prev).toBe('doc-b');
+    // 若按 order 重排（甲→乙→丙），甲的 prev 会是 null、next 是乙——与此相反。
+    expect(resolveAdjacentSlug('doc-a', entries)).toEqual({ prev: 'doc-b', next: 'doc-c' });
   });
 });
 
 describe('DocsPage', () => {
   it('渲染导航树（分类 + 标题）与正文（react-markdown 渲染标题）', async () => {
-    renderAt('/docs/test-doc');
+    renderAt('/docs/doc-b');
     // 正文：frontmatter 已剥离，`# 你好` 由 react-markdown 渲染为 h1。
     expect(await screen.findByRole('heading', { name: '你好', level: 1 })).toBeTruthy();
-    // 导航树：分类标签 + 两篇标题 + 当前篇高亮链接。
-    expect(screen.getByText('新手必读')).toBeTruthy();
-    expect(screen.getByText('操作指南')).toBeTruthy();
-    expect(screen.getByRole('link', { name: '另一篇' }).getAttribute('href')).toBe(
-      '/docs/other-doc',
+    const nav = screen.getByRole('navigation', { name: '文档目录' });
+    // 分类内按 order 升序（甲 order=1 → 乙 order=2），分类间「新手必读」在前。
+    expect(
+      within(nav)
+        .getAllByRole('link')
+        .map((a) => a.textContent),
+    ).toEqual(['甲篇', '乙篇', '丙篇']);
+    expect(within(nav).getByRole('link', { name: '丙篇' }).getAttribute('href')).toBe(
+      '/docs/doc-c',
     );
-    expect(screen.getAllByRole('link', { name: '测试文档' }).length).toBeGreaterThan(0);
-    expect(mocks.loadDocRaw).toHaveBeenCalledWith('test-doc');
+    expect(screen.getAllByRole('link', { name: '乙篇' }).length).toBeGreaterThan(0);
+    expect(mocks.loadDocRaw).toHaveBeenCalledWith('doc-b');
+  });
+
+  it('正文不渲染 frontmatter（原文含 frontmatter，渲染前剥离）', async () => {
+    renderAt('/docs/doc-b');
+    expect(await screen.findByRole('heading', { name: '你好', level: 1 })).toBeTruthy();
+    expect(screen.queryByText(/title:/)).toBeNull();
+    expect(screen.queryByText(/category:/)).toBeNull();
+    expect(screen.queryByText(/updated:/)).toBeNull();
+    expect(screen.queryByText(/^---$/)).toBeNull();
   });
 
   it('无 slug（/docs）时重定向到第一篇', async () => {
     renderAt('/docs');
     expect(await screen.findByRole('heading', { name: '你好', level: 1 })).toBeTruthy();
-    expect(screen.getByTestId('location-probe').textContent).toBe('/docs/test-doc');
+    expect(screen.getByTestId('location-probe').textContent).toBe('/docs/doc-b');
   });
 
-  it('上/下篇按清单顺序渲染并链到相邻文档', async () => {
-    const first = renderAt('/docs/test-doc');
+  it('上/下篇按清单数组顺序渲染并链到相邻文档', async () => {
+    const first = renderAt('/docs/doc-b');
     expect(await screen.findByRole('heading', { name: '你好', level: 1 })).toBeTruthy();
-    expect(screen.getByRole('link', { name: /下一篇/ }).getAttribute('href')).toBe(
-      '/docs/other-doc',
-    );
+    expect(screen.getByRole('link', { name: /下一篇/ }).getAttribute('href')).toBe('/docs/doc-a');
     expect(screen.queryByRole('link', { name: /上一篇/ })).toBeNull();
     first.unmount();
 
-    renderAt('/docs/other-doc');
+    const middle = renderAt('/docs/doc-a');
     expect(await screen.findByRole('link', { name: /上一篇/ })).toBeTruthy();
-    expect(screen.getByRole('link', { name: /上一篇/ }).getAttribute('href')).toBe(
-      '/docs/test-doc',
-    );
+    expect(screen.getByRole('link', { name: /上一篇/ }).getAttribute('href')).toBe('/docs/doc-b');
+    expect(screen.getByRole('link', { name: /下一篇/ }).getAttribute('href')).toBe('/docs/doc-c');
+    middle.unmount();
+
+    renderAt('/docs/doc-c');
+    expect(await screen.findByRole('link', { name: /上一篇/ })).toBeTruthy();
+    expect(screen.getByRole('link', { name: /上一篇/ }).getAttribute('href')).toBe('/docs/doc-a');
     expect(screen.queryByRole('link', { name: /下一篇/ })).toBeNull();
+  });
+
+  it('本页目录：列出正文 h2/h3、锚点与标题一一对应、点击滚动到对应标题', async () => {
+    renderAt('/docs/doc-b');
+    expect(await screen.findByRole('heading', { name: '你好', level: 1 })).toBeTruthy();
+    const toc = screen.getByRole('complementary', { name: '本页目录' });
+    const links = within(toc).getAllByRole('link');
+    // 只取 h2/h3（正文 h1「你好」不进目录），按出现顺序。
+    expect(links.map((a) => a.textContent)).toEqual(['快速开始', '安装依赖', '常见问题']);
+    expect(links[0].getAttribute('href')).toBe('#快速开始');
+    // 每个锚点都能在正文里找到 id 对应、文本相同的标题（锚点 id 与渲染文本同源）。
+    for (const link of links) {
+      const id = (link.getAttribute('href') ?? '').replace(/^#/, '');
+      const heading = document.getElementById(id);
+      expect(heading?.tagName).toMatch(/^H[23]$/);
+      expect(heading?.textContent).toBe(link.textContent);
+    }
+    // 点击锚点滚动到对应标题。
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      fireEvent.click(links[1]);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView.mock.instances[0]).toBe(document.getElementById('安装依赖'));
+  });
+
+  it('窄屏目录默认收起，展开后可见导航项（抽屉）', async () => {
+    renderAt('/docs/doc-b');
+    expect(await screen.findByRole('heading', { name: '你好', level: 1 })).toBeTruthy();
+    const toggle = screen.getByRole('button', { name: /文档目录/ });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('navigation', { name: '文档目录（窄屏）' })).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const drawer = screen.getByRole('navigation', { name: '文档目录（窄屏）' });
+    expect(
+      within(drawer)
+        .getAllByRole('link')
+        .map((a) => a.textContent),
+    ).toEqual(['甲篇', '乙篇', '丙篇']);
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('navigation', { name: '文档目录（窄屏）' })).toBeNull();
   });
 
   it('加载失败时展示错误提示而不是空白', async () => {
     mocks.loadDocRaw.mockRejectedValue(new Error('网络异常'));
-    renderAt('/docs/test-doc');
+    renderAt('/docs/doc-b');
     expect(await screen.findByText(/文档加载失败：网络异常/)).toBeTruthy();
   });
 });
