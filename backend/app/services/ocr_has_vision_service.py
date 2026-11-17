@@ -214,9 +214,11 @@ class OcrHasVisionService:
         90°/270° 各补一次**纯 OCR**（NER 在胜者空间只跑一次），按「关键词
         清醒判别」择优：表单关键词命中（``KEYWORD_HITS_MIN``）对 VL 输出波动
         免疫，取代比较制分数（复跑实证批量波动能把倒置乱码帧抬过真转正帧、
-        as-is 边际压死真候选）；as-is 清醒则保持原样（不引入转歪风险）。好页
-        （无签名）零额外开销。返回值是最终采用的 (image, width, height,
-        blocks, visual_regions)；方向与评分写进 ``last_ocr_orientation`` 与
+        as-is 边际压死真候选）；as-is 清醒**且文本行水平**则保持原样（不引入
+        转歪风险）——竖躺页即使 as-is 关键词清醒也必须归一（竖排几何截断字符
+        框，复跑实证奇数页 as-is kw=44 但证号框只盖 11/18 位）。好页（无签名）
+        零额外开销。返回值是最终采用的 (image, width, height, blocks,
+        visual_regions)；方向与评分写进 ``last_ocr_orientation`` 与
         ``duration_ms["ocr_orientation"]``（自动流入 pipeline_status /
         page_event_log 观测面）。所有候选都不清醒 ⇒ ``OrientationUnresolvedError``
         按 #199 语义升级页级显式失败（``is_page_fatal_stage_error`` 接收）。

@@ -16,7 +16,9 @@
 错乱、表头裸露。表单关键词命中数对 VL 波动免疫（真 upright kw=46 vs
 as-is/错向 kw=0），取代分数成为决定性判别器；所有候选都不清醒 ⇒
 `OrientationUnresolvedError` 页级显式失败（#199 语义，宁可显式失败不可
-静默少打码）。
+静默少打码）。竖躺页（vertical_share>0.4）即使 as-is 关键词清醒也必须归一
+——侧读能读出词但竖排几何截断字符框（复跑实证：保持原样的奇数页证号框只盖
+11/18 位，归一页全盖）。
 
 方向语义（与 PyMuPDF `page.set_rotation` 渲染语义对齐，单测钉死）：
 - angle=90：把原页**顺时针**转 90° 得到 OCR 输入（偶数页的转正方向）；
@@ -73,6 +75,7 @@ class OrientationScore:
     clearly_fine: bool               # 无需重试即可收
     rotation_suspect: bool           # 出现旋转签名 → 值得试转正
     keyword_hits: int = 0            # 表单关键词命中数（清醒判别，对 VL 波动免疫）
+    vertical_share: float = 0.0      # 竖排行块占比（>0.4 = 文本行竖躺，须归一）
     signals: dict = field(default_factory=dict)
 
 
@@ -130,6 +133,7 @@ def score_ocr_blocks(blocks: list, width: int, height: int) -> OrientationScore:
         clearly_fine=clearly_fine,
         rotation_suspect=rotation_suspect,
         keyword_hits=keyword_hits,
+        vertical_share=vertical_share,
         signals={
             "blocks": n,
             "cjk": cjk,
@@ -160,8 +164,13 @@ def choose_orientation(as_is: OrientationScore, candidates: dict[int, dict]) -> 
     判别取代比较制分数择优，Issue#347 复跑实证）：
 
     - as-is 无旋转签名 → 0（好页零开销，绝不重试）；
-    - as-is 关键词清醒（kw ≥ ``KEYWORD_HITS_MIN``）→ 0：原样已读出真表单
-      文本，再旋转只会引入「把可读页转歪」的新风险；
+    - as-is 清醒（kw ≥ ``KEYWORD_HITS_MIN``）**且文本行水平**
+      （``vertical_share`` ≤ 0.4）→ 0：原样即正（真 upright 或仅 blob 解析
+      粗糙），再旋转只会引入「把可读页转歪」的新风险；
+    - **as-is 竖躺（vertical_share > 0.4）⇒ 一律归一，kw 不构成保持理由**：
+      竖躺页的 as-is OCR 也可能读出成串表单词（VL 侧读文本并不罕见，复跑
+      实证奇数页 as-is kw=43–45），但竖排几何仍会截断字符框——复跑实证
+      p9（保持原样）证号框 h=0.053 只盖 ~11/18 位、p10（归一）h=0.096 全盖；
     - 存在清醒候选 → 取分数最高的清醒候选。**不再要求跨 as-is 分数边际**
       ——真转正候选的批内评分可被 VL 波动压低到垃圾 as-is 之下（复跑实证
       p10：90° 真候选 227 < as-is 241×1.2），边际判据会把可救页推向误回退；
@@ -173,7 +182,10 @@ def choose_orientation(as_is: OrientationScore, candidates: dict[int, dict]) -> 
     if not as_is.rotation_suspect:
         return {"angle": 0, "retried": False, "resolved": True, "scores": scores}
     scores.update({str(a): float(d["score"]) for a, d in candidates.items()})
-    if as_is.keyword_hits >= KEYWORD_HITS_MIN:
+    if (
+        as_is.keyword_hits >= KEYWORD_HITS_MIN
+        and as_is.vertical_share <= _VERTICAL_SHARE_SUSPECT
+    ):
         return {"angle": 0, "retried": True, "resolved": True, "scores": scores}
     sober = {
         a: d for a, d in candidates.items()

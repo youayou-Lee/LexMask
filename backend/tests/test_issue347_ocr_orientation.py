@@ -205,25 +205,46 @@ class TestChooseOrientation:
         227、倒置乱码帧抬到 344，as-is 241——比较制择优（含 1.2× 边际）全部
         指向错向/回退 ⇒ 乱码帧出框 ⇒ 表头裸露。关键词清醒判别下 90°（kw=46）
         直接胜出，分数再高的乱码帧（kw=0）也不选。"""
-        as_is = score_ocr_blocks(_rotated_page_blocks(), PAGE_W, PAGE_H)
+        from dataclasses import replace
+
+        as_is = replace(
+            score_ocr_blocks(_rotated_page_blocks(), PAGE_W, PAGE_H), score=241.0
+        )
         d = choose_orientation(
             as_is,
             {90: _cand(227.0, 46), 270: _cand(344.0, 0)},
         )
+        assert 227.0 < as_is.score * 1.2  # 真候选过不了比较制边际（实证条件）
         assert d["angle"] == 90
         assert d["resolved"] is True
 
-    def test_as_is_sober_keeps_zero(self):
-        """as-is 有旋转签名但关键词清醒（原样已读出真表单文本）：保持 0，
-        不信任任何候选——不引入「把可读页转歪」的新风险。"""
-        blocks = _rotated_page_blocks()
+    def test_as_is_upright_sober_keeps_zero(self):
+        """as-is 有旋转签名（巨型 blob）但文本行水平且关键词清醒（原样即正，
+        仅解析粗糙）：保持 0，不信任任何候选——不引入「把可读页转歪」的新风险。"""
+        blob = _block("账号：6222021234567890 户名：李某某 交易日期：2024年3月15日 金额：3000.00",
+                      0.02, 0.02, 0.96, 0.7, PAGE_W, PAGE_H)
+        as_is = score_ocr_blocks([blob], PAGE_W, PAGE_H)
+        assert as_is.rotation_suspect is True
+        assert as_is.vertical_share <= 0.25
+        assert as_is.keyword_hits >= KEYWORD_HITS_MIN
+        d = choose_orientation(as_is, {90: _cand(500.0, 46)})
+        assert d["angle"] == 0
+        assert d["resolved"] is True
+
+    def test_as_is_lying_sober_still_normalizes(self):
+        """复跑实证（根因②演进第二钉）：竖躺页（vertical_share≈0.7）的 as-is
+        OCR 也可能读出成串表单词（kw=44，VL 侧读），但竖排几何仍截断字符框
+        （p9 证号框 h=0.053 只盖 ~11/18 位；归一页 p10 h=0.096 全盖）⇒ 竖躺
+        页必须归一到直立候选，as-is kw 不构成保持原样的理由。"""
+        blocks = _rotated_page_blocks()  # 竖排块（vsh=1.0）
         blocks[0] = _vertical_block("账号：6222021234567890 户名：李某某 交易日期：2024年3月15日",
                                     0.1, 0.1, 0.022, 0.12, PAGE_W, PAGE_H)
         as_is = score_ocr_blocks(blocks, PAGE_W, PAGE_H)
         assert as_is.rotation_suspect is True
+        assert as_is.vertical_share > 0.4
         assert as_is.keyword_hits >= KEYWORD_HITS_MIN
-        d = choose_orientation(as_is, {90: _cand(500.0, 46)})
-        assert d["angle"] == 0
+        d = choose_orientation(as_is, {90: _cand(227.0, 46), 270: _cand(344.0, 0)})
+        assert d["angle"] == 90  # 清醒候选胜出，不保持竖躺原样
         assert d["resolved"] is True
 
     def test_all_garbage_resolved_false(self):
