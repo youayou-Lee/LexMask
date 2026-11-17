@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppSidebar } from './app-sidebar';
 import { useI18n } from '@/i18n';
+import { AdminMonitoringPanel } from '@/features/settings/panels/monitoring-panel';
 import { SidebarProvider } from '@/components/ui/sidebar';
 import { SingleTaskProvider } from '@/features/single-task/single-task-context';
 
@@ -91,7 +92,8 @@ describe('Issue#351 P2-D1：侧边栏服务面板降级', () => {
     expect(txt).not.toContain('文本语义服务');
     expect(txt).not.toContain('视觉特征服务');
     expect(txt).not.toContain('GB');
-    expect(txt).not.toContain('v0.0.0');
+    // testid 配对（门⑥ I-1）：版本字面量在 CI `npm test` 下=1.0.0，v0.0.0 字面量恒绿。
+    expect(footer.querySelector('[data-testid="app-version"]')).toBeNull();
     // 正向：标题与刷新按钮在场可点
     expect(txt).toContain('本地服务');
     const refresh = screen.getByTestId('health-refresh');
@@ -112,5 +114,13 @@ describe('Issue#351 P2-D1：侧边栏服务面板降级', () => {
     // 正向：短版在场（截断根治=短语）
     expect(screen.getAllByText(/案卷转脱敏 Markdown/).length).toBeGreaterThan(0);
     view.unmount();
+  });
+});
+describe('Issue#351 P2-D1 续：版本行正向落位（门⑥ I-2）', () => {
+  it('monitoring-panel 渲染版本行（monitoring-build-info 在场）', () => {
+    healthState.health = fullHealth;
+    healthState.roundTripMs = 12;
+    render(<AdminMonitoringPanel />);
+    expect(screen.getByTestId('monitoring-build-info')).not.toBeNull();
   });
 });

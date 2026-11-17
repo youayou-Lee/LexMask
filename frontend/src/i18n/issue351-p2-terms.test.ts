@@ -16,6 +16,10 @@ describe('Issue#351 P2-E：术语残留清零', () => {
     expect(en['batchWizard.status.awaitingReview']).toBe('Awaiting review');
   });
 
+  it('D2-en：供料副标题 en 短句同步（冷审 I6/门⑥ Minor-3 双钉）', () => {
+    expect(en['nav.agentMd.sub']).toBe('Case files to sanitized Markdown');
+  });
+
   it('E2：死键 singleTask.phase.awaiting_review 已从 zh/en 删除（缺席断言）', () => {
     expect(zh).not.toHaveProperty('singleTask.phase.awaiting_review');
     expect(en).not.toHaveProperty('singleTask.phase.awaiting_review');
