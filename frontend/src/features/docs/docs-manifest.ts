@@ -37,7 +37,11 @@ export const DOCS_MANIFEST: ReadonlyArray<{ file: string; slug: string }> = [
   { file: '配置与管理/账号与登录.md', slug: 'account-login' },
   { file: '配置与管理/识别项设置.md', slug: 'entity-types' },
   { file: '配置与管理/配置清单.md', slug: 'config-list' },
+  { file: '配置与管理/律师场景配置指南.md', slug: 'lawyer-guide' },
   { file: '常见问题与排障/常见问题.md', slug: 'faq' },
+  { file: '常见问题与排障/识别效果不佳怎么办.md', slug: 'poor-results' },
+  { file: '常见问题与排障/遇到报错怎么办.md', slug: 'errors' },
+  { file: '更新日志/版本更新记录.md', slug: 'changelog' },
 ];
 
 export function parseDocsFrontmatter(raw: string, source: string): DocsFrontmatter {
@@ -67,7 +71,7 @@ export function parseDocsFrontmatter(raw: string, source: string): DocsFrontmatt
  * 按 category 分组、组内按 order 升序、组间按**分类首现顺序**。
  *
  * 首现顺序 = `entries` 数组顺序（= `getAllDocsEntries()` 返回的注册表顺序，
- * 即阅读顺序 新手必读 → 操作指南 → 配置与管理 → 常见问题）。用 Map 的插入序
+ * 即阅读顺序 新手必读 → 操作指南 → 配置与管理 → 常见问题与排障 → 更新日志）。用 Map 的插入序
  * 天然实现：第一次遇到某分类时插入，之后只往数组追加，分类位置不再变化。
  *
  * 不按「组内最小 order」或「篇数」排：各分类都从 order 1 起，前者全部并列；

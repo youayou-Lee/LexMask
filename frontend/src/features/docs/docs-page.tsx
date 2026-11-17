@@ -13,7 +13,7 @@ import type { DocsEntry, DocsNavSection } from './docs-manifest';
  * 相邻文档（上一篇/下一篇）。
  *
  * 顺序口径 = `entries` 数组顺序（`getAllDocsEntries()` 返回的登记顺序，即阅读顺序
- * 新手必读 → 操作指南 → 配置与管理 → 常见问题与排障），不在此处重新排序
+ * 新手必读 → 操作指南 → 配置与管理 → 常见问题与排障 → 更新日志），不在此处重新排序
  * （`order` 是分类内序号，与阅读顺序不同）。
  * 纯函数：供测试直接钉行为。
  */

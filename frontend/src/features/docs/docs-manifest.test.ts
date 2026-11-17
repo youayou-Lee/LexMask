@@ -90,20 +90,21 @@ describe('内容清单（manifest）', () => {
   });
 
   // 真实清单的组间顺序 = 注册表顺序（= spec §3 的阅读顺序）。这条是「篇数降序」
-  // 旧规则的红灯用例：12 篇里「操作指南」最多（5 篇），旧规则会把它顶到最前。
-  it('真实清单的组间顺序 = 注册表顺序（新手必读 → 操作指南 → 配置与管理 → 常见问题）', async () => {
+  // 旧规则的红灯用例：16 篇里「操作指南」最多（5 篇），旧规则会把它顶到最前。
+  it('真实清单的组间顺序 = 注册表顺序（新手必读 → 操作指南 → 配置与管理 → 常见问题与排障 → 更新日志）', async () => {
     const nav = buildDocsNav(await getAllDocsEntries());
     expect(nav.map((s) => s.category)).toEqual([
       '新手必读',
       '操作指南',
       '配置与管理',
       '常见问题与排障',
+      '更新日志',
     ]);
   });
 
-  it('getAllDocsEntries 返回全部注册文档（≥12 篇，frontmatter 解析正确）', async () => {
+  it('getAllDocsEntries 返回全部注册文档（≥16 篇，frontmatter 解析正确）', async () => {
     const entries = await getAllDocsEntries();
-    expect(entries.length).toBeGreaterThanOrEqual(12);
+    expect(entries.length).toBeGreaterThanOrEqual(16);
     expect(entries.find((e) => e.slug === 'product-intro')).toMatchObject({
       title: '产品简介',
       category: '新手必读',
