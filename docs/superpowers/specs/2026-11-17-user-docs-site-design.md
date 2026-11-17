@@ -74,9 +74,9 @@
 | 项 | 选择 | 理由 |
 |---|---|---|
 | Markdown 渲染 | `react-markdown` + `remark-gfm` + 轻量语法高亮 | 前端生态主流，按需引 |
-| 内容存放 | `frontend/docs/<分类>/<slug>.md`，frontmatter：`title`/`category`/`order`/`updated` | 与代码同仓，PR 可审查 |
+| 内容存放 | `frontend/src/features/docs-content/<分类>/<slug>.md`（实际口径见 §4.2 实现口径），frontmatter：`title`/`category`/`order`/`updated` | 与代码同仓，PR 可审查 |
 | 路由 | `/docs`、`/docs/:slug` | 复用现有路由守卫与登录态 |
-| 渲染策略 | 构建时静态预渲染 | 秒开、无闪烁、无 XSS 面 |
+| 渲染策略 | 构建期只做静态资源打包（无构建时预渲染）；frontmatter 校验与导航树构建在运行期完成（与 §4.5、§4.2 实现口径一致） | 静态资源 + 文档页懒加载 chunk，秒开；内容不来自用户输入，无 XSS 面 |
 | 入口 | 侧边栏新增「文档中心」菜单项 | 已定 |
 | 搜索 | 第一版不做，顶栏预留位置 | YAGNI |
 
