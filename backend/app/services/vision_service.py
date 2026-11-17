@@ -2322,14 +2322,34 @@ class VisionService:
         # hallucinated-card gate never judges against a concurrent page's blocks.
         self._page_ocr_blocks = page_blocks
 
+        # Issue#347：OCR 可能按 90°/270° 转正后的页图工作（last_ocr_orientation）。
+        # ink 检查与像素归一化必须在同一张胜者图上做；归一化框在出口单点映射回
+        # 原页坐标——下游（落库/渲染/预览/人工框合并/外层标注图重绘）只见原页
+        # 坐标，零改动。
+        from app.services.vision.ocr_orientation import (
+            map_bounding_box_to_page,
+            rotate_image_for_ocr,
+        )
+
+        orientation = getattr(self.ocr_has_service, "last_ocr_orientation", None) or {}
+        angle = int(orientation.get("angle") or 0)
+
         img = Image.open(io.BytesIO(image_data))
         img = ImageOps.exif_transpose(img)
+        if angle:
+            img = rotate_image_for_ocr(img, angle)
 
         # 像素级过滤/收紧是纯 CPU 工作，放 worker 线程避免阻塞事件循环。
         bounding_boxes = await asyncio.to_thread(
             self._filter_ocr_has_regions, img, regions, page
         )
         bounding_boxes = self._drop_contained_same_type_text(bounding_boxes)
+        if angle:
+            bounding_boxes = [map_bounding_box_to_page(box, angle) for box in bounding_boxes]
+            logger.info(
+                "Page %d: OCR ran on %d°-rotated image; %d box(es) mapped back to page space",
+                page, angle, len(bounding_boxes),
+            )
         return bounding_boxes, result_image_base64
 
     def _drop_contained_same_type_text(self, boxes: list[BoundingBox]) -> list[BoundingBox]:

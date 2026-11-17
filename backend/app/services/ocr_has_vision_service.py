@@ -139,6 +139,9 @@ class OcrHasVisionService:
         self._has_ready = False
         self.last_duration_ms: dict[str, Any] = {}
         self.last_ocr_blocks: list[OCRTextBlock] = []
+        # Issue#347：本调用最终采用的 OCR 输入方向（0=原样/90=顺时针转正/270=逆时针
+        # 转正）与各候选评分。_detect_with_ocr_has 读取它把归一化框映射回原页坐标。
+        self.last_ocr_orientation: dict[str, Any] = {"angle": 0, "retried": False, "scores": {}}
         self.current_owner_id: str | None = None
         # 正则兜底超时事件计数（Issue#65 / 冷审 I2）：vision 链的失效面是
         # 「整页该类型失效」，比文本链更值得可观测。
@@ -190,6 +193,85 @@ class OcrHasVisionService:
             selected_entity_types=selected_entity_types,
             stage_status=stage_status,
         )
+
+    async def _normalize_ocr_orientation(
+        self,
+        image: Image.Image,
+        width: int,
+        height: int,
+        ocr_blocks: list[OCRTextBlock],
+        visual_regions: list[SensitiveRegion],
+        *,
+        require_visual_regions: bool,
+        selected_entity_types: list[str],
+        duration_ms: dict[str, Any],
+    ) -> tuple[Image.Image, int, int, list[OCRTextBlock], list[SensitiveRegion]]:
+        """Issue#347：±90° 扫描页的 OCR 前方向归一（try-and-pick）。
+
+        as-is 块评分出现旋转签名（竖排行块占比高 / 巨型 blob）时，把页图转
+        90°/270° 各补一次**纯 OCR**（NER 在胜者空间只跑一次），比较制择优；
+        胜者必须显著优于 as-is（``WINNER_MARGIN_RATIO``）否则保持原样——宁可
+        维持现状，不把正常页转歪。好页（无签名）零额外开销。返回值是最终采用
+        的 (image, width, height, blocks, visual_regions)；方向与评分写进
+        ``last_ocr_orientation`` 与 ``duration_ms["ocr_orientation"]``（自动
+        流入 pipeline_status / page_event_log 观测面）。
+        """
+        from app.services.vision.ocr_orientation import (
+            choose_orientation,
+            rotate_image_for_ocr,
+            score_ocr_blocks,
+        )
+
+        as_is = score_ocr_blocks(ocr_blocks, width, height)
+        candidates: dict[int, tuple[Image.Image, list[OCRTextBlock], list[SensitiveRegion], dict]] = {}
+        candidate_scores: dict[int, float] = {}
+        retried = as_is.rotation_suspect
+        if retried:
+            for angle in (90, 270):
+                rotated = rotate_image_for_ocr(image, angle)
+                stage_status: dict[str, Any] = {}
+                try:
+                    blocks_a, visuals_a = await asyncio.to_thread(
+                        self._run_paddle_ocr,
+                        rotated,
+                        require_visual_regions=require_visual_regions,
+                        selected_entity_types=selected_entity_types,
+                        stage_status=stage_status,
+                    )
+                except Exception:
+                    # 候选方向 OCR 失败不致命：该角弃权，决策只在可用候选里做。
+                    logger.warning("orientation candidate %d° OCR failed", angle, exc_info=True)
+                    continue
+                candidates[angle] = (rotated, blocks_a, visuals_a, stage_status)
+                candidate_scores[angle] = score_ocr_blocks(
+                    blocks_a, rotated.width, rotated.height
+                ).score
+
+        decision = choose_orientation(as_is, candidate_scores)
+        angle = int(decision["angle"])
+        duration_ms["ocr_orientation"] = {
+            "chosen": angle,
+            "retried": retried,
+            "scores": decision["scores"],
+            "signals": as_is.signals,
+        }
+        self.last_ocr_orientation = {
+            "angle": angle,
+            "retried": retried,
+            "scores": decision["scores"],
+        }
+        if angle == 0:
+            return image, width, height, ocr_blocks, visual_regions
+
+        rotated, blocks_w, visuals_w, stage_status_w = candidates[angle]
+        # 观测面阶段时长与缓存状态跟随胜者（重试会把 as-is 的 timing 覆盖掉）。
+        for key, value in stage_status_w.items():
+            duration_ms[key] = value
+        logger.info(
+            "OCR orientation normalized: as-is %s → %d° (scores %s)",
+            as_is.signals, angle, decision["scores"],
+        )
+        return rotated, rotated.width, rotated.height, blocks_w, visuals_w
 
     async def _run_has_text_analysis(
         self,
@@ -562,6 +644,21 @@ class OcrHasVisionService:
             require_visual_regions=require_visual_regions,
             selected_entity_types=ocr_selected_entity_type_ids,
             stage_status=duration_ms,
+        )
+        # Issue#347：±90° 躺倒的扫描页（双面扫描奇偶交替、PDF 无 /Rotate）在方向
+        # 分类全关的 OCR 下退化——表头字段读不出 → 整行漏打，竖排行被横排行假设
+        # 截断 → 证号只遮前段。as-is 块出现旋转签名时，转 90°/270° 各补一次纯
+        # OCR（不跑 NER），比较制择优；好页零额外开销，坏页不浪费 NER。坐标留在
+        # 胜者空间，由 _detect_with_ocr_has 出口单点映射回原页。
+        image, width, height, ocr_blocks, visual_regions = await self._normalize_ocr_orientation(
+            image,
+            width,
+            height,
+            ocr_blocks,
+            visual_regions,
+            require_visual_regions=require_visual_regions,
+            selected_entity_types=ocr_selected_entity_type_ids,
+            duration_ms=duration_ms,
         )
         self.last_ocr_blocks = list(ocr_blocks)
         # Per-call, race-free handoff: last_ocr_blocks is a process-wide singleton
