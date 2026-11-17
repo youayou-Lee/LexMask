@@ -1493,7 +1493,7 @@ const zhOverrides: Record<string, string> = {
   'batchWizard.status.pending': '等待中',
   'batchWizard.status.parsing': '解析中',
   'batchWizard.status.analyzing': '识别中',
-  'batchWizard.status.awaitingReview': '待审阅',
+  'batchWizard.status.awaitingReview': '待复核',
   'batchWizard.status.reviewApproved': '待匿名化',
   'batchWizard.status.redacting': '匿名化中',
   'batchWizard.status.completed': '已完成',
@@ -2335,7 +2335,6 @@ Object.assign(zhOverrides, {
   'singleTask.notify.failed': '处理失败：{name}',
   'singleTask.phase.recognizing': '识别中',
   'singleTask.phase.redacting': '打码中',
-  'singleTask.phase.awaiting_review': '待确认',
   'singleTask.offline': '连接断开，任务仍在后台运行',
   // Issue#194 Task 11：处理详情卡（结果页 / 识别进行中视图共用行构建器）
   'processingDetails.title': '处理详情',
@@ -2784,7 +2783,7 @@ Object.assign(zhOverrides, {
 // Issue#75 喂 Agent（/agent-md 四步动线）；useT 无插值，进度类文案用拼接
 Object.assign(zhOverrides, {
   'nav.agentMd': '供料模式',
-  'nav.agentMd.sub': '案卷转脱敏 Markdown，安全供给云端 AI',
+  'nav.agentMd.sub': '案卷转脱敏 Markdown',
   'agentMd.title': '供料模式 — 案卷转脱敏 Markdown',
   'agentMd.uploadHint': '上传一份 PDF 案卷，产出可直接投喂云端法律 AI 的脱敏 Markdown 与映射表',
   'agentMd.uploadFailed': '上传失败',
