@@ -1,8 +1,15 @@
 // Copyright 2026 LexMask Contributors
 
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  MemoryRouter,
+  Route,
+  RouterProvider,
+  Routes,
+  createMemoryRouter,
+  useLocation,
+} from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DocsPage, resolveAdjacentSlug } from './docs-page';
@@ -155,6 +162,17 @@ describe('DocsPage', () => {
     expect(screen.getByTestId('location-probe').textContent).toBe('/docs/doc-b');
   });
 
+  // I-1：未知 slug 不能渲染空正文/错误页——回文档中心首页（真实路由里 /docs 再重定向到首篇）。
+  it('未知 slug 重定向回文档中心首页（不渲染空正文、不落加载失败）', async () => {
+    renderAt('/docs/ghost-slug');
+    // 重定向链落地到清单首篇，正文正常渲染。
+    expect(await screen.findByRole('heading', { name: '你好', level: 1 })).toBeTruthy();
+    expect(screen.getByTestId('location-probe').textContent).toBe('/docs/doc-b');
+    // 关键：不再拿未知 slug 去请求原文（否则错误态会盖住重定向）。
+    expect(mocks.loadDocRaw).not.toHaveBeenCalledWith('ghost-slug');
+    expect(screen.queryByText(/文档加载失败/)).toBeNull();
+  });
+
   it('上/下篇按清单数组顺序渲染并链到相邻文档', async () => {
     const first = renderAt('/docs/doc-b');
     expect(await screen.findByRole('heading', { name: '你好', level: 1 })).toBeTruthy();
@@ -220,6 +238,29 @@ describe('DocsPage', () => {
 
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('navigation', { name: '文档目录（窄屏）' })).toBeNull();
+  });
+
+  // M-3：切换文档时抽屉必须收起——展开着的抽屉会挡住新一篇的正文。
+  it('切换文档时窄屏抽屉自动收起', async () => {
+    const router = createMemoryRouter(
+      [
+        { path: '/docs', element: <DocsPage /> },
+        { path: '/docs/:slug', element: <DocsPage /> },
+      ],
+      { initialEntries: ['/docs/doc-b'] },
+    );
+    render(<RouterProvider router={router} />);
+    expect(await screen.findByRole('heading', { name: '你好', level: 1 })).toBeTruthy();
+
+    const toggle = screen.getByRole('button', { name: /文档目录/ });
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+    await act(async () => {
+      await router.navigate('/docs/doc-a');
+    });
+    await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('false'));
     expect(screen.queryByRole('navigation', { name: '文档目录（窄屏）' })).toBeNull();
   });
 

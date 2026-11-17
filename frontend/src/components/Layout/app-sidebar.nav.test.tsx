@@ -57,13 +57,13 @@ afterEach(() => {
 });
 
 describe('Issue#262：侧边栏法律默认档收敛', () => {
-  it('法律默认档：处理流程 6 项固定顺序，开始/处理结果不再出现', () => {
+  it('法律默认档：处理流程 7 项固定顺序，开始/处理结果不再出现', () => {
     vi.mocked(listActiveSingleJobs).mockResolvedValue([]);
     renderSidebar();
     expect(screen.queryByTestId('nav-start')).toBeNull();
     expect(screen.queryByTestId('nav-history')).toBeNull();
     expect(screen.getByTestId('nav-jobs')).toBeTruthy();
-    // <nav> 内两组按 DOM 顺序拼接：处理流程 6 项 + 配置组（非管理员仅高级设置）。
+    // <nav> 内两组按 DOM 顺序拼接：处理流程 7 项 + 配置组（非管理员仅高级设置）。
     const navTestIds = Array.from(document.querySelectorAll('nav [data-testid]')).map((el) =>
       el.getAttribute('data-testid'),
     );

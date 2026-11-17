@@ -145,8 +145,16 @@ export function DocsPage() {
 
   const currentSlug = slug ?? entries?.[0]?.slug ?? null;
 
+  // 切换文档时收起窄屏抽屉——抽屉展开着会挡住新一篇的正文（M-3）。
   React.useEffect(() => {
-    if (!currentSlug) return;
+    setNavOpen(false);
+  }, [currentSlug]);
+
+  React.useEffect(() => {
+    // 清单未到位不取正文：未知 slug 在清单到位后由渲染层重定向，若先按 slug 发一次请求，
+    // 失败写入的 error 会盖住重定向（表现为「文档加载失败」而不是回到目录）。
+    if (!currentSlug || !entries) return;
+    if (!entries.some((entry) => entry.slug === currentSlug)) return;
     let cancelled = false;
     setRaw(null);
     loadDocRaw(currentSlug)
@@ -159,7 +167,7 @@ export function DocsPage() {
     return () => {
       cancelled = true;
     };
-  }, [currentSlug]);
+  }, [currentSlug, entries]);
 
   if (error) {
     return (
@@ -180,6 +188,11 @@ export function DocsPage() {
   }
 
   const current = entries.find((e) => e.slug === slug);
+  // 未知 slug（手输错字 / 旧链接 / 清单改名）回文档中心首页——渲染空正文或错误页都不如
+  // 把人送回目录树。真实路由里 `/docs` 本身就是重定向到清单首篇。
+  if (!current) {
+    return <Navigate to="/docs" replace />;
+  }
   const { prev, next } = resolveAdjacentSlug(slug, entries);
   // `loadDocRaw` 返回的是**含 frontmatter 的原文**，下面的 replace 负责把 frontmatter
   // 剥掉（承重代码，勿删）；正文里的 `# 你好` 交给 react-markdown 渲染。

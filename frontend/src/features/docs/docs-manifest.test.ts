@@ -80,7 +80,7 @@ describe('内容清单（manifest）', () => {
     expect(entry).toBeDefined();
     const raw = await loadDocRaw('product-intro');
     // 页面用 frontmatter 的 title 渲染唯一 H1，正文再从 `##` 起（H1 不重复）。
-    expect(raw).toContain('## 墨隐是什么');
+    expect(raw).toContain('## 本产品是什么');
     expect(raw.startsWith('---\ntitle: 产品简介\n')).toBe(true);
     expect(raw).not.toContain('\n# 产品简介\n');
   });
