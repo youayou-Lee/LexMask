@@ -246,4 +246,14 @@ describe('Issue#327 子集预览接线契约：三处接线不得被静默摘掉
     expect(playgroundHook).toMatch(/import \{[^}]*isRecognitionInFlight[^}]*\} from '@\/features\/playground\/lib\/subset-pages';/);
     expect(playgroundHook).toMatch(/isRecognitionInFlight\(pageStatus\.recognition_state\)/);
   });
+
+  // Issue#351 A6（门⑥ Important-3）：「产物构成恰好一处」的正向半边——
+  // 画布横幅 `singleExportHint` 必须仍在页面层接线（弹窗侧的 0 处断言在
+  // playground-page-export.test.tsx）。横幅若被删，产物说明降到 0 处而
+  // 弹窗测试仍全绿——这里钉住唯一保留点的接线不丢。
+  it('A6 产物构成唯一保留点：画布横幅 singleExportHint 接线在位', () => {
+    expect(page).toContain('batchWizard.pages.singleExportHint');
+    // 弹窗组件不得回头引用横幅键（保持两处职责分离）
+    expect(read('./components/playground-page-export.tsx')).not.toContain('singleExportHint');
+  });
 });

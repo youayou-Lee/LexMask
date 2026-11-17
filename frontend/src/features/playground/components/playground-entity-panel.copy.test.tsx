@@ -145,7 +145,7 @@ describe('Issue#351 A7：来源标签同源全隐、混合源仅差异行', () =
     expect(screen.getAllByText('张三').length).toBeGreaterThan(0);
   });
 
-  it('混合来源：仅与首行来源不同的行标注来源', () => {
+  it('混合来源：仅少数派行标注来源（多数派锚）', () => {
     render(
       <PlaygroundEntityPanel
         {...baseProps}
@@ -157,11 +157,28 @@ describe('Issue#351 A7：来源标签同源全隐、混合源仅差异行', () =
     const r1 = screen.getByTestId('playground-entity-e1');
     const r2 = screen.getByTestId('playground-entity-e2');
     const r3 = screen.getByTestId('playground-entity-e3');
-    // 首行来源（语义模型）为锚：少数派（正则）标注，多数派不标注
+    // 多数派（语义模型）为锚：少数派（正则）标注，多数派不标注
     expect(/正则/.test(r2.textContent ?? '')).toBe(true);
     expect(/语义模型/.test(r1.textContent ?? '')).toBe(false);
     expect(/语义模型/.test(r3.textContent ?? '')).toBe(false);
     expect(/正则/.test(r1.textContent ?? '')).toBe(false);
     expect(/正则/.test(r3.textContent ?? '')).toBe(false);
+  });
+
+  it('门⑥ Minor-4：首行是少数派时仍标注少数派（锚按多数派而非数据序首行）', () => {
+    const minorityFirst: Entity[] = [
+      { id: 'm1', text: '甲', type: 'PERSON', start: 0, end: 1, selected: true, source: 'regex' },
+      { id: 'm2', text: '乙', type: 'PERSON', start: 2, end: 3, selected: false, source: 'has' },
+      { id: 'm3', text: '丙', type: 'PERSON', start: 4, end: 5, selected: false, source: 'llm' },
+    ];
+    render(<PlaygroundEntityPanel {...baseProps} entities={minorityFirst} mappingEntities={minorityFirst} />);
+    openDrawer();
+    const r1 = screen.getByTestId('playground-entity-m1');
+    const r2 = screen.getByTestId('playground-entity-m2');
+    const r3 = screen.getByTestId('playground-entity-m3');
+    // 多数派=语义模型（2 票）为锚；数据序首行（正则）恰是少数派 ⇒ 必须标它，而非标多数派两行
+    expect(/正则/.test(r1.textContent ?? '')).toBe(true);
+    expect(/语义模型/.test(r2.textContent ?? '')).toBe(false);
+    expect(/语义模型/.test(r3.textContent ?? '')).toBe(false);
   });
 });

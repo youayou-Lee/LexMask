@@ -13,6 +13,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, useLocation } from 'react-router-dom';
+import { zh } from '@/i18n/zh';
 
 import { TasksPage } from './tasks-page';
 
@@ -51,6 +52,10 @@ const { mockedJobs, mockedUseJobs, resetMockedJobsState } = vi.hoisted(() => {
       awaitingReviewItems: 3,
       completedItems: 40,
       riskItems: 1,
+      // Issue#351 B2：工单单位口径（mock 与 use-jobs.ts 返回形状逐键对齐，门⑥ Minor-7）
+      awaitingReviewJobs: 3,
+      completedJobs: 40,
+      riskJobs: 1,
     },
     changeTab: vi.fn(),
     refreshList: vi.fn(),
@@ -337,6 +342,15 @@ describe('Issue#351 B1：任务中心术语统一「复核」族', () => {
     // 正向：统一后的词确实渲染（列头待复核 + 操作列继续复核）
     expect(screen.getAllByText(/待复核/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/继续复核/).length).toBeGreaterThan(0);
+  });
+
+  it('门⑥ Critical-1：动态 key redactionState.awaiting_review（任务详情页可达）也是待复核', () => {
+    // 该 key 经 utils/redactionState.getRedactionStateLabel 渲染于 /jobs「查看详情」
+    // 详情页——字符串值级钉（渲染面走 job-detail，此处钉字典防回归）
+    expect(zh['redactionState.awaiting_review']).toBe('待复核');
+    expect(zh['job.status.awaiting_review']).toBe('待复核');
+    expect(zh['jobDetail.progressAwaiting']).toBe('待复核 {n}');
+    expect(zh['history.metric.awaitingReview']).toBe('待复核');
   });
 });
 

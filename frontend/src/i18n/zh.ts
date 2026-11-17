@@ -297,7 +297,7 @@ const zhBase: Record<string, string> = {
   'job.statusDesc.cancelled': '任务已停止。',
   'job.statusDesc.unknown': '状态已更新，请刷新查看最新进度。',
   'redactionState.redacted': '已处理',
-  'redactionState.awaiting_review': '待审核',
+  'redactionState.awaiting_review': '待复核',
   'redactionState.unredacted': '未处理',
 
   'report.coverage': '覆盖率',

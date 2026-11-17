@@ -921,10 +921,26 @@ const EntityList: FC<{
     ENTITY_GROUPS.flatMap((group) => group.types.map((type) => type.id)),
   );
   const customEntities = entities.filter((entity) => !groupedTypeIds.has(entity.type));
-  // Issue#351 A7：同源列表不渲染来源标签；混合来源只标注与首行来源不同的少数派行。
-  const firstSourceLabel = entities.length > 0 ? entitySourceLabel(entities[0], t) : '';
-  const mixedSource = new Set(entities.map((entity) => entitySourceLabel(entity, t))).size > 1;
-  const sourceMarking = (entity: Entity) => mixedSource && entitySourceLabel(entity, t) !== firstSourceLabel;
+  // Issue#351 A7：同源列表不渲染来源标签；混合来源只标注少数派行。
+  // 锚=多数派标签（频次最高；平票取数据序首个）——渲染按组序重排，
+  // 用数据序首行当锚会与用户看到的首行错位（门⑥ Minor-4）。
+  const labelCounts = new Map<string, number>();
+  for (const entity of entities) {
+    const label = entitySourceLabel(entity, t);
+    labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
+  }
+  const mixedSource = labelCounts.size > 1;
+  let dominantLabel = '';
+  let dominantCount = 0;
+  for (const entity of entities) {
+    const label = entitySourceLabel(entity, t);
+    const count = labelCounts.get(label) ?? 0;
+    if (count > dominantCount) {
+      dominantCount = count;
+      dominantLabel = label;
+    }
+  }
+  const sourceMarking = (entity: Entity) => mixedSource && entitySourceLabel(entity, t) !== dominantLabel;
 
   return (
     <>
