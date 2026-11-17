@@ -156,6 +156,39 @@ describe('DocsPage', () => {
     expect(screen.queryByText(/^---$/)).toBeNull();
   });
 
+  // 门⑥ I-1：剥离与解析共用 splitDocsFrontmatter 后的边界钉——两条历史上「解析成功
+  // 但旧剥离正则失效」的合法 frontmatter，不得把元数据渲染进正文。
+  it('frontmatter 闭合无尾随换行（EOF）时不残留元数据', async () => {
+    mocks.loadDocRaw.mockImplementation(async (slug: string) =>
+      slug === 'doc-b'
+        ? '---\ntitle: 乙篇\ncategory: 新手必读\norder: 2\nupdated: 2026-11-17\n---'
+        : rawForSlug(slug),
+    );
+    renderAt('/docs/doc-b');
+    // 页面正常渲染（面包屑在、无元数据残留）；正文为空是这篇夹具本来的样子。
+    expect(await screen.findByText(/文档中心/)).toBeTruthy();
+    expect(screen.queryByText(/title:/)).toBeNull();
+    expect(screen.queryByText(/category:/)).toBeNull();
+    expect(screen.queryByText(/updated:/)).toBeNull();
+    expect(screen.queryByText(/^---$/)).toBeNull();
+  });
+
+  it('字段值内含 --- 时 category/order/updated 残留不进正文', async () => {
+    mocks.loadDocRaw.mockImplementation(async (slug: string) =>
+      slug === 'doc-b'
+        ? '---\ntitle: 乙篇---\ncategory: 新手必读\norder: 2\nupdated: 2026-11-17\n---\n\n' +
+          DOC_BODY
+        : rawForSlug(slug),
+    );
+    renderAt('/docs/doc-b');
+    // 正文正常渲染（值内 --- 没有吞掉后续字段，也没有提前进正文）。
+    expect(await screen.findByRole('heading', { name: '你好', level: 1 })).toBeTruthy();
+    expect(screen.queryByText(/category:/)).toBeNull();
+    expect(screen.queryByText(/order:/)).toBeNull();
+    expect(screen.queryByText(/updated:/)).toBeNull();
+    expect(screen.queryByText(/乙篇---/)).toBeNull();
+  });
+
   it('无 slug（/docs）时重定向到第一篇', async () => {
     renderAt('/docs');
     expect(await screen.findByRole('heading', { name: '你好', level: 1 })).toBeTruthy();

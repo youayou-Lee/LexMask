@@ -44,13 +44,35 @@ export const DOCS_MANIFEST: ReadonlyArray<{ file: string; slug: string }> = [
   { file: '更新日志/版本更新记录.md', slug: 'changelog' },
 ];
 
+/**
+ * frontmatter 分界（单一真源，门⑥ I-1）：解析与页面剥离共用同一实现。
+ * 闭合分隔线必须锚定行首（`\r?\n---`）并允许文件在闭合线后直接结束（`\r?\n|$`）——
+ * 否则「闭合线无尾随换行」或「字段值内含 `---`」这两类合法 frontmatter 会在
+ * 页面上把元数据当正文渲染出来（解析成功但剥离失败）。
+ */
+const DOCS_FRONTMATTER_SPLIT_RE = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
+
+export interface DocsFrontmatterSplit {
+  /** frontmatter 原始字段块（不含首尾分隔线）。 */
+  rawFields: string;
+  /** 剥离 frontmatter 后的正文（保留 frontmatter 后的原有换行形态）。 */
+  body: string;
+}
+
+/** 把「frontmatter + 正文」拆开；没有合法 frontmatter 时返回 null（fail-closed 判据）。 */
+export function splitDocsFrontmatter(raw: string): DocsFrontmatterSplit | null {
+  const match = DOCS_FRONTMATTER_SPLIT_RE.exec(raw);
+  if (!match) return null;
+  return { rawFields: match[1], body: raw.slice(match[0].length) };
+}
+
 export function parseDocsFrontmatter(raw: string, source: string): DocsFrontmatter {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw);
-  if (!match) {
+  const split = splitDocsFrontmatter(raw);
+  if (!split) {
     throw new Error(`文档缺少 frontmatter：${source}`);
   }
   const fields: Record<string, string> = {};
-  for (const line of match[1].split(/\r?\n/)) {
+  for (const line of split.rawFields.split(/\r?\n/)) {
     const colon = line.indexOf(':');
     if (colon === -1) continue;
     fields[line.slice(0, colon).trim()] = line.slice(colon + 1).trim();

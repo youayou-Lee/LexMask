@@ -6,7 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-import { buildDocsNav, getAllDocsEntries, loadDocRaw } from './docs-manifest';
+import { buildDocsNav, getAllDocsEntries, loadDocRaw, splitDocsFrontmatter } from './docs-manifest';
 import type { DocsEntry, DocsNavSection } from './docs-manifest';
 
 /**
@@ -159,7 +159,13 @@ export function DocsPage() {
     setRaw(null);
     loadDocRaw(currentSlug)
       .then((text) => {
-        if (!cancelled) setRaw(text);
+        if (cancelled) return;
+        // 门⑥ I-1：正文渲染依赖 frontmatter 可剥离（与清单解析同一分界实现）。
+        // 剥不开的原文直接显式报错，不把元数据当正文渲染（fail-closed）。
+        if (!splitDocsFrontmatter(text)) {
+          throw new Error(`文档 frontmatter 剥离失败（与清单解析口径不一致）：${currentSlug}`);
+        }
+        setRaw(text);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -194,9 +200,10 @@ export function DocsPage() {
     return <Navigate to="/docs" replace />;
   }
   const { prev, next } = resolveAdjacentSlug(slug, entries);
-  // `loadDocRaw` 返回的是**含 frontmatter 的原文**，下面的 replace 负责把 frontmatter
-  // 剥掉（承重代码，勿删）；正文里的 `# 你好` 交给 react-markdown 渲染。
-  const body = (raw ?? '').replace(/^---[\s\S]*?---\r?\n/, '');
+  // `loadDocRaw` 返回的是**含 frontmatter 的原文**，frontmatter 分界与清单解析共用
+  // splitDocsFrontmatter（单一真源，门⑥ I-1——两套正则不同源会让元数据渲染进正文）。
+  // 加载时已校验可剥离，这里的 `?? ''` 只是类型兜底；正文交给 react-markdown 渲染。
+  const body = raw == null ? '' : (splitDocsFrontmatter(raw)?.body ?? '');
   const toc = extractToc(body);
 
   return (

@@ -9,6 +9,7 @@ import {
   getAllDocsEntries,
   loadDocRaw,
   parseDocsFrontmatter,
+  splitDocsFrontmatter,
 } from './docs-manifest';
 
 /** 磁盘上的全部文档 md（与 docs-manifest.ts 内部 glob 同一口径，用于守卫注册表 ↔ 文件一致）。 */
@@ -42,6 +43,49 @@ describe('parseDocsFrontmatter', () => {
     const raw =
       '---\ntitle: 标题\ncategory: 新手必读\norder: abc\nupdated: 2026-11-17\n---\n\n正文';
     expect(() => parseDocsFrontmatter(raw, 'bad.md')).toThrow(/order/);
+  });
+});
+
+// 门⑥ I-1：解析与页面剥离必须共用同一分界实现。旧页面剥离正则 `/^---[\s\S]*?---\r?\n/`
+// 与解析正则锚定条件不同，两条合法 frontmatter 会「解析成功但剥离失败」（元数据当正文渲染）：
+// ① 闭合 --- 在文件末尾且无尾随换行；② 字段值内含 `---`（提前截断）。
+describe('splitDocsFrontmatter', () => {
+  it('常规 frontmatter：字段块与正文分离，且与 parseDocsFrontmatter 同源（能 split 必能 parse）', () => {
+    const raw = '---\ntitle: 快速开始\ncategory: 新手必读\norder: 2\nupdated: 2026-11-17\n---\n\n# 正文';
+    const split = splitDocsFrontmatter(raw);
+    expect(split).not.toBeNull();
+    expect(split!.rawFields).toBe('title: 快速开始\ncategory: 新手必读\norder: 2\nupdated: 2026-11-17');
+    expect(split!.body).toBe('\n# 正文');
+    expect(parseDocsFrontmatter(raw, 'x.md')).toBeTruthy();
+  });
+
+  it('边界①：闭合 --- 后无尾随换行（EOF）——解析成功、正文为空且不残留元数据', () => {
+    const raw = '---\ntitle: 标题\ncategory: 新手必读\norder: 1\nupdated: 2026-11-17\n---';
+    const split = splitDocsFrontmatter(raw);
+    expect(split).not.toBeNull();
+    expect(split!.body).toBe('');
+    expect(split!.rawFields).not.toContain('---');
+    expect(parseDocsFrontmatter(raw, 'x.md')).toEqual({
+      title: '标题',
+      category: '新手必读',
+      order: 1,
+      updated: '2026-11-17',
+    });
+  });
+
+  it('边界②：字段值内含 ---（如 title: 注意事项---）不提前截断', () => {
+    const raw =
+      '---\ntitle: 注意事项---\ncategory: 配置与管理\norder: 3\nupdated: 2026-11-17\n---\n\n正文';
+    const split = splitDocsFrontmatter(raw);
+    expect(split).not.toBeNull();
+    expect(split!.rawFields).toContain('category: 配置与管理');
+    expect(split!.body).toBe('\n正文');
+    expect(parseDocsFrontmatter(raw, 'x.md').title).toBe('注意事项---');
+  });
+
+  it('frontmatter 缺失返回 null（fail-closed 判据）', () => {
+    expect(splitDocsFrontmatter('# 没有 frontmatter')).toBeNull();
+    expect(splitDocsFrontmatter('')).toBeNull();
   });
 });
 
