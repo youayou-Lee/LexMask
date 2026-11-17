@@ -226,7 +226,7 @@ function StructuredPoliciesCompatRoute() {
 }
 
 // Issue#348：文档中心路由片段——导出仅为路由契约测试直挂（行为无差异）。
-// `docs` 重定向目标是 Task 1 的夹具首篇（`test-doc`）；Task 5 接入真实内容时
+// `docs` 重定向目标是 Task 1 的夹具首篇（`test-doc`）；Task 6 接入真实内容时
 // 需同步改为真实首篇 slug（届时 DOCS_ROUTES 与 router.docs.test.tsx 一起改）。
 export const DOCS_ROUTES: Array<{ path: string; element: React.ReactNode }> = [
   { path: 'docs', element: <Navigate to="/docs/test-doc" replace /> },

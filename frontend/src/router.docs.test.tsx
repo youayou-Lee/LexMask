@@ -1,9 +1,12 @@
 // Copyright 2026 LexMask Contributors
 
-// Issue#348：/docs 路由接线契约——把 DOCS_ROUTES 片段直挂 MemoryRouter，钉三件事：
+// Issue#348：/docs 路由接线契约——把 DOCS_ROUTES 片段直挂 MemoryRouter，钉四件事：
 // ① 片段恰含 docs / docs/:slug 两条（不漏挂、不额外挂别的）；
-// ② `/docs` 重定向到清单首篇（replace），落点即文档中心组件；
-// ③ `docs/:slug` 挂的是 DocsPage（lazy 导入 + LazyPage 包裹）。
+// ② `/docs` 的落点是清单首篇（`location.pathname`），且落到文档中心组件而非兜底路由；
+// ③ `docs/:slug` 挂的是 DocsPage（lazy 导入 + LazyPage 包裹）；
+// ④ 这两条真的被 `createBrowserRouter` 展开进 `/`（RequireAuth + Layout）的 children。
+// 注：钉的是「路由存在 + 重定向落点」，**不钉 replace 语义**——本文件没有 history 栈/URL 断言，
+// 重定向是否污染后退栈需在真实浏览器里验（e2e/smoke_routes.py），别把②读成「已证 replace」。
 // 页面自身的渲染行为在 docs-page.test.tsx 覆盖，此处只钉「路由 → 组件」接线。
 
 // @vitest-environment jsdom
@@ -12,7 +15,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DOCS_MANIFEST } from './features/docs/docs-manifest';
-import { DOCS_ROUTES } from './router';
+import { DOCS_ROUTES, router } from './router';
 
 // 用 stub 顶替 DocsPage：本文件只验证接线，不重复页面渲染断言（也就不依赖文档内容）。
 vi.mock('./features/docs/docs-page', () => ({
@@ -50,6 +53,15 @@ describe('文档中心路由（#348）', () => {
     for (const route of docsRoutes) {
       expect(route.element).toBeTruthy();
     }
+  });
+
+  // 接线钉：片段必须真的被 `createBrowserRouter` 展开——只导出不挂的话上面几条仍全绿
+  // （它们直挂片段自身），删掉 router.tsx 里的 `...DOCS_ROUTES,` 时靠这条变红。
+  it('createBrowserRouter 的 / 路由 children 里含 docs 片段', () => {
+    const root = router.routes.find((r) => r.path === '/');
+    const childPaths = root?.children?.map((c) => c.path);
+    expect(childPaths).toContain('docs');
+    expect(childPaths).toContain('docs/:slug');
   });
 
   it('/docs 重定向到清单首篇', async () => {
