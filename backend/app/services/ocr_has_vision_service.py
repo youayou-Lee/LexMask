@@ -217,6 +217,7 @@ class OcrHasVisionService:
         流入 pipeline_status / page_event_log 观测面）。
         """
         from app.services.vision.ocr_orientation import (
+            WINNER_MARGIN_RATIO,
             choose_orientation,
             rotate_image_for_ocr,
             score_ocr_blocks,
@@ -242,10 +243,18 @@ class OcrHasVisionService:
                     # 候选方向 OCR 失败不致命：该角弃权，决策只在可用候选里做。
                     logger.warning("orientation candidate %d° OCR failed", angle, exc_info=True)
                     continue
+                score_a = score_ocr_blocks(blocks_a, rotated.width, rotated.height)
                 candidates[angle] = (rotated, blocks_a, visuals_a, stage_status)
-                candidate_scores[angle] = score_ocr_blocks(
-                    blocks_a, rotated.width, rotated.height
-                ).score
+                candidate_scores[angle] = score_a.score
+                # 置信早退（Issue#347 性能）：候选「明显正常且显著胜出」即收，省掉
+                # 剩余候选的一次纯 OCR。双条件缺一不可——横排乱码页（180° 相对形态）
+                # 文本仍水平、clearly_fine 可能为真，但分数不达边际照样继续试下一
+                # 个角；真正 upright 的候选两者皆满足。
+                if (
+                    score_a.clearly_fine
+                    and score_a.score >= as_is.score * WINNER_MARGIN_RATIO
+                ):
+                    break
 
         decision = choose_orientation(as_is, candidate_scores)
         angle = int(decision["angle"])

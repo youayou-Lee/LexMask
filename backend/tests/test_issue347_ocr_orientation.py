@@ -251,7 +251,7 @@ class TestDetectAndDrawOrientationSeam:
         regions, _ = await svc.detect_and_draw(_png_bytes(400, 800), vision_types=None, draw_result=False)
         assert svc.last_ocr_orientation["angle"] == 90  # 并列时取先试的 90
         assert svc.last_ocr_orientation["retried"] is True
-        assert calls == [(400, 800), (800, 400), (800, 400)]  # as-is + rot90 + rot270
+        assert calls == [(400, 800), (800, 400)]  # as-is + rot90（置信早退，rot270 免跑）
         # NER/匹配吃的是胜者（横排）块
         assert svc.last_ocr_blocks[0].text.startswith("合同")
         assert regions == []
@@ -326,3 +326,34 @@ class TestDetectWithOcrHasExitMapping:
         boxes, _ = await vs._detect_with_ocr_has(_png_bytes(200, 100), page=1, pipeline_types=None, draw_result=False)
         assert boxes[0].x == pytest.approx(60 / 200)
         assert boxes[0].y == pytest.approx(30 / 100)
+
+    @pytest.mark.asyncio
+    async def test_not_confident_first_still_evaluates_second(self, monkeypatch):
+        """第一个候选「明显正常但分数不达边际」（横排乱码形态）⇒ 必须继续试 270。"""
+        from app.services.ocr_has_vision_service import get_ocr_has_vision_service
+        svc = get_ocr_has_vision_service()
+        calls: list[tuple[int, int]] = []
+
+        def _garbage_horizontal(page_w: int, page_h: int) -> list[OCRTextBlock]:
+            # 横排（vertical_share=0 → clearly_fine 走 cjk 门）但文本稀碎、分数低：
+            # 5 块 × 8 CJK = 40 ≥ 30 → clearly_fine True；score 40 < as-is 70×1.2
+            return [_block("杂读碎符碎片乱块文本", 0.05 + i * 0.18, 0.1 + (i % 2) * 0.5, 0.15, 0.04, page_w, page_h)
+                    for i in range(5)]
+
+        def fake_run_paddle_ocr(image, require_visual_regions=False, selected_entity_types=None, stage_status=None):
+            calls.append((image.width, image.height))
+            if image.width < image.height:
+                return _rotated_page_blocks(image.width, image.height), []
+            if len(calls) == 2:
+                return _garbage_horizontal(image.width, image.height), []
+            return _horizontal_page_blocks(image.width, image.height), []
+
+        async def fake_ner(blocks, vision_types=None, stage_status=None, page_deadline=None):
+            return []
+
+        monkeypatch.setattr(svc, "_run_paddle_ocr", fake_run_paddle_ocr)
+        monkeypatch.setattr(svc, "_invoke_has_text_analysis", fake_ner)
+        monkeypatch.setattr(svc, "_apply_regex_fallback", lambda *a, **k: [])
+        await svc.detect_and_draw(_png_bytes(400, 800), vision_types=None, draw_result=False)
+        assert calls == [(400, 800), (800, 400), (800, 400)]  # 90° 不达边际 ⇒ 270° 照跑
+        assert svc.last_ocr_orientation["angle"] == 270
