@@ -19,6 +19,7 @@ import {
 import { notifyWatermarkUploadStatus } from '@/features/watermark-tool/upload-notify';
 import { safeJson } from '../utils';
 import { boundingBoxesFromServerInfo, planServerCachedResume } from '../lib/playground-draft';
+import { inlineWatermarkNoticeText } from '../lib/inline-watermark-notice';
 import {
   currentSegmentFromPerformance,
   inFlightPages,
@@ -242,13 +243,13 @@ export function usePlaygroundFile(options: UsePlaygroundFileOptions) {
   /**
    * Issue#338：解析期剔除的内嵌平铺水印行数 → 一句显式提示（真源 `fileInfo.watermark_inline_filtered`）。
    * 派生而不用 state：`fileInfo` 一变（换文件/重新上传）提示自然归零，不会把上一份文件的
-   * 水印数带到新文件上。`null`/缺失/≤0 ⇒ 不提示（「没测到」与「0 行」都不是水印提醒的场合）。
+   * 水印数带到新文件上。脏数据口径（0/负数/非整数/NaN/字符串…）收口在纯函数
+   * `inlineWatermarkNoticeText`，由 `lib/inline-watermark-notice.test.ts` 直接钉住。
    */
-  const inlineWatermarkNotice = useMemo(() => {
-    const lines = fileInfo?.watermark_inline_filtered;
-    if (typeof lines !== 'number' || !Number.isFinite(lines) || lines <= 0) return null;
-    return t('playground.inlineWatermarkNotice').replace('{count}', String(lines));
-  }, [fileInfo?.watermark_inline_filtered]);
+  const inlineWatermarkNotice = useMemo(
+    () => inlineWatermarkNoticeText(fileInfo?.watermark_inline_filtered, (key) => t(key)),
+    [fileInfo?.watermark_inline_filtered, t],
+  );
 
   // --- Cleanup abort on unmount ---
   useEffect(() => {

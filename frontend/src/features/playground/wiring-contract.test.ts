@@ -221,8 +221,15 @@ describe('Issue#327 子集预览接线契约：三处接线不得被静默摘掉
     expect(fileHook).toMatch(
       /watermark_inline_filtered:\s*parseData\.watermark_inline_filtered \?\? null/,
     );
-    // ② 文件层派生提示（单位=行，≤0/缺失 ⇒ 不提示）
+    // ② 文件层派生提示（单位=行，≤0/缺失/脏数据 ⇒ 不提示）；脏数据口径收口在纯函数，
+    //    不得绕过它直接格式化（绕过 ⇒ lib 用例全绿但生产暴露脏值）
     expect(fileHook).toMatch(/const inlineWatermarkNotice = useMemo\(/);
+    expect(fileHook).toMatch(
+      /inlineWatermarkNoticeText\(\s*fileInfo\?\.watermark_inline_filtered/,
+    );
+    expect(fileHook).toMatch(
+      /import \{ inlineWatermarkNoticeText \} from '\.\.\/lib\/inline-watermark-notice';/,
+    );
     // ③ 组合层把它挂进返回值
     expect(playgroundHook).toContain('inlineWatermarkNotice: fileCtx.inlineWatermarkNotice,');
     // ④ 数据上下文白名单必须含它，否则页面层恒 undefined（本用例的根因）
