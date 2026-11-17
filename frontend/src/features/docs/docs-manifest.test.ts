@@ -46,27 +46,59 @@ describe('parseDocsFrontmatter', () => {
 });
 
 describe('buildDocsNav', () => {
-  it('按 category 分组、组内按 order 升序、组间按首个 order 排序', () => {
+  // 组间顺序 = 分类在注册表里的**首现顺序**（Map 插入序），不是组内最小 order、
+  // 更不是篇数——篇数降序会把 5 篇的「操作指南」排到 3 篇的「新手必读」之前，
+  // 与 spec §3 的阅读顺序（新手必读 → 操作指南 → 配置与管理 → 常见问题）相悖。
+  it('按 category 分组、组内按 order 升序、组间按分类首现顺序', () => {
     const entries = [
+      { slug: 'c', title: 'C', category: '新手必读', order: 1, updated: '2026-11-17' },
       { slug: 'b', title: 'B', category: '操作指南', order: 1, updated: '2026-11-17' },
       { slug: 'a', title: 'A', category: '新手必读', order: 2, updated: '2026-11-17' },
-      { slug: 'c', title: 'C', category: '新手必读', order: 1, updated: '2026-11-17' },
     ];
     const nav = buildDocsNav(entries);
     expect(nav.map((s) => s.category)).toEqual(['新手必读', '操作指南']);
     expect(nav[0].items.map((i) => i.slug)).toEqual(['c', 'a']);
   });
+
+  // 反例：篇数多的分类**后登记**时不得插到前面；首现分类的组内最小 order 更大
+  // （9 > 1）也不得因此让位。旧规则（篇数降序 / 首篇 order）在这两条上都会排错。
+  it('组间顺序只看首现：篇数多的后登记不提前，首现分类 order 更大也不让位', () => {
+    const entries = [
+      { slug: 'solo', title: '单篇', category: '常见问题与排障', order: 9, updated: '2026-11-17' },
+      { slug: 'b1', title: 'B1', category: '批量处理', order: 1, updated: '2026-11-17' },
+      { slug: 'b2', title: 'B2', category: '批量处理', order: 2, updated: '2026-11-17' },
+    ];
+    const nav = buildDocsNav(entries);
+    expect(nav.map((s) => s.category)).toEqual(['常见问题与排障', '批量处理']);
+    expect(nav[1].items.map((i) => i.slug)).toEqual(['b1', 'b2']);
+  });
 });
 
 describe('内容清单（manifest）', () => {
-  it('loadDocRaw 返回真实文档原文（含 frontmatter）', async () => {
+  it('loadDocRaw 返回真实文档原文（含 frontmatter；正文不再重复 H1）', async () => {
     const entry = DOCS_MANIFEST.find((e) => e.slug === 'product-intro');
     expect(entry).toBeDefined();
-    await expect(loadDocRaw('product-intro')).resolves.toContain('# 产品简介');
+    const raw = await loadDocRaw('product-intro');
+    // 页面用 frontmatter 的 title 渲染唯一 H1，正文再从 `##` 起（H1 不重复）。
+    expect(raw).toContain('## 墨隐是什么');
+    expect(raw.startsWith('---\ntitle: 产品简介\n')).toBe(true);
+    expect(raw).not.toContain('\n# 产品简介\n');
   });
 
   it('未注册 slug 抛错', async () => {
     await expect(loadDocRaw('not-exist')).rejects.toThrow(/not-exist/);
+  });
+
+  // 真实清单的组间顺序 = 注册表顺序（= spec §3 的阅读顺序）。这条是「篇数降序」
+  // 旧规则的红灯用例：12 篇里「操作指南」最多（5 篇），旧规则会把它顶到最前。
+  it('真实清单的组间顺序 = 注册表顺序（新手必读 → 操作指南 → 配置与管理 → 常见问题）', async () => {
+    const nav = buildDocsNav(await getAllDocsEntries());
+    expect(nav.map((s) => s.category)).toEqual([
+      '新手必读',
+      '操作指南',
+      '配置与管理',
+      '常见问题与排障',
+    ]);
   });
 
   it('getAllDocsEntries 返回全部注册文档（≥12 篇，frontmatter 解析正确）', async () => {

@@ -64,30 +64,30 @@ export function parseDocsFrontmatter(raw: string, source: string): DocsFrontmatt
 }
 
 /**
- * 按 category 分组、组内按 order 升序、组间按「组内首篇 order」升序。
+ * 按 category 分组、组内按 order 升序、组间按**分类首现顺序**。
  *
- * 并列规则（各分类首篇 order 相同时，例如所有分类都从 order 1 起）：
- * 篇数多的分类在前，仍相同则按分类名升序——保证顺序确定、可复现，
- * 不依赖 entries 的传入顺序。
+ * 首现顺序 = `entries` 数组顺序（= `getAllDocsEntries()` 返回的注册表顺序，
+ * 即阅读顺序 新手必读 → 操作指南 → 配置与管理 → 常见问题）。用 Map 的插入序
+ * 天然实现：第一次遇到某分类时插入，之后只往数组追加，分类位置不再变化。
+ *
+ * 不按「组内最小 order」或「篇数」排：各分类都从 order 1 起，前者全部并列；
+ * 篇数降序会把 5 篇的「操作指南」排到 3 篇的「新手必读」之前，与 spec §3 的
+ * 阅读顺序相悖（2026-11-17 主控裁决 D）。
  */
 export function buildDocsNav(entries: DocsEntry[]): DocsNavSection[] {
   const sections = new Map<string, DocsEntry[]>();
   for (const entry of entries) {
-    const list = sections.get(entry.category) ?? [];
-    list.push(entry);
-    sections.set(entry.category, list);
+    const list = sections.get(entry.category);
+    if (list) {
+      list.push(entry);
+    } else {
+      sections.set(entry.category, [entry]);
+    }
   }
-  return [...sections.entries()]
-    .map(([category, items]) => ({
-      category,
-      items: [...items].sort((a, b) => a.order - b.order),
-    }))
-    .sort(
-      (a, b) =>
-        a.items[0].order - b.items[0].order ||
-        b.items.length - a.items.length ||
-        a.category.localeCompare(b.category, 'zh-Hans-CN'),
-    );
+  return [...sections.values()].map((items) => ({
+    category: items[0].category,
+    items: [...items].sort((a, b) => a.order - b.order),
+  }));
 }
 
 /** vite `?raw` glob：键形如 `/src/features/docs-content/新手必读/产品简介.md`。 */
