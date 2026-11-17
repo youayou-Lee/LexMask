@@ -692,6 +692,11 @@ export function useJobs(options?: UseJobsOptions) {
       awaitingReviewItems: listStats.awaiting_review_items,
       completedItems: listStats.completed_items,
       riskItems: listStats.risk_items,
+      // Issue#351 B2：工单单位口径——空态分流数字必须与表体行数同单位才可对账
+      //（*_items 是文件单位，一个工单可含多文件，冷审修订钉死）。
+      awaitingReviewJobs: listStats.awaiting_review_jobs,
+      completedJobs: listStats.completed_jobs,
+      riskJobs: listStats.risk_jobs,
     }),
     [listStats],
   );

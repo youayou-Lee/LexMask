@@ -559,20 +559,17 @@ const PlaygroundInner: FC = () => {
               setWatermarkText={recognition.setWatermarkText}
               clearPlaygroundTextPresetTracking={recognition.clearPlaygroundTextPresetTracking}
               presetQuickSwitch={
-                <div className="flex flex-col gap-1">
-                  <Button
-                    variant="outline"
-                    onClick={handleReset}
-                    disabled={isLoading}
-                    className="h-9 w-full whitespace-nowrap"
-                    data-testid="playground-back-to-config-btn"
-                  >
-                    {t('playground.reconfigTypes')}
-                  </Button>
-                  <p className="line-clamp-2 text-xs leading-4 text-muted-foreground">
-                    {t('playground.reconfigHint')}
-                  </p>
-                </div>
+                // Issue#351 A4：reconfigHint 段落删除——「回到上传页并清空」后果
+                // 已并入识别卡唯一一行合并提示（playground.rerunHint）。
+                <Button
+                  variant="outline"
+                  onClick={handleReset}
+                  disabled={isLoading}
+                  className="h-9 w-full whitespace-nowrap"
+                  data-testid="playground-back-to-config-btn"
+                >
+                  {t('playground.reconfigTypes')}
+                </Button>
               }
               onRerunNer={handleRerunNer}
               onRedact={handleRedact}

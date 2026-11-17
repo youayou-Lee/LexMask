@@ -112,17 +112,35 @@ describe('单文件任务的逐页结果与选页导出（Issue#257 需求重对
     expect(screen.getByTestId('playground-page-export-excluded').textContent).toContain('4');
   });
 
-  it('底栏汇总不留占位符，且产物口径是 zip（Issue#313 去掉旧说明页文案）', async () => {
+  it('底栏汇总不留占位符；产物构成只在画布横幅一处，弹窗只留计数（Issue#351 A6）', async () => {
     await renderSettled(<PlaygroundPageExport fileId="file-1" />);
 
     const summary = screen.getByTestId('playground-page-export-summary').textContent ?? '';
     // 真实 UI 事故：只 replace 首发时会漏出 `{count}`；这里同时钉住占位符全替换。
     expect(summary).not.toContain('{');
     expect(summary).not.toContain('}');
-    // #278 起说明页不再插入 PDF，产物是 zip；旧「说明页 1 页」文案必须消失。
+    // #278 起说明页不再插入 PDF，旧「说明页 1 页」文案必须消失。
     expect(summary).not.toContain('说明页 1 页');
-    expect(summary).toContain('zip');
+    // Issue#351 A6：产物构成（zip 脱敏 PDF + 映射清单 + 说明.txt）全右栏恰好一处
+    // （画布横幅 batchWizard.pages.singleExportHint），弹窗底栏不再重复。
+    expect(summary).not.toContain('产物');
+    expect(summary).not.toContain('zip');
+    // 正向：计数信息保留
+    expect(summary).toContain('已选');
+    expect(summary).toContain('排除');
     expect(summary).toContain('4');
+  });
+
+  it('清空选择后走 exportEmpty 空态文案，无产物字样（Issue#351 A6 边界）', async () => {
+    await renderSettled(<PlaygroundPageExport fileId="file-1" />);
+    // 逐个取消默认选中的成功页（1/2/3/5），失败页 4 与未跑页 6 本就不可选
+    for (const page of [1, 2, 3, 5]) {
+      fireEvent.click(screen.getByTestId(`page-cell-${page}`));
+    }
+    const summary = screen.getByTestId('playground-page-export-summary').textContent ?? '';
+    expect(summary).toContain('尚未选择任何页');
+    expect(summary).not.toContain('产物');
+    expect(summary).not.toContain('zip');
   });
 
   it('非分页文件（docx/txt 之类）不渲染整块', async () => {

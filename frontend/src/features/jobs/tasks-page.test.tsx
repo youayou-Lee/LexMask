@@ -325,3 +325,31 @@ describe('Issue#282：供料任务并入任务中心', () => {
     expect(screen.queryByTestId('agent-md-task-panel')).toBeNull();
   });
 });
+
+// Issue#351 B1/B3：任务中心术语统一「复核」族 + 顶部堆叠收敛。
+// 冷审纪律：旧变体「清零」必须是负向断言（正则一次扫三个变体），
+// 且与「新词在场」的正向断言成对，防选择器打空恒绿。
+describe('Issue#351 B1：任务中心术语统一「复核」族', () => {
+  it('旧变体（待审核/待审阅/继续审阅）在 /jobs 页清零，新词在位', () => {
+    renderTasks('/jobs');
+    // 负向：三个旧变体一次扫空
+    expect(screen.queryByText(/待审核|待审阅|继续审阅/)).toBeNull();
+    // 正向：统一后的词确实渲染（列头待复核 + 操作列继续复核）
+    expect(screen.getAllByText(/待复核/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/继续复核/).length).toBeGreaterThan(0);
+  });
+});
+
+describe('Issue#351 B3：统计卡收敛（与页签口径去重）', () => {
+  it('只留任务总数/异常文件两张卡，无「操作」kicker、无重叠口径卡', () => {
+    renderTasks('/jobs');
+    // 正向：保留的两张卡在位
+    expect(screen.getByText('任务总数')).not.toBeNull();
+    expect(screen.getByText('异常文件')).not.toBeNull();
+    // 负向：与页签口径重叠的三张卡 + 「操作」kicker 清零
+    expect(screen.queryByText('运行任务')).toBeNull();
+    expect(screen.queryByText(/待审核文件|待复核文件/)).toBeNull();
+    expect(screen.queryByText('已完成文件')).toBeNull();
+    expect(screen.queryByText('操作')).toBeNull();
+  });
+});
