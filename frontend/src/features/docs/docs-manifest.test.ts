@@ -59,20 +59,24 @@ describe('buildDocsNav', () => {
 });
 
 describe('内容清单（manifest）', () => {
-  it('loadDocRaw 返回夹具 md 原文', async () => {
-    const entry = DOCS_MANIFEST.find((e) => e.slug === 'test-doc');
+  it('loadDocRaw 返回真实文档原文（含 frontmatter）', async () => {
+    const entry = DOCS_MANIFEST.find((e) => e.slug === 'product-intro');
     expect(entry).toBeDefined();
-    await expect(loadDocRaw('test-doc')).resolves.toContain('# 你好');
+    await expect(loadDocRaw('product-intro')).resolves.toContain('# 产品简介');
   });
 
   it('未注册 slug 抛错', async () => {
     await expect(loadDocRaw('not-exist')).rejects.toThrow(/not-exist/);
   });
 
-  it('getAllDocsEntries 返回夹具条目（title/category 解析正确）', async () => {
+  it('getAllDocsEntries 返回全部注册文档（≥12 篇，frontmatter 解析正确）', async () => {
     const entries = await getAllDocsEntries();
-    const testDoc = entries.find((e) => e.slug === 'test-doc');
-    expect(testDoc).toMatchObject({ title: '测试文档', category: '新手必读', order: 1 });
+    expect(entries.length).toBeGreaterThanOrEqual(12);
+    expect(entries.find((e) => e.slug === 'product-intro')).toMatchObject({
+      title: '产品简介',
+      category: '新手必读',
+      order: 1,
+    });
   });
 
   // order 是「分类内序号」，全局按 order 排序会打乱分类（product-intro → single-file →

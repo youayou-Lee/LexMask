@@ -26,7 +26,18 @@ export interface DocsNavSection {
  * 防止漏登记或文件缺失）。
  */
 export const DOCS_MANIFEST: ReadonlyArray<{ file: string; slug: string }> = [
-  { file: '新手必读/test-doc.md', slug: 'test-doc' },
+  { file: '新手必读/产品简介.md', slug: 'product-intro' },
+  { file: '新手必读/快速开始.md', slug: 'quick-start' },
+  { file: '新手必读/脱敏理念与能力边界.md', slug: 'philosophy' },
+  { file: '操作指南/单文件处理.md', slug: 'single-file' },
+  { file: '操作指南/批量处理.md', slug: 'batch' },
+  { file: '操作指南/预览与调整.md', slug: 'preview-adjust' },
+  { file: '操作指南/导出与交付.md', slug: 'export-delivery' },
+  { file: '操作指南/供料模式（喂Agent）.md', slug: 'feed-agent' },
+  { file: '配置与管理/账号与登录.md', slug: 'account-login' },
+  { file: '配置与管理/识别项设置.md', slug: 'entity-types' },
+  { file: '配置与管理/配置清单.md', slug: 'config-list' },
+  { file: '常见问题与排障/常见问题.md', slug: 'faq' },
 ];
 
 export function parseDocsFrontmatter(raw: string, source: string): DocsFrontmatter {
@@ -79,7 +90,7 @@ export function buildDocsNav(entries: DocsEntry[]): DocsNavSection[] {
     );
 }
 
-/** vite `?raw` glob：键形如 `/src/features/docs-content/新手必读/test-doc.md`。 */
+/** vite `?raw` glob：键形如 `/src/features/docs-content/新手必读/产品简介.md`。 */
 const rawModules = import.meta.glob('/src/features/docs-content/**/*.md', {
   query: '?raw',
   import: 'default',

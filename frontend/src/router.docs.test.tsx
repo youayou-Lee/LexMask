@@ -64,10 +64,12 @@ describe('文档中心路由（#348）', () => {
     expect(childPaths).toContain('docs/:slug');
   });
 
-  it('/docs 重定向到清单首篇', async () => {
+  it('/docs 重定向到清单首篇（产品简介）', async () => {
+    // 首篇必须是产品简介——重定向落点是用户进文档中心看到的第一页。
+    expect(FIRST_SLUG).toBe('product-intro');
     renderDocsRoutes('/docs');
     expect(await screen.findByTestId('docs-page-stub')).toBeTruthy();
-    expect(screen.getByTestId('location-probe').textContent).toBe(`/docs/${FIRST_SLUG}`);
+    expect(screen.getByTestId('location-probe').textContent).toBe('/docs/product-intro');
     expect(screen.queryByTestId('docs-route-fallback')).toBeNull();
   });
 

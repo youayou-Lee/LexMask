@@ -95,12 +95,12 @@ describe('Issue#262：侧边栏法律默认档收敛', () => {
   });
 
   // Issue#348（fix r1）：/docs 是「重定向入口 + /docs/:slug 子路由」——
-  // 入口不能带 end，否则 pathname=/docs/test-doc 时 isNavActive 的等值判断失败，
+  // 入口不能带 end，否则 pathname=/docs/product-intro 时 isNavActive 的等值判断失败，
   // 用户进了文档中心菜单项反而永不高亮。高亮断言双轨：aria-current（语义）
   // + data-active（sidebar 的 isActive 入参，真正驱动高亮 class 的那个属性）。
   it('文档中心入口在 /docs 与 /docs/:slug 下均高亮（Issue#348）', () => {
     vi.mocked(listActiveSingleJobs).mockResolvedValue([]);
-    for (const path of ['/docs', '/docs/test-doc']) {
+    for (const path of ['/docs', '/docs/product-intro']) {
       const { unmount } = renderSidebar(path);
       const link = document.querySelector<HTMLAnchorElement>('a[href="/docs"]');
       expect(link, `pathname=${path}：应渲染 /docs 入口`).not.toBeNull();
