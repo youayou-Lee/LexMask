@@ -609,6 +609,7 @@ class OcrHasVisionService:
         vision_types: list | None = None,
         draw_result: bool = True,
         blocks_out: list | None = None,
+        orientation_out: dict | None = None,
     ) -> tuple[list[SensitiveRegion], str | None]:
         """
         检测敏感信息并在图像上绘制
@@ -621,6 +622,10 @@ class OcrHasVisionService:
         Args:
             image_bytes: 图像字节
             vision_types: 用户启用的视觉类型配置列表 (VisionTypeConfig 对象)
+            blocks_out: 可选出参列表，同步填本调用 OCR 块（防单例竞态）
+            orientation_out: 可选出参字典，同步填本调用采用的方向
+                （``{"angle", "retried", "resolved", "scores"}``；出口框映射必须用
+                本调用自己的这份，不读 ``last_ocr_orientation`` 单例）
 
         Returns:
             (敏感区域列表, base64编码的带框图像)
@@ -700,6 +705,14 @@ class OcrHasVisionService:
         # judges THIS page's evidence.
         if blocks_out is not None:
             blocks_out[:] = ocr_blocks
+        # Issue#347：orientation 同样走 per-call race-free handoff——last_ocr_orientation
+        # 是进程级单例，JOB_CONCURRENCY>1 时并发页在「本页 detect 返回 → 调用方读
+        # 单例」的窗口内互相覆盖，出口映射（vision_service._detect_with_ocr_has）会
+        # 拿到别的页的角 ⇒ 框整体错位 180°、遮码落空白、真值裸露（复跑实证：p33
+        # ID/账号框=真值位置旋转 180°）。调用方传自己的 dict，本调用在 return 前
+        # 同步填好——与 blocks_out 同一模式。
+        if orientation_out is not None:
+            orientation_out.update(self.last_ocr_orientation)
         duration_ms["ocr"] = round((time.perf_counter() - ocr_start) * 1000)
         logger.info("OCR finished in %.2fs, blocks=%d", duration_ms["ocr"] / 1000, len(ocr_blocks))
 

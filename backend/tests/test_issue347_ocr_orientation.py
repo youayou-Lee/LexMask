@@ -359,8 +359,10 @@ class TestDetectWithOcrHasExitMapping:
         vs = VisionService()
         ocr_svc = vs.ocr_has_service
 
-        async def fake_detect_and_draw(image_bytes, vision_types=None, draw_result=True, blocks_out=None):
-            ocr_svc.last_ocr_orientation = {"angle": 90, "retried": True, "scores": {}}
+        async def fake_detect_and_draw(image_bytes, vision_types=None, draw_result=True,
+                                       blocks_out=None, orientation_out=None):
+            if orientation_out is not None:
+                orientation_out.update({"angle": 90, "retried": True, "resolved": True, "scores": {}})
             # 胜者空间（100x200 转正图）像素框
             return [SensitiveRegion(text="张三", entity_type="PERSON", left=30, top=60, width=40, height=40)], None
 
@@ -379,6 +381,36 @@ class TestDetectWithOcrHasExitMapping:
         assert boxes[0].type == "PERSON"
 
     @pytest.mark.asyncio
+    async def test_mapping_uses_per_call_orientation_not_singleton(self, monkeypatch):
+        """竞态安全钉（复跑实证 p33）：出口映射必须用本调用 detect 出参里的角，
+        单例被并发页污染（故意设成不同角）也不得影响本页映射——否则框 180° 错位、
+        遮码落空白、真值裸露。"""
+        import app.services.vision_service as vs_mod
+        from app.services.ocr_has_vision_service import SensitiveRegion
+        from app.services.vision_service import VisionService
+
+        vs = VisionService()
+        ocr_svc = vs.ocr_has_service
+
+        async def fake_detect_and_draw(image_bytes, vision_types=None, draw_result=True,
+                                       blocks_out=None, orientation_out=None):
+            # 单例被「并发页」污染成 270；本调用出参是 90——映射必须用 90
+            ocr_svc.last_ocr_orientation = {"angle": 270, "retried": True, "resolved": True, "scores": {}}
+            if orientation_out is not None:
+                orientation_out.update({"angle": 90, "retried": True, "resolved": True, "scores": {}})
+            return [SensitiveRegion(text="张三", entity_type="PERSON", left=30, top=60, width=40, height=40)], None
+
+        monkeypatch.setattr(ocr_svc, "detect_and_draw", fake_detect_and_draw)
+        monkeypatch.setattr(vs_mod, "region_has_visible_ink", lambda *a, **k: True)
+
+        boxes, _ = await vs._detect_with_ocr_has(_png_bytes(200, 100), page=8, pipeline_types=None, draw_result=False)
+        # 出参角 90：(0.3, 0.3, 0.4, 0.2) → (0.3, 0.3, 0.2, 0.4)（若误读单例 270 会得到 (0.5, 0.3, 0.2, 0.4)）
+        assert boxes[0].x == pytest.approx(0.3)
+        assert boxes[0].y == pytest.approx(0.3)
+        assert boxes[0].width == pytest.approx(0.2)
+        assert boxes[0].height == pytest.approx(0.4)
+
+    @pytest.mark.asyncio
     async def test_no_orientation_identity(self, monkeypatch):
         from app.services.ocr_has_vision_service import SensitiveRegion
         from app.services.vision_service import VisionService
@@ -386,8 +418,10 @@ class TestDetectWithOcrHasExitMapping:
         vs = VisionService()
         ocr_svc = vs.ocr_has_service
 
-        async def fake_detect_and_draw(image_bytes, vision_types=None, draw_result=True, blocks_out=None):
-            ocr_svc.last_ocr_orientation = {"angle": 0, "retried": False, "scores": {}}
+        async def fake_detect_and_draw(image_bytes, vision_types=None, draw_result=True,
+                                       blocks_out=None, orientation_out=None):
+            if orientation_out is not None:
+                orientation_out.update({"angle": 0, "retried": False, "resolved": True, "scores": {}})
             return [SensitiveRegion(text="张三", entity_type="PERSON", left=60, top=30, width=40, height=40)], None
 
         monkeypatch.setattr(ocr_svc, "detect_and_draw", fake_detect_and_draw)

@@ -2311,11 +2311,16 @@ class VisionService:
         from app.services.vision.has_text_analysis import reset_page_ner_deadline
 
         reset_page_ner_deadline()
+        # Issue#347：orientation 用 per-call 出参（不读 last_ocr_orientation 单例）——
+        # 并发页（JOB_CONCURRENCY>1）会在「本页 detect 返回 → 读单例」的窗口互相覆盖
+        # 该单例，出口映射拿错角 ⇒ 框 180° 错位、遮码落空白、真值裸露（复跑实证）。
+        orientation: dict = {}
         regions, result_image_base64 = await self.ocr_has_service.detect_and_draw(
             image_data,
             vision_types=pipeline_types,
             draw_result=draw_result,
             blocks_out=page_blocks,
+            orientation_out=orientation,
         )
         # Issue#275：登记 OCR 真实产出（失败页无 blocks ⇒ store 拒空，§3.3-④）。
         # 路径取激活窗口落的 ``_neighbor_registry_path``（recognition_path）；
@@ -2332,15 +2337,16 @@ class VisionService:
         self._page_ocr_blocks = page_blocks
 
         # Issue#347：OCR 可能按 90°/270° 转正后的页图工作（last_ocr_orientation）。
-        # ink 检查与像素归一化必须在同一张胜者图上做；归一化框在出口单点映射回
-        # 原页坐标——下游（落库/渲染/预览/人工框合并/外层标注图重绘）只见原页
-        # 坐标，零改动。
+        # Issue#347：本调用自有的 orientation 出参（detect_and_draw 在 return 前
+        # 同步填好）给出采用角——不读 ocr_has_service.last_ocr_orientation 单例
+        # （并发覆盖竞态，见 detect 调用处注释）。ink 检查与像素归一化必须在同
+        # 一张胜者图上做；归一化框在出口单点映射回原页坐标——下游（落库/渲染/
+        # 预览/人工框合并/外层标注图重绘）只见原页坐标，零改动。
         from app.services.vision.ocr_orientation import (
             map_bounding_box_to_page,
             rotate_image_for_ocr,
         )
 
-        orientation = getattr(self.ocr_has_service, "last_ocr_orientation", None) or {}
         angle = int(orientation.get("angle") or 0)
 
         img = Image.open(io.BytesIO(image_data))
