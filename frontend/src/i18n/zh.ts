@@ -25,6 +25,8 @@ const zhBase: Record<string, string> = {
   'nav.visionModel': '图像识别服务',
   'nav.restore': '还原工具',
   'nav.restore.sub': '脱敏文本+映射表还原',
+  'nav.docs': '文档中心',
+  'nav.docs.sub': '产品说明与使用指南',
 
   'restore.kicker': '还原',
   'restore.title': '还原工具',

@@ -1369,3 +1369,176 @@ body {
     padding: 1rem 1.625rem 0;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   文档站正文排版（Issue#348）
+   react-markdown 输出的是裸标签，而 Tailwind preflight 清掉了标题/列表/表格的
+   浏览器默认样式——不补这一层，/docs 正文会退化成「一坨同字号文字」。
+   只作用于文档站容器 .docs-prose，不影响产品其他区域；颜色/圆角全部取 :root
+   既有 token，换主题自动跟随。
+   --------------------------------------------------------------------------- */
+.docs-prose {
+  color: var(--foreground);
+  overflow-wrap: break-word;
+}
+
+.docs-prose > :first-child {
+  margin-top: 0;
+}
+
+.docs-prose > :last-child {
+  margin-bottom: 0;
+}
+
+.docs-prose p {
+  margin: 0 0 0.875rem;
+}
+
+.docs-prose h2 {
+  margin: 2rem 0 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-light);
+  color: var(--foreground);
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.4;
+  /* 本页目录锚点跳转时留出顶栏高度，标题不被压住 */
+  scroll-margin-top: 1rem;
+}
+
+.docs-prose h3 {
+  margin: 1.5rem 0 0.5rem;
+  color: var(--foreground);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.5;
+  scroll-margin-top: 1rem;
+}
+
+.docs-prose ul,
+.docs-prose ol {
+  margin: 0 0 0.875rem;
+  padding-left: 1.375rem;
+}
+
+.docs-prose ul {
+  list-style: disc;
+}
+
+.docs-prose ol {
+  list-style: decimal;
+}
+
+.docs-prose li {
+  margin: 0.25rem 0;
+}
+
+.docs-prose li::marker {
+  color: var(--foreground-subtle);
+}
+
+.docs-prose li > p:only-child {
+  margin: 0;
+}
+
+.docs-prose li > ul,
+.docs-prose li > ol {
+  margin: 0.25rem 0 0;
+}
+
+.docs-prose strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.docs-prose a {
+  color: var(--brand);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--brand) 35%, transparent);
+  text-underline-offset: 2px;
+}
+
+.docs-prose a:hover {
+  text-decoration-color: var(--brand);
+}
+
+.docs-prose code {
+  border: 1px solid var(--border-light);
+  background: var(--background-tertiary);
+  border-radius: 4px;
+  padding: 0.0625rem 0.3125rem;
+  font-size: 0.875em;
+}
+
+.docs-prose pre {
+  margin: 0 0 1rem;
+  padding: 0.875rem 1rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--background-secondary);
+}
+
+.docs-prose pre code {
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  white-space: pre;
+}
+
+.docs-prose blockquote {
+  margin: 0 0 1rem;
+  padding: 0.625rem 0.875rem;
+  border-left: 3px solid var(--brand);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--accent-light);
+  color: var(--muted-foreground);
+}
+
+.docs-prose blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+/* display:block + overflow-x:auto：宽表格在窄栏里横向滚动，不撑破正文 */
+.docs-prose table {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 0 0 1rem;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.docs-prose th,
+.docs-prose td {
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.docs-prose th {
+  background: var(--background-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.docs-prose tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--background-secondary) 55%, transparent);
+}
+
+.docs-prose hr {
+  margin: 2rem 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.docs-prose img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+}

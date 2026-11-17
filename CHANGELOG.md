@@ -6,6 +6,14 @@
   - **测试**：新增 `playground-entity-panel.copy.test.tsx` 8 例（A1 计数恰好一处含 0/0 边界 / A2 不可用说明恰好一处×2 / A4 单提示行旧段清零 / A7 同源全隐+混合源差异行+首行少数派锚）、`jobs-table.empty.test.tsx` 4 例（分流出现+点击切 tab / 其他状态无任务回落全局空态 / stats 未传向后兼容 / 自身状态不计入其他状态）、`playground-page-export.test.tsx` 改 1 增 1（A6 底栏无产物构成+计数在场 / exportEmpty 边界）、`tasks-page.test.tsx` +3（B1 旧变体清零正则一次扫三变体+新词在场 / B3 两卡+kicker 清零 / 门⑥ Critical-1 动态 key 字典钉）、`wiring-contract.test.ts` +1（A6 横幅接线在位+弹窗不引用横幅键）；前端全量 **822 passed（104 files）**、`tsc`（app+test）绿、build 绿、lint 本次触碰文件 0 问题（4 error 为基线既有、未触碰文件）；门④ 浏览器实测（worktree vite dev :5180）：右栏 DOM 断言 `已选`=false、desc 全部 `clipped:false`、导出弹窗无「产物/zip」、区域列表 15 行零来源标签、任务中心过滤态空态分流+查看待复核落地行数==徽标数（工单单位）全部 PASS。
   - **门⑥ 冷审处置（With fixes → 全部闭环）**：Critical-1 `redactionState.awaiting_review`（动态 key 经 `utils/redactionState` 渲染于 /jobs 查看详情详情页，初版 grep 只扫 features/components 漏了 utils/）待审核→待复核，B1 断言补字典级钉（zh['redactionState.awaiting_review'] 等 4 key）；Important-3 A6「恰好一处」补正向半边（wiring-contract 钉横幅接线在位）；Minor-4 EntityList 锚改多数派标签（频次最高、平票取数据序首，原数据序首行在组序重排下会与用户所见首行错位），补首行少数派用例；Minor-6 测试计数复核（copy 实为 8 例）；Minor-7 mock `pageMetrics` 补工单单位字段与真实返回形状对齐；Important-2 **显式偏差声明**：方案 v2 承诺的「供料任务 >0 时另列一句」不另实现——`AgentMdTaskPanel` 常驻渲染于表格正上方（tasks-page.tsx:87-93）且按 view 过滤，供料待复核任务在其面板行直接可见，重复列出违反「同一信息只出现一次」；Minor-5 `batchWizard.status.awaitingReview`（待审阅，/batch 向导）与 Minor 建议的 `singleTask.phase.awaiting_review`（待确认）登记入 P1/P2 术语清单。
   - **范围边界**：#351 第一节 5「调整识别项」交互错位（涉及流程，另议）、批量中转页/向导、全局 toast 跟弹、术语命名总表、stats 单位口径重构均不在本 PR（P1/P2 另拆）。
+## 2026-11-18 · 用户文档中心（#348）
+
+- **feat：新增「文档中心」（`/docs`）——登录后从侧边栏进入的统一用户文档站**：左侧导航树 + 右侧正文 + 本页目录（窄屏折叠为抽屉，切文档自动收起），首批 16 篇、5 个分类：产品简介、快速开始、脱敏理念与能力边界、单文件处理、批量处理、预览与调整、导出与交付、供料模式、账号与登录、识别项设置、配置清单、律师场景配置指南、常见问题、识别效果不佳怎么办、遇到报错怎么办、版本更新记录。
+  - **内容来源**：原有 5 篇零散文档（用户使用说明、操作手册、账号识别项配置指南、识别项与配置清单使用指南、排查与日志使用指南）全部重组进统一目录树并删除原件，消除双份维护；另新写产品简介、脱敏理念与能力边界、预览与调整、导出与交付、常见问题等篇。
+  - **文档即代码**：正文以 Markdown 存放（`frontend/src/features/docs-content/<分类>/<篇名>.md`），frontmatter 提供标题/分类/排序/更新日期；文件与 slug 的注册表 + 守卫用例保证「加一篇文档 = 加一个 md + 一行注册」，漏登记或 frontmatter 非法即 CI 判红；正文渲染在运行期完成（`react-markdown` + `remark-gfm`），文档页为独立懒加载 chunk，主包体积增量约 3.3KB。
+  - **访问控制**：复用既有登录守卫，未登录访问跳登录页并在登录后回跳；文档内容不含案卷、凭据与内部架构。未知 slug 重定向回文档中心首页，不渲染空正文。
+  - **测试**：前端全量 837 例通过（含文档清单 / 导航树 / 路由接线 / 页面渲染用例），`tsc`（app+test）绿、`npm run build` 绿。
+
 
 ## 2026-11-17（Issue#338）
 

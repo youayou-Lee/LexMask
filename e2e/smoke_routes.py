@@ -32,6 +32,10 @@ ROUTES = [
     "/settings/word-pools",
     "/model-settings/text",
     "/model-settings/vision",
+    # Issue#348：文档中心——/docs 重定向落点与 /docs/:slug 深链都要能渲染出正文。
+    # e2e 冒烟待有服务环境时实跑（e2e 冒烟）。
+    "/docs",
+    "/docs/product-intro",
 ]
 
 
