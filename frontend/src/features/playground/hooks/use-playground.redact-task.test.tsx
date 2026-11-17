@@ -188,9 +188,11 @@ function TaskProbe() {
 }
 
 function renderHarness() {
-  // Issue#194 终审 D：provider 发通知要 navigate（useNavigate）⇒ 必须在 Router 上下文内
+  // Issue#194 终审 D：provider 发通知要 navigate（useNavigate）⇒ 必须在 Router 上下文内。
+  // Issue#351 P1-A：挂载恢复路由闸要求 /single 前缀（草稿恢复只在单文件工作台生效）——
+  // 无 initialEntries 的 MemoryRouter 默认 pathname='/'，会被闸拦掉；显式落 /single。
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={['/single']}>
       <SingleTaskProvider>
         <Probe />
         <TaskProbe />

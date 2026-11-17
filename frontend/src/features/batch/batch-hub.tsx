@@ -1,14 +1,7 @@
 // Copyright 2026 LexMask Contributors
 
 import { Link } from 'react-router-dom';
-import {
-  ArrowRight,
-  CheckCircle2,
-  Files,
-  History,
-  ListChecks,
-  PlayCircle,
-} from 'lucide-react';
+import { ArrowRight, Files, History, ListChecks } from 'lucide-react';
 import { useI18n, useT } from '@/i18n';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -92,10 +85,6 @@ export function BatchHub() {
     en: 'Upload Word, PDF, scan, and image files together. The default mixed workflow keeps recognition, review, and export in one queue.',
     zh: '\u4e0a\u4f20 Word\u3001PDF\u3001\u626b\u63cf\u4ef6\u548c\u56fe\u7247\u6df7\u5408\u6279\u6b21\uff0c\u9ed8\u8ba4\u7528\u540c\u4e00\u961f\u5217\u5b8c\u6210\u8bc6\u522b\u3001\u590d\u6838\u548c\u5bfc\u51fa\u3002',
   });
-  const mixedModeNote =
-    locale === 'zh'
-      ? '\u5927\u591a\u6570\u7528\u6237\u5e94\u5148\u4ece\u878d\u5408\u6587\u4ef6\u5f00\u59cb\u3002'
-      : 'Most users should start with mixed-file batches.';
 
   return (
     <div className="saas-page flex h-full min-h-0 overflow-hidden bg-background">
@@ -162,14 +151,12 @@ export function BatchHub() {
             </Alert>
           )}
 
-          <JourneyRail locale={locale} />
-
           <section className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
             <PrimaryBatchEntry
               item={PRIMARY_MODE}
               title={primaryTitle}
+              actionLabel={t('batchHub.primary.cta')}
               desc={primaryDesc}
-              journeyNote={mixedModeNote}
               liveBlocked={batchEntryBlocked}
               liveBlockedReason={getBlockedReason('smart')}
               onOpenLive={() => openBatch('smart')}
@@ -219,8 +206,8 @@ function AgentBatchEntry({
     <PrimaryBatchEntry
       item={AGENT_MODE}
       title={title}
+      actionLabel={t('batchHub.mode.agent.cta')}
       desc={desc}
-      journeyNote={t('batchHub.mode.agent.journeyNote')}
       liveBlocked={liveBlocked}
       liveBlockedReason={liveBlockedReason}
       onOpenLive={onOpenLive}
@@ -229,113 +216,11 @@ function AgentBatchEntry({
   );
 }
 
-function JourneyRail({ locale }: { locale: Locale }) {
-  const copy =
-    locale === 'zh'
-      ? [
-          {
-            title: '\u5f15\u5bfc',
-            desc: '\u786e\u8ba4\u670d\u52a1\u4e0e\u5904\u7406\u8def\u5f84',
-            cta: '\u67e5\u770b\u5f15\u5bfc',
-            href: '/',
-            Icon: CheckCircle2,
-          },
-          {
-            title: '\u5355\u6b21',
-            desc: '\u5148\u7528\u4e00\u4e2a\u6587\u4ef6\u9a8c\u8bc1\u89c4\u5219',
-            cta: '\u5355\u6b21\u9a8c\u8bc1',
-            href: '/playground',
-            Icon: PlayCircle,
-          },
-          {
-            title: '\u6279\u91cf',
-            desc: '\u786e\u8ba4\u540e\u542f\u52a8\u6df7\u5408\u6279\u6b21',
-            cta: '\u5f53\u524d\u9875\u9762',
-            Icon: Files,
-          },
-        ]
-      : [
-          {
-            title: 'Guide',
-            desc: 'Confirm service readiness and the right path.',
-            cta: 'Open guide',
-            href: '/',
-            Icon: CheckCircle2,
-          },
-          {
-            title: 'Single',
-            desc: 'Validate rules with one file first.',
-            cta: 'Run single file',
-            href: '/playground',
-            Icon: PlayCircle,
-          },
-          {
-            title: 'Batch',
-            desc: 'Start mixed batches after validation.',
-            cta: 'Current page',
-            Icon: Files,
-          },
-        ];
-
-  return (
-    <Card
-      className="page-surface !flex-none border-border/70 shadow-[var(--shadow-control)]"
-      data-testid="batch-journey-rail"
-    >
-      <CardContent className="grid gap-2 p-3 sm:grid-cols-3">
-        {copy.map(({ title, desc, cta, href, Icon }, index) => {
-          const active = index === copy.length - 1;
-
-          return (
-            <div
-              key={title}
-              className={`grid min-h-[4.25rem] grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border px-3 py-2 ${
-                active ? 'border-foreground bg-muted/50' : 'border-border/70 bg-background/70'
-              }`}
-            >
-              <span
-                className={`flex size-9 items-center justify-center rounded-xl ${
-                  active ? 'bg-foreground text-background' : 'bg-muted text-foreground'
-                }`}
-              >
-                <Icon className="size-4" />
-              </span>
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-muted-foreground">
-                    {String(index + 1).padStart(2, '0')}
-                  </span>
-                  <span className="truncate text-sm font-semibold">{title}</span>
-                </div>
-                <p className="mt-0.5 truncate text-xs leading-5 text-muted-foreground" title={desc}>
-                  {desc}
-                </p>
-              </div>
-              {href ? (
-                <Button variant="ghost" size="sm" className="h-8 rounded-lg px-2 text-xs" asChild>
-                  <Link to={href}>
-                    {cta}
-                    <ArrowRight className="ml-1 size-3.5" />
-                  </Link>
-                </Button>
-              ) : (
-                <Badge variant="secondary" className="rounded-full px-2.5 py-0.5">
-                  {cta}
-                </Badge>
-              )}
-            </div>
-          );
-        })}
-      </CardContent>
-    </Card>
-  );
-}
-
 function PrimaryBatchEntry({
   item,
   title,
+  actionLabel,
   desc,
-  journeyNote,
   liveBlocked,
   liveBlockedReason,
   onOpenLive,
@@ -343,8 +228,8 @@ function PrimaryBatchEntry({
 }: {
   item: ModeCard;
   title: string;
+  actionLabel: string;
   desc: string;
-  journeyNote: string;
   liveBlocked: boolean;
   liveBlockedReason?: string;
   onOpenLive: () => void;
@@ -393,9 +278,6 @@ function PrimaryBatchEntry({
           </p>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="secondary" className="rounded-full px-2.5 py-0.5">
-              {journeyNote}
-            </Badge>
             {item.tagKeys.map((tagKey) => (
               <Badge
                 key={tagKey}
@@ -427,7 +309,7 @@ function PrimaryBatchEntry({
             title={liveBlocked ? liveBlockedReason : undefined}
             data-testid={item.testId}
           >
-            <span className="truncate">{title}</span>
+            <span className="truncate">{actionLabel}</span>
             <ArrowRight className="size-4" />
           </Button>
           {liveBlocked ? (
