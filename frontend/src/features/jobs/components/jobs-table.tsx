@@ -149,8 +149,9 @@ function stopRowClick(event: ReactMouseEvent) {
 
 const JOBS_MIN_PAGE_SIZE = 10;
 const JOBS_MAX_PAGE_SIZE = 20;
-// Issue#355：ds 表格行高下限（定稿 56px，副信息行需要竖向空间）；classic 走密度系统。
-const JOBS_DS_ROW_MIN_HEIGHT = 56;
+// Issue#355：ds 表格行高下限（iOS 重置：inset grouped 行高 ≥64px，真稿 .row
+// min-height:64px；副信息行需要竖向空间）；classic 走密度系统。
+const JOBS_DS_ROW_MIN_HEIGHT = 64;
 const JOBS_TABLE_MIN_CHILD_HEIGHT = 22;
 const JOBS_TABLE_MAX_CHILD_HEIGHT = 34;
 const JOBS_TABLE_MIN_PADDING_Y = 3;

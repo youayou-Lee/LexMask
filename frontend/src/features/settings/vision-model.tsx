@@ -1,6 +1,7 @@
 ﻿// Copyright 2026 LexMask Contributors
 
 import { useT } from '@/i18n';
+import { useUiTheme } from '@/theme/ui-theme';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Pencil, Trash2 } from 'lucide-react';
@@ -18,6 +19,8 @@ import { VisionModelTestResult } from './vision-model-test-result';
 
 export function VisionModel() {
   const t = useT();
+  // Issue#355 iOS 重置：ds 下标题换 32px 大标题类（classic 类名原样）。
+  const dsMode = useUiTheme((s) => s.theme) === 'ds';
   const {
     modelConfigs,
     loading,
@@ -88,9 +91,17 @@ export function VisionModel() {
               </AlertDescription>
             </Alert>
           )}
-          <section className="surface-subtle flex shrink-0 flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <section className="ios-glass surface-subtle flex shrink-0 flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
-              <h1 className="text-2xl font-semibold tracking-tight text-foreground">{t('nav.visionModel')}</h1>
+              <h1
+                className={
+                  dsMode
+                    ? 'ds-page-title'
+                    : 'text-2xl font-semibold tracking-tight text-foreground'
+                }
+              >
+                {t('nav.visionModel')}
+              </h1>
               <p className="mt-0.5 max-w-5xl text-xs leading-5 text-muted-foreground">
                 {t('settings.visionModel.infoDesc')}
               </p>

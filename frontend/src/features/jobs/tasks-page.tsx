@@ -16,7 +16,7 @@
 
 import React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { RefreshCw, Trash2 } from 'lucide-react';
+import { ArrowUpRight, RefreshCw, Trash2 } from 'lucide-react';
 import { useT } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -219,7 +219,7 @@ export function TasksPage() {
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
           <Tabs value={view} onValueChange={selectView} className="shrink-0">
             <TabsList
-              className="rounded-xl border border-border/70 bg-muted/40 p-1"
+              className="ios-segmented rounded-xl border border-border/70 bg-muted/40 p-1"
               data-testid="tasks-view-tabs"
             >
               <TabsTrigger
@@ -290,7 +290,41 @@ export function TasksPage() {
   );
 }
 
-/** ds 指标条（定稿 §6.2）：单条通栏白卡 4 等分竖线分隔；口径=工单，与页签徽标同源。 */
+/** ds 玻璃指标卡（Issue#355 真稿 ios-tasks-center .metrics）：4 张玻璃卡
+ * （backdrop-filter + 白玻璃描边 + sparkline 占位 + 变化胶囊）；
+ * 大数字墨色、仅异常红。口径=工单，与页签徽标同源（数值与 testid 沿用）。
+ * sparkline 为静态占位示意——时序数据另案（规格 §八挂账），胶囊文案为
+ * 语义提示而非虚构数值（无历史时点数据，不造假 delta）。 */
+type MetricChipTone = 'up' | 'warn' | 'bad' | 'flat';
+
+const METRIC_SPARKLINES: Record<MetricChipTone, { line: string; area?: string; color: string }> = {
+  up: {
+    line: 'M1 18 L10 14 L19 16 L28 10 L37 12 L46 7 L55 9 L61 4',
+    area: 'M1 18 L10 14 L19 16 L28 10 L37 12 L46 7 L55 9 L61 4 L61 24 L1 24 Z',
+    color: '#10A37F',
+  },
+  warn: { line: 'M1 12 L10 13 L19 11 L28 12 L37 10 L46 11 L55 12 L61 10', color: '#F0A32B' },
+  flat: { line: 'M1 14 L10 13 L19 14 L28 12 L37 13 L46 12 L55 13 L61 12', color: '#B9BDC3' },
+  bad: { line: 'M1 8 L10 12 L19 9 L28 15 L37 11 L46 16 L55 13 L61 18', color: '#DC2626' },
+};
+
+function MetricSparkline({ tone }: { tone: MetricChipTone }) {
+  const spark = METRIC_SPARKLINES[tone];
+  return (
+    <svg
+      className="ds-metric-spark"
+      width="62"
+      height="24"
+      viewBox="0 0 62 24"
+      fill="none"
+      aria-hidden
+    >
+      {spark.area ? <path d={spark.area} fill="rgba(16,163,127,.10)" /> : null}
+      <path d={spark.line} stroke={spark.color} strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function DsMetricsStrip({
   activeJobs,
   awaitingReview,
@@ -308,41 +342,58 @@ function DsMetricsStrip({
       key: 'active',
       label: t('tasks.tab.active'),
       value: activeJobs,
-      tone: 'neutral',
-      note: t('ds.metrics.activeNote'),
+      valueTone: 'neutral',
+      chipTone: 'up' as MetricChipTone,
+      chipText: t('ds.metrics.activeChip'),
+      note: t('ds.metrics.activeFoot'),
+      sparkTone: 'up' as MetricChipTone,
     },
     {
       key: 'review',
       label: t('tasks.tab.review'),
       value: awaitingReview,
-      tone: 'neutral',
-      note: t('ds.metrics.reviewNote'),
+      valueTone: 'neutral',
+      chipTone: 'warn' as MetricChipTone,
+      chipText: t('ds.metrics.reviewNote'),
+      note: t('ds.metrics.reviewFoot'),
+      sparkTone: 'warn' as MetricChipTone,
     },
     {
       key: 'done',
       label: t('jobs.filter.completed'),
       value: completedJobs,
-      tone: 'neutral',
-      note: t('ds.metrics.doneNote'),
+      valueTone: 'neutral',
+      chipTone: 'up' as MetricChipTone,
+      chipText: t('ds.metrics.doneNote'),
+      note: t('ds.metrics.doneFoot'),
+      sparkTone: 'up' as MetricChipTone,
     },
     {
       key: 'risk',
       label: t('jobs.abnormalHeader'),
       value: riskJobs,
-      tone: riskJobs > 0 ? 'danger' : 'neutral',
-      note: t('ds.metrics.riskNote'),
+      valueTone: riskJobs > 0 ? 'danger' : 'neutral',
+      chipTone: (riskJobs > 0 ? 'bad' : 'flat') as MetricChipTone,
+      chipText: riskJobs > 0 ? t('ds.metrics.riskNote') : t('ds.metrics.riskChipOk'),
+      note: t('ds.metrics.riskFoot'),
+      sparkTone: (riskJobs > 0 ? 'bad' : 'flat') as MetricChipTone,
     },
-  ] as const;
+  ];
 
   return (
     <div className="ds-metrics shrink-0" data-testid="ds-metrics-strip">
       {cells.map((cell) => (
         <div className="ds-metric" key={cell.key} data-testid={`ds-metric-${cell.key}`}>
           <span className="ds-metric-label">{cell.label}</span>
-          <span className="ds-metric-value" data-tone={cell.tone}>
+          <span className="ds-metric-value" data-tone={cell.valueTone}>
             {cell.value}
           </span>
+          <span className="ds-metric-chip" data-tone={cell.chipTone}>
+            {cell.chipTone === 'up' ? <ArrowUpRight aria-hidden /> : null}
+            {cell.chipText}
+          </span>
           <span className="ds-metric-note">{cell.note}</span>
+          <MetricSparkline tone={cell.sparkTone} />
         </div>
       ))}
     </div>

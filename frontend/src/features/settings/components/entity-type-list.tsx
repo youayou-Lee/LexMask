@@ -102,7 +102,7 @@ export function EntityTypeList({
       )}
       data-testid={`entity-type-list-${variant}`}
     >
-      <div className="page-surface w-full rounded-[20px] border border-border/70 bg-card shadow-[var(--shadow-control)]">
+      <div className="ios-card page-surface w-full rounded-[20px] border border-border/70 bg-card shadow-[var(--shadow-control)]">
         <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border/70 bg-muted/20 px-4 py-2.5">
           <div className="flex min-w-0 items-center gap-2">
             <span className={cn('size-2 shrink-0 rounded-full', toneClasses.dot)} />

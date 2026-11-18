@@ -2,6 +2,7 @@
 
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { useUiTheme } from '@/theme/ui-theme';
 import {
   formatAggregateJobStatus,
   getAggregateJobStatusMeta,
@@ -47,11 +48,15 @@ export function JobTypeBadge({ jobType }: { jobType: JobTypeApi }) {
       : jobType === 'single'
         ? t('jobs.type.single')
         : t('jobs.batchTask');
+  // Issue#355 iOS 重置：ds 下类型 chip 分色（批量=tint / 其余=中性）需要
+  // data-type 钩子；classic 不加属性（零新 DOM 纪律）。
+  const dsMode = useUiTheme((s) => s.theme) === 'ds';
   return (
     <Badge
       variant="secondary"
       className="shrink-0 whitespace-nowrap text-2xs font-semibold"
       data-testid="job-type-badge"
+      data-type={dsMode ? jobType : undefined}
     >
       {label}
     </Badge>

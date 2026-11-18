@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useT } from '@/i18n';
+import { useUiTheme } from '@/theme/ui-theme';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -12,6 +13,8 @@ import { ModelEndpointCard } from './components/model-endpoint-card';
 
 export function TextModel() {
   const t = useT();
+  // Issue#355 iOS 重置：ds 下标题换 32px 大标题类（classic 类名原样）。
+  const dsMode = useUiTheme((s) => s.theme) === 'ds';
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
   const {
@@ -56,9 +59,17 @@ export function TextModel() {
               </AlertDescription>
             </Alert>
           )}
-          <section className="surface-subtle flex shrink-0 flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <section className="ios-glass surface-subtle flex shrink-0 flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
-              <h1 className="text-2xl font-semibold tracking-tight text-foreground">{t('nav.textModel')}</h1>
+              <h1
+                className={
+                  dsMode
+                    ? 'ds-page-title'
+                    : 'text-2xl font-semibold tracking-tight text-foreground'
+                }
+              >
+                {t('nav.textModel')}
+              </h1>
               <p className="mt-0.5 max-w-5xl text-xs leading-5 text-muted-foreground">
                 {t('settings.textModel.infoDesc')}
               </p>

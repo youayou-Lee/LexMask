@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useT } from '@/i18n';
+import { useUiTheme } from '@/theme/ui-theme';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -34,6 +35,9 @@ export function SettingsHub() {
   const t = useT();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = readHubTab(searchParams.get('tab'));
+  // Issue#355 iOS 重置：ds 下渲染大标题页头（真稿 ios-settings .page-head；
+  // classic 无此 DOM）。页签共用 iOS 分段样式（ios-segmented，样式仅 ds 生效）。
+  const dsMode = useUiTheme((s) => s.theme) === 'ds';
   const handleTabChange = (next: string) => {
     const nextParams = new URLSearchParams(searchParams);
     if (next === 'types') nextParams.delete('tab');
@@ -44,13 +48,19 @@ export function SettingsHub() {
   return (
     <div className="saas-page flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
       <div className="page-shell !max-w-[min(100%,1920px)] !px-3 !py-2 sm:!px-4 sm:!py-3">
+        {dsMode && (
+          <div className="shrink-0" data-testid="ds-settings-header">
+            <h1 className="ds-page-title">{t('ds.settings.title')}</h1>
+            <p className="ds-page-sub">{t('ds.settings.sub')}</p>
+          </div>
+        )}
         <Tabs
           value={activeTab}
           onValueChange={handleTabChange}
           className="page-stack gap-3 overflow-hidden"
         >
           <TabsList
-            className="shrink-0 self-start rounded-xl border border-border/70 bg-muted/40 p-1"
+            className="ios-segmented shrink-0 self-start rounded-xl border border-border/70 bg-muted/40 p-1"
             data-testid="settings-hub-tabs"
           >
             <TabsTrigger
@@ -239,7 +249,7 @@ function EntityTypeSettingsPanel() {
 
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
           <TabsList
-            className="rounded-xl border border-border/70 bg-muted/40 p-1"
+            className="ios-segmented rounded-xl border border-border/70 bg-muted/40 p-1"
             data-testid="settings-tabs"
           >
             <TabsTrigger value="text" className="whitespace-nowrap" data-testid="tab-text">

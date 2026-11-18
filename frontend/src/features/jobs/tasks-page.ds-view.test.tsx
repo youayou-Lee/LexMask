@@ -21,7 +21,7 @@ import type { JobProgress, JobSummary } from '@/services/jobsApi';
 import { TasksPage } from './tasks-page';
 import { JobsTable } from './components/jobs-table';
 
-const { mockedUseJobs, resetMockedJobsState } = vi.hoisted(() => {
+const { mockedJobs, mockedUseJobs, resetMockedJobsState } = vi.hoisted(() => {
   const mockState = { tab: 'all', initialized: false };
   const mockedJobs = {
     tab: 'all',
@@ -202,6 +202,36 @@ describe('Issue#355 ds 骨架：页面标题区 + 指标条', () => {
     expect(screen.queryByTestId('ds-metrics-strip')).toBeNull();
     // classic 表格标题在场（jobs-table-heading 仅在 ds 经 CSS 隐藏，DOM 两态都在）
     expect(container.querySelector('.jobs-table-heading')).toBeTruthy();
+  });
+});
+
+describe('Issue#355 iOS 重置：玻璃指标卡 + iOS 分段控件', () => {
+  it('ds 指标卡=玻璃卡语言：4 卡网格、每卡变化胶囊 + sparkline 占位；异常卡红色调', () => {
+    renderTasks('/jobs');
+    const strip = screen.getByTestId('ds-metrics-strip');
+    expect(strip.children.length).toBe(4);
+    // 变化胶囊 + sparkline 占位（真稿 .chip/.spark；sparkline 为静态示意，时序数据另案）
+    expect(strip.querySelectorAll('.ds-metric-chip').length).toBe(4);
+    expect(strip.querySelectorAll('.ds-metric-spark').length).toBe(4);
+    // 异常卡（riskJobs=1>0）：大数字红色调钩子 + 胶囊 bad 色调
+    const risk = screen.getByTestId('ds-metric-risk');
+    expect(risk.querySelector('[data-tone="danger"]')).toBeTruthy();
+    expect(risk.querySelector('.ds-metric-chip')?.getAttribute('data-tone')).toBe('bad');
+    // 工具行页签换 iOS 分段样式钩子（样式仅 ds 生效）
+    expect(screen.getByTestId('tasks-view-tabs').classList.contains('ios-segmented')).toBe(true);
+  });
+
+  it('risk=0 时异常卡回落中性：墨色大数字 + flat 胶囊（不虚构异常）', () => {
+    const originalRiskJobs = mockedJobs.pageMetrics.riskJobs;
+    mockedJobs.pageMetrics = { ...mockedJobs.pageMetrics, riskJobs: 0 };
+    try {
+      renderTasks('/jobs');
+      const risk = screen.getByTestId('ds-metric-risk');
+      expect(risk.querySelector('[data-tone="danger"]')).toBeNull();
+      expect(risk.querySelector('.ds-metric-chip')?.getAttribute('data-tone')).toBe('flat');
+    } finally {
+      mockedJobs.pageMetrics = { ...mockedJobs.pageMetrics, riskJobs: originalRiskJobs };
+    }
   });
 });
 
