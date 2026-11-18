@@ -447,6 +447,11 @@ const enBase: Record<string, string> = {
   'jobs.refreshing': 'Refreshing...',
   'jobs.clickRefresh': 'Refresh',
   'jobs.taskRecords': 'Task Records',
+  // Issue#355 ds table (mockup §6.4): merged stats column / subline / badges
+  'jobs.statsHeader': 'Stats',
+  'jobs.filesCount': '{n} file(s)',
+  'jobs.awaitingBadge': 'Review {n}',
+  'jobs.failedBadge': 'Failed {n}',
   'jobs.cancelBeforeDelete': 'Cancel running tasks before deleting',
   'jobs.task': 'Task',
   'jobs.totalCountHeader': 'Total',

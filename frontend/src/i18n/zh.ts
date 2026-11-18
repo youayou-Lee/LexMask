@@ -431,6 +431,11 @@ const zhBase: Record<string, string> = {
   'jobs.refreshing': '刷新中...',
   'jobs.clickRefresh': '点击刷新',
   'jobs.taskRecords': '任务记录',
+  // Issue#355 ds 表格（定稿 §6.4）：合并统计列/副信息行/角标
+  'jobs.statsHeader': '统计',
+  'jobs.filesCount': '{n} 个文件',
+  'jobs.awaitingBadge': '待审 {n}',
+  'jobs.failedBadge': '失败 {n}',
   'jobs.cancelBeforeDelete': '运行中任务需先取消后删除',
   'jobs.task': '任务',
   'jobs.totalCountHeader': '总数',
