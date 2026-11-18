@@ -1,0 +1,4 @@
+services:
+  ocr:
+    environment:
+      OCR_VL_ENABLED: "1"
