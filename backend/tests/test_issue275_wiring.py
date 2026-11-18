@@ -368,10 +368,13 @@ async def test_ocr_path_registers_page_text(tmp_path, monkeypatch):
     vs = VisionService()
 
     class _StubOcrHasDraw:
-        async def detect_and_draw(self, image_data, vision_types=None, draw_result=True, blocks_out=None):
+        async def detect_and_draw(self, image_data, vision_types=None, draw_result=True, blocks_out=None,
+                                  orientation_out=None):
             blocks_out.append(
                 OCRTextBlock(text="OCR第二页内容", polygon=[[0, 0], [1, 0], [1, 1], [0, 1]], confidence=1.0)
             )
+            if orientation_out is not None:
+                orientation_out.update({"angle": 0, "retried": False, "resolved": True, "scores": {}})
             return [], None
 
     vs.ocr_has_service = _StubOcrHasDraw()

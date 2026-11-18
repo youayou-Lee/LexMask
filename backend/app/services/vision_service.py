@@ -100,7 +100,7 @@ def is_page_fatal_stage_error(result) -> bool:
     只扫了一部分」的交付面（云实测 2026-10-29：页 133 撞预算 179.7s ⇒
     status=completed、failed_pages={}、ocr_has 区域数 0）。
 
-    本函数把三类异常升级为页级失败：
+    本函数把四类异常升级为页级失败：
 
     1. 「页级 NER 预算 strict 失败」（``HasTextNerPageBudgetExceeded``）——
        `task_queue_pipelines` 的 `except Exception` 会把它写进
@@ -114,13 +114,19 @@ def is_page_fatal_stage_error(result) -> bool:
        后上抛）或负健康 TTL 内跳过 ⇒ 该页**没被 NER 扫过**，静默零实体放行即
        漏打码（fail-open），升格页级失败（#199 语义）。受
        ``HAS_NER_UNAVAILABLE_PAGE_FAIL`` 门控（False=运维回落阀，此时
-       `run_has_text_analysis` 不抛，本分支为双保险）。其它阶段异常（OCR 服务
-       抖动、视觉通道故障）维持既有「降级 + warning」语义不变。
+       `run_has_text_analysis` 不抛，本分支为双保险）。
+    4. Issue#347 方向未决（``OrientationUnresolvedError``）——旋转嫌疑页的所有
+       候选方向都读不出表单文本（关键词不清醒），任选一向都是赌博 ⇒ 页级显式
+       失败（#199 语义），而非静默按垃圾 OCR 放行（表头/账号整行漏打）。
+
+    其它阶段异常（OCR 服务抖动、视觉通道故障）维持既有「降级 + warning」语义
+    不变。
     """
     from app.services.vision.has_text_analysis import (
         HasTextNerPageBudgetExceeded,
         HasTextNerUnavailable,
     )
+    from app.services.vision.ocr_orientation import OrientationUnresolvedError
 
     if isinstance(result, HasTextNerPageBudgetExceeded):
         return bool(getattr(settings, "HAS_NER_PAGE_BUDGET_STRICT_FAIL", True))
@@ -133,6 +139,9 @@ def is_page_fatal_stage_error(result) -> bool:
     # 即代表用户显式要求过该类型。
     if isinstance(result, VisualStageError):
         return bool(getattr(settings, "VISUAL_EXPLICIT_TYPE_PAGE_FAIL", False))
+    # Issue#347：方向未决专类（无门控，正确性 fail-closed，参照 RoutingEvidenceTimeout）。
+    if isinstance(result, OrientationUnresolvedError):
+        return True
     return isinstance(result, RoutingEvidenceTimeout)
 
 from PIL import Image, ImageOps
@@ -2302,11 +2311,16 @@ class VisionService:
         from app.services.vision.has_text_analysis import reset_page_ner_deadline
 
         reset_page_ner_deadline()
+        # Issue#347：orientation 用 per-call 出参（不读 last_ocr_orientation 单例）——
+        # 并发页（JOB_CONCURRENCY>1）会在「本页 detect 返回 → 读单例」的窗口互相覆盖
+        # 该单例，出口映射拿错角 ⇒ 框 180° 错位、遮码落空白、真值裸露（复跑实证）。
+        orientation: dict = {}
         regions, result_image_base64 = await self.ocr_has_service.detect_and_draw(
             image_data,
             vision_types=pipeline_types,
             draw_result=draw_result,
             blocks_out=page_blocks,
+            orientation_out=orientation,
         )
         # Issue#275：登记 OCR 真实产出（失败页无 blocks ⇒ store 拒空，§3.3-④）。
         # 路径取激活窗口落的 ``_neighbor_registry_path``（recognition_path）；
@@ -2318,18 +2332,71 @@ class VisionService:
                 self._blocks_text(page_blocks),
                 source="ocr",
             )
-        # This call's OCR blocks, captured off the process-wide singleton so the
-        # hallucinated-card gate never judges against a concurrent page's blocks.
-        self._page_ocr_blocks = page_blocks
+
+        # Issue#347：OCR 可能按 90°/270° 转正后的页图工作（last_ocr_orientation）。
+        # Issue#347：本调用自有的 orientation 出参（detect_and_draw 在 return 前
+        # 同步填好）给出采用角——不读 ocr_has_service.last_ocr_orientation 单例
+        # （并发覆盖竞态，见 detect 调用处注释）。ink 检查与像素归一化必须在同
+        # 一张胜者图上做；归一化框在出口单点映射回原页坐标——下游（落库/渲染/
+        # 预览/人工框合并/外层标注图重绘）只见原页坐标，零改动。
+        from app.services.vision.ocr_orientation import (
+            map_bounding_box_to_page,
+            map_polygon_to_page,
+            rotate_image_for_ocr,
+        )
+
+        angle = int(orientation.get("angle") or 0)
 
         img = Image.open(io.BytesIO(image_data))
         img = ImageOps.exif_transpose(img)
+        if angle:
+            # 门⑥ Important：winner 空间块（polygon/chars=输入图像素坐标）映射回
+            # 原页空间——_page_ocr_blocks 的两个消费者（幻觉卡闸/签名检测器）按
+            # 原页坐标解释 blocks，不映射会让它们在错误空间对账（幻觉卡闸失灵 /
+            # 手写签名误删）。
+            from app.services.ocr_has_vision_service import OCRTextBlock
+
+            page_w, page_h = img.size
+
+            def _map_block(b):
+                chars = []
+                for ch in b.chars:
+                    try:
+                        (x1, y1), (x2, y2) = map_polygon_to_page(
+                            [[ch["x1"], ch["y1"]], [ch["x2"], ch["y2"]]], angle, page_w, page_h
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        # 与 ocr_paddle_extract/ocr_cjk_geometry 的防御同口径：
+                        # 坏字符框跳过不毒化整页
+                        continue
+                    chars.append({"c": ch.get("c"), "x1": min(x1, x2), "y1": min(y1, y2),
+                                  "x2": max(x1, x2), "y2": max(y1, y2)})
+                return OCRTextBlock(
+                    text=b.text,
+                    polygon=map_polygon_to_page(b.polygon, angle, page_w, page_h),
+                    confidence=b.confidence,
+                    chars=chars,
+                    recovered=b.recovered,
+                )
+
+            page_blocks = [_map_block(b) for b in page_blocks]
+            img = rotate_image_for_ocr(img, angle)
+
+        # This call's OCR blocks, captured off the process-wide singleton so the
+        # hallucinated-card gate never judges against a concurrent page's blocks.
+        self._page_ocr_blocks = page_blocks
 
         # 像素级过滤/收紧是纯 CPU 工作，放 worker 线程避免阻塞事件循环。
         bounding_boxes = await asyncio.to_thread(
             self._filter_ocr_has_regions, img, regions, page
         )
         bounding_boxes = self._drop_contained_same_type_text(bounding_boxes)
+        if angle:
+            bounding_boxes = [map_bounding_box_to_page(box, angle) for box in bounding_boxes]
+            logger.info(
+                "Page %d: OCR ran on %d°-rotated image; %d box(es) mapped back to page space",
+                page, angle, len(bounding_boxes),
+            )
         return bounding_boxes, result_image_base64
 
     def _drop_contained_same_type_text(self, boxes: list[BoundingBox]) -> list[BoundingBox]:
