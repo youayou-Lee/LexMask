@@ -11,8 +11,11 @@
    src/index.css 除本文件的 import 行外零 diff。
    ────────────────────────────────────────────────────────────
 
-   阶段 1 范围：设计令牌 + 全站基础面（暖纸底/发丝线）+ Shell（侧栏/顶栏）
-   + 任务中心 /jobs 换装。其余页面内容属阶段 2+（用户已在验收方案知悉排期）。
+   范围（2026-11-19 iOS 重置 · Agent A 壳与组件）：设计令牌（iOS 玻璃浅色）+
+   全站基础面 + Shell（悬浮玻璃侧栏/玻璃顶栏/面包屑）+ 基础组件语言（胶囊按钮/
+   绿拨杆开关/分段控件 .ds-seg/状态胶囊 .ds-pill/输入框）+ 页面大标题页头基类
+   （.ds-page-title/.ds-page-head/.ds-page-cta）。页面级换装归 Agent B/C
+   （styles/ios-pages-b.css、ios-pages-c.css，接线由编排者统一做）。
 
    已知口径偏差（记录于 Issue#355）：
    - 指标条不复刻 4 格指标条：#351 B3（晚于设计稿）已把口径收敛为
@@ -135,7 +138,8 @@
      13px 密度实验被用户否决（「字体偏小，不如原来的」）：字号类差异化全部撤除，
      rem 尺度与 classic 相同 ⇒ 正文/控件字号逐处一致；ds 的差异化只走骨架
      （标题区/指标条/表格列结构）与表面（纸感/发丝线/侧栏）。
-     --page-shell-offset 因此无需任何覆盖（header 60px = h-16@15px，与 classic 相同）。 */
+     --page-shell-offset 不覆盖（ds 顶栏 58px，classic 60px——差 2px 落在 offset 的
+     余量段内，使用该 token 的满高面无需跟随；2026-11-19 Agent A 核对）。 */
   color-scheme: light;
 }
 
@@ -168,43 +172,224 @@
   backdrop-filter: none;
 }
 
-/* ---------- 3. Shell · 顶栏 ---------- */
+/* ---------- 3. Shell · 玻璃顶栏（2026-11-19 iOS 重置：58px + 面包屑 + 图标胶囊） ---------- */
 [data-theme="ds"] .app-shell-header {
-  height: 60px;
-  background: rgba(247, 246, 242, 0.82);
-  border-bottom-color: var(--ds-hair);
-  backdrop-filter: saturate(180%) blur(12px);
+  height: 58px;
+  min-height: 58px;
+  padding-right: 26px;
+  padding-left: 26px;
+  background: rgba(238, 240, 244, 0.72);
+  border-bottom-color: var(--ds-hair-faint);
+  backdrop-filter: var(--ds-blur);
+  -webkit-backdrop-filter: var(--ds-blur);
 }
 
-/* ---------- 4. Shell · 侧边栏 ---------- */
-/* 品牌头：60px（设计稿 .brand） */
+/* 面包屑（设计稿 .topbar .crumb）：`分组 / 当前页`，分组与侧栏 nav.group.* 同口径 */
+[data-theme="ds"] .ds-crumb {
+  font-size: 12.5px;
+  font-weight: 560;
+  letter-spacing: -0.003em;
+  color: var(--ds-faint);
+}
+[data-theme="ds"] .ds-crumb b {
+  color: var(--ds-ink-2);
+  font-weight: 620;
+}
+[data-theme="ds"] .ds-crumb-sep {
+  color: var(--ds-ghost);
+  font-weight: 500;
+}
+
+/* 右侧动作区：去胶囊容器底 → 一排 34px 白玻璃图标圆片（设计稿 .top-actions .icon-pill）。
+   文案 span 由 CSS 隐藏（按钮 aria-label 保留无障碍名），分隔线由 DOM 条件渲染摘除 */
+[data-theme="ds"] .ds-header-actions {
+  gap: 9px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+[data-theme="ds"] .ds-header-actions button {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--ds-hair-faint);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.75);
+  box-shadow: var(--ds-sh-card);
+  color: var(--ds-ink-2);
+}
+[data-theme="ds"] .ds-header-actions button:hover {
+  background: #ffffff;
+  color: var(--ds-ink);
+  transform: none;
+}
+[data-theme="ds"] .ds-header-actions button > span {
+  display: none;
+}
+[data-theme="ds"] .ds-header-actions div[role='status'] {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--ds-hair-faint);
+  background: rgba(255, 255, 255, 0.75);
+  box-shadow: var(--ds-sh-card);
+}
+
+/* ---------- 4. Shell · 悬浮玻璃侧栏（2026-11-19 iOS 重置，设计稿 .sidebar） ----------
+   浮动=270px 预留宽（256 视宽 + 14 左缘；index.tsx 按 ds 注入 --sidebar-width:270px），
+   玻璃面板=白玻璃+白描边+浮层影；active 项=绿底白字胶囊（替换旧绿色竖条）。
+   DOM 挂钩：.ds-sidebar-shell（Sidebar className，落于 fixed 定位容器）。 */
+[data-theme="ds"] .ds-sidebar-shell {
+  padding: 14px 0 14px 14px;
+}
+[data-theme="ds"] [data-sidebar="sidebar"] {
+  background: var(--ds-glass);
+  border: 1px solid var(--ds-glass-border);
+  border-radius: var(--ds-r-2xl);
+  box-shadow: var(--ds-sh-pop);
+  backdrop-filter: var(--ds-blur);
+  -webkit-backdrop-filter: var(--ds-blur);
+}
+
+/* 品牌头 66px（设计稿 .brand）：34px 徽标 + 15px/700 名 + 10.5px 标语，无底部分隔线 */
 [data-theme="ds"] [data-sidebar="header"] {
-  height: 60px;
+  height: 66px;
+  padding: 0 16px;
+  border-bottom-color: transparent;
 }
-/* 选中项：淡绿底（token）+ 左侧 2.5px 绿色圆角竖条（设计稿 nav-item.active） */
-[data-theme="ds"] [data-sidebar="menu-button"][data-active="true"] {
-  position: relative;
-  border-radius: var(--ds-r-sm);
+[data-theme="ds"] [data-sidebar="header"] img {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
 }
-[data-theme="ds"] [data-sidebar="menu-button"][data-active="true"]::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 2.5px;
-  height: 15px;
-  border-radius: 0 3px 3px 0;
-  background: var(--ds-accent-bright);
+[data-theme="ds"] [data-sidebar="header"] span {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
-/* 非选中项悬停=中性极淡（设计稿 .nav-item:hover），不吃选中绿 */
+[data-theme="ds"] [data-sidebar="header"] p {
+  margin-top: 1px;
+  font-size: 10.5px;
+  color: var(--ds-faint);
+}
+
+/* 导航体：6/12 内边距；分组标签微型大写（设计稿 .nav-label）；组间分隔线退场 */
+[data-theme="ds"] [data-sidebar="content"] {
+  padding: 6px 12px 8px;
+}
+[data-theme="ds"] .nav-sublabel {
+  display: none;
+}
+[data-theme="ds"] [data-sidebar="group-label"] {
+  height: auto;
+  padding: 14px 10px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--ds-faint);
+}
+[data-theme="ds"] [data-sidebar="separator"] {
+  background: transparent;
+}
+
+/* 导航项 40px 胶囊（设计稿 .nav-item：40px/13px/图标 17px faint） */
+[data-theme="ds"] [data-sidebar="menu-button"] {
+  height: 40px;
+  min-height: 40px;
+  gap: 10px;
+  padding: 0 11px;
+  border-radius: 13px;
+  font-size: 13px;
+  font-weight: 560;
+  color: var(--ds-ink-2);
+}
+[data-theme="ds"] [data-sidebar="menu-button"] > svg {
+  width: 17px;
+  height: 17px;
+  opacity: 1;
+  color: var(--ds-faint);
+}
+[data-theme="ds"] [data-sidebar="menu-button"] span.truncate {
+  font-size: 13px;
+  font-weight: inherit;
+}
 [data-theme="ds"] [data-sidebar="menu-button"]:hover:not([data-active="true"]) {
-  background: rgba(20, 22, 26, 0.032);
+  background: rgba(17, 20, 28, 0.045);
+  color: var(--ds-ink);
 }
-/* 底部服务状态卡：暖白玻璃（设计稿 .health），不吃选中绿 */
-[data-theme="ds"] [data-sidebar="footer"] .bg-sidebar-accent {
-  background: rgba(255, 255, 255, 0.6);
-  border-color: var(--ds-hair);
+[data-theme="ds"] [data-sidebar="menu-button"]:active:not([data-active="true"]) {
+  background: rgba(17, 20, 28, 0.06);
+  color: var(--ds-ink);
+}
+/* active=绿底白字胶囊（设计稿 .nav-item.active；影=0 6px 16px -6px tint 55%）。
+   底色用 --ds-accent(#0C8468) 而非真稿原值 bright(#10A37F)：白字对比度 3.2:1<4.5，
+   #0C8468=4.6:1 达标（Agent A 门④提醒，同琥珀 #A34A08 处理先例） */
+[data-theme="ds"] [data-sidebar="menu-button"][data-active="true"] {
+  border-color: transparent;
+  background: var(--ds-accent);
+  color: #ffffff;
+  font-weight: 650;
+  box-shadow: 0 6px 16px -6px rgba(16, 163, 127, 0.55);
+}
+[data-theme="ds"] [data-sidebar="menu-button"][data-active="true"] > svg {
+  color: #ffffff;
+}
+/* 计数角标=绿面胶囊；active 上反白（设计稿 .nav-badge） */
+[data-theme="ds"] [data-testid^='nav-badge-'] {
+  padding: 2px 7px;
+  background: var(--ds-accent-surface-2);
+  color: var(--ds-accent);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+[data-theme="ds"] [data-sidebar="menu-button"][data-active="true"] [data-testid^='nav-badge-'] {
+  background: rgba(255, 255, 255, 0.24);
+  color: #ffffff;
+}
+
+/* 底部服务卡=紧凑玻璃状态条（设计稿 .sidebar-foot .service-card）：
+   明细 DOM 全保留（用户裁定的产品信息，不得删），视觉收成 10px 紧凑玻璃行。
+   DOM 挂钩（app-sidebar.tsx）：.ds-service-card/.ds-service-dot/.ds-service-title/
+   .ds-service-statusline/.ds-service-row/.ds-service-badge/.ds-service-version */
+[data-theme="ds"] [data-sidebar="footer"] {
+  padding: 10px 12px 12px;
+}
+[data-theme="ds"] [data-sidebar="footer"] .ds-service-card {
+  padding: 9px 11px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--ds-hair-faint);
+  border-radius: 14px;
+  box-shadow: none;
+}
+[data-theme="ds"] [data-sidebar="footer"] .ds-service-dot {
+  width: 7px;
+  height: 7px;
+}
+[data-theme="ds"] [data-sidebar="footer"] .ds-service-title {
+  font-size: 11.5px;
+  font-weight: 600;
+}
+[data-theme="ds"] [data-sidebar="footer"] .ds-service-statusline {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--ds-faint);
+}
+[data-theme="ds"] [data-sidebar="footer"] .ds-service-row {
+  min-height: 0;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border-color: var(--ds-hair-faint);
+}
+[data-theme="ds"] [data-sidebar="footer"] .ds-service-row > span {
+  font-size: 10px;
+}
+[data-theme="ds"] [data-sidebar="footer"] .ds-service-row .ds-service-badge {
+  padding: 1px 5px;
+  font-size: 9.5px;
+}
+[data-theme="ds"] [data-sidebar="footer"] .ds-service-version {
+  margin-top: 4px;
+  font-size: 9.5px;
 }
 
 /* ---------- 5. 任务中心 /jobs · 分段页签（外层视图） ---------- */
@@ -391,20 +576,50 @@
 
 /* ---------- 11. ds 骨架：纸纹已于 2026-11-19 视觉重置移除（iOS 玻璃=干净面，无噪点） ---------- */
 
-/* ---------- 12. ds 骨架：页面标题区（宋体大标题）/ 指标条 / 顶栏面包屑 ---------- */
+/* ---------- 12. ds 骨架：页面大标题页头（iOS Large Title）+ 指标条（面包屑已移 §3） ----------
+   2026-11-19 重置：无衬线 32px/760/-0.025em（设计稿 .page-title/.page-sub/.page-head），
+   右侧主操作=胶囊 CTA（.ds-page-cta，B/C 挂到 Button className 上）。 */
 [data-theme="ds"] .ds-page-title {
   margin: 0;
-  font-family: var(--ds-serif);
-  font-size: 27px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  line-height: 1.25;
+  font-family: var(--ds-sans);
+  font-size: 32px;
+  font-weight: 760;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
   color: var(--ds-ink);
 }
 [data-theme="ds"] .ds-page-sub {
-  margin: 2px 0 0;
-  font-size: 12.5px;
+  margin: 6px 0 0;
+  font-size: 13.5px;
   color: var(--ds-muted);
+}
+[data-theme="ds"] .ds-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+[data-theme="ds"] .ds-page-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 40px;
+  padding: 0 18px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #14b58b, #0c8468);
+  color: #ffffff;
+  font-size: 13.5px;
+  font-weight: 640;
+  box-shadow: var(--ds-sh-btn);
+}
+[data-theme="ds"] .ds-page-cta svg {
+  width: 15px;
+  height: 15px;
+}
+[data-theme="ds"] .ds-page-cta:hover {
+  background: linear-gradient(180deg, #17c79a, #0e9070);
+  color: #ffffff;
+  transform: none;
 }
 /* 指标条：单条通栏白卡 + 内部 1px 竖线 4 等分（定稿 §6.2，非独立卡）。
    标签/注解用 muted（5.33:1）承载语义；faint 仅装饰位 */
@@ -448,25 +663,7 @@
   font-size: 10.5px;
   color: var(--ds-faint);
 }
-[data-theme="ds"] .ds-crumb {
-  font-size: 12px;
-  font-weight: 560;
-  letter-spacing: -0.003em;
-  color: var(--ds-ink-2);
-}
-
-/* ---------- 13. ds 骨架：侧栏紧凑层级（定稿 32-34px 项 + 微型分组标签） ---------- */
-[data-theme="ds"] .nav-sublabel {
-  display: none;
-}
-[data-theme="ds"] [data-sidebar="menu-button"] {
-  min-height: 34px;
-  border-radius: var(--ds-r-sm);
-}
-[data-theme="ds"] [data-sidebar="group-label"] {
-  font-size: 9.5px;
-  letter-spacing: 0.11em;
-}
+/* ---------- 13. ds 骨架：侧栏紧凑层级（2026-11-19 并入 §4 悬浮玻璃侧栏段） ---------- */
 
 /* ---------- 14. ds 骨架：筛选面板收编（信息上移标题区/指标条，去重复） ---------- */
 /* 冷评审 #3：工具行与页签合为一行 ⇒ ds 下整个筛选面板隐藏（条件渲染），
@@ -500,4 +697,142 @@
 }
 [data-theme="ds"] .jobs-action-cell .jobs-action-btn.jobs-action-primary {
   color: var(--ds-accent-bright);
+}
+
+/* ---------- 15. 基础组件语言（2026-11-19 iOS 重置 · Agent A，B/C 共用）----------
+   按钮=胶囊；主按钮=绿渐变 40px（设计稿 .btn-primary，影=--ds-sh-btn）；outline
+   收敛为白卡细边；开关=iOS 绿拨杆 #34C759（规格 §四.4）；分段控件=灰轨道白滑块
+   （设计稿 .segmented/.seg）；状态胶囊=tint 淡底+点（设计稿 .status）；输入框圆角 12。
+   DOM 挂钩（ui/*.tsx className 层，classic 无 CSS 匹配零影响）：.ds-btn /
+   .ds-btn-primary / .ds-btn-outline / .ds-switch / .ds-switch-thumb / .ds-input */
+[data-theme="ds"] .ds-btn {
+  border-radius: 999px;
+}
+[data-theme="ds"] .ds-btn:hover {
+  transform: none;
+}
+[data-theme="ds"] .ds-btn-primary {
+  height: 40px;
+  background: linear-gradient(180deg, #14b58b, #0c8468);
+  color: #ffffff;
+  box-shadow: var(--ds-sh-btn);
+}
+[data-theme="ds"] .ds-btn-primary svg {
+  width: 15px;
+  height: 15px;
+}
+[data-theme="ds"] .ds-btn-primary:hover {
+  background: linear-gradient(180deg, #17c79a, #0e9070);
+  color: #ffffff;
+}
+[data-theme="ds"] .ds-btn-outline {
+  background: var(--ds-card);
+  border-color: var(--ds-hair-strong);
+  box-shadow: var(--ds-sh-xs);
+}
+[data-theme="ds"] .ds-btn-outline:hover {
+  background: var(--ds-card);
+}
+
+/* iOS 开关（shadcn Switch 的 ds 样式）：checked=#34C759、unchecked=中性轨道、白拨杆 */
+[data-theme="ds"] .ds-switch {
+  border-color: transparent;
+}
+[data-theme="ds"] .ds-switch[data-state='checked'] {
+  background: #34c759;
+}
+[data-theme="ds"] .ds-switch[data-state='unchecked'] {
+  background: rgba(120, 134, 168, 0.28);
+}
+[data-theme="ds"] .ds-switch-thumb {
+  background: #ffffff;
+}
+
+/* 分段控件基类：灰轨道 + 白滑块。选中标记三口径全收（.ds-seg-item 上）：
+   data-active="true"（自管 DOM）/ data-state="active"（Radix Tabs）/ aria-pressed="true" */
+[data-theme="ds"] .ds-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: rgba(118, 128, 148, 0.14);
+  border-radius: 12px;
+}
+[data-theme="ds"] .ds-seg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-weight: 560;
+  color: var(--ds-ink-2);
+  transition:
+    background-color var(--ds-dur) var(--ds-ease),
+    color var(--ds-dur) var(--ds-ease);
+}
+[data-theme="ds"] .ds-seg-item:hover {
+  color: var(--ds-ink);
+}
+[data-theme="ds"] .ds-seg-item[data-active='true'],
+[data-theme="ds"] .ds-seg-item[data-state='active'],
+[data-theme="ds"] .ds-seg-item[aria-pressed='true'] {
+  background: #ffffff;
+  color: var(--ds-ink);
+  font-weight: 640;
+  box-shadow:
+    0 2px 8px -1px rgba(15, 18, 28, 0.14),
+    0 0 0 0.5px rgba(15, 18, 28, 0.04);
+}
+/* 段内计数（设计稿 .seg .n）：未选中 faint、选中转绿 */
+[data-theme="ds"] .ds-seg-n {
+  font-size: 10.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-faint);
+}
+[data-theme="ds"] .ds-seg-item[data-active='true'] .ds-seg-n,
+[data-theme="ds"] .ds-seg-item[data-state='active'] .ds-seg-n,
+[data-theme="ds"] .ds-seg-item[aria-pressed='true'] .ds-seg-n {
+  color: var(--ds-accent);
+}
+
+/* 状态胶囊基类（设计稿 .status：26px 胶囊 + 6px 点）；tone 修饰类四色。
+   warn 文字用 #A34A08（同 §7 tone-badge 口径：#B45309 在淡琥珀合成底 4.33:1 <4.5） */
+[data-theme="ds"] .ds-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 11px 0 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 620;
+}
+[data-theme="ds"] .ds-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+[data-theme="ds"] .ds-pill-brand {
+  background: var(--ds-accent-surface);
+  color: var(--ds-accent);
+}
+[data-theme="ds"] .ds-pill-warn {
+  background: var(--ds-warn-surface);
+  color: #a34a08;
+}
+[data-theme="ds"] .ds-pill-danger {
+  background: var(--ds-danger-surface);
+  color: var(--ds-danger);
+}
+[data-theme="ds"] .ds-pill-neutral {
+  background: var(--ds-neutral-surface);
+  color: var(--ds-neutral);
+}
+
+/* 输入框圆角 12（规格 §四.4；Input/Textarea 基类挂钩 .ds-input） */
+[data-theme="ds"] .ds-input {
+  border-radius: 12px;
 }

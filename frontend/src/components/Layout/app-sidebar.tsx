@@ -25,6 +25,7 @@ import {
   type ServiceInfo,
   type ServicesHealth,
 } from '@/hooks/use-service-health';
+import { useUiTheme } from '@/theme/ui-theme';
 import {
   PlayIcon,
   BatchIcon,
@@ -74,6 +75,10 @@ export function AppSidebar() {
   const { health, checking, roundTripMs, refresh } = useServiceHealth();
   const { tasks } = useSingleTask();
   const isAdmin = Boolean(status?.is_super_admin);
+  // Issue#355 ds 壳：悬浮玻璃侧栏用 floating 变体（侧栏独立浮层、四周留白）；
+  // classic 保持 inset（主区=圆角卡片），variant 翻转只随主题走，classic 像素零变化。
+  const { theme } = useUiTheme();
+  const dsMode = theme === 'ds';
   // Issue#262：角标只计进行中/待复核的任务——done/failed 是终态，不应把用户拽回任务中心。
   const nonTerminalCount = tasks.filter((task) => !isTerminalPhase(task.phase)).length;
 
@@ -195,7 +200,11 @@ export function AppSidebar() {
   ];
 
   return (
-    <Sidebar collapsible="offcanvas" variant="inset">
+    <Sidebar
+      collapsible="offcanvas"
+      variant={dsMode ? 'floating' : 'inset'}
+      className={dsMode ? 'ds-sidebar-shell' : undefined}
+    >
       <SidebarHeader className="h-16 flex-row items-center gap-3 border-b border-sidebar-border px-4">
         <img
           src={BRAND.logoUrl}
@@ -393,13 +402,13 @@ function SidebarServiceStatus({
 
   return (
     <section
-      className="min-h-0 min-w-0 overflow-hidden rounded-xl border border-sidebar-border bg-sidebar-accent px-2.5 py-2 text-sidebar-foreground shadow-[var(--shadow-sm)]"
+      className="ds-service-card min-h-0 min-w-0 overflow-hidden rounded-xl border border-sidebar-border bg-sidebar-accent px-2.5 py-2 text-sidebar-foreground shadow-[var(--shadow-sm)]"
       aria-label={t('health.sidebar.title')}
       data-testid="sidebar-service-status"
     >
       <div className="flex items-center gap-2">
         <span
-          className={cn('h-2.5 w-2.5 shrink-0 rounded-full', {
+          className={cn('ds-service-dot h-2.5 w-2.5 shrink-0 rounded-full', {
             'animate-pulse bg-sidebar-foreground/35': checking,
             'bg-[var(--success-foreground)]': overallTone === 'success',
             'bg-[var(--warning-foreground)]': overallTone === 'warning',
@@ -407,8 +416,10 @@ function SidebarServiceStatus({
           })}
         />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold">{t('health.sidebar.title')}</p>
-          <p className="truncate text-[11px] font-medium text-sidebar-foreground/60">
+          <p className="ds-service-title truncate text-sm font-semibold">
+            {t('health.sidebar.title')}
+          </p>
+          <p className="ds-service-statusline truncate text-[11px] font-medium text-sidebar-foreground/60">
             {statusText}
             {roundTripMs != null ? ` · ${roundTripMs} ms` : ''}
           </p>
@@ -434,13 +445,15 @@ function SidebarServiceStatus({
           return (
             <div
               key={key}
-              className="grid min-h-5 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 overflow-hidden rounded-lg bg-sidebar/45 px-1.5 py-0.5"
+              className="ds-service-row grid min-h-5 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 overflow-hidden rounded-lg bg-sidebar/45 px-1.5 py-0.5"
             >
               <span className="min-w-0 truncate text-[11px] font-medium" title={serviceName}>
                 {serviceName}
               </span>
               <span
-                className={cn('shrink-0 rounded-full px-1 py-0.5 text-[10px] font-semibold', {
+                className={cn(
+                  'ds-service-badge shrink-0 rounded-full px-1 py-0.5 text-[10px] font-semibold',
+                  {
                   'bg-[var(--success-surface)] text-[var(--success-foreground)]':
                     status === 'online',
                   'bg-[var(--warning-surface)] text-[var(--warning-foreground)]':
@@ -461,7 +474,7 @@ function SidebarServiceStatus({
           return (
             <div
               key={card.index}
-              className="mt-1 grid min-h-5 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 overflow-hidden rounded-lg border border-sidebar-border/80 px-1.5 py-0.5"
+              className="ds-service-row mt-1 grid min-h-5 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 overflow-hidden rounded-lg border border-sidebar-border/80 px-1.5 py-0.5"
             >
               <span className="shrink-0 text-[11px] font-semibold">{`${accelLabel} ${card.index}`}</span>
               <span
@@ -474,7 +487,7 @@ function SidebarServiceStatus({
           );
         })
       ) : (
-        <div className="mt-1 grid min-h-5 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 overflow-hidden rounded-lg border border-sidebar-border/80 px-1.5 py-0.5">
+        <div className="ds-service-row mt-1 grid min-h-5 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 overflow-hidden rounded-lg border border-sidebar-border/80 px-1.5 py-0.5">
           <span className="shrink-0 text-[11px] font-semibold">{accelLabel}</span>
           <span
             className="min-w-0 truncate text-right text-[11px] text-sidebar-foreground/70"
@@ -485,7 +498,7 @@ function SidebarServiceStatus({
         </div>
       )}
       <p
-        className="mt-2 truncate text-center text-[10px] text-sidebar-foreground/50"
+        className="ds-service-version mt-2 truncate text-center text-[10px] text-sidebar-foreground/50"
         data-testid="app-version"
         title={`v${__APP_VERSION__} · ${__BUILD_TIME__}`}
       >

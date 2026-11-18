@@ -72,4 +72,19 @@ describe('Issue#355 ds-theme.css 作用域契约（classic 零泄漏）', () => 
     expect(css).toContain(`${SCOPE} .jobs-table-list > li > div`);
     expect(css.length).toBeGreaterThan(2000);
   });
+
+  // Issue#355 Agent A（2026-11-19 iOS 重置）壳与组件段的接线钉：
+  // 玻璃顶栏 / 侧栏 active 绿胶囊 / 分段控件 / 主按钮胶囊 / iOS 开关在位且带作用域。
+  it('壳与基础组件段关键规则在位（删段时本测试必须红）', () => {
+    expect(css).toContain(`${SCOPE} .app-shell-header {`);
+    expect(css).toContain(`${SCOPE} .ds-sidebar-shell {`);
+    expect(css).toContain(`${SCOPE} [data-sidebar="sidebar"] {`);
+    expect(css).toContain(`${SCOPE} [data-sidebar="menu-button"][data-active="true"] {`);
+    expect(css).toContain(`${SCOPE} .ds-seg {`);
+    expect(css).toContain(`${SCOPE} .ds-btn-primary {`);
+    expect(css).toContain(`${SCOPE} .ds-switch[data-state='checked'] {`);
+    expect(css).toContain(`${SCOPE} .ds-pill {`);
+    expect(css).toContain(`${SCOPE} .ds-page-title {`);
+    expect(css).toContain(`${SCOPE} .ds-page-cta {`);
+  });
 });

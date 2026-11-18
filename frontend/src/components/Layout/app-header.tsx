@@ -45,10 +45,15 @@ export function AppHeader() {
     <header className="app-shell-header flex h-16 shrink-0 items-center justify-between border-b border-border/70 bg-background/95 px-4 backdrop-blur-2xl sm:px-6">
       <div className="flex min-h-[40px] min-w-0 flex-1 items-center gap-3">
         <SidebarTrigger className="lg:hidden" aria-label={t('layout.toggleSidebar')} />
-        {/* Issue#355 ds 骨架：顶栏面包屑（定稿 .topbar .crumb；classic 不渲染） */}
+        {/* Issue#355 ds 骨架：顶栏面包屑（定稿 .topbar .crumb=`分组 / 当前页`；classic 不渲染）。
+            分组名复用侧栏既有键 nav.group.*（无新 i18n），分组归属见 getCrumbGroup。 */}
         {dsMode && (
-          <span className="ds-crumb hidden min-w-0 truncate lg:inline" aria-hidden={!dsMode}>
-            {title}
+          <span className="ds-crumb hidden min-w-0 items-center gap-1.5 truncate lg:inline-flex">
+            <span className="shrink-0">{getCrumbGroup(location.pathname, t)}</span>
+            <span className="ds-crumb-sep shrink-0" aria-hidden="true">
+              /
+            </span>
+            <b className="truncate font-semibold">{title}</b>
           </span>
         )}
         <div className="flex min-w-0 flex-col justify-center lg:hidden" aria-label={title}>
@@ -61,7 +66,7 @@ export function AppHeader() {
 
       <nav
         aria-label={t('layout.headerActions')}
-        className="flex shrink-0 items-center gap-2 rounded-full border border-border/70 bg-[var(--surface-control)] px-2 py-1.5 shadow-[var(--shadow-control)]"
+        className="ds-header-actions flex shrink-0 items-center gap-2 rounded-full border border-border/70 bg-[var(--surface-control)] px-2 py-1.5 shadow-[var(--shadow-control)]"
       >
         <div
           role="status"
@@ -80,7 +85,8 @@ export function AppHeader() {
           />
         </div>
 
-        <div className="mx-1 hidden h-4 w-px bg-border/60 sm:block" />
+        {/* Issue#355 ds：动作区图标化后分隔线退场（ds-theme.css §3 图标圆片自带边界） */}
+        {!dsMode && <div className="mx-1 hidden h-4 w-px bg-border/60 sm:block" />}
 
         <Button
           variant="ghost"
@@ -183,4 +189,15 @@ function getPageHeader(
   };
 
   return map[pathname] || { title: t('nav.playground') };
+}
+
+// 面包屑分组前缀（Issue#355 ds 骨架）：配置族路径归「高级」，其余归「处理流程」，
+// 与侧栏 nav.group.* 分组同口径；键为既有 i18n（zh：处理流程/高级，en：Workflow/Advanced）。
+const CONFIG_CRUMB_PREFIXES = ['/settings', '/console', '/model-settings'];
+
+function getCrumbGroup(pathname: string, t: (key: string) => string): string {
+  const isConfig = CONFIG_CRUMB_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(prefix + '/'),
+  );
+  return isConfig ? t('nav.group.config') : t('nav.group.workflow');
 }
