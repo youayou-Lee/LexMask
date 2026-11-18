@@ -123,17 +123,10 @@
   --shadow-lg: var(--ds-sh-pop);
   --shadow-control: var(--ds-sh-xs);
 
-  /* 顶栏 60px（classic h-16=64px ⇒ offset -4px；断点值与 index.css 同构） */
-  --page-shell-offset: 4.5rem;
+  /* 顶栏高度沿用 classic 的 h-16（根字号 15px ⇒ 4rem=60px，与设计稿 60px 恰好一致，
+     实测 2026-11-19 门④：classic header 实高即 60px）——故 --page-shell-offset
+     不做任何 ds 覆盖，避免按 64px 误推 -4px 造成页底裁切（A3 回退条款）。 */
   color-scheme: light;
-}
-
-@media (min-width: 640px) {
-  [data-theme="ds"] { --page-shell-offset: 4.75rem; }
-}
-
-@media (min-width: 1536px) {
-  [data-theme="ds"] { --page-shell-offset: 5rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
