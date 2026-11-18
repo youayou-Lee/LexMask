@@ -1,0 +1,1549 @@
+{
+  "per_file": [
+    {
+      "pages": 1,
+      "overall": {
+        "tp": 23,
+        "fp": 6,
+        "fn": 4,
+        "precision": 0.7931034482758621,
+        "recall": 0.8518518518518519,
+        "f1": 0.8214285714285715
+      },
+      "per_type": {
+        "公司名称": {
+          "tp": 0,
+          "fp": 2,
+          "fn": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "地址": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "姓名": {
+          "tp": 6,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "开户行": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "护照号": {
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "日期": {
+          "tp": 4,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "机关单位": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "机构名称": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 4,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "电话": {
+          "tp": 4,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "编号": {
+          "tp": 0,
+          "fp": 2,
+          "fn": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "身份证号": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "邮箱": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "银行卡号": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "digital": {
+        "身份证号": {
+          "total_gt": 2,
+          "exact_rate": 1.0,
+          "exact": 2,
+          "near_miss": 0,
+          "miss": 0,
+          "near_miss_detail": [],
+          "miss_detail": []
+        },
+        "护照号": {
+          "total_gt": 1,
+          "exact_rate": 1.0,
+          "exact": 1,
+          "near_miss": 0,
+          "miss": 0,
+          "near_miss_detail": [],
+          "miss_detail": []
+        },
+        "电话": {
+          "total_gt": 4,
+          "exact_rate": 1.0,
+          "exact": 4,
+          "near_miss": 0,
+          "miss": 0,
+          "near_miss_detail": [],
+          "miss_detail": []
+        },
+        "银行卡号": {
+          "total_gt": 2,
+          "exact_rate": 1.0,
+          "exact": 2,
+          "near_miss": 0,
+          "miss": 0,
+          "near_miss_detail": [],
+          "miss_detail": []
+        },
+        "邮箱": {
+          "total_gt": 2,
+          "exact_rate": 1.0,
+          "exact": 2,
+          "near_miss": 0,
+          "miss": 0,
+          "near_miss_detail": [],
+          "miss_detail": []
+        }
+      },
+      "latency_sec": {
+        "mean": 2.615,
+        "max": 2.615,
+        "total": 2.615
+      },
+      "digital_gate": {
+        "pass": true,
+        "failures": []
+      },
+      "loose": {
+        "wrong_type": 3,
+        "type_confusion_top": {
+          "机构名称→公司名称": 2,
+          "机构名称→机关单位": 1
+        }
+      },
+      "perf": {
+        "pages_total": 1,
+        "warmup_pages": 1,
+        "steady_pages": 1,
+        "wall_s": {
+          "total": 2.615,
+          "mean": 2.615,
+          "p50": 2.615,
+          "p95": 2.615
+        },
+        "throughput_pages_per_min": 22.945,
+        "duration_ms": {},
+        "pages_detail": [
+          {
+            "page": 1,
+            "warmup": false,
+            "wall_s": 2.615,
+            "duration_ms": {},
+            "pipeline_status": {},
+            "entities": {
+              "姓名": [
+                "王丽军",
+                "冯军芳",
+                "陈艳超",
+                "王丽军",
+                "尤娜明",
+                "许丽军",
+                "赵军芳",
+                "尤娜明"
+              ],
+              "身份证号": [
+                "110108196708082590",
+                "110139199803114069"
+              ],
+              "地址": [
+                "上海市浦东新区世纪大道25号院8号楼108室",
+                "广州市天河区体育西路56号院3号楼109室"
+              ],
+              "公司名称": [
+                "瑞泰实业发展有限公司第8分公司",
+                "恒达建筑工程有限公司第3分公司"
+              ],
+              "电话": [
+                "13916937959",
+                "19471450494",
+                "16647663206",
+                "15102175741"
+              ],
+              "邮箱": [
+                "user07.chen@example-corp2.cn",
+                "user38.chen@example-corp3.cn"
+              ],
+              "日期": [
+                "2021年08月08日",
+                "2022-03-15",
+                "2022-03-15",
+                "2022年03月11日",
+                "2023-10-18",
+                "2023-10-18"
+              ],
+              "开户行": [
+                "中国工商银行某分行",
+                "中国工商银行某分行"
+              ],
+              "银行卡号": [
+                "6222 0210 1007 2021",
+                "6222 0210 1038 2114"
+              ],
+              "编号": [
+                "HT-2026-0000",
+                "SF1350009173"
+              ],
+              "护照号": [
+                "E10300922"
+              ],
+              "机关单位": [
+                "海州区人民法院"
+              ]
+            }
+          }
+        ]
+      },
+      "file": {
+        "id": "syn_contract_2p_mid",
+        "carrier": "docx",
+        "doc_type": "contract",
+        "density": "mid",
+        "gt_entities": 27,
+        "eval_wall_s": 2.628
+      },
+      "errors": [
+        {
+          "file": "syn_contract_2p_mid",
+          "page": 1,
+          "type": "机构名称",
+          "kind": "漏检",
+          "expect": "恒达商贸有限公司第9分公司",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_contract_2p_mid",
+          "page": 1,
+          "type": "机构名称",
+          "kind": "漏检",
+          "expect": "恒达建筑工程有限公司第3分公司",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_contract_2p_mid",
+          "page": 1,
+          "type": "机构名称",
+          "kind": "漏检",
+          "expect": "海州区人民法院",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_contract_2p_mid",
+          "page": 1,
+          "type": "机构名称",
+          "kind": "漏检",
+          "expect": "瑞泰实业发展有限公司第8分公司",
+          "actual": "—",
+          "stage": "NER/OCR"
+        }
+      ]
+    },
+    {
+      "pages": 1,
+      "overall": {
+        "tp": 18,
+        "fp": 4,
+        "fn": 2,
+        "precision": 0.8181818181818182,
+        "recall": 0.9,
+        "f1": 0.8571428571428572
+      },
+      "per_type": {
+        "地址": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "姓名": {
+          "tp": 6,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "日期": {
+          "tp": 4,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "机关单位": {
+          "tp": 0,
+          "fp": 2,
+          "fn": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "机构名称": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 2,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "案号": {
+          "tp": 0,
+          "fp": 2,
+          "fn": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "电话": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "身份证号": {
+          "tp": 4,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "digital": {
+        "身份证号": {
+          "total_gt": 4,
+          "exact_rate": 1.0,
+          "exact": 4,
+          "near_miss": 0,
+          "miss": 0,
+          "near_miss_detail": [],
+          "miss_detail": []
+        },
+        "电话": {
+          "total_gt": 2,
+          "exact_rate": 1.0,
+          "exact": 2,
+          "near_miss": 0,
+          "miss": 0,
+          "near_miss_detail": [],
+          "miss_detail": []
+        }
+      },
+      "latency_sec": {
+        "mean": 1.936,
+        "max": 1.936,
+        "total": 1.936
+      },
+      "digital_gate": {
+        "pass": true,
+        "failures": []
+      },
+      "loose": {
+        "wrong_type": 2,
+        "type_confusion_top": {
+          "机构名称→机关单位": 2
+        }
+      },
+      "perf": {
+        "pages_total": 1,
+        "warmup_pages": 1,
+        "steady_pages": 1,
+        "wall_s": {
+          "total": 1.936,
+          "mean": 1.936,
+          "p50": 1.936,
+          "p95": 1.936
+        },
+        "throughput_pages_per_min": 30.992,
+        "duration_ms": {},
+        "pages_detail": [
+          {
+            "page": 1,
+            "warmup": false,
+            "wall_s": 1.936,
+            "duration_ms": {},
+            "pipeline_status": {},
+            "entities": {
+              "案号": [
+                "2026）民初1000号",
+                "2026）民初1001号"
+              ],
+              "姓名": [
+                "韩勇艳",
+                "秦刚杰",
+                "赵强娟",
+                "秦刚杰",
+                "韩勇艳",
+                "吴磊平",
+                "冯超刚",
+                "卫敏桂",
+                "冯超刚",
+                "吴磊平"
+              ],
+              "身份证号": [
+                "110115197403155187",
+                "110102196102226774",
+                "110146196010186652",
+                "110133199209258248"
+              ],
+              "地址": [
+                "广州市天河区体育西路32号院6号楼115室",
+                "杭州市西湖区文三路63号院1号楼116室"
+              ],
+              "日期": [
+                "2022年03月15日",
+                "2021年02月26日",
+                "2023年10月18日",
+                "2022年09月01日"
+              ],
+              "电话": [
+                "13823875918",
+                "16554601165"
+              ],
+              "机关单位": [
+                "南湖经济技术开发区人民法院",
+                "海州区人民法院"
+              ]
+            }
+          }
+        ]
+      },
+      "file": {
+        "id": "syn_judgment_2p_mid",
+        "carrier": "docx",
+        "doc_type": "judgment",
+        "density": "mid",
+        "gt_entities": 20,
+        "eval_wall_s": 1.946
+      },
+      "errors": [
+        {
+          "file": "syn_judgment_2p_mid",
+          "page": 1,
+          "type": "机构名称",
+          "kind": "漏检",
+          "expect": "南湖经济技术开发区人民法院",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_judgment_2p_mid",
+          "page": 1,
+          "type": "机构名称",
+          "kind": "漏检",
+          "expect": "海州区人民法院",
+          "actual": "—",
+          "stage": "NER/OCR"
+        }
+      ]
+    },
+    {
+      "pages": 1,
+      "overall": {
+        "tp": 11,
+        "fp": 4,
+        "fn": 2,
+        "precision": 0.7333333333333333,
+        "recall": 0.8461538461538461,
+        "f1": 0.7857142857142856
+      },
+      "per_type": {
+        "公司名称": {
+          "tp": 0,
+          "fp": 2,
+          "fn": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "地址": {
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "姓名": {
+          "tp": 3,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "开户行": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "日期": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "机构名称": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 2,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "电话": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "编号": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "身份证号": {
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "邮箱": {
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "银行卡号": {
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "digital": {
+        "身份证号": {
+          "total_gt": 1,
+          "exact_rate": 1.0,
+          "exact": 1,
+          "near_miss": 0,
+          "miss": 0,
+          "near_miss_detail": [],
+          "miss_detail": []
+        },
+        "电话": {
+          "total_gt": 2,
+          "exact_rate": 1.0,
+          "exact": 2,
+          "near_miss": 0,
+          "miss": 0,
+          "near_miss_detail": [],
+          "miss_detail": []
+        },
+        "银行卡号": {
+          "total_gt": 1,
+          "exact_rate": 1.0,
+          "exact": 1,
+          "near_miss": 0,
+          "miss": 0,
+          "near_miss_detail": [],
+          "miss_detail": []
+        },
+        "邮箱": {
+          "total_gt": 1,
+          "exact_rate": 1.0,
+          "exact": 1,
+          "near_miss": 0,
+          "miss": 0,
+          "near_miss_detail": [],
+          "miss_detail": []
+        }
+      },
+      "latency_sec": {
+        "mean": 1.355,
+        "max": 1.355,
+        "total": 1.355
+      },
+      "digital_gate": {
+        "pass": true,
+        "failures": []
+      },
+      "loose": {
+        "wrong_type": 2,
+        "type_confusion_top": {
+          "机构名称→公司名称": 2
+        }
+      },
+      "perf": {
+        "pages_total": 1,
+        "warmup_pages": 1,
+        "steady_pages": 1,
+        "wall_s": {
+          "total": 1.355,
+          "mean": 1.355,
+          "p50": 1.355,
+          "p95": 1.355
+        },
+        "throughput_pages_per_min": 44.28,
+        "duration_ms": {},
+        "pages_detail": [
+          {
+            "page": 1,
+            "warmup": false,
+            "wall_s": 1.355,
+            "duration_ms": {},
+            "pipeline_status": {},
+            "entities": {
+              "姓名": [
+                "王丽军",
+                "冯军芳",
+                "陈艳超",
+                "王丽军"
+              ],
+              "身份证号": [
+                "110108196708082590"
+              ],
+              "地址": [
+                "上海市浦东新区世纪大道25号院8号楼108室"
+              ],
+              "公司名称": [
+                "瑞泰实业发展有限公司第8分公司",
+                "恒达商贸有限公司第9分公司"
+              ],
+              "电话": [
+                "13916937959",
+                "19471450494"
+              ],
+              "邮箱": [
+                "user07.chen@example-corp2.cn"
+              ],
+              "日期": [
+                "2021年08月08日",
+                "2022-03-15",
+                "2022-03-15"
+              ],
+              "开户行": [
+                "中国工商银行某分行"
+              ],
+              "银行卡号": [
+                "6222 0210 1007 2021"
+              ],
+              "编号": [
+                "HT-2026-0000"
+              ]
+            }
+          }
+        ]
+      },
+      "file": {
+        "id": "syn_contract_txt_1p_mid",
+        "carrier": "txt",
+        "doc_type": "contract",
+        "density": "mid",
+        "gt_entities": 13,
+        "eval_wall_s": 1.364
+      },
+      "errors": [
+        {
+          "file": "syn_contract_txt_1p_mid",
+          "page": 1,
+          "type": "机构名称",
+          "kind": "漏检",
+          "expect": "恒达商贸有限公司第9分公司",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_contract_txt_1p_mid",
+          "page": 1,
+          "type": "机构名称",
+          "kind": "漏检",
+          "expect": "瑞泰实业发展有限公司第8分公司",
+          "actual": "—",
+          "stage": "NER/OCR"
+        }
+      ]
+    },
+    {
+      "pages": 1,
+      "overall": {
+        "tp": 41,
+        "fp": 0,
+        "fn": 20,
+        "precision": 1.0,
+        "recall": 0.6721311475409836,
+        "f1": 0.8039215686274509
+      },
+      "per_type": {
+        "姓名": {
+          "tp": 21,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "日期": {
+          "tp": 20,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "银行卡号": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 20,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "digital": {
+        "银行卡号": {
+          "total_gt": 20,
+          "exact_rate": 0.0,
+          "exact": 0,
+          "near_miss": 0,
+          "miss": 20,
+          "near_miss_detail": [],
+          "miss_detail": [
+            "6222 0210 1028 2084",
+            "6222 0210 1091 8273",
+            "6222 0210 1154 6462",
+            "6222 0210 2035 8105",
+            "6222 0210 2098 6294",
+            "6222 0210 2161 4483",
+            "6222 0210 3042 6126",
+            "6222 0210 3105 4315",
+            "6222 0210 4049 4147",
+            "6222 0210 4112 2336",
+            "6222 0210 5056 2168",
+            "6222 0210 5119 8357",
+            "6222 0210 6063 8189",
+            "6222 0210 6126 6378",
+            "6222 0210 7070 6210",
+            "6222 0210 7133 4399",
+            "6222 0210 8077 4231",
+            "6222 0210 8140 2420",
+            "6222 0210 9084 2252",
+            "6222 0210 9147 8441"
+          ]
+        }
+      },
+      "latency_sec": {
+        "mean": 2.467,
+        "max": 2.467,
+        "total": 2.467
+      },
+      "digital_gate": {
+        "pass": false,
+        "failures": [
+          "银行卡号: exact 0/20（near_miss 0 / miss 20）"
+        ]
+      },
+      "loose": {
+        "wrong_type": 0,
+        "type_confusion_top": {}
+      },
+      "perf": {
+        "pages_total": 1,
+        "warmup_pages": 1,
+        "steady_pages": 1,
+        "wall_s": {
+          "total": 2.467,
+          "mean": 2.467,
+          "p50": 2.467,
+          "p95": 2.467
+        },
+        "throughput_pages_per_min": 24.321,
+        "duration_ms": {},
+        "pages_detail": [
+          {
+            "page": 1,
+            "warmup": false,
+            "wall_s": 2.467,
+            "duration_ms": {},
+            "pipeline_status": {},
+            "entities": {
+              "姓名": [
+                "杨敏桂",
+                "冯桂霞",
+                "杨英伟",
+                "孙伟丽",
+                "陈芳勇",
+                "朱娜明",
+                "李敏桂",
+                "褚静敏",
+                "秦丽军",
+                "周强娟",
+                "卫磊平",
+                "尤军芳",
+                "吴洋强",
+                "蒋勇艳",
+                "许艳超",
+                "郑杰英",
+                "沈娟静",
+                "赵涛洋",
+                "王明涛",
+                "韩超刚",
+                "钱霞娜"
+              ],
+              "日期": [
+                "2024-05-01",
+                "2023-04-12",
+                "2022-03-23",
+                "2021-02-06",
+                "2020-01-17",
+                "2025-12-28",
+                "2024-11-11",
+                "2023-10-22",
+                "2022-09-05",
+                "2021-08-16",
+                "2020-07-27",
+                "2025-06-10",
+                "2024-05-21",
+                "2023-04-04",
+                "2022-03-15",
+                "2021-02-26",
+                "2020-01-09",
+                "2025-12-20",
+                "2024-11-03",
+                "2023-10-14"
+              ]
+            }
+          }
+        ]
+      },
+      "file": {
+        "id": "syn_statement_1p_table",
+        "carrier": "txt",
+        "doc_type": "bank_statement",
+        "density": "dense",
+        "gt_entities": 61,
+        "eval_wall_s": 2.477
+      },
+      "errors": [
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 1028 2084",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 1091 8273",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 1154 6462",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 2035 8105",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 2098 6294",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 2161 4483",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 3042 6126",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 3105 4315",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 4049 4147",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 4112 2336",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 5056 2168",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 5119 8357",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 6063 8189",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 6126 6378",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 7070 6210",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 7133 4399",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 8077 4231",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 8140 2420",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 9084 2252",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "数字丢失",
+          "expect": "6222 0210 9147 8441",
+          "actual": "—",
+          "stage": "OCR/NER"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 1028 2084",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 1091 8273",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 1154 6462",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 2035 8105",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 2098 6294",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 2161 4483",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 3042 6126",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 3105 4315",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 4049 4147",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 4112 2336",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 5056 2168",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 5119 8357",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 6063 8189",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 6126 6378",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 7070 6210",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 7133 4399",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 8077 4231",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 8140 2420",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 9084 2252",
+          "actual": "—",
+          "stage": "NER/OCR"
+        },
+        {
+          "file": "syn_statement_1p_table",
+          "page": 1,
+          "type": "银行卡号",
+          "kind": "漏检",
+          "expect": "6222 0210 9147 8441",
+          "actual": "—",
+          "stage": "NER/OCR"
+        }
+      ]
+    }
+  ],
+  "failed": [
+    {
+      "id": "syn_contract_1p_mid",
+      "error": "RuntimeError: vision 2cf97693-6646-4fed-b65e-e16e75f6b286 p1 -> HTTP 503: {\"error_code\":\"visual_service_unavailable\",\"message\":\"视觉检测服务（LocateAnything）未启动：本地请运行 ./start_local.sh --with-visual，或以云端模式启动（--visual cloud，隧道指向自有实例）；若本次任务不需要印章/签字检测，请取消勾选对应视觉识别项。\",\"detail\":{},\"request_id\":\"956b4719f079\"}"
+    },
+    {
+      "id": "syn_contract_10p_mid",
+      "error": "RuntimeError: vision 6f3c14b4-b000-4c8c-b84e-e29f4e3ab19c p1 -> HTTP 503: {\"error_code\":\"visual_service_unavailable\",\"message\":\"视觉检测服务（LocateAnything）未启动：本地请运行 ./start_local.sh --with-visual，或以云端模式启动（--visual cloud，隧道指向自有实例）；若本次任务不需要印章/签字检测，请取消勾选对应视觉识别项。\",\"detail\":{},\"request_id\":\"93fc986ab0fa\"}"
+    },
+    {
+      "id": "syn_contract_50p_mid",
+      "error": "RuntimeError: vision f66cce0f-64fc-463e-b7e9-6c5c0e3e162d p1 -> HTTP 503: {\"error_code\":\"visual_service_unavailable\",\"message\":\"视觉检测服务（LocateAnything）未启动：本地请运行 ./start_local.sh --with-visual，或以云端模式启动（--visual cloud，隧道指向自有实例）；若本次任务不需要印章/签字检测，请取消勾选对应视觉识别项。\",\"detail\":{},\"request_id\":\"025aacfbab23\"}"
+    },
+    {
+      "id": "syn_judgment_3p_mid",
+      "error": "RuntimeError: vision 70504fa6-7a96-44a8-8b18-92d2a1dbdff0 p1 -> HTTP 503: {\"error_code\":\"visual_service_unavailable\",\"message\":\"视觉检测服务（LocateAnything）未启动：本地请运行 ./start_local.sh --with-visual，或以云端模式启动（--visual cloud，隧道指向自有实例）；若本次任务不需要印章/签字检测，请取消勾选对应视觉识别项。\",\"detail\":{},\"request_id\":\"239c86adadd6\"}"
+    },
+    {
+      "id": "syn_contract_10p_dense",
+      "error": "RuntimeError: vision 8527c80a-38d1-4da2-b40c-cf15d2237ce4 p1 -> HTTP 503: {\"error_code\":\"visual_service_unavailable\",\"message\":\"视觉检测服务（LocateAnything）未启动：本地请运行 ./start_local.sh --with-visual，或以云端模式启动（--visual cloud，隧道指向自有实例）；若本次任务不需要印章/签字检测，请取消勾选对应视觉识别项。\",\"detail\":{},\"request_id\":\"f2c135c38d58\"}"
+    },
+    {
+      "id": "syn_contract_10p_sparse",
+      "error": "RuntimeError: vision 5138be56-4048-4889-b64f-57861800f8ef p1 -> HTTP 503: {\"error_code\":\"visual_service_unavailable\",\"message\":\"视觉检测服务（LocateAnything）未启动：本地请运行 ./start_local.sh --with-visual，或以云端模式启动（--visual cloud，隧道指向自有实例）；若本次任务不需要印章/签字检测，请取消勾选对应视觉识别项。\",\"detail\":{},\"request_id\":\"e382d73df1a7\"}"
+    },
+    {
+      "id": "syn_contract_3p_mid",
+      "error": "RuntimeError: vision 465369b8-b4f7-4bd9-b7ae-b8273f072d8d p1 -> HTTP 503: {\"error_code\":\"visual_service_unavailable\",\"message\":\"视觉检测服务（LocateAnything）未启动：本地请运行 ./start_local.sh --with-visual，或以云端模式启动（--visual cloud，隧道指向自有实例）；若本次任务不需要印章/签字检测，请取消勾选对应视觉识别项。\",\"detail\":{},\"request_id\":\"cf8eb32e60d0\"}"
+    },
+    {
+      "id": "syn_judgment_txt_3p_mid",
+      "error": "RuntimeError: vision 3f7f13d4-7df4-48b2-93d2-ba54cbf261a4 p1 -> HTTP 503: {\"error_code\":\"visual_service_unavailable\",\"message\":\"视觉检测服务（LocateAnything）未启动：本地请运行 ./start_local.sh --with-visual，或以云端模式启动（--visual cloud，隧道指向自有实例）；若本次任务不需要印章/签字检测，请取消勾选对应视觉识别项。\",\"detail\":{},\"request_id\":\"0869aa275e93\"}"
+    },
+    {
+      "id": "syn_warrant_1p_mid",
+      "error": "RuntimeError: vision cfa99008-d6d5-4690-8352-677068224673 p1 -> HTTP 503: {\"error_code\":\"visual_service_unavailable\",\"message\":\"视觉检测服务（LocateAnything）未启动：本地请运行 ./start_local.sh --with-visual，或以云端模式启动（--visual cloud，隧道指向自有实例）；若本次任务不需要印章/签字检测，请取消勾选对应视觉识别项。\",\"detail\":{},\"request_id\":\"8ff6343958d0\"}"
+    },
+    {
+      "id": "syn_hybrid_4p_mid",
+      "error": "RuntimeError: vision 105170d5-351a-43e4-a055-6fffc52ebc09 p1 -> HTTP 503: {\"error_code\":\"visual_service_unavailable\",\"message\":\"视觉检测服务（LocateAnything）未启动：本地请运行 ./start_local.sh --with-visual，或以云端模式启动（--visual cloud，隧道指向自有实例）；若本次任务不需要印章/签字检测，请取消勾选对应视觉识别项。\",\"detail\":{},\"request_id\":\"f989448e74fe\"}"
+    },
+    {
+      "id": "syn_edge_3p_mixed",
+      "error": "RuntimeError: vision 7a5f2af7-1e77-4497-913e-95a268b76499 p1 -> HTTP 503: {\"error_code\":\"visual_service_unavailable\",\"message\":\"视觉检测服务（LocateAnything）未启动：本地请运行 ./start_local.sh --with-visual，或以云端模式启动（--visual cloud，隧道指向自有实例）；若本次任务不需要印章/签字检测，请取消勾选对应视觉识别项。\",\"detail\":{},\"request_id\":\"9f15a8358aa3\"}"
+    }
+  ],
+  "overall": {
+    "pages": 4,
+    "overall": {
+      "tp": 93,
+      "fp": 14,
+      "fn": 28,
+      "precision": 0.8691588785046729,
+      "recall": 0.768595041322314,
+      "f1": 0.8157894736842105
+    },
+    "per_type": {
+      "公司名称": {
+        "tp": 0,
+        "fp": 4,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "地址": {
+        "tp": 5,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "姓名": {
+        "tp": 36,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "开户行": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "护照号": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "日期": {
+        "tp": 30,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "机关单位": {
+        "tp": 0,
+        "fp": 3,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "机构名称": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 8,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "案号": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "电话": {
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "编号": {
+        "tp": 0,
+        "fp": 3,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "身份证号": {
+        "tp": 7,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "邮箱": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "银行卡号": {
+        "tp": 3,
+        "fp": 0,
+        "fn": 20,
+        "precision": 1.0,
+        "recall": 0.13043478260869565,
+        "f1": 0.23076923076923078
+      }
+    },
+    "digital": {
+      "身份证号": {
+        "total_gt": 7,
+        "exact": 7,
+        "near_miss": 0,
+        "miss": 0,
+        "near_miss_detail": [],
+        "miss_detail": [],
+        "exact_rate": 1.0
+      },
+      "护照号": {
+        "total_gt": 1,
+        "exact": 1,
+        "near_miss": 0,
+        "miss": 0,
+        "near_miss_detail": [],
+        "miss_detail": [],
+        "exact_rate": 1.0
+      },
+      "电话": {
+        "total_gt": 8,
+        "exact": 8,
+        "near_miss": 0,
+        "miss": 0,
+        "near_miss_detail": [],
+        "miss_detail": [],
+        "exact_rate": 1.0
+      },
+      "银行卡号": {
+        "total_gt": 23,
+        "exact": 3,
+        "near_miss": 0,
+        "miss": 20,
+        "near_miss_detail": [],
+        "miss_detail": [
+          "6222 0210 1028 2084",
+          "6222 0210 1091 8273",
+          "6222 0210 1154 6462",
+          "6222 0210 2035 8105",
+          "6222 0210 2098 6294",
+          "6222 0210 2161 4483",
+          "6222 0210 3042 6126",
+          "6222 0210 3105 4315",
+          "6222 0210 4049 4147",
+          "6222 0210 4112 2336",
+          "6222 0210 5056 2168",
+          "6222 0210 5119 8357",
+          "6222 0210 6063 8189",
+          "6222 0210 6126 6378",
+          "6222 0210 7070 6210",
+          "6222 0210 7133 4399",
+          "6222 0210 8077 4231",
+          "6222 0210 8140 2420",
+          "6222 0210 9084 2252",
+          "6222 0210 9147 8441"
+        ],
+        "exact_rate": 0.13043478260869565
+      },
+      "邮箱": {
+        "total_gt": 3,
+        "exact": 3,
+        "near_miss": 0,
+        "miss": 0,
+        "near_miss_detail": [],
+        "miss_detail": [],
+        "exact_rate": 1.0
+      }
+    },
+    "latency_sec": {
+      "mean": 2.0932500000000003,
+      "max": 2.615,
+      "total": 8.373000000000001
+    },
+    "digital_gate": {
+      "pass": false,
+      "failures": [
+        "银行卡号: exact 3/23（near_miss 0 / miss 20）"
+      ]
+    },
+    "loose": {
+      "wrong_type": 5,
+      "type_confusion_top": {
+        "机构名称→公司名称": 3,
+        "机构名称→机关单位": 2
+      }
+    }
+  },
+  "rejected": [],
+  "env": {
+    "env_label": "local-nvidia-neo001",
+    "target_label": "v2.1.0-9a9d5fa",
+    "level": "e2e",
+    "suite": "synthetic",
+    "git": "9a9d5fa",
+    "generated_at": "2026-11-05T02:58:55",
+    "with_perf": true
+  }
+}
