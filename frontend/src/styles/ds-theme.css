@@ -1,0 +1,386 @@
+/* ============================================================
+   Issue#355 · ds 主题（Harvey × Linear 设计基线 · 阶段 1）
+   来源稿：design-proto/tasks-center-v3.html + design-tokens.css + ds-shared.css
+  （2026-11-18 用户逐张确认的保底方案）
+
+   ── 作用域铁律 ──────────────────────────────────────────────
+   本文件每一条选择器都必须以 [data-theme="ds"] 开头
+  （契约测试 src/styles/ds-theme-scope.test.ts 逐行强制）。
+   classic（升级前存量视觉）= 根节点无该属性 ⇒ 本文件完全不生效；
+   src/index.css 除本文件的 import 行外零 diff。
+   ────────────────────────────────────────────────────────────
+
+   阶段 1 范围：设计令牌 + 全站基础面（暖纸底/发丝线）+ Shell（侧栏/顶栏）
+   + 任务中心 /jobs 换装。其余页面内容属阶段 2+（用户已在验收方案知悉排期）。
+
+   已知口径偏差（记录于 Issue#355）：
+   - 指标条不复刻 4 格指标条：#351 B3（晚于设计稿）已把口径收敛为
+     「页签徽标 + 2 张统计药丸」（同一信息只出现一次），ds 尊重更晚的产品决策；
+   - 表格行高不硬编码 56px：行高由 #257/#351 密度系统按 pageSize 动态计算；
+   - 分段页签为逐 trigger 白底药丸（背景过渡），非测量式滑块（.24s 位移动画
+     需 JS 测量，视觉差异 ≈ 无，降级 prefers-reduced-motion 自动生效）。
+   ============================================================ */
+
+/* ---------- 1. 设计令牌 + 基础令牌 ds 重声明 ---------- */
+[data-theme="ds"] {
+  /* 表面（纸感暖白） */
+  --ds-bg: #F7F6F2;
+  --ds-bg-gradient:
+    radial-gradient(1100px 520px at 12% -8%, rgba(16, 163, 127, 0.06), transparent 62%),
+    radial-gradient(900px 480px at 92% -4%, rgba(118, 130, 150, 0.055), transparent 58%),
+    linear-gradient(180deg, #F8F7F3 0%, #F4F2EC 100%);
+  --ds-card: #FFFFFF;
+  --ds-card-sunken: #FCFBF8;
+  --ds-sidebar: #FBFAF7;
+
+  /* 墨色阶 */
+  --ds-ink: #14161A;
+  --ds-ink-2: #3D4249;
+  --ds-muted: #62666D;
+  --ds-faint: #9A9EA5;
+  --ds-ghost: #B9BDC3;
+
+  /* 发丝线 */
+  --ds-hair: rgba(20, 22, 26, 0.075);
+  --ds-hair-strong: rgba(20, 22, 26, 0.11);
+  --ds-hair-faint: rgba(20, 22, 26, 0.055);
+
+  /* 品牌绿（低饱和语义位用法；--brand 本体不动） */
+  --ds-accent: #0F7A5F;
+  --ds-accent-bright: #10A37F;
+  --ds-accent-surface: rgba(16, 163, 127, 0.075);
+  --ds-accent-surface-2: rgba(16, 163, 127, 0.12);
+
+  /* 语义色 */
+  --ds-warn: #B45309;
+  --ds-warn-surface: rgba(245, 158, 11, 0.10);
+  --ds-danger: #B91C1C;
+  --ds-danger-surface: rgba(220, 38, 38, 0.075);
+  --ds-neutral: #5B6169;
+  --ds-neutral-surface: rgba(20, 22, 26, 0.05);
+
+  /* 字体（Latin/数字 Geist 已是全局主字体；此处补 CJK 命名与宋体栈） */
+  --ds-sans: 'Geist Variable', 'Noto Sans CJK SC', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --ds-serif: 'Noto Serif CJK SC', 'Noto Serif SC', Georgia, 'Songti SC', serif;
+
+  /* 圆角（5/7/9/12/14） */
+  --ds-r-xs: 5px;
+  --ds-r-sm: 7px;
+  --ds-r-md: 9px;
+  --ds-r-lg: 12px;
+  --ds-r-xl: 14px;
+
+  /* 阴影（三层极淡 + 顶部内高光） */
+  --ds-sh-xs: 0 1px 2px rgba(20, 22, 26, 0.04);
+  --ds-sh-card: 0 1px 2px rgba(20, 22, 26, 0.04), 0 14px 34px -26px rgba(20, 22, 26, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.70);
+  --ds-sh-pop: 0 1px 2px rgba(20, 22, 26, 0.05), 0 18px 40px -30px rgba(20, 22, 26, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.70);
+  --ds-sh-btn: 0 1px 2px rgba(20, 22, 26, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.10);
+
+  /* 动效 */
+  --ds-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ds-dur: 0.14s;
+  --ds-dur-slow: 0.24s;
+
+  /* ── 基础令牌的 ds 重声明：全站纸感底 + 发丝线（classic 不受影响） ── */
+  --background: var(--ds-bg);
+  --background-secondary: #F4F2EC;
+  --background-tertiary: #EEECE5;
+  --foreground: var(--ds-ink);
+  --foreground-secondary: var(--ds-ink-2);
+  --muted-foreground: var(--ds-muted);
+  --border: var(--ds-hair);
+  --border-light: var(--ds-hair-faint);
+  --input: var(--ds-hair-strong);
+  --card: var(--ds-card);
+  --card-foreground: var(--ds-ink);
+  --popover: var(--ds-card);
+  --popover-foreground: var(--ds-ink);
+  --secondary: #F4F2EC;
+  --muted: #F1EFE9;
+  /* ghost/outline 悬停面=中性极淡（设计稿 .btn.ghost / .nav-item:hover），
+     不用绿面——绿色只出现在语义位 */
+  --accent: rgba(20, 22, 26, 0.045);
+  --accent-foreground: var(--ds-ink);
+  --panel: rgba(255, 255, 255, 0.97);
+  --panel-strong: #FFFFFF;
+  --surface-control: #FFFFFF;
+  --surface-control-muted: var(--ds-card-sunken);
+  --surface-canvas: var(--ds-bg);
+
+  /* 侧边栏（shadcn sidebar 组件全走这组 token） */
+  --sidebar-background: var(--ds-sidebar);
+  --sidebar-foreground: var(--ds-ink);
+  --sidebar-accent: var(--ds-accent-surface);
+  --sidebar-accent-foreground: var(--ds-ink);
+  --sidebar-border: var(--ds-hair);
+  --sidebar-ring: rgba(16, 163, 127, 0.28);
+  --sidebar-primary: var(--ds-accent-surface-2);
+  --sidebar-primary-foreground: var(--ds-ink);
+
+  /* 阴影收敛：发丝 not 粗影 */
+  --shadow-sm: var(--ds-sh-xs);
+  --shadow-md: var(--ds-sh-card);
+  --shadow-lg: var(--ds-sh-pop);
+  --shadow-control: var(--ds-sh-xs);
+
+  /* 顶栏 60px（classic h-16=64px ⇒ offset -4px；断点值与 index.css 同构） */
+  --page-shell-offset: 4.5rem;
+  color-scheme: light;
+}
+
+@media (min-width: 640px) {
+  [data-theme="ds"] { --page-shell-offset: 4.75rem; }
+}
+
+@media (min-width: 1536px) {
+  [data-theme="ds"] { --page-shell-offset: 5rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="ds"] {
+    --ds-dur: 0s;
+    --ds-dur-slow: 0s;
+  }
+}
+
+/* ---------- 2. 全站基础面 ---------- */
+[data-theme="ds"] body {
+  font-family: var(--ds-sans);
+  background: var(--ds-bg-gradient);
+  background-attachment: fixed;
+}
+
+/* 页面角落极淡光晕（classic 已 neutralize 的 .saas-page::before，ds 恢复） */
+[data-theme="ds"] .saas-page::before {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(16, 163, 127, 0.05), transparent 24%),
+    radial-gradient(circle at 100% 0%, rgba(114, 136, 173, 0.08), transparent 26%);
+}
+
+[data-theme="ds"] .saas-panel {
+  background: var(--ds-card);
+  border-color: var(--ds-hair);
+  border-radius: var(--ds-r-xl);
+  box-shadow: var(--ds-sh-card);
+  backdrop-filter: none;
+}
+
+/* ---------- 3. Shell · 顶栏 ---------- */
+[data-theme="ds"] .app-shell-header {
+  height: 60px;
+  background: rgba(247, 246, 242, 0.82);
+  border-bottom-color: var(--ds-hair);
+  backdrop-filter: saturate(180%) blur(12px);
+}
+
+/* ---------- 4. Shell · 侧边栏 ---------- */
+/* 品牌头：60px（设计稿 .brand） */
+[data-theme="ds"] [data-sidebar="header"] {
+  height: 60px;
+}
+/* 选中项：淡绿底（token）+ 左侧 2.5px 绿色圆角竖条（设计稿 nav-item.active） */
+[data-theme="ds"] [data-sidebar="menu-button"][data-active="true"] {
+  position: relative;
+  border-radius: var(--ds-r-sm);
+}
+[data-theme="ds"] [data-sidebar="menu-button"][data-active="true"]::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2.5px;
+  height: 15px;
+  border-radius: 0 3px 3px 0;
+  background: var(--ds-accent-bright);
+}
+/* 非选中项悬停=中性极淡（设计稿 .nav-item:hover），不吃选中绿 */
+[data-theme="ds"] [data-sidebar="menu-button"]:hover:not([data-active="true"]) {
+  background: rgba(20, 22, 26, 0.032);
+}
+/* 底部服务状态卡：暖白玻璃（设计稿 .health），不吃选中绿 */
+[data-theme="ds"] [data-sidebar="footer"] .bg-sidebar-accent {
+  background: rgba(255, 255, 255, 0.6);
+  border-color: var(--ds-hair);
+}
+
+/* ---------- 5. 任务中心 /jobs · 分段页签（外层视图） ---------- */
+[data-theme="ds"] [data-testid="tasks-view-tabs"] {
+  height: auto;
+  padding: 2px;
+  background: rgba(20, 22, 26, 0.045);
+  border: 1px solid var(--ds-hair-faint);
+  border-radius: var(--ds-r-md);
+}
+[data-theme="ds"] [data-testid="tasks-view-tabs"] [role="tab"] {
+  height: 28px;
+  border-radius: var(--ds-r-sm);
+  font-size: 12px;
+  color: var(--ds-muted);
+  transition:
+    background-color var(--ds-dur) var(--ds-ease),
+    color var(--ds-dur) var(--ds-ease);
+}
+[data-theme="ds"] [data-testid="tasks-view-tabs"] [role="tab"]:hover {
+  color: var(--ds-ink);
+}
+[data-theme="ds"] [data-testid="tasks-view-tabs"] [role="tab"][data-state="active"] {
+  background: var(--ds-card);
+  color: var(--ds-ink);
+  font-weight: 600;
+  box-shadow: var(--ds-sh-xs);
+}
+/* 页签计数胶囊：绿色语义位（设计稿 .nav-badge / 分段计数） */
+[data-theme="ds"] [data-testid="tasks-view-tabs"] [role="tab"] span.rounded-full {
+  background: var(--ds-accent-surface-2);
+  color: var(--ds-accent);
+}
+
+/* ---------- 6. 任务中心 /jobs · 表格卡 ---------- */
+[data-theme="ds"] [data-testid="jobs-table-surface"] {
+  background: var(--ds-card);
+  border-color: var(--ds-hair);
+  border-radius: var(--ds-r-xl);
+  box-shadow: var(--ds-sh-card);
+}
+
+/* 表头：次级纸面 + ghost 小字（设计稿 .jobs-table-head） */
+[data-theme="ds"] .jobs-table-head {
+  background: var(--ds-card-sunken);
+  border-bottom: 1px solid var(--ds-hair-faint);
+  color: var(--ds-ghost);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* 行：去斑马纹 → 发丝分隔（ul.divide-y 已随 --border 变发丝）+ 悬停左绿线 */
+[data-theme="ds"] .jobs-table-list > li > div {
+  background: transparent;
+}
+[data-theme="ds"] .jobs-table-list > li > div:hover {
+  background: var(--ds-accent-surface);
+  box-shadow: inset 2px 0 0 var(--ds-accent-bright);
+}
+
+/* 筛选弹层页签：暖底 + 发丝边（active 墨底白字保持 classic 既有口径） */
+[data-theme="ds"] [data-testid="jobs-table-tab-list"] {
+  background: rgba(20, 22, 26, 0.045);
+  border-color: var(--ds-hair);
+}
+
+/* ---------- 7. 任务中心 /jobs · 状态药丸（圆点 + 文字，设计稿 .status） ---------- */
+[data-theme="ds"] .tone-badge-brand,
+[data-theme="ds"] .tone-badge-review,
+[data-theme="ds"] .tone-badge-warning,
+[data-theme="ds"] .tone-badge-success,
+[data-theme="ds"] .tone-badge-danger,
+[data-theme="ds"] .tone-badge-neutral,
+[data-theme="ds"] .tone-badge-muted {
+  font-size: 11px;
+  border-color: transparent;
+}
+[data-theme="ds"] .tone-badge-brand::before,
+[data-theme="ds"] .tone-badge-review::before,
+[data-theme="ds"] .tone-badge-warning::before,
+[data-theme="ds"] .tone-badge-success::before,
+[data-theme="ds"] .tone-badge-danger::before,
+[data-theme="ds"] .tone-badge-neutral::before,
+[data-theme="ds"] .tone-badge-muted::before {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  margin-right: 5px;
+  border-radius: 999px;
+}
+/* 进行中=绿（brand） */
+[data-theme="ds"] .tone-badge-brand {
+  background: var(--ds-accent-surface);
+  color: var(--ds-accent);
+  border-color: rgba(16, 163, 127, 0.22);
+}
+[data-theme="ds"] .tone-badge-brand::before {
+  background: var(--ds-accent-bright);
+}
+/* 待复核=琥珀（review/warning） */
+[data-theme="ds"] .tone-badge-review,
+[data-theme="ds"] .tone-badge-warning {
+  background: var(--ds-warn-surface);
+  color: var(--ds-warn);
+  border-color: rgba(245, 158, 11, 0.24);
+}
+[data-theme="ds"] .tone-badge-review::before,
+[data-theme="ds"] .tone-badge-warning::before {
+  background: #EFA00B;
+}
+/* 已完成=灰（success），中性=灰 */
+[data-theme="ds"] .tone-badge-success,
+[data-theme="ds"] .tone-badge-neutral {
+  background: var(--ds-neutral-surface);
+  color: var(--ds-neutral);
+  border-color: rgba(20, 22, 26, 0.12);
+}
+[data-theme="ds"] .tone-badge-success::before,
+[data-theme="ds"] .tone-badge-neutral::before {
+  background: #7C838B;
+}
+/* 异常=红（danger） */
+[data-theme="ds"] .tone-badge-danger {
+  background: var(--ds-danger-surface);
+  color: var(--ds-danger);
+  border-color: rgba(220, 38, 38, 0.2);
+}
+[data-theme="ds"] .tone-badge-danger::before {
+  background: #DC2626;
+}
+/* 弱化=ghost 点 */
+[data-theme="ds"] .tone-badge-muted {
+  background: rgba(20, 22, 26, 0.045);
+  color: var(--ds-muted);
+  border-color: var(--ds-hair);
+}
+[data-theme="ds"] .tone-badge-muted::before {
+  background: var(--ds-ghost);
+}
+
+/* ---------- 8. 任务中心 /jobs · 进度条（3.5px 渐变 + 微光，设计稿 .bar） ---------- */
+[data-theme="ds"] .jobs-progress-cell > div > div:first-child {
+  height: 3.5px;
+  background: rgba(20, 22, 26, 0.07);
+}
+[data-theme="ds"] .tone-progress-brand,
+[data-theme="ds"] .tone-progress-success {
+  background: linear-gradient(90deg, #17B890, #10A37F);
+  box-shadow: 0 0 6px rgba(16, 163, 127, 0.35);
+}
+[data-theme="ds"] .tone-progress-warning {
+  background: linear-gradient(90deg, #EFA00B, #B45309);
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.3);
+}
+[data-theme="ds"] .tone-progress-danger {
+  background: linear-gradient(90deg, #DC2626, #B91C1C);
+  box-shadow: 0 0 6px rgba(220, 38, 38, 0.3);
+}
+
+/* ---------- 9. 任务中心 /jobs · 分页栏 ---------- */
+[data-theme="ds"] .pagination-rail {
+  background: var(--ds-card-sunken);
+  border-color: var(--ds-hair);
+  border-radius: var(--ds-r-lg);
+  box-shadow: none;
+}
+[data-theme="ds"] .pagination-rail__pill {
+  background: var(--ds-card);
+  border-color: var(--ds-hair);
+}
+
+/* ---------- 10. /jobs done 视图（历史树）· 树线墨化（classic 硬编码 #d1d5db） ---------- */
+[data-theme="ds"] .history-row-child .history-tree-cell::after {
+  background: rgba(20, 22, 26, 0.25);
+  border-color: rgba(20, 22, 26, 0.25);
+}
+[data-theme="ds"] .history-tree-hook,
+[data-theme="ds"] .jobs-child-row > span:first-child::before {
+  border-color: rgba(20, 22, 26, 0.25);
+}

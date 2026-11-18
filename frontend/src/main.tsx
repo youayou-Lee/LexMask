@@ -12,6 +12,11 @@ import { applyBrand } from '@/config/brand';
 import { initI18n } from '@/i18n';
 import { initUiTheme } from '@/theme/ui-theme';
 import './index.css';
+// Issue#355：ds 主题（Harvey×Linear 基线）——全部规则自作用域化（[data-theme="ds"]），
+// classic（无该属性）零生效；契约测试 src/styles/ds-theme-scope.test.ts 强制。
+// 经 main.tsx 引入而非 index.css @import：CSS 规范要求 @import 先于其它规则，
+// 这样 index.css 保持零 diff（比「仅 import 行」更强的 classic 零改动保证）。
+import './styles/ds-theme.css';
 
 applyBrand();
 // Issue#355：渲染前把持久化主题刷到根节点，首帧即正确风格（防 FOUC）。
