@@ -1,7 +1,7 @@
 ﻿// Copyright 2026 LexMask Contributors
 
 import { useState } from 'react';
-import { Globe, KeyRound, LogOut } from 'lucide-react';
+import { Globe, KeyRound, LogOut, Palette } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { useI18n, useT } from '@/i18n';
 import { useServiceHealth } from '@/hooks/use-service-health';
@@ -10,11 +10,13 @@ import { Button } from '@/components/ui/button';
 import { SidebarTrigger } from '@/components/ui/sidebar';
 import { ChangePasswordDialog } from '@/components/ChangePasswordDialog';
 import { useAuth } from '@/features/auth/auth-context';
+import { useUiTheme } from '@/theme/ui-theme';
 
 export function AppHeader() {
   const t = useT();
   const location = useLocation();
   const { locale, setLocale } = useI18n();
+  const { theme, toggleTheme } = useUiTheme();
   const { health, checking } = useServiceHealth();
   const { status, logout } = useAuth();
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
@@ -39,7 +41,7 @@ export function AppHeader() {
         : t('health.backendDown');
 
   return (
-    <header className="flex h-16 shrink-0 items-center justify-between border-b border-border/70 bg-background/95 px-4 backdrop-blur-2xl sm:px-6">
+    <header className="app-shell-header flex h-16 shrink-0 items-center justify-between border-b border-border/70 bg-background/95 px-4 backdrop-blur-2xl sm:px-6">
       <div className="flex min-h-[40px] min-w-0 flex-1 items-center gap-3">
         <SidebarTrigger className="lg:hidden" aria-label={t('layout.toggleSidebar')} />
         <div className="flex min-w-0 flex-col justify-center lg:hidden" aria-label={title}>
@@ -84,6 +86,23 @@ export function AppHeader() {
           <Globe className="size-3.5" />
           <span className="hidden sm:inline">
             {locale === 'zh' ? t('layout.switchToEnglish') : t('layout.switchToChinese')}
+          </span>
+        </Button>
+
+        {/* Issue#355：风格切换（ds=新基线默认 / classic=升级前存量视觉），
+            机制=根节点 data-theme 翻转 + localStorage 持久化，见 src/theme/ui-theme.ts。 */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 rounded-full px-2.5 text-xs text-muted-foreground hover:text-foreground"
+          onClick={toggleTheme}
+          aria-label={theme === 'ds' ? t('layout.switchToClassic') : t('layout.switchToModern')}
+          aria-pressed={theme === 'ds'}
+          data-testid="theme-toggle"
+        >
+          <Palette className="size-3.5" />
+          <span className="hidden sm:inline">
+            {theme === 'ds' ? t('layout.switchToClassic') : t('layout.switchToModern')}
           </span>
         </Button>
 

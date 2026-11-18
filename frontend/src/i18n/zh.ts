@@ -1147,6 +1147,10 @@ const zhOverrides: Record<string, string> = {
   'page.visionModel.title': '高级设置',
   'page.visionModel.sub': 'OCR 与图像识别服务连接',
   'layout.languageSwitch': '切换语言',
+  // Issue#355 主题双轨切换（新基线 ds / 经典 classic）
+  'layout.uiThemeToggle': '界面风格',
+  'layout.switchToClassic': '切换经典风格',
+  'layout.switchToModern': '切换新版风格',
   'health.allOnline': '全部服务正常',
   'health.someOffline': '部分服务需要处理',
   'health.someBusy': '模型服务在线',

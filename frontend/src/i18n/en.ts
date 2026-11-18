@@ -1095,6 +1095,10 @@ const enBase: Record<string, string> = {
   'layout.headerActions': 'Status and settings',
   'layout.toggleSidebar': 'Toggle sidebar',
   'layout.languageSwitch': 'Switch language',
+  // Issue#355 dual-track theme toggle (ds baseline / classic legacy)
+  'layout.uiThemeToggle': 'Interface style',
+  'layout.switchToClassic': 'Switch to classic style',
+  'layout.switchToModern': 'Switch to new style',
 
   'entityTag.CUSTOM': 'Custom',
 
