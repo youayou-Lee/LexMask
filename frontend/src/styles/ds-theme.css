@@ -1,7 +1,8 @@
 /* ============================================================
-   Issue#355 · ds 主题（Harvey × Linear 设计基线 · 阶段 1）
-   来源稿：design-proto/tasks-center-v3.html + design-tokens.css + ds-shared.css
-  （2026-11-18 用户逐张确认的保底方案）
+   Issue#355 · ds 主题（2026-11-19 视觉重置：iOS 玻璃浅色 × 排版重构）
+   来源稿：design-proto/ios-*.html（5 张真稿，规格书=
+   LexMask-workspace/docs/memory/2026-11-19-issue355-ios-redesign-spec.md）
+   Harvey×Linear 视觉方向作废归档；令牌名与作用域机制沿用。
 
    ── 作用域铁律 ──────────────────────────────────────────────
    本文件每一条选择器都必须以 [data-theme="ds"] 开头
@@ -23,68 +24,75 @@
 
 /* ---------- 1. 设计令牌 + 基础令牌 ds 重声明 ---------- */
 [data-theme="ds"] {
-  /* 表面（纸感暖白） */
-  --ds-bg: #F7F6F2;
+  /* 表面（iOS systemGroupedBackground 冷调浅灰 + 三角柔和光斑；2026-11-19 方向重置） */
+  --ds-bg: #EEF0F4;
   --ds-bg-gradient:
-    radial-gradient(1100px 520px at 12% -8%, rgba(16, 163, 127, 0.06), transparent 62%),
-    radial-gradient(900px 480px at 92% -4%, rgba(118, 130, 150, 0.055), transparent 58%),
-    linear-gradient(180deg, #F8F7F3 0%, #F4F2EC 100%);
+    radial-gradient(900px 480px at 8% -10%, rgba(16, 163, 127, 0.10), transparent 60%),
+    radial-gradient(1100px 560px at 96% -6%, rgba(88, 112, 255, 0.08), transparent 60%),
+    radial-gradient(800px 500px at 50% 110%, rgba(255, 158, 44, 0.05), transparent 60%);
   --ds-card: #FFFFFF;
-  --ds-card-sunken: #FCFBF8;
-  --ds-sidebar: #FBFAF7;
+  --ds-card-sunken: #F6F7FA;
+  --ds-sidebar: rgba(255, 255, 255, 0.66);
+
+  /* 玻璃层（iOS 玻璃层级：侧栏/顶栏/画布卡） */
+  --ds-glass: rgba(255, 255, 255, 0.66);
+  --ds-glass-strong: rgba(255, 255, 255, 0.82);
+  --ds-glass-border: rgba(255, 255, 255, 0.65);
+  --ds-blur: saturate(180%) blur(22px);
 
   /* 墨色阶 */
-  --ds-ink: #14161A;
-  --ds-ink-2: #3D4249;
-  --ds-muted: #62666D;
-  --ds-faint: #9A9EA5;
+  --ds-ink: #0B0D12;
+  --ds-ink-2: #3A3F4B;
+  --ds-muted: #6B7280;
+  --ds-faint: #9CA3AF;
   --ds-ghost: #B9BDC3;
 
   /* 发丝线 */
-  --ds-hair: rgba(20, 22, 26, 0.075);
-  --ds-hair-strong: rgba(20, 22, 26, 0.11);
-  --ds-hair-faint: rgba(20, 22, 26, 0.055);
+  --ds-hair: rgba(17, 20, 28, 0.07);
+  --ds-hair-strong: rgba(17, 20, 28, 0.11);
+  --ds-hair-faint: rgba(17, 20, 28, 0.045);
 
-  /* 品牌绿（低饱和语义位用法；--brand 本体不动） */
-  --ds-accent: #0F7A5F;
+  /* 品牌绿 = iOS tint（--brand 本体不动） */
+  --ds-accent: #0C8468;
   --ds-accent-bright: #10A37F;
-  --ds-accent-surface: rgba(16, 163, 127, 0.075);
-  --ds-accent-surface-2: rgba(16, 163, 127, 0.12);
+  --ds-accent-surface: rgba(16, 163, 127, 0.10);
+  --ds-accent-surface-2: rgba(16, 163, 127, 0.16);
 
   /* 语义色 */
   --ds-warn: #B45309;
-  --ds-warn-surface: rgba(245, 158, 11, 0.10);
-  --ds-danger: #B91C1C;
-  --ds-danger-surface: rgba(220, 38, 38, 0.075);
-  --ds-neutral: #5B6169;
-  --ds-neutral-surface: rgba(20, 22, 26, 0.05);
+  --ds-warn-surface: rgba(245, 158, 11, 0.14);
+  --ds-danger: #DC2626;
+  --ds-danger-surface: rgba(220, 38, 38, 0.10);
+  --ds-neutral: #5A6472;
+  --ds-neutral-surface: rgba(120, 134, 168, 0.13);
 
-  /* 字体（Latin/数字 Geist 已是全局主字体；此处补 CJK 命名与宋体栈） */
-  --ds-sans: 'Geist Variable', 'Noto Sans CJK SC', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  /* 字体（Latin/数字 Geist；中文系统栈；根字号 15px 与 classic 一致——字号差异化已否决） */
+  --ds-sans: 'Geist Variable', 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', -apple-system, 'Segoe UI', system-ui, sans-serif;
   --ds-serif: 'Noto Serif CJK SC', 'Noto Serif SC', Georgia, 'Songti SC', serif;
 
-  /* 圆角（5/7/9/12/14） */
-  --ds-r-xs: 5px;
-  --ds-r-sm: 7px;
-  --ds-r-md: 9px;
-  --ds-r-lg: 12px;
-  --ds-r-xl: 14px;
+  /* 圆角（iOS 连续圆角感：16/22/26 为主） */
+  --ds-r-xs: 10px;
+  --ds-r-sm: 12px;
+  --ds-r-md: 16px;
+  --ds-r-lg: 18px;
+  --ds-r-xl: 22px;
+  --ds-r-2xl: 26px;
 
-  /* 阴影（三层极淡 + 顶部内高光） */
-  --ds-sh-xs: 0 1px 2px rgba(20, 22, 26, 0.04);
-  --ds-sh-card: 0 1px 2px rgba(20, 22, 26, 0.04), 0 14px 34px -26px rgba(20, 22, 26, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.70);
-  --ds-sh-pop: 0 1px 2px rgba(20, 22, 26, 0.05), 0 18px 40px -30px rgba(20, 22, 26, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.70);
-  --ds-sh-btn: 0 1px 2px rgba(20, 22, 26, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  /* 阴影（iOS 柔和大影） */
+  --ds-sh-xs: 0 1px 2px rgba(15, 18, 28, 0.04);
+  --ds-sh-card: 0 1px 2px rgba(15, 18, 28, 0.04), 0 10px 30px -12px rgba(15, 18, 28, 0.10);
+  --ds-sh-pop: 0 2px 6px rgba(15, 18, 28, 0.05), 0 24px 60px -20px rgba(15, 18, 28, 0.18);
+  --ds-sh-btn: 0 8px 20px -8px rgba(16, 163, 127, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.25);
 
   /* 动效 */
   --ds-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --ds-dur: 0.14s;
   --ds-dur-slow: 0.24s;
 
-  /* ── 基础令牌的 ds 重声明：全站纸感底 + 发丝线（classic 不受影响） ── */
+  /* ── 基础令牌的 ds 重声明：全站冷调浅灰 + 发丝线（classic 不受影响） ── */
   --background: var(--ds-bg);
-  --background-secondary: #F4F2EC;
-  --background-tertiary: #EEECE5;
+  --background-secondary: #F6F7FA;
+  --background-tertiary: #EDEFF3;
   --foreground: var(--ds-ink);
   --foreground-secondary: var(--ds-ink-2);
   --muted-foreground: var(--ds-muted);
@@ -95,8 +103,8 @@
   --card-foreground: var(--ds-ink);
   --popover: var(--ds-card);
   --popover-foreground: var(--ds-ink);
-  --secondary: #F4F2EC;
-  --muted: #F1EFE9;
+  --secondary: #F6F7FA;
+  --muted: #EDEFF3;
   /* ghost/outline 悬停面=中性极淡（设计稿 .btn.ghost / .nav-item:hover），
      不用绿面——绿色只出现在语义位 */
   --accent: rgba(20, 22, 26, 0.045);
@@ -381,16 +389,7 @@
   border-color: rgba(20, 22, 26, 0.25);
 }
 
-/* ---------- 11. ds 骨架：纸纹（定稿 body::before 噪点，classic 无） ---------- */
-[data-theme="ds"] body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.42'/%3E%3C/svg%3E");
-  opacity: 0.03;
-}
+/* ---------- 11. ds 骨架：纸纹已于 2026-11-19 视觉重置移除（iOS 玻璃=干净面，无噪点） ---------- */
 
 /* ---------- 12. ds 骨架：页面标题区（宋体大标题）/ 指标条 / 顶栏面包屑 ---------- */
 [data-theme="ds"] .ds-page-title {
