@@ -296,11 +296,12 @@
 [data-theme="ds"] .tone-badge-brand::before {
   background: var(--ds-accent-bright);
 }
-/* 待复核=琥珀（review/warning） */
+/* 待复核=琥珀（review/warning）。文字用比 --ds-warn(#B45309) 深一档的 #A34A08：
+   门④实测 #B45309 在淡琥珀合成底上 4.33:1 <4.5（状态=关键文本），#A34A08=5.11:1 达标 */
 [data-theme="ds"] .tone-badge-review,
 [data-theme="ds"] .tone-badge-warning {
   background: var(--ds-warn-surface);
-  color: var(--ds-warn);
+  color: #A34A08;
   border-color: rgba(245, 158, 11, 0.24);
 }
 [data-theme="ds"] .tone-badge-review::before,
