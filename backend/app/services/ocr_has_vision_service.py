@@ -634,6 +634,9 @@ class OcrHasVisionService:
             orientation_out: 可选出参字典，同步填本调用采用的方向
                 （``{"angle", "retried", "resolved", "scores"}``；出口框映射必须用
                 本调用自己的这份，不读 ``last_ocr_orientation`` 单例）
+            normalize_orientation: False = 跳过 ±90° 方向归一（DICOM 像素线——
+                调用方按原帧像素坐标直接使用 regions/blocks）；ops 急停另见
+                ``settings.SCAN_ORIENTATION_NORMALIZE_ENABLED``
 
         Returns:
             (敏感区域列表, base64编码的带框图像)
@@ -642,6 +645,13 @@ class OcrHasVisionService:
         duration_ms: dict[str, Any] = {}
         self.last_duration_ms = duration_ms
         self.last_ocr_blocks = []
+        # 门⑥复审 follow-up：last_ocr_orientation 单例随调用重置为 init 形态——
+        # normalize=False（DICOM/ops 急停）路径不写它，若残留上个请求的角，
+        # orientation_out 会把陈旧角交给出口映射（正是本 PR 要消灭的单例读模式）。
+        # 与 last_duration_ms/last_ocr_blocks 的重置同模式。
+        self.last_ocr_orientation = {
+            "angle": 0, "retried": False, "resolved": True, "scores": {},
+        }
 
         # 准备图像
         prepare_start = time.perf_counter()

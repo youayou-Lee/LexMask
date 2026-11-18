@@ -2361,9 +2361,14 @@ class VisionService:
             def _map_block(b):
                 chars = []
                 for ch in b.chars:
-                    (x1, y1), (x2, y2) = map_polygon_to_page(
-                        [[ch["x1"], ch["y1"]], [ch["x2"], ch["y2"]]], angle, page_w, page_h
-                    )
+                    try:
+                        (x1, y1), (x2, y2) = map_polygon_to_page(
+                            [[ch["x1"], ch["y1"]], [ch["x2"], ch["y2"]]], angle, page_w, page_h
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        # 与 ocr_paddle_extract/ocr_cjk_geometry 的防御同口径：
+                        # 坏字符框跳过不毒化整页
+                        continue
                     chars.append({"c": ch.get("c"), "x1": min(x1, x2), "y1": min(y1, y2),
                                   "x2": max(x1, x2), "y2": max(y1, y2)})
                 return OCRTextBlock(

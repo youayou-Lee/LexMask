@@ -84,12 +84,13 @@ class TestScoreOcrBlocks:
         s = score_ocr_blocks([blob], PAGE_W, PAGE_H)
         assert s.signals["blob_area"] > 0.5
         assert s.rotation_suspect is False  # 无竖行佐证 ⇒ 不触发
-        # blob + 部分竖行块 ⇒ 佐证成立
-        mixed = [blob] + [
-            _vertical_block("李某某20100424", 0.1 + i * 0.2, 0.1, 0.02, 0.1, PAGE_W, PAGE_H)
-            for i in range(4)
-        ]
+        # blob + 少量竖行（vsh 落佐证带 (0.2, 0.4]，不走 vsh>0.4 分支）⇒ 佐证成立
+        mixed = [blob,
+                 _block("账号：6222021234567890", 0.05, 0.75, 0.6, 0.03, PAGE_W, PAGE_H),
+                 _block("交易日期：2024年3月15日", 0.05, 0.80, 0.6, 0.03, PAGE_W, PAGE_H),
+                 _vertical_block("李某某20100424", 0.1, 0.1, 0.02, 0.1, PAGE_W, PAGE_H)]
         s2 = score_ocr_blocks(mixed, PAGE_W, PAGE_H)
+        assert 0.2 < s2.vertical_share <= 0.4  # 佐证带，非 vsh>0.4 分支
         assert s2.signals["blob_area"] > 0.5
         assert s2.rotation_suspect is True
 
@@ -597,9 +598,8 @@ class TestOrientationDisableSeams:
         from app.services.ocr_has_vision_service import get_ocr_has_vision_service
 
         svc = get_ocr_has_vision_service()
-        # 单例服务跨测试残留状态：显式重置为 init 形态，断言「跳过归一⇒保持不变」
-        svc.last_ocr_orientation = {"angle": 0, "retried": False, "resolved": True, "scores": {}}
         calls: list[tuple[int, int]] = []
+        orientation_out: dict = {}
 
         def fake_run_paddle_ocr(image, require_visual_regions=False, selected_entity_types=None, stage_status=None):
             calls.append((image.width, image.height))
@@ -614,11 +614,12 @@ class TestOrientationDisableSeams:
         monkeypatch.setattr(svc, "_apply_regex_fallback", lambda *a, **k: [])
         regions, _ = await svc.detect_and_draw(
             _png_bytes(400, 800), vision_types=None, draw_result=False,
-            normalize_orientation=False,
+            normalize_orientation=False, orientation_out=orientation_out,
         )
         assert calls == [(400, 800)]  # 零额外 OCR
-        assert svc.last_ocr_orientation["angle"] == 0
-        assert svc.last_ocr_orientation["resolved"] is True
+        # 跳过归一时 orientation_out 必须是 init 形态（不残留单例旧角）
+        assert orientation_out["angle"] == 0
+        assert orientation_out["resolved"] is True
         assert regions == []
 
     @pytest.mark.asyncio
@@ -640,9 +641,15 @@ class TestOrientationDisableSeams:
         monkeypatch.setattr(svc, "_invoke_has_text_analysis", fake_ner)
         monkeypatch.setattr(svc, "_apply_regex_fallback", lambda *a, **k: [])
         monkeypatch.setattr(settings, "SCAN_ORIENTATION_NORMALIZE_ENABLED", False)
-        await svc.detect_and_draw(_png_bytes(400, 800), vision_types=None, draw_result=False)
+        orientation_out: dict = {}
+        await svc.detect_and_draw(
+            _png_bytes(400, 800), vision_types=None, draw_result=False,
+            orientation_out=orientation_out,
+        )
         assert calls == [(400, 800)]  # 门关闭 ⇒ 零额外 OCR
-        assert svc.last_ocr_orientation["angle"] == 0
+        # 断言生产调用方读的 orientation_out（而非单例）：门关闭 ⇒ init 形态
+        assert orientation_out["angle"] == 0
+        assert orientation_out["resolved"] is True
 
 
 class TestPolygonMapping:
@@ -675,8 +682,9 @@ class TestPageBlocksPageSpace:
 
         vs = VisionService()
         ocr_svc = vs.ocr_has_service
+        # 胜者空间（输入 100x200）内框：x∈[10,90] y∈[20,40]
         winner_blocks = [
-            OCRTextBlock(text="账号：6222021234567890", polygon=[[10, 20], [110, 20], [110, 40], [10, 40]])
+            OCRTextBlock(text="账号：6222021234567890", polygon=[[10, 20], [90, 20], [90, 40], [10, 40]])
         ]
 
         async def fake_detect_and_draw(image_bytes, vision_types=None, draw_result=True,
@@ -697,9 +705,12 @@ class TestPageBlocksPageSpace:
         # 点 (10,20)：xn=0.1, yn=0.1 ⇒ (0.1*200, (1-0.1)*100) = (20, 90)
         # 点 (110,40)：xn=1.1?? 超出——夹具点须落在输入内。改在测试内断言映射
         # 后的 bbox 在页空间合理范围即可（左下 x 小、y 大）。
-        (x0, y0), (x1, y1), _, _ = blocks[0].polygon
-        assert x0 == pytest.approx(20.0)
-        assert y0 == pytest.approx(90.0)
+        # 四点逐一断言（angle=90：页点 (xn*100, yn*200) → (yn*200, (1-xn)*100)）
+        pts = blocks[0].polygon
+        assert pts[0] == pytest.approx([20.0, 90.0])   # (10,20): xn=.1,yn=.1
+        assert pts[1] == pytest.approx([20.0, 10.0])   # (90,20): xn=.9,yn=.1
+        assert pts[2] == pytest.approx([40.0, 10.0])   # (90,40): xn=.9,yn=.2
+        assert pts[3] == pytest.approx([40.0, 90.0])   # (10,40): xn=.1,yn=.2
 
 
 class TestCandidateKwObservability:

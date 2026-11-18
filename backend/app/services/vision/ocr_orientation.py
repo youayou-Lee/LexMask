@@ -281,13 +281,8 @@ def map_polygon_to_page(polygon, angle: int, page_width: float, page_height: flo
     """
     if angle == 0:
         return polygon
-    if angle == 90:
-        # 输入 = 原页顺时针 90° ⇒ 输入图宽=原页高、输入图高=原页宽
-        iw, ih = float(page_height), float(page_width)
-    elif angle == 270:
-        iw, ih = float(page_height), float(page_width)
-    else:
-        raise ValueError(f"unsupported orientation angle: {angle}")
+    # 两个角度的输入图宽高互换相同（= 原页高 × 原页宽）；只有点公式分向
+    iw, ih = float(page_height), float(page_width)
     pw, ph = float(page_width), float(page_height)
     out = []
     for point in polygon:
@@ -295,7 +290,11 @@ def map_polygon_to_page(polygon, angle: int, page_width: float, page_height: flo
         xn, yn = x / iw, y / ih
         if angle == 90:
             xp, yp = yn, 1.0 - xn
-        else:  # 270
+        elif angle == 270:
             xp, yp = 1.0 - yn, xn
+        elif angle == 0:
+            xp, yp = xn, yn
+        else:
+            raise ValueError(f"unsupported orientation angle: {angle}")
         out.append([xp * pw, yp * ph])
     return out
