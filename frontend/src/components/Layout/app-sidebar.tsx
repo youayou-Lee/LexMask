@@ -20,7 +20,11 @@ import { BRAND, brandName, brandTagline } from '@/config/brand';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/features/auth/auth-context';
 import { useSingleTask } from '@/features/single-task/single-task-context';
-import { useServiceHealth } from '@/hooks/use-service-health';
+import {
+  useServiceHealth,
+  type ServiceInfo,
+  type ServicesHealth,
+} from '@/hooks/use-service-health';
 import {
   PlayIcon,
   BatchIcon,
@@ -65,7 +69,9 @@ export function AppSidebar() {
   const t = useT();
   const location = useLocation();
   const { status } = useAuth();
-  const { checking, refresh } = useServiceHealth();
+  // Issue#355 用户裁定（2026-11-19）：恢复服务卡明细（连接信息/显存/版本），
+  // 翻转 #351 P2-D1 的降级——空壳卡对用户无意义。
+  const { health, checking, roundTripMs, refresh } = useServiceHealth();
   const { tasks } = useSingleTask();
   const isAdmin = Boolean(status?.is_super_admin);
   // Issue#262：角标只计进行中/待复核的任务——done/failed 是终态，不应把用户拽回任务中心。
@@ -237,7 +243,12 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter className="shrink-0 p-2">
-        <SidebarServiceStatus checking={checking} onRefresh={refresh} />
+        <SidebarServiceStatus
+          health={health}
+          checking={checking}
+          roundTripMs={roundTripMs}
+          onRefresh={refresh}
+        />
       </SidebarFooter>
     </Sidebar>
   );
@@ -331,37 +342,197 @@ function isNavActive(item: NavItem, pathname: string): boolean {
   return pathname === item.path || pathname.startsWith(item.path + '/');
 }
 
+// 服务卡明细的固定展示顺序：OCR 是律师唯一必经链路，放最上。
+const serviceOrder: Array<keyof ServicesHealth['services']> = [
+  'paddle_ocr',
+  'has_ner',
+  'visual_features',
+];
+
+// Issue#355 用户裁定（2026-11-19）：恢复完整服务卡（状态点+状态行+服务明细+显存+版本），
+// 翻转 #351 P2-D1 的「标题+刷新」降级——用户裁定空壳卡无意义，连接信息回归侧栏常驻。
+// 版本行与系统设置→服务监控的 build info 并存（侧栏常驻可见 vs 管理员详情页）。
 function SidebarServiceStatus({
+  health,
   checking,
+  roundTripMs,
   onRefresh,
 }: {
+  health: ServicesHealth | null;
   checking: boolean;
+  roundTripMs: number | null;
   onRefresh: () => void;
 }) {
   const t = useT();
+  const services = serviceOrder.map((key) => ({
+    key,
+    service: health?.services[key] ?? fallbackService(key, checking, t),
+  }));
+  const statuses = services.map(({ service }) => displayStatus(service));
+  const overallTone =
+    !health && !checking
+      ? 'error'
+      : statuses.some((status) => status === 'offline')
+        ? 'error'
+        : statuses.some((status) => status === 'degraded' || status === 'checking')
+          ? 'warning'
+          : 'success';
+  const statusText = checking
+    ? t('health.checking')
+    : !health
+      ? t('health.backendDown')
+      : statuses.some((status) => status === 'offline')
+        ? t('health.someOffline')
+        : statuses.some((status) => status === 'degraded')
+          ? t('health.someDegraded')
+          : t('health.allOnline');
+  const gpuText = getGpuText(health, t);
+  // Accelerator family reported by the backend (npu on Ascend, gpu on NVIDIA),
+  // so the device rows/badges read NPU 0 / NPU 1 on the NPU box and GPU on the 5090.
+  const accelLabel = (health?.accelerator ?? 'gpu').toUpperCase();
 
-  // Issue#351 P2-D1（v2 方案）：SidebarFooter 常驻卡降级为「标题+刷新」一行。
-  // - 明细行/GPU 显存/版本行移出：对终端律师用户零决策价值（窄栏还挤成竖排断字）；
-  //   明细的正规归宿=系统设置→服务监控（管理员），版本行随之挪入监控页。
-  // - 总体状态点删除：AppHeader 已有 health-indicator（同一信息只出现一次）。
-  // - 保留刷新按钮：服务异常时用户想重试的直觉入口。
   return (
     <section
-      className="flex min-h-0 min-w-0 items-center justify-between gap-2 overflow-hidden rounded-xl border border-sidebar-border bg-sidebar-accent px-2.5 py-2 text-sidebar-foreground shadow-[var(--shadow-sm)]"
+      className="min-h-0 min-w-0 overflow-hidden rounded-xl border border-sidebar-border bg-sidebar-accent px-2.5 py-2 text-sidebar-foreground shadow-[var(--shadow-sm)]"
       aria-label={t('health.sidebar.title')}
       data-testid="sidebar-service-status"
     >
-      <p className="min-w-0 truncate text-sm font-semibold">{t('health.sidebar.title')}</p>
-      <button
-        type="button"
-        onClick={onRefresh}
-        className="grid size-6 shrink-0 place-items-center rounded-full text-sidebar-foreground/60 transition hover:bg-sidebar-primary hover:text-sidebar-foreground"
-        title={t('health.refreshTitle')}
-        aria-label={t('health.refreshTitle')}
-        data-testid="health-refresh"
+      <div className="flex items-center gap-2">
+        <span
+          className={cn('h-2.5 w-2.5 shrink-0 rounded-full', {
+            'animate-pulse bg-sidebar-foreground/35': checking,
+            'bg-[var(--success-foreground)]': overallTone === 'success',
+            'bg-[var(--warning-foreground)]': overallTone === 'warning',
+            'bg-[var(--error-foreground)]': overallTone === 'error',
+          })}
+        />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold">{t('health.sidebar.title')}</p>
+          <p className="truncate text-[11px] font-medium text-sidebar-foreground/60">
+            {statusText}
+            {roundTripMs != null ? ` · ${roundTripMs} ms` : ''}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="grid size-6 shrink-0 place-items-center rounded-full text-sidebar-foreground/60 transition hover:bg-sidebar-primary hover:text-sidebar-foreground"
+          title={t('health.refreshTitle')}
+          aria-label={t('health.refreshTitle')}
+          data-testid="health-refresh"
+        >
+          <RefreshCw className={cn('size-3.5', checking && 'animate-spin')} />
+        </button>
+      </div>
+
+      <div className="mt-1.5 flex flex-col gap-1">
+        {services.map(({ key, service }) => {
+          const status = displayStatus(service);
+          const runtime = runtimeBadge(service, t, accelLabel);
+          const serviceName = t(`health.service.${key}`);
+
+          return (
+            <div
+              key={key}
+              className="grid min-h-5 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 overflow-hidden rounded-lg bg-sidebar/45 px-1.5 py-0.5"
+            >
+              <span className="min-w-0 truncate text-[11px] font-medium" title={serviceName}>
+                {serviceName}
+              </span>
+              <span
+                className={cn('shrink-0 rounded-full px-1 py-0.5 text-[10px] font-semibold', {
+                  'bg-[var(--success-surface)] text-[var(--success-foreground)]':
+                    status === 'online',
+                  'bg-[var(--warning-surface)] text-[var(--warning-foreground)]':
+                    status === 'checking' || status === 'degraded',
+                  'bg-[var(--error-surface)] text-[var(--error-foreground)]': status === 'offline',
+                })}
+              >
+                {runtime ?? t(`health.${status}`)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {health?.gpu_memory_all && health.gpu_memory_all.length > 1 ? (
+        health.gpu_memory_all.map((card) => {
+          const cardText = `${(card.used_mb / 1024).toFixed(1)}/${(card.total_mb / 1024).toFixed(1)} GB`;
+          return (
+            <div
+              key={card.index}
+              className="mt-1 grid min-h-5 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 overflow-hidden rounded-lg border border-sidebar-border/80 px-1.5 py-0.5"
+            >
+              <span className="shrink-0 text-[11px] font-semibold">{`${accelLabel} ${card.index}`}</span>
+              <span
+                className="min-w-0 truncate text-right text-[11px] text-sidebar-foreground/70"
+                title={cardText}
+              >
+                {cardText}
+              </span>
+            </div>
+          );
+        })
+      ) : (
+        <div className="mt-1 grid min-h-5 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 overflow-hidden rounded-lg border border-sidebar-border/80 px-1.5 py-0.5">
+          <span className="shrink-0 text-[11px] font-semibold">{accelLabel}</span>
+          <span
+            className="min-w-0 truncate text-right text-[11px] text-sidebar-foreground/70"
+            title={gpuText}
+          >
+            {gpuText}
+          </span>
+        </div>
+      )}
+      <p
+        className="mt-2 truncate text-center text-[10px] text-sidebar-foreground/50"
+        data-testid="app-version"
+        title={`v${__APP_VERSION__} · ${__BUILD_TIME__}`}
       >
-        <RefreshCw className={cn('size-3.5', checking && 'animate-spin')} />
-      </button>
+        {`v${__APP_VERSION__} · ${__BUILD_TIME__}`}
+      </p>
     </section>
   );
+}
+
+function displayStatus(service: ServiceInfo): 'online' | 'offline' | 'checking' | 'degraded' {
+  return service.status === 'busy' ? 'online' : service.status;
+}
+
+function fallbackService(
+  key: keyof ServicesHealth['services'],
+  checking: boolean,
+  t: (key: string) => string,
+): ServiceInfo {
+  return { name: t(`health.service.${key}`), status: checking ? 'checking' : 'offline' };
+}
+
+function getGpuText(health: ServicesHealth | null, t: (key: string) => string) {
+  if (!health) return t('health.gpuNotDetected');
+  if (health.gpu_memory) {
+    const usedGb = (health.gpu_memory.used_mb / 1024).toFixed(1);
+    const totalGb = (health.gpu_memory.total_mb / 1024).toFixed(1);
+    return `${usedGb}/${totalGb} GB`;
+  }
+
+  const runtimeModes = serviceOrder
+    .map((key) => health.services[key]?.detail?.runtime_mode)
+    .filter(Boolean);
+  const hasCpuFallbackRisk = serviceOrder.some(
+    (key) => health.services[key]?.detail?.cpu_fallback_risk,
+  );
+  if (hasCpuFallbackRisk) return t('health.runtime.cpuRisk');
+  if (runtimeModes.includes('gpu')) return t('health.runtime.gpu');
+  if (runtimeModes.includes('cpu')) return t('health.runtime.cpu');
+
+  return t('health.gpuNotDetected');
+}
+
+function runtimeBadge(service: ServiceInfo, t: (key: string) => string, accelLabel: string) {
+  if (service.detail?.cpu_fallback_risk) return t('health.runtime.cpuRisk');
+  const mode = service.detail?.runtime_mode;
+  // 'gpu' runtime renders as the host accelerator family (NPU on Ascend, GPU on NVIDIA).
+  if (mode === 'gpu') return accelLabel;
+  if (mode) return t(`health.runtime.${mode}`);
+  return null;
 }
