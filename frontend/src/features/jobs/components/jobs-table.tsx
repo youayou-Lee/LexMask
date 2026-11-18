@@ -299,9 +299,12 @@ export function JobsTable({
             <span className="jobs-progress-cell">{t('jobs.progress')}</span>
             <span className="jobs-count-head">{t('jobs.statsHeader')}</span>
             <span className="jobs-updated-cell">{t('jobs.updatedAt')}</span>
-            <span className="jobs-action-column-head">{t('jobNav.continueReview')}</span>
-            <span className="jobs-action-column-head">{t('jobs.viewDetail')}</span>
-            <span className="jobs-action-column-head">{t('jobs.deleteAction')}</span>
+            {/* 冷评审 #4：操作三列 ghost 图标，表头合并为单个「操作」（占 3 列） */}
+            <span className="jobs-action-column-head" style={{ gridColumn: 'span 3' }}>
+              {t('jobs.actionsHeader')}
+            </span>
+            <span className="jobs-action-column-head" aria-hidden />
+            <span className="jobs-action-column-head" aria-hidden />
           </>
         ) : (
           <>
@@ -756,7 +759,10 @@ const JobRow = memo(function JobRow({
                 asChild
                 variant="outline"
                 size="icon"
-                className={cn(actionIconBtnBase, 'bg-background hover:bg-muted')}
+                className={cn(
+                  actionIconBtnBase,
+                  'jobs-action-btn jobs-action-primary bg-background hover:bg-muted',
+                )}
               >
                 <Link
                   to={primary.to}
@@ -778,7 +784,7 @@ const JobRow = memo(function JobRow({
               asChild
               variant="outline"
               size="icon"
-              className={cn(actionIconBtnBase, 'bg-background hover:bg-muted')}
+              className={cn(actionIconBtnBase, 'jobs-action-btn bg-background hover:bg-muted')}
             >
               <Link
                 to={detailHref}
@@ -805,7 +811,7 @@ const JobRow = memo(function JobRow({
                 }}
                 className={cn(
                   actionIconBtnBase,
-                  'border border-transparent text-muted-foreground hover:border-[var(--error-border)] hover:bg-[var(--error-surface)] hover:text-[var(--error-foreground)] disabled:opacity-50',
+                  'jobs-action-btn border border-transparent text-muted-foreground hover:border-[var(--error-border)] hover:bg-[var(--error-surface)] hover:text-[var(--error-foreground)] disabled:opacity-50',
                 )}
                 title={t('jobs.deleteTask')}
                 aria-label={t('jobs.deleteTask')}

@@ -123,22 +123,12 @@
   --shadow-lg: var(--ds-sh-pop);
   --shadow-control: var(--ds-sh-xs);
 
-  /* ── 密度基准（Issue#355 验收期深化，用户裁定「骨架补齐」）──
-     ds 根字号 13px（定稿 body 13px 基准）：全站 rem 尺度整体收紧。
-     classic 维持 15px 不受影响。顶栏仍由 .app-shell-header 钉 60px（定稿值，
-     不随 rem 变化），故 --page-shell-offset 改用 px 表达（60px 头部 +
-     .page-shell 顶部内边距 0.75/0.875/1rem @13px ≈ 9.75/11.4/13px，向上取整）。 */
-  font-size: 13px;
-  --page-shell-offset: 70px;
+  /* ── 字号裁定（2026-11-19 用户验收反馈）：ds 根字号与 classic 一致（15px）──
+     13px 密度实验被用户否决（「字体偏小，不如原来的」）：字号类差异化全部撤除，
+     rem 尺度与 classic 相同 ⇒ 正文/控件字号逐处一致；ds 的差异化只走骨架
+     （标题区/指标条/表格列结构）与表面（纸感/发丝线/侧栏）。
+     --page-shell-offset 因此无需任何覆盖（header 60px = h-16@15px，与 classic 相同）。 */
   color-scheme: light;
-}
-
-@media (min-width: 640px) {
-  [data-theme="ds"] { --page-shell-offset: 72px; }
-}
-
-@media (min-width: 1536px) {
-  [data-theme="ds"] { --page-shell-offset: 74px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -452,12 +442,6 @@
   font-variant-numeric: tabular-nums;
   color: var(--ds-ink);
 }
-[data-theme="ds"] .ds-metric-value[data-tone='accent'] {
-  color: var(--ds-accent);
-}
-[data-theme="ds"] .ds-metric-value[data-tone='warn'] {
-  color: #A34A08;
-}
 [data-theme="ds"] .ds-metric-value[data-tone='danger'] {
   color: var(--ds-danger);
 }
@@ -486,10 +470,35 @@
 }
 
 /* ---------- 14. ds 骨架：筛选面板收编（信息上移标题区/指标条，去重复） ---------- */
+/* 冷评审 #3：工具行与页签合为一行 ⇒ ds 下整个筛选面板隐藏（条件渲染），
+   刷新/清理按钮上移至页签行右侧（tasks-page ds 分支） */
+[data-theme="ds"] .jobs-filters-panel {
+  display: none;
+}
 [data-theme="ds"] .jobs-filters-copy,
 [data-theme="ds"] .jobs-filters-pills {
   display: none;
 }
 [data-theme="ds"] .jobs-table-heading {
   display: none;
+}
+/* 冷评审 #10：供料任务卡归入白卡体系（classic 保持 muted/20 淡底） */
+[data-theme="ds"] .jobs-agent-panel {
+  background: var(--ds-card);
+  border-color: var(--ds-hair);
+  box-shadow: var(--ds-sh-xs);
+}
+/* 冷评审 #4：操作列 ghost 化——去边框/底色，主操作常显绿（规范 §6.4） */
+[data-theme="ds"] .jobs-action-cell .jobs-action-btn {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ds-muted);
+}
+[data-theme="ds"] .jobs-action-cell .jobs-action-btn:hover {
+  background: rgba(20, 22, 26, 0.045);
+  color: var(--ds-ink);
+}
+[data-theme="ds"] .jobs-action-cell .jobs-action-btn.jobs-action-primary {
+  color: var(--ds-accent-bright);
 }

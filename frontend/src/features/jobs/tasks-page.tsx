@@ -16,7 +16,9 @@
 
 import React from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { RefreshCw, Trash2 } from 'lucide-react';
 import { useT } from '@/i18n';
+import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -57,6 +59,9 @@ function JobsLedgerView({
 }) {
   const t = useT();
   const s = jobs;
+  // Issue#355 冷评审 #3：ds 下筛选面板整体不渲染（信息上移标题区/指标条，
+  // 刷新/清理按钮上移页签行右侧）；classic 分支保持原组装零漂移。
+  const dsMode = useUiTheme((s2) => s2.theme) === 'ds';
   const lockLabel = s.deletingJobId
     ? t('jobs.deletingEllipsis')
     : s.requeueingJobId || s.cleanupLoading
@@ -65,13 +70,15 @@ function JobsLedgerView({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="jobs-page">
-      <JobsFilters
-        onRefresh={s.refreshList}
-        onCleanup={() => s.setCleanupConfirmOpen(true)}
-        refreshing={s.refreshing}
-        tableBusy={s.tableBusy}
-        metrics={s.pageMetrics}
-      />
+      {!dsMode && (
+        <JobsFilters
+          onRefresh={s.refreshList}
+          onCleanup={() => s.setCleanupConfirmOpen(true)}
+          refreshing={s.refreshing}
+          tableBusy={s.tableBusy}
+          metrics={s.pageMetrics}
+        />
+      )}
 
       {s.notice && (
         <Alert className="mb-2" data-testid="jobs-notice">
@@ -208,36 +215,65 @@ export function TasksPage() {
             riskJobs={jobs.pageMetrics.riskJobs}
           />
         )}
-        <Tabs value={view} onValueChange={selectView} className="shrink-0">
-          <TabsList
-            className="rounded-xl border border-border/70 bg-muted/40 p-1"
-            data-testid="tasks-view-tabs"
-          >
-            <TabsTrigger
-              value="active"
-              className="whitespace-nowrap"
-              data-testid="tasks-tab-active"
+        {/* Issue#355 冷评审 #3：ds 下页签与刷新/清理同一行（定稿工具行）；classic 维持上下两块 */}
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+          <Tabs value={view} onValueChange={selectView} className="shrink-0">
+            <TabsList
+              className="rounded-xl border border-border/70 bg-muted/40 p-1"
+              data-testid="tasks-view-tabs"
             >
-              {t('tasks.tab.active')}
-              <span className={tabCountClass}>
-                {jobs.pageMetrics.activeJobs + agentTasks.counts.active}
-              </span>
-            </TabsTrigger>
-            <TabsTrigger
-              value="review"
-              className="whitespace-nowrap"
-              data-testid="tasks-tab-review"
-            >
-              {t('tasks.tab.review')}
-              <span className={tabCountClass}>
-                {jobs.pageMetrics.awaitingReviewItems + agentTasks.counts.awaiting_review}
-              </span>
-            </TabsTrigger>
-            <TabsTrigger value="done" className="whitespace-nowrap" data-testid="tasks-tab-done">
-              {t('tasks.tab.done')}
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+              <TabsTrigger
+                value="active"
+                className="whitespace-nowrap"
+                data-testid="tasks-tab-active"
+              >
+                {t('tasks.tab.active')}
+                <span className={tabCountClass}>
+                  {jobs.pageMetrics.activeJobs + agentTasks.counts.active}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger
+                value="review"
+                className="whitespace-nowrap"
+                data-testid="tasks-tab-review"
+              >
+                {t('tasks.tab.review')}
+                <span className={tabCountClass}>
+                  {jobs.pageMetrics.awaitingReviewItems + agentTasks.counts.awaiting_review}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="done" className="whitespace-nowrap" data-testid="tasks-tab-done">
+                {t('tasks.tab.done')}
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+          {dsMode && (
+            <div className="flex shrink-0 items-center gap-2" data-testid="ds-tabs-actions">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={jobs.refreshList}
+                disabled={jobs.tableBusy}
+                data-testid="jobs-refresh-btn"
+                title={t('jobs.refreshTitle')}
+                className="h-8 min-w-[5.5rem] justify-center rounded-lg px-2.5 text-xs whitespace-nowrap"
+              >
+                <RefreshCw data-icon="inline-start" className={jobs.refreshing ? 'animate-spin' : ''} />
+                {jobs.refreshing ? t('jobs.refreshing') : t('jobs.clickRefresh')}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 rounded-lg border-destructive/25 px-2.5 text-xs whitespace-nowrap text-destructive hover:bg-destructive/10"
+                onClick={() => jobs.setCleanupConfirmOpen(true)}
+                data-testid="jobs-cleanup-btn"
+              >
+                <Trash2 data-icon="inline-start" />
+                {t('jobs.cleanupButton')}
+              </Button>
+            </div>
+          )}
+        </div>
 
         {/* 条件渲染（非 CSS 隐藏）：active/review 不发 /files，done 不重复抬列表请求。 */}
         {view === 'done' ? (
@@ -272,14 +308,14 @@ function DsMetricsStrip({
       key: 'active',
       label: t('tasks.tab.active'),
       value: activeJobs,
-      tone: 'accent',
+      tone: 'neutral',
       note: t('ds.metrics.activeNote'),
     },
     {
       key: 'review',
       label: t('tasks.tab.review'),
       value: awaitingReview,
-      tone: 'warn',
+      tone: 'neutral',
       note: t('ds.metrics.reviewNote'),
     },
     {

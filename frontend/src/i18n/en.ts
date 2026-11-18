@@ -449,6 +449,7 @@ const enBase: Record<string, string> = {
   'jobs.taskRecords': 'Task Records',
   // Issue#355 ds table (mockup §6.4): merged stats column / subline / badges
   'jobs.statsHeader': 'Stats',
+  'jobs.actionsHeader': 'Actions',
   'jobs.filesCount': '{n} file(s)',
   'jobs.awaitingBadge': 'Review {n}',
   'jobs.failedBadge': 'Failed {n}',

@@ -433,6 +433,7 @@ const zhBase: Record<string, string> = {
   'jobs.taskRecords': '任务记录',
   // Issue#355 ds 表格（定稿 §6.4）：合并统计列/副信息行/角标
   'jobs.statsHeader': '统计',
+  'jobs.actionsHeader': '操作',
   'jobs.filesCount': '{n} 个文件',
   'jobs.awaitingBadge': '待审 {n}',
   'jobs.failedBadge': '失败 {n}',

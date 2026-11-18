@@ -28,7 +28,7 @@ export function JobsFilters({
   const t = useT();
 
   return (
-    <section className="saas-panel mb-2 grid shrink-0 gap-2.5 rounded-[20px] border-border/70 bg-card/95 p-2.5 shadow-[var(--shadow-control)] xl:grid-cols-[minmax(260px,0.7fr)_minmax(520px,1fr)_auto] xl:items-center 2xl:p-3">
+    <section className="jobs-filters-panel saas-panel mb-2 grid shrink-0 gap-2.5 rounded-[20px] border-border/70 bg-card/95 p-2.5 shadow-[var(--shadow-control)] xl:grid-cols-[minmax(260px,0.7fr)_minmax(520px,1fr)_auto] xl:items-center 2xl:p-3">
       <div className="jobs-filters-copy flex min-w-0 flex-col gap-1">
         {/* Issue#351 B3：删「操作」kicker chip（对用户零信息量） */}
         <h2 className="page-title truncate text-base">{t('jobs.filters.title')}</h2>

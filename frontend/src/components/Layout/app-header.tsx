@@ -164,6 +164,9 @@ function getPageHeader(
   if (pathname === '/structured/delivery')
     return { title: t('nav.structured.delivery'), sub: t('nav.structured.delivery.sub') };
   if (pathname === '/dicom') return { title: t('page.dicom.title'), sub: t('page.dicom.sub') };
+  // Issue#355 冷评审 #7：/docs 原先落 default 分支错显「单次处理」，补面包屑映射。
+  if (pathname === '/docs' || pathname.startsWith('/docs/'))
+    return { title: t('nav.docs'), sub: t('nav.docs.sub') };
   if (pathname === '/settings') return { title: t('page.config.title'), sub: t('page.config.sub') };
   if (pathname.startsWith('/jobs/'))
     return { title: t('page.jobDetail.title'), sub: t('page.jobDetail.sub') };
