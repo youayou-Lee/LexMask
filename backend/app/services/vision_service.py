@@ -2332,9 +2332,6 @@ class VisionService:
                 self._blocks_text(page_blocks),
                 source="ocr",
             )
-        # This call's OCR blocks, captured off the process-wide singleton so the
-        # hallucinated-card gate never judges against a concurrent page's blocks.
-        self._page_ocr_blocks = page_blocks
 
         # Issue#347：OCR 可能按 90°/270° 转正后的页图工作（last_ocr_orientation）。
         # Issue#347：本调用自有的 orientation 出参（detect_and_draw 在 return 前
@@ -2344,6 +2341,7 @@ class VisionService:
         # 预览/人工框合并/外层标注图重绘）只见原页坐标，零改动。
         from app.services.vision.ocr_orientation import (
             map_bounding_box_to_page,
+            map_polygon_to_page,
             rotate_image_for_ocr,
         )
 
@@ -2352,7 +2350,36 @@ class VisionService:
         img = Image.open(io.BytesIO(image_data))
         img = ImageOps.exif_transpose(img)
         if angle:
+            # 门⑥ Important：winner 空间块（polygon/chars=输入图像素坐标）映射回
+            # 原页空间——_page_ocr_blocks 的两个消费者（幻觉卡闸/签名检测器）按
+            # 原页坐标解释 blocks，不映射会让它们在错误空间对账（幻觉卡闸失灵 /
+            # 手写签名误删）。
+            from app.services.ocr_has_vision_service import OCRTextBlock
+
+            page_w, page_h = img.size
+
+            def _map_block(b):
+                chars = []
+                for ch in b.chars:
+                    (x1, y1), (x2, y2) = map_polygon_to_page(
+                        [[ch["x1"], ch["y1"]], [ch["x2"], ch["y2"]]], angle, page_w, page_h
+                    )
+                    chars.append({"c": ch.get("c"), "x1": min(x1, x2), "y1": min(y1, y2),
+                                  "x2": max(x1, x2), "y2": max(y1, y2)})
+                return OCRTextBlock(
+                    text=b.text,
+                    polygon=map_polygon_to_page(b.polygon, angle, page_w, page_h),
+                    confidence=b.confidence,
+                    chars=chars,
+                    recovered=b.recovered,
+                )
+
+            page_blocks = [_map_block(b) for b in page_blocks]
             img = rotate_image_for_ocr(img, angle)
+
+        # This call's OCR blocks, captured off the process-wide singleton so the
+        # hallucinated-card gate never judges against a concurrent page's blocks.
+        self._page_ocr_blocks = page_blocks
 
         # 像素级过滤/收紧是纯 CPU 工作，放 worker 线程避免阻塞事件循环。
         bounding_boxes = await asyncio.to_thread(

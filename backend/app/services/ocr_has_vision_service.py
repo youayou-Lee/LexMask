@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 from PIL import Image
 
+from app.core.config import settings
 from app.core.safe_regex import (
     RegexTimeoutError,
     match_items,
@@ -275,6 +276,12 @@ class OcrHasVisionService:
             "resolved": resolved,
             "scores": decision["scores"],
             "signals": as_is.signals,
+            # 门⑥ Minor：各候选的关键词命中数（决定性判别器）持久化——成功归一
+            # 的页事后也能审计「为什么选了这个角」。
+            "candidates": {
+                str(a): {"score": d["score"], "keyword_hits": d["keyword_hits"]}
+                for a, d in candidate_scores.items()
+            },
         }
         self.last_ocr_orientation = {
             "angle": angle,
@@ -610,6 +617,7 @@ class OcrHasVisionService:
         draw_result: bool = True,
         blocks_out: list | None = None,
         orientation_out: dict | None = None,
+        normalize_orientation: bool = True,
     ) -> tuple[list[SensitiveRegion], str | None]:
         """
         检测敏感信息并在图像上绘制
@@ -687,16 +695,24 @@ class OcrHasVisionService:
         # 截断 → 证号只遮前段。as-is 块出现旋转签名时，转 90°/270° 各补一次纯
         # OCR（不跑 NER），按关键词清醒判别择优；好页零额外开销，坏页不浪费 NER。
         # 坐标留在胜者空间，由 _detect_with_ocr_has 出口单点映射回原页。
-        image, width, height, ocr_blocks, visual_regions = await self._normalize_ocr_orientation(
-            image,
-            width,
-            height,
-            ocr_blocks,
-            visual_regions,
-            require_visual_regions=require_visual_regions,
-            selected_entity_types=ocr_selected_entity_type_ids,
-            duration_ms=duration_ms,
+        # normalize_orientation=False（DICOM 像素线）：医疗帧叠加层非表单文本，
+        # 关键词判别不适用，且调用方按原帧像素坐标直接使用 regions/blocks——归一
+        # 化会让它们落在旋转空间（遮错像素）。ops 级急停见 settings.
+        # SCAN_ORIENTATION_NORMALIZE_ENABLED。
+        normalize = normalize_orientation and bool(
+            getattr(settings, "SCAN_ORIENTATION_NORMALIZE_ENABLED", True)
         )
+        if normalize:
+            image, width, height, ocr_blocks, visual_regions = await self._normalize_ocr_orientation(
+                image,
+                width,
+                height,
+                ocr_blocks,
+                visual_regions,
+                require_visual_regions=require_visual_regions,
+                selected_entity_types=ocr_selected_entity_type_ids,
+                duration_ms=duration_ms,
+            )
         self.last_ocr_blocks = list(ocr_blocks)
         # Per-call, race-free handoff: last_ocr_blocks is a process-wide singleton
         # overwritten by any concurrent detect before a downstream reader (the

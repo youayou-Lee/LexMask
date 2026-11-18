@@ -6,10 +6,8 @@ A-p14 整页未打的直接根因）。契约：None ⇒ 按收不出回退整�
 不变），与同函数其他调用点口径一致。
 """
 
-import pytest
 
 from app.services.ocr_has_vision_service import OCRTextBlock
-
 
 # ---------------------------------------------------------------- 金额紧裁 None 防御（修 B）
 

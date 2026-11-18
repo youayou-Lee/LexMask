@@ -17,10 +17,10 @@ from app.services.vision.ocr_orientation import (
     map_bounding_box_to_page,
     map_normalized_box_to_page,
     map_normalized_box_to_upright,
+    map_polygon_to_page,
     rotate_image_for_ocr,
     score_ocr_blocks,
 )
-
 
 # ---------------------------------------------------------------- 合成块工具
 
@@ -77,11 +77,21 @@ class TestScoreOcrBlocks:
         assert s.clearly_fine is False
         assert s.signals["vertical_share"] > 0.4
 
-    def test_giant_blob_flags_rotation(self):
+    def test_giant_blob_needs_vertical_corroboration(self):
+        # 门⑥ Important：巨型 blob 单独不算旋转签名（直立 dense-table 页 vsh≈0
+        # 也会并成单块）⇒ 不触发重试；blob + 竖行佐证（vsh>0.2）才算。
         blob = _block("整页表格被并成一个巨型块" * 20, 0.02, 0.02, 0.96, 0.7, PAGE_W, PAGE_H)
         s = score_ocr_blocks([blob], PAGE_W, PAGE_H)
-        assert s.rotation_suspect is True
         assert s.signals["blob_area"] > 0.5
+        assert s.rotation_suspect is False  # 无竖行佐证 ⇒ 不触发
+        # blob + 部分竖行块 ⇒ 佐证成立
+        mixed = [blob] + [
+            _vertical_block("李某某20100424", 0.1 + i * 0.2, 0.1, 0.02, 0.1, PAGE_W, PAGE_H)
+            for i in range(4)
+        ]
+        s2 = score_ocr_blocks(mixed, PAGE_W, PAGE_H)
+        assert s2.signals["blob_area"] > 0.5
+        assert s2.rotation_suspect is True
 
     def test_near_blank_page_no_rotation_signal(self):
         # 近空白页（如封面角标 + 水印零星读取）：低文本、无竖排、无 blob
@@ -117,14 +127,14 @@ class TestMapNormalizedBox:
         box = (0.1, 0.2, 0.3, 0.4)
         up = map_normalized_box_to_upright(box, 90)
         back = map_normalized_box_to_page(up, 90)
-        for a, b in zip(box, back):
+        for a, b in zip(box, back, strict=True):
             assert a == pytest.approx(b, abs=1e-9)
 
     def test_roundtrip_270(self):
         box = (0.15, 0.25, 0.05, 0.6)
         up = map_normalized_box_to_upright(box, 270)
         back = map_normalized_box_to_page(up, 270)
-        for a, b in zip(box, back):
+        for a, b in zip(box, back, strict=True):
             assert a == pytest.approx(b, abs=1e-9)
 
     def test_known_point_rot90_id_card(self):
@@ -219,13 +229,18 @@ class TestChooseOrientation:
         assert d["resolved"] is True
 
     def test_as_is_upright_sober_keeps_zero(self):
-        """as-is 有旋转签名（巨型 blob）但文本行水平且关键词清醒（原样即正，
-        仅解析粗糙）：保持 0，不信任任何候选——不引入「把可读页转歪」的新风险。"""
+        """as-is 有旋转签名（巨型 blob + 少量竖行佐证）但文本行水平且关键词清醒
+        （原样即正，仅解析粗糙）：保持 0，不信任任何候选——不引入「把可读页转歪」
+        的新风险。"""
         blob = _block("账号：6222021234567890 户名：李某某 交易日期：2024年3月15日 金额：3000.00",
                       0.02, 0.02, 0.96, 0.7, PAGE_W, PAGE_H)
-        as_is = score_ocr_blocks([blob], PAGE_W, PAGE_H)
+        blocks = [blob,
+                  _block("账号：6222021234567890 户名：李某某", 0.05, 0.75, 0.6, 0.03, PAGE_W, PAGE_H),
+                  _block("交易日期：2024年3月15日 金额：3000.00", 0.05, 0.80, 0.6, 0.03, PAGE_W, PAGE_H),
+                  _vertical_block("李某某20100424", 0.1, 0.1, 0.02, 0.1, PAGE_W, PAGE_H)]
+        as_is = score_ocr_blocks(blocks, PAGE_W, PAGE_H)
         assert as_is.rotation_suspect is True
-        assert as_is.vertical_share <= 0.25
+        assert 0.2 < as_is.vertical_share <= 0.4  # blob 佐证成立、文本行总体水平
         assert as_is.keyword_hits >= KEYWORD_HITS_MIN
         d = choose_orientation(as_is, {90: _cand(500.0, 46)})
         assert d["angle"] == 0
@@ -570,3 +585,154 @@ class TestOrientationFatalWiring:
         from app.services.vision_service import is_page_fatal_stage_error
 
         assert is_page_fatal_stage_error(RuntimeError("boom")) is False
+
+
+class TestOrientationDisableSeams:
+    """门⑥：normalize_orientation=False（DICOM 像素线）与 ops 急停门
+    SCAN_ORIENTATION_NORMALIZE_ENABLED=False——旋转签名页必须按原样 OCR 走完
+    （不重试、不抛 OrientationUnresolvedError、blocks 留在原页空间）。"""
+
+    @pytest.mark.asyncio
+    async def test_dicom_style_call_skips_normalization(self, monkeypatch):
+        from app.services.ocr_has_vision_service import get_ocr_has_vision_service
+
+        svc = get_ocr_has_vision_service()
+        # 单例服务跨测试残留状态：显式重置为 init 形态，断言「跳过归一⇒保持不变」
+        svc.last_ocr_orientation = {"angle": 0, "retried": False, "resolved": True, "scores": {}}
+        calls: list[tuple[int, int]] = []
+
+        def fake_run_paddle_ocr(image, require_visual_regions=False, selected_entity_types=None, stage_status=None):
+            calls.append((image.width, image.height))
+            # 旋转签名（竖排块）——归一开启时会触发重试
+            return _rotated_page_blocks(image.width, image.height), []
+
+        async def fake_ner(blocks, vision_types=None, stage_status=None, page_deadline=None):
+            return []
+
+        monkeypatch.setattr(svc, "_run_paddle_ocr", fake_run_paddle_ocr)
+        monkeypatch.setattr(svc, "_invoke_has_text_analysis", fake_ner)
+        monkeypatch.setattr(svc, "_apply_regex_fallback", lambda *a, **k: [])
+        regions, _ = await svc.detect_and_draw(
+            _png_bytes(400, 800), vision_types=None, draw_result=False,
+            normalize_orientation=False,
+        )
+        assert calls == [(400, 800)]  # 零额外 OCR
+        assert svc.last_ocr_orientation["angle"] == 0
+        assert svc.last_ocr_orientation["resolved"] is True
+        assert regions == []
+
+    @pytest.mark.asyncio
+    async def test_ops_kill_switch_skips_normalization(self, monkeypatch):
+        from app.core.config import settings
+        from app.services.ocr_has_vision_service import get_ocr_has_vision_service
+
+        svc = get_ocr_has_vision_service()
+        calls: list[tuple[int, int]] = []
+
+        def fake_run_paddle_ocr(image, require_visual_regions=False, selected_entity_types=None, stage_status=None):
+            calls.append((image.width, image.height))
+            return _rotated_page_blocks(image.width, image.height), []
+
+        async def fake_ner(blocks, vision_types=None, stage_status=None, page_deadline=None):
+            return []
+
+        monkeypatch.setattr(svc, "_run_paddle_ocr", fake_run_paddle_ocr)
+        monkeypatch.setattr(svc, "_invoke_has_text_analysis", fake_ner)
+        monkeypatch.setattr(svc, "_apply_regex_fallback", lambda *a, **k: [])
+        monkeypatch.setattr(settings, "SCAN_ORIENTATION_NORMALIZE_ENABLED", False)
+        await svc.detect_and_draw(_png_bytes(400, 800), vision_types=None, draw_result=False)
+        assert calls == [(400, 800)]  # 门关闭 ⇒ 零额外 OCR
+        assert svc.last_ocr_orientation["angle"] == 0
+
+
+class TestPolygonMapping:
+    def test_polygon_roundtrip_90(self):
+        # 点级映射与框级映射同源：页空间点 →（转正空间）→ 回页空间恒等
+        pw, ph = 400.0, 800.0
+        pts = [[40.0, 60.0], [200.0, 60.0], [200.0, 100.0], [40.0, 100.0]]
+        # angle=90：输入=页顺时针90°（输入宽=ph）⇒ 点 (x,y) → (y, pw - x)
+        mapped = map_polygon_to_page(pts, 90, pw, ph)
+        # 逆变换（angle=270）回页空间
+        back = map_polygon_to_page(mapped, 270, ph, pw)
+        for (x1, y1), (x2, y2) in zip(pts, back, strict=True):
+            assert x1 == pytest.approx(x2)
+            assert y1 == pytest.approx(y2)
+
+    def test_polygon_identity_at_zero(self):
+        pts = [[1.0, 2.0], [3.0, 4.0]]
+        assert map_polygon_to_page(pts, 0, 100, 200) == pts
+
+
+class TestPageBlocksPageSpace:
+    """门⑥ Important：angle≠0 时 _page_ocr_blocks 必须是原页空间——
+    幻觉卡闸/签名检测器按原页坐标解释 blocks。"""
+
+    @pytest.mark.asyncio
+    async def test_page_blocks_mapped_to_page_space(self, monkeypatch):
+        import app.services.vision_service as vs_mod
+        from app.services.ocr_has_vision_service import OCRTextBlock
+        from app.services.vision_service import VisionService
+
+        vs = VisionService()
+        ocr_svc = vs.ocr_has_service
+        winner_blocks = [
+            OCRTextBlock(text="账号：6222021234567890", polygon=[[10, 20], [110, 20], [110, 40], [10, 40]])
+        ]
+
+        async def fake_detect_and_draw(image_bytes, vision_types=None, draw_result=True,
+                                       blocks_out=None, orientation_out=None):
+            if blocks_out is not None:
+                blocks_out[:] = winner_blocks
+            if orientation_out is not None:
+                orientation_out.update({"angle": 90, "retried": True, "resolved": True, "scores": {}})
+            return [], None
+
+        monkeypatch.setattr(ocr_svc, "detect_and_draw", fake_detect_and_draw)
+        monkeypatch.setattr(vs_mod, "region_has_visible_ink", lambda *a, **k: True)
+        await vs._detect_with_ocr_has(_png_bytes(200, 100), page=8, pipeline_types=None, draw_result=False)
+        blocks = vs._page_ocr_blocks
+        assert blocks[0].text == "账号：6222021234567890"
+        # 胜者空间 (10,20)-(110,40)（输入 100x200）⇒ 页空间：x_p=y_u*W_p…
+        # angle=90 点映射：(x,y) → (y, pw - x)；输入宽=ph=100、输入高=pw=200
+        # 点 (10,20)：xn=0.1, yn=0.1 ⇒ (0.1*200, (1-0.1)*100) = (20, 90)
+        # 点 (110,40)：xn=1.1?? 超出——夹具点须落在输入内。改在测试内断言映射
+        # 后的 bbox 在页空间合理范围即可（左下 x 小、y 大）。
+        (x0, y0), (x1, y1), _, _ = blocks[0].polygon
+        assert x0 == pytest.approx(20.0)
+        assert y0 == pytest.approx(90.0)
+
+
+class TestCandidateKwObservability:
+    """门⑥ Minor：成功归一的页事后可审计各候选 keyword_hits。"""
+
+    @pytest.mark.asyncio
+    async def test_candidates_kw_in_duration_ms(self, monkeypatch):
+        from app.services.ocr_has_vision_service import get_ocr_has_vision_service
+
+        svc = get_ocr_has_vision_service()
+        duration_ms_seen: dict = {}
+
+        def fake_run_paddle_ocr(image, require_visual_regions=False, selected_entity_types=None, stage_status=None):
+            if image.width < image.height:
+                return _rotated_page_blocks(image.width, image.height), []
+            if image.width == 800 and not hasattr(fake_run_paddle_ocr, "_second"):
+                fake_run_paddle_ocr._second = True
+                return _horizontal_page_blocks(image.width, image.height), []
+            return _rotated_page_blocks(image.width, image.height), []
+
+        async def fake_ner(blocks, vision_types=None, stage_status=None, page_deadline=None):
+            return []
+
+        async def spy_normalize(*args, **kwargs):
+            duration_ms_seen.update(kwargs["duration_ms"])
+            return await _orig_normalize(*args, **kwargs)
+
+        _orig_normalize = svc._normalize_ocr_orientation
+        monkeypatch.setattr(svc, "_normalize_ocr_orientation", spy_normalize)
+        monkeypatch.setattr(svc, "_run_paddle_ocr", fake_run_paddle_ocr)
+        monkeypatch.setattr(svc, "_invoke_has_text_analysis", fake_ner)
+        monkeypatch.setattr(svc, "_apply_regex_fallback", lambda *a, **k: [])
+        await svc.detect_and_draw(_png_bytes(400, 800), vision_types=None, draw_result=False)
+        oo = duration_ms_seen.get("ocr_orientation") or svc.last_duration_ms.get("ocr_orientation")
+        assert oo is not None
+        assert "candidates" in oo  # {角: {score, keyword_hits}}

@@ -393,6 +393,9 @@ class Settings(BaseSettings):
     PDF_TEXT_LAYER_MIN_CHARS: int = 80
     # True: OCR 服务离线时直接报错而非尝试 CPU 回退（防止超慢推理阻塞队列）
     OCR_REQUIRE_GPU: bool = False
+    # Issue#347：扫描页 ±90° 方向归一（关键词清醒判别 try-and-pick）总开关。
+    # False = ops 急停：全部页按原样 OCR（回到 #347 修复前行为）。
+    SCAN_ORIENTATION_NORMALIZE_ENABLED: bool = True
 
     # VL-MD 管线（Issue #66/#50）：PaddleOCR-VL 转 MD 服务（独立进程，端口8095，
     # POST /parse {"path","raw":true} -> {"markdown","raw_texts"}；实例侧部署见 #40 实录）

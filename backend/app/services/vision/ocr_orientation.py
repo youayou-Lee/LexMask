@@ -43,6 +43,10 @@ from PIL import Image
 _VERTICAL_SHARE_SUSPECT = 0.4      # 竖排行块占比超过此值 → 旋转签名
 _VERTICAL_SHARE_FINE = 0.25        # clearly_fine 的上限
 _BLOB_AREA_SUSPECT = 0.5           # 单块覆盖页面比例超过此值 → 巨型 blob 签名
+# 门⑥ Important：blob 佐证的竖行占比下限——blob>0.5 且 vsh 落在此值以下不算
+# 旋转签名（直立 dense-table 页的 blob 解析无竖行，vsh≈0；躺倒页文本行竖排
+# vsh≈0.7）。
+_BLOB_AREA_CORROBORATE_MIN = 0.2
 _MIN_CJK_FINE = 30                 # CJK 存活数下限（与长数字游程二选一）
 _MIN_LONG_RUNS_FINE = 5            # ≥6 位数字游程数下限
 _VERTICAL_SHARE_WEIGHT = 150.0     # 竖排占比的评分惩罚
@@ -126,7 +130,13 @@ def score_ocr_blocks(blocks: list, width: int, height: int) -> OrientationScore:
         and blob_area <= _BLOB_AREA_SUSPECT
         and (cjk >= _MIN_CJK_FINE or long_runs >= _MIN_LONG_RUNS_FINE)
     )
-    rotation_suspect = vertical_share > _VERTICAL_SHARE_SUSPECT or blob_area > _BLOB_AREA_SUSPECT
+    # 门⑥ Important：巨型 blob 单独不构成旋转证据（直立 dense-table 合同/判决页
+    # 也会并成单块，vsh≈0）⇒ 必须同时有竖行佐证（vsh>0.2）才算旋转签名，
+    # 否则直立 blob 页会白跑 2 次 OCR 再 fail-closed。躺倒页真并入单块时块本身
+    # 水平（vsh=0）⇒ 不触发，保持原样（blob 解析），不产生误失败。
+    rotation_suspect = vertical_share > _VERTICAL_SHARE_SUSPECT or (
+        blob_area > _BLOB_AREA_SUSPECT and vertical_share > _BLOB_AREA_CORROBORATE_MIN
+    )
     return OrientationScore(
         angle=0,
         score=score,
@@ -182,6 +192,9 @@ def choose_orientation(as_is: OrientationScore, candidates: dict[int, dict]) -> 
     if not as_is.rotation_suspect:
         return {"angle": 0, "retried": False, "resolved": True, "scores": scores}
     scores.update({str(a): float(d["score"]) for a, d in candidates.items()})
+    # 「文本行水平」的边界用 _VERTICAL_SHARE_SUSPECT（0.4，= 旋转签名门限）而非
+    # clearly_fine 的 _VERTICAL_SHARE_FINE（0.25）：as-is vsh 落在 0.25–0.4 时
+    # 文本行总体仍水平（少量竖块混入），保持原样的风险可接受；勿改成 0.25。
     if (
         as_is.keyword_hits >= KEYWORD_HITS_MIN
         and as_is.vertical_share <= _VERTICAL_SHARE_SUSPECT
@@ -256,3 +269,33 @@ def map_bounding_box_to_page(box, angle: int):
         (float(box.x), float(box.y), float(box.width), float(box.height)), angle
     )
     return box.model_copy(update={"x": x, "y": y, "width": w, "height": h})
+
+
+def map_polygon_to_page(polygon, angle: int, page_width: float, page_height: float):
+    """转正空间（OCR 输入图）像素坐标多边形 → 原页像素坐标（点级逆映射）。
+
+    与 ``map_normalized_box_to_page`` 同一变换的点级形态，供把 winner 空间的
+    ``OCRTextBlock``（``polygon``/``chars`` 均为输入图像素坐标）整体映射回原页
+    空间——下游 ``_page_ocr_blocks`` 消费者（幻觉卡闸/签名检测器）按原页坐标
+    解释它们。``page_width``/``page_height`` 为原页像素尺寸（输入图宽高互换）。
+    """
+    if angle == 0:
+        return polygon
+    if angle == 90:
+        # 输入 = 原页顺时针 90° ⇒ 输入图宽=原页高、输入图高=原页宽
+        iw, ih = float(page_height), float(page_width)
+    elif angle == 270:
+        iw, ih = float(page_height), float(page_width)
+    else:
+        raise ValueError(f"unsupported orientation angle: {angle}")
+    pw, ph = float(page_width), float(page_height)
+    out = []
+    for point in polygon:
+        x, y = float(point[0]), float(point[1])
+        xn, yn = x / iw, y / ih
+        if angle == 90:
+            xp, yp = yn, 1.0 - xn
+        else:  # 270
+            xp, yp = 1.0 - yn, xn
+        out.append([xp * pw, yp * ph])
+    return out

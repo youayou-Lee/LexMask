@@ -235,6 +235,10 @@ class DicomOCRPixelDetector:
                 vision_types=None,
                 draw_result=False,
                 blocks_out=ocr_blocks,
+                # Issue#347 门⑥ Critical：DICOM 帧叠加层（PATIENT NAME/ID/DOB）非表单
+                # 文本，关键词清醒判别不适用；本调用方按原帧像素坐标直接使用
+                # regions/blocks，方向归一会让它们落在旋转空间（遮错像素/越界）。
+                normalize_orientation=False,
             )
             if not isinstance(detected, tuple) or len(detected) != 2:
                 raise RuntimeError("DICOM OCR/HaS returned an invalid detection result")

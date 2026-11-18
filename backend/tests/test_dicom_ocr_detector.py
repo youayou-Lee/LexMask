@@ -53,6 +53,8 @@ class _FakeVisionService:
         vision_types=None,
         draw_result: bool = True,
         blocks_out: list | None = None,
+        orientation_out: dict | None = None,
+        normalize_orientation: bool = True,
     ):
         call_index = len(self.calls)
         with Image.open(__import__("io").BytesIO(image_bytes)) as image:
@@ -110,8 +112,12 @@ class _UnknownStatusVisionService:
         vision_types=None,
         draw_result: bool = True,
         blocks_out: list | None = None,
+        orientation_out: dict | None = None,
+        normalize_orientation: bool = True,
     ):
         del image_bytes, vision_types, draw_result
+        # Issue#347 门⑥ 接线钉：DICOM 像素线必须关闭方向归一（原帧像素坐标）
+        assert normalize_orientation is False
         assert blocks_out is not None
         blocks_out.extend(
             [
