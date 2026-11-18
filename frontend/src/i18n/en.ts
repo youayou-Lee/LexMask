@@ -2252,6 +2252,17 @@ Object.assign(enOverrides, {
   'ds.metrics.reviewNote': 'Needs review',
   'ds.metrics.doneNote': 'Completed total',
   'ds.metrics.riskNote': 'Needs attention',
+  // Issue#355 iOS reset · partition B (metric chips/footnotes + numeric pager + settings header)
+  'ds.metrics.activeChip': 'Live',
+  'ds.metrics.riskChipOk': 'No issues',
+  'ds.metrics.activeFoot': 'Recognizing and parsing',
+  'ds.metrics.reviewFoot': 'Confirm before delivery',
+  'ds.metrics.doneFoot': 'Ready for delivery',
+  'ds.metrics.riskFoot': 'Retry from the detail page',
+  'ds.pager.info': '{total} tasks in total · {size} per page',
+  'ds.pager.pageLabel': 'Page {page}',
+  'ds.settings.title': 'Advanced Settings',
+  'ds.settings.sub': 'Recognition items · Redaction presets · Word pools · Model services',
 });
 
 // Structured data module (keys mirror zh.ts).

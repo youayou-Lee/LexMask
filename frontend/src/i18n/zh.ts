@@ -2210,6 +2210,17 @@ Object.assign(zhOverrides, {
   'ds.metrics.reviewNote': '需人工确认',
   'ds.metrics.doneNote': '累计完成',
   'ds.metrics.riskNote': '需要处理',
+  // Issue#355 iOS 重置 · B 分区（指标卡变化胶囊/注脚 + 数字分页器 + 设置页头）
+  'ds.metrics.activeChip': '实时更新',
+  'ds.metrics.riskChipOk': '暂无异常',
+  'ds.metrics.activeFoot': '正在识别与解析',
+  'ds.metrics.reviewFoot': '确认后方可交付',
+  'ds.metrics.doneFoot': '可打包交付',
+  'ds.metrics.riskFoot': '可在详情页重试',
+  'ds.pager.info': '共 {total} 个任务 · 每页 {size} 条',
+  'ds.pager.pageLabel': '第 {page} 页',
+  'ds.settings.title': '高级设置',
+  'ds.settings.sub': '识别项 · 清单 · 词库 · 模型服务',
 });
 
 // Structured data module (keep zh wording verbatim).

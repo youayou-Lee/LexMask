@@ -17,6 +17,8 @@ import './index.css';
 // 经 main.tsx 引入而非 index.css @import：CSS 规范要求 @import 先于其它规则，
 // 这样 index.css 保持零 diff（比「仅 import 行」更强的 classic 零改动保证）。
 import './styles/ds-theme.css';
+// Issue#355 iOS 重置：B 分区（数据页面）样式——编排者统一接线，顺序在 ds-theme 之后取覆盖
+import './styles/ios-pages-b.css';
 
 applyBrand();
 // Issue#355：渲染前把持久化主题刷到根节点，首帧即正确风格（防 FOUC）。
