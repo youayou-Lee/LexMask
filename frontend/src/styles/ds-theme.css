@@ -123,10 +123,22 @@
   --shadow-lg: var(--ds-sh-pop);
   --shadow-control: var(--ds-sh-xs);
 
-  /* 顶栏高度沿用 classic 的 h-16（根字号 15px ⇒ 4rem=60px，与设计稿 60px 恰好一致，
-     实测 2026-11-19 门④：classic header 实高即 60px）——故 --page-shell-offset
-     不做任何 ds 覆盖，避免按 64px 误推 -4px 造成页底裁切（A3 回退条款）。 */
+  /* ── 密度基准（Issue#355 验收期深化，用户裁定「骨架补齐」）──
+     ds 根字号 13px（定稿 body 13px 基准）：全站 rem 尺度整体收紧。
+     classic 维持 15px 不受影响。顶栏仍由 .app-shell-header 钉 60px（定稿值，
+     不随 rem 变化），故 --page-shell-offset 改用 px 表达（60px 头部 +
+     .page-shell 顶部内边距 0.75/0.875/1rem @13px ≈ 9.75/11.4/13px，向上取整）。 */
+  font-size: 13px;
+  --page-shell-offset: 70px;
   color-scheme: light;
+}
+
+@media (min-width: 640px) {
+  [data-theme="ds"] { --page-shell-offset: 72px; }
+}
+
+@media (min-width: 1536px) {
+  [data-theme="ds"] { --page-shell-offset: 74px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -377,4 +389,107 @@
 [data-theme="ds"] .history-tree-hook,
 [data-theme="ds"] .jobs-child-row > span:first-child::before {
   border-color: rgba(20, 22, 26, 0.25);
+}
+
+/* ---------- 11. ds 骨架：纸纹（定稿 body::before 噪点，classic 无） ---------- */
+[data-theme="ds"] body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.42'/%3E%3C/svg%3E");
+  opacity: 0.03;
+}
+
+/* ---------- 12. ds 骨架：页面标题区（宋体大标题）/ 指标条 / 顶栏面包屑 ---------- */
+[data-theme="ds"] .ds-page-title {
+  margin: 0;
+  font-family: var(--ds-serif);
+  font-size: 27px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+  color: var(--ds-ink);
+}
+[data-theme="ds"] .ds-page-sub {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--ds-muted);
+}
+/* 指标条：单条通栏白卡 + 内部 1px 竖线 4 等分（定稿 §6.2，非独立卡）。
+   标签/注解用 muted（5.33:1）承载语义；faint 仅装饰位 */
+[data-theme="ds"] .ds-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 13px 2px;
+  background: var(--ds-card);
+  border: 1px solid var(--ds-hair);
+  border-radius: var(--ds-r-xl);
+  box-shadow: var(--ds-sh-card);
+}
+[data-theme="ds"] .ds-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 0 18px;
+}
+[data-theme="ds"] .ds-metric + .ds-metric {
+  border-left: 1px solid var(--ds-hair);
+}
+[data-theme="ds"] .ds-metric-label {
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ds-muted);
+}
+[data-theme="ds"] .ds-metric-value {
+  font-size: 25px;
+  font-weight: 620;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-ink);
+}
+[data-theme="ds"] .ds-metric-value[data-tone='accent'] {
+  color: var(--ds-accent);
+}
+[data-theme="ds"] .ds-metric-value[data-tone='warn'] {
+  color: #A34A08;
+}
+[data-theme="ds"] .ds-metric-value[data-tone='danger'] {
+  color: var(--ds-danger);
+}
+[data-theme="ds"] .ds-metric-note {
+  font-size: 10.5px;
+  color: var(--ds-faint);
+}
+[data-theme="ds"] .ds-crumb {
+  font-size: 12px;
+  font-weight: 560;
+  letter-spacing: -0.003em;
+  color: var(--ds-ink-2);
+}
+
+/* ---------- 13. ds 骨架：侧栏紧凑层级（定稿 32-34px 项 + 微型分组标签） ---------- */
+[data-theme="ds"] .nav-sublabel {
+  display: none;
+}
+[data-theme="ds"] [data-sidebar="menu-button"] {
+  min-height: 34px;
+  border-radius: var(--ds-r-sm);
+}
+[data-theme="ds"] [data-sidebar="group-label"] {
+  font-size: 9.5px;
+  letter-spacing: 0.11em;
+}
+
+/* ---------- 14. ds 骨架：筛选面板收编（信息上移标题区/指标条，去重复） ---------- */
+[data-theme="ds"] .jobs-filters-copy,
+[data-theme="ds"] .jobs-filters-pills {
+  display: none;
+}
+[data-theme="ds"] .jobs-table-heading {
+  display: none;
 }

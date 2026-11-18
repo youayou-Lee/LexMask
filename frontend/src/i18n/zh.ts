@@ -2199,10 +2199,11 @@ Object.assign(zhOverrides, {
   'toast.open': '查看',
   'toast.fallbackError': '操作失败，请稍后重试',
   'health.serviceName.visualFeatures': '视觉特征',
-  // Issue#355 用户裁定（2026-11-19）：恢复侧栏服务卡的明细行（#351 P2-D1 曾随卡片降级一并清理）
-  'health.service.paddle_ocr': '文字识别服务',
-  'health.service.has_ner': '文本语义服务',
-  'health.service.visual_features': '视觉特征服务',
+  // Issue#355 ds 指标条注解（口径=工单；数字与页签徽标同源）
+  'ds.metrics.activeNote': '正在处理',
+  'ds.metrics.reviewNote': '需人工确认',
+  'ds.metrics.doneNote': '累计完成',
+  'ds.metrics.riskNote': '需要处理',
 });
 
 // Structured data module (keep zh wording verbatim).

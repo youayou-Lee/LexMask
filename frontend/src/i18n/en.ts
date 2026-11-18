@@ -2241,11 +2241,11 @@ Object.assign(enOverrides, {
   'toast.open': 'View',
   'toast.fallbackError': 'Operation failed. Please try again later.',
   'health.serviceName.visualFeatures': 'Visual Features',
-  // Issue#355 user ruling (2026-11-19): restore sidebar service-card detail rows
-  // (removed along with the card downgrade in #351 P2-D1)
-  'health.service.paddle_ocr': 'PaddleOCR',
-  'health.service.has_ner': 'HaS Text',
-  'health.service.visual_features': 'Visual Elements',
+  // Issue#355 ds metrics strip notes (job-unit counts, same source as tab badges)
+  'ds.metrics.activeNote': 'In progress',
+  'ds.metrics.reviewNote': 'Needs review',
+  'ds.metrics.doneNote': 'Completed total',
+  'ds.metrics.riskNote': 'Needs attention',
 });
 
 // Structured data module (keys mirror zh.ts).

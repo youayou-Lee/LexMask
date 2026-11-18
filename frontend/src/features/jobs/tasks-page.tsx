@@ -22,6 +22,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { InteractionLockOverlay } from '@/components/InteractionLockOverlay';
 import { HistoryView } from '@/features/history';
+import { useUiTheme } from '@/theme/ui-theme';
 import { useJobs, type JobsStatusFilter } from './hooks/use-jobs';
 import { useAgentMdTasks } from './hooks/use-agent-md-tasks';
 import { AgentMdTaskPanel } from './components/agent-md-task-panel';
@@ -152,6 +153,9 @@ export function TasksPage() {
   const t = useT();
   const [searchParams, setSearchParams] = useSearchParams();
   const view = readTasksView(searchParams.get('view'));
+  // Issue#355 验收期深化：ds 骨架（页面标题区/指标条）只在 ds 主题条件渲染——
+  // classic 分支不产生任何新 DOM（比 CSS 显隐更强的零回归保证）。
+  const dsMode = useUiTheme((s) => s.theme) === 'ds';
 
   // 工单 hook 在页面级实例化。Issue#268：
   // - initialTab 由 URL ?view= 注入（active→'active'、review→'awaiting_review'、
@@ -190,6 +194,20 @@ export function TasksPage() {
       data-testid="tasks-page"
     >
       <div className="page-shell !max-w-[min(100%,2048px)] !px-3 !py-3 sm:!px-4 2xl:!px-5 flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+        {dsMode && (
+          <div className="shrink-0" data-testid="ds-page-header">
+            <h1 className="ds-page-title">{t('page.jobs.title')}</h1>
+            <p className="ds-page-sub">{t('page.jobs.sub')}</p>
+          </div>
+        )}
+        {dsMode && (
+          <DsMetricsStrip
+            activeJobs={jobs.pageMetrics.activeJobs + agentTasks.counts.active}
+            awaitingReview={jobs.pageMetrics.awaitingReviewItems + agentTasks.counts.awaiting_review}
+            completedJobs={jobs.pageMetrics.completedJobs}
+            riskJobs={jobs.pageMetrics.riskJobs}
+          />
+        )}
         <Tabs value={view} onValueChange={selectView} className="shrink-0">
           <TabsList
             className="rounded-xl border border-border/70 bg-muted/40 p-1"
@@ -232,6 +250,65 @@ export function TasksPage() {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+/** ds 指标条（定稿 §6.2）：单条通栏白卡 4 等分竖线分隔；口径=工单，与页签徽标同源。 */
+function DsMetricsStrip({
+  activeJobs,
+  awaitingReview,
+  completedJobs,
+  riskJobs,
+}: {
+  activeJobs: number;
+  awaitingReview: number;
+  completedJobs: number;
+  riskJobs: number;
+}) {
+  const t = useT();
+  const cells = [
+    {
+      key: 'active',
+      label: t('tasks.tab.active'),
+      value: activeJobs,
+      tone: 'accent',
+      note: t('ds.metrics.activeNote'),
+    },
+    {
+      key: 'review',
+      label: t('tasks.tab.review'),
+      value: awaitingReview,
+      tone: 'warn',
+      note: t('ds.metrics.reviewNote'),
+    },
+    {
+      key: 'done',
+      label: t('jobs.filter.completed'),
+      value: completedJobs,
+      tone: 'neutral',
+      note: t('ds.metrics.doneNote'),
+    },
+    {
+      key: 'risk',
+      label: t('jobs.abnormalHeader'),
+      value: riskJobs,
+      tone: riskJobs > 0 ? 'danger' : 'neutral',
+      note: t('ds.metrics.riskNote'),
+    },
+  ] as const;
+
+  return (
+    <div className="ds-metrics shrink-0" data-testid="ds-metrics-strip">
+      {cells.map((cell) => (
+        <div className="ds-metric" key={cell.key} data-testid={`ds-metric-${cell.key}`}>
+          <span className="ds-metric-label">{cell.label}</span>
+          <span className="ds-metric-value" data-tone={cell.tone}>
+            {cell.value}
+          </span>
+          <span className="ds-metric-note">{cell.note}</span>
+        </div>
+      ))}
     </div>
   );
 }

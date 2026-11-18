@@ -241,7 +241,7 @@ export function JobsTable({
     >
       <div className="flex shrink-0 flex-nowrap items-center justify-between gap-3 border-b border-border/70 px-3 py-2.5 sm:px-4">
         <div className="page-section-heading min-w-0">
-          <h3 className="truncate text-sm font-semibold tracking-[-0.02em]">
+          <h3 className="jobs-table-heading truncate text-sm font-semibold tracking-[-0.02em]">
             {t('jobs.taskRecords')}
           </h3>
         </div>

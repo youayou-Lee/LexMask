@@ -17,6 +17,7 @@ export function AppHeader() {
   const location = useLocation();
   const { locale, setLocale } = useI18n();
   const { theme, toggleTheme } = useUiTheme();
+  const dsMode = theme === 'ds';
   const { health, checking } = useServiceHealth();
   const { status, logout } = useAuth();
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
@@ -44,6 +45,12 @@ export function AppHeader() {
     <header className="app-shell-header flex h-16 shrink-0 items-center justify-between border-b border-border/70 bg-background/95 px-4 backdrop-blur-2xl sm:px-6">
       <div className="flex min-h-[40px] min-w-0 flex-1 items-center gap-3">
         <SidebarTrigger className="lg:hidden" aria-label={t('layout.toggleSidebar')} />
+        {/* Issue#355 ds 骨架：顶栏面包屑（定稿 .topbar .crumb；classic 不渲染） */}
+        {dsMode && (
+          <span className="ds-crumb hidden min-w-0 truncate lg:inline" aria-hidden={!dsMode}>
+            {title}
+          </span>
+        )}
         <div className="flex min-w-0 flex-col justify-center lg:hidden" aria-label={title}>
           <div className="truncate text-lg font-semibold leading-tight tracking-tight text-foreground">
             {title}

@@ -282,7 +282,7 @@ function SidebarNavItem({ item, pathname }: { item: NavItem; pathname: string })
           {item.sublabel ? (
             <span className="flex min-w-0 flex-col gap-0.5 py-0.5 leading-snug">
               <span className="truncate text-xs font-medium leading-tight">{item.label}</span>
-              <span className="truncate text-[11px] font-normal leading-tight opacity-45">
+              <span className="nav-sublabel truncate text-[11px] font-normal leading-tight opacity-45">
                 {item.sublabel}
               </span>
             </span>

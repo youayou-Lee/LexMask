@@ -69,7 +69,9 @@ export default defineConfig({
     // 默认 node 环境（纯逻辑测试）；组件测试文件用 `// @vitest-environment jsdom` 逐文件切换。
     // 首个组件测试：src/features/settings/components/entity-type-list.clamp-tooltip.test.tsx（Issue#48）。
     environment: 'node',
-    setupFiles: [],
+    // Issue#355：vitest 环境默认钉 classic 主题（存量测试钉的是 classic 行为；
+    // ds 专属测试显式切换主题），见 src/test-setup.ts。
+    setupFiles: ['./src/test-setup.ts'],
   },
   server: {
     port: 3000,

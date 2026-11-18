@@ -29,15 +29,16 @@ export function JobsFilters({
 
   return (
     <section className="saas-panel mb-2 grid shrink-0 gap-2.5 rounded-[20px] border-border/70 bg-card/95 p-2.5 shadow-[var(--shadow-control)] xl:grid-cols-[minmax(260px,0.7fr)_minmax(520px,1fr)_auto] xl:items-center 2xl:p-3">
-      <div className="flex min-w-0 flex-col gap-1">
+      <div className="jobs-filters-copy flex min-w-0 flex-col gap-1">
         {/* Issue#351 B3：删「操作」kicker chip（对用户零信息量） */}
         <h2 className="page-title truncate text-base">{t('jobs.filters.title')}</h2>
         <p className="page-copy truncate text-xs leading-4">{t('jobs.filters.desc')}</p>
       </div>
 
       {/* Issue#351 B3：统计卡只留与页签徽标口径不重叠的两张——
-          运行/待复核/已完成由页签承载（同一信息只出现一次）。 */}
-      <div className="grid min-w-0 grid-cols-2 gap-1.5 xl:max-w-[280px]">
+          运行/待复核/已完成由页签承载（同一信息只出现一次）。
+          Issue#355：ds 骨架下信息上移至标题区/指标条，这两块经锚点类在 ds 隐藏。 */}
+      <div className="jobs-filters-pills grid min-w-0 grid-cols-2 gap-1.5 xl:max-w-[280px]">
         <MetricPill label={t('jobs.metric.totalJobs')} value={metrics.totalJobs} />
         <MetricPill label={t('jobs.metric.riskFiles')} value={metrics.riskItems} tone="alert" />
       </div>
