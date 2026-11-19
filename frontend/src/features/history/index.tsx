@@ -14,6 +14,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { InteractionLockOverlay } from '@/components/InteractionLockOverlay';
 import { PaginationRail } from '@/components/PaginationRail';
+import { useUiTheme } from '@/theme/ui-theme';
+import { NumericPager } from '@/features/jobs/components/jobs-pagination';
 import { useHistory } from './hooks/use-history';
 import { HistoryFilterMenu, HistoryFilters } from './components/history-filters';
 import { TrashRecycleDialog } from './components/trash-dialog';
@@ -26,6 +28,10 @@ import { PAGE_SIZE_OPTIONS } from './hooks/use-history';
 export function HistoryView() {
   const t = useT();
   const s = useHistory();
+  // Issue#355 iOS 重置：ds 分支配数字页码分页器（渲染层换装，数据口径同源）。
+  const dsMode = useUiTheme((st) => st.theme) === 'ds';
+  const rangeStart = s.total > 0 ? (s.page - 1) * s.pageSize + 1 : 0;
+  const rangeEnd = s.total > 0 ? Math.min(s.total, s.page * s.pageSize) : 0;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="history-page">
@@ -59,7 +65,7 @@ export function HistoryView() {
         </Alert>
       )}
 
-      <Card className="page-surface flex min-h-0 flex-1 overflow-visible rounded-[20px] border-border/70 bg-card/95 shadow-[var(--shadow-md)]">
+      <Card className="ios-card page-surface flex min-h-0 flex-1 overflow-visible rounded-[20px] border-border/70 bg-card/95 shadow-[var(--shadow-md)]">
         <CardContent className="flex min-h-0 flex-1 flex-col overflow-visible p-0">
           <div className="flex shrink-0 flex-nowrap items-center justify-between gap-3 border-b border-border/70 px-3 py-2.5 sm:px-4">
             <div className="page-section-heading flex min-w-0 items-center gap-2">
@@ -112,22 +118,41 @@ export function HistoryView() {
         </CardContent>
       </Card>
       <div className="mt-2 shrink-0">
-        <PaginationRail
-          page={s.page}
-          pageSize={s.pageSize}
-          totalItems={s.total}
-          totalPages={s.totalPages}
-          onPageChange={s.goPage}
-          onPageSizeChange={s.changePageSize}
-          pageSizeOptions={PAGE_SIZE_OPTIONS}
-          rangeLabel={t('history.showRange')}
-          perPageLabel={t('history.perPage')}
-          itemsUnitLabel={t('history.itemsUnit')}
-          compact
-          disabled={s.initialLoading || s.tableLoading || s.interactionLocked}
-          reserveWhenEmpty
-          className="history-pagination-rail jobs-pagination-rail !min-h-10 !rounded-xl border-border/70 bg-muted/40"
-        />
+        {dsMode ? (
+          <NumericPager
+            page={s.page}
+            pageSize={s.pageSize}
+            total={s.total}
+            totalPages={s.totalPages}
+            disabled={s.initialLoading || s.tableLoading || s.interactionLocked}
+            onGoPage={s.goPage}
+            onChangePageSize={s.changePageSize}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            infoText={t('history.showRange')
+              .replace('{start}', String(rangeStart))
+              .replace('{end}', String(rangeEnd))
+              .replace('{total}', String(s.total))}
+            perPageLabel={t('history.perPage')}
+            itemsUnitLabel={t('history.itemsUnit')}
+          />
+        ) : (
+          <PaginationRail
+            page={s.page}
+            pageSize={s.pageSize}
+            totalItems={s.total}
+            totalPages={s.totalPages}
+            onPageChange={s.goPage}
+            onPageSizeChange={s.changePageSize}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            rangeLabel={t('history.showRange')}
+            perPageLabel={t('history.perPage')}
+            itemsUnitLabel={t('history.itemsUnit')}
+            compact
+            disabled={s.initialLoading || s.tableLoading || s.interactionLocked}
+            reserveWhenEmpty
+            className="history-pagination-rail jobs-pagination-rail !min-h-10 !rounded-xl border-border/70 bg-muted/40"
+          />
+        )}
       </div>
 
       <Dialog

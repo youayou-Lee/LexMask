@@ -1,0 +1,842 @@
+/* ============================================================
+   Issue#355 · Agent C 工作流页面 CSS（2026-11-19 iOS 视觉重置）
+   范围：单次处理三态（投料/审阅/结果）· 批量向导 · 供料模式 ·
+         还原工具 · 水印工具 · 文档中心 · 批量入口页头
+   真稿：design-proto/ios-single-upload.html · ios-single-review.html ·
+         ios-batch-wizard.html（其余页按布局六规则类推）
+   规格：LexMask-workspace/docs/memory/2026-11-19-issue355-ios-redesign-spec.md
+
+   ── 作用域契约（与 ds-theme.css 相同，契约测试逐行强制） ────
+   本文件每一条选择器都必须以 [data-theme="ds"] 开头；
+   classic（根节点无 data-theme="ds"）= 本文件完全不生效、零新样式。
+   ────────────────────────────────────────────────────────────
+
+   ── 接线要求（编排者执行） ──────────────────────────────────
+   必须在 src/main.tsx 中于 `import './styles/ds-theme.css';` 之后导入：
+     import './styles/ios-pages-c.css';
+   DOM 挂钩（Agent C 各组件上的 inert 类，classic 无 CSS 匹配零影响）：
+     .ds-upload-hero / .ds-drop / .ds-drop-ico / .ds-drop-title /
+     .ds-drop-sub / .ds-drop-cta / .ds-drop-formats / .ds-cfg-strip /
+     .ds-cfg-chip / .ds-cfg-adv / .ds-recent / .ds-canvas-card /
+     .ds-canvas-tools / .ds-inspector / .ds-inspector-card /
+     .ds-stepper-n / .ds-stepper-line / .ds-step-card / .ds-step-head /
+     .ds-step-drop / .ds-step-files / .ds-step-summary / .ds-step-actionbar
+   ============================================================ */
+
+/* ============ 1. 单次处理 · 投料态（产品哲学样板：大上传页 + 小配置条） ============ */
+
+/* 页头右侧「识别历史」tint 胶囊链接（真稿 .head-link） */
+[data-theme="ds"] .ds-head-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 15px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 620;
+  color: var(--ds-accent);
+  background: var(--ds-accent-surface);
+  transition: background-color var(--ds-dur) var(--ds-ease);
+}
+[data-theme="ds"] .ds-head-link:hover {
+  background: var(--ds-accent-surface-2);
+  color: var(--ds-accent);
+}
+[data-theme="ds"] .ds-head-link svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* 1a. hero 白卡：拖拽位 + 配置条 + 最近处理 同住一张 26px 圆角浮层卡（真稿 .hero-card） */
+[data-theme="ds"] .ds-upload-hero {
+  overflow: hidden;
+  background: var(--ds-card);
+  border: 1px solid var(--ds-hair-faint);
+  border-radius: var(--ds-r-2xl);
+  box-shadow: var(--ds-sh-pop);
+}
+/* 拖拽位外层包装（classic 的 min-h 高度下限）在 ds 交还内容高度 */
+[data-theme="ds"] .ds-upload-hero > div:first-child {
+  min-height: 0;
+  flex: none;
+}
+
+/* 1b. 大拖拽位（真稿 .drop）：绿虚线框 + 淡绿面 + 居中列 */
+[data-theme="ds"] .saas-hero.ds-drop {
+  margin: 22px;
+  min-height: 0;
+  flex: none;
+  padding: 52px 30px 44px;
+  border: 2px dashed rgba(16, 163, 127, 0.35);
+  border-radius: 20px;
+  background: rgba(16, 163, 127, 0.045);
+  box-shadow: none;
+}
+[data-theme="ds"] .saas-hero.ds-drop:hover {
+  border-color: rgba(16, 163, 127, 0.55);
+  box-shadow: none;
+}
+[data-theme="ds"] .saas-hero.ds-drop:has(input:focus-visible) {
+  outline: 2px solid var(--ds-accent-bright);
+  outline-offset: 2px;
+}
+/* 拖拽态：drag-active 由 react-dropzone 挂 ring/border-primary——ds 收敛为绿面加深 */
+[data-theme="ds"] .saas-hero.ds-drop.ring-4 {
+  border-color: rgba(16, 163, 127, 0.6);
+  background: rgba(16, 163, 127, 0.09);
+  box-shadow: none;
+}
+
+/* 76px 绿渐变图标（真稿 .drop .ico） */
+[data-theme="ds"] .ds-drop-ico {
+  width: 76px;
+  height: 76px;
+  border-radius: 26px;
+  background: linear-gradient(150deg, #17c79a, #0c8468);
+  color: #ffffff;
+  box-shadow: 0 16px 34px -10px rgba(16, 163, 127, 0.6);
+}
+[data-theme="ds"] .ds-drop-ico svg {
+  width: 34px;
+  height: 34px;
+}
+
+/* 21px/750 标题 + 12.5px 一句话（真稿 .drop .t/.s） */
+[data-theme="ds"] .ds-drop-title {
+  font-size: 21px;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+  color: var(--ds-ink);
+}
+[data-theme="ds"] .ds-drop-sub {
+  font-size: 12.5px;
+  color: var(--ds-muted);
+}
+
+/* 绿胶囊主 CTA（真稿 .drop-btn：44px 渐变胶囊） */
+[data-theme="ds"] .ds-drop-cta {
+  height: 44px;
+  padding: 0 24px;
+  border-radius: 999px;
+  border: none;
+  background: linear-gradient(180deg, #14b58b, #0c8468);
+  color: #ffffff;
+  font-size: 13.5px;
+  font-weight: 680;
+  box-shadow: 0 8px 20px -8px rgba(16, 163, 127, 0.65);
+}
+[data-theme="ds"] .ds-drop-cta:hover {
+  background: linear-gradient(180deg, #17c79a, #0e9070);
+  color: #ffffff;
+}
+[data-theme="ds"] .ds-drop-cta:disabled {
+  opacity: 0.5;
+  background: linear-gradient(180deg, #14b58b, #0c8468);
+  color: #ffffff;
+}
+[data-theme="ds"] .ds-drop-cta svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 格式 chips（真稿 .formats/.fmt：10.5px 白底小胶囊） */
+[data-theme="ds"] .ds-drop-formats {
+  display: flex;
+  gap: 7px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+[data-theme="ds"] .ds-drop-fmt {
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--ds-ink-2);
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid var(--ds-hair-faint);
+  border-radius: 999px;
+  padding: 4px 11px;
+  white-space: nowrap;
+}
+
+/* 1c. 小配置条（真稿 .config-strip）：默认值替选择，高级收进抽屉 */
+[data-theme="ds"] .ds-cfg-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 22px 18px;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: rgba(246, 247, 250, 0.9);
+  border: 1px solid var(--ds-hair-faint);
+}
+[data-theme="ds"] .ds-cfg-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ds-faint);
+  margin-right: 2px;
+}
+[data-theme="ds"] .ds-cfg-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ds-ink-2);
+  background: #ffffff;
+  border: 1px solid var(--ds-hair-faint);
+  border-radius: 999px;
+  padding: 6px 12px;
+  white-space: nowrap;
+}
+[data-theme="ds"] .ds-cfg-chip svg {
+  width: 12px;
+  height: 12px;
+  color: var(--ds-accent-bright);
+  flex: none;
+}
+/* 投料态「高级」入口（真稿 .cfg-adv：右侧安静文字钮） */
+[data-theme="ds"] .ds-cfg-adv {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 620;
+  color: var(--ds-muted);
+  border-radius: 999px;
+  padding: 6px 12px;
+}
+[data-theme="ds"] .ds-cfg-adv:hover {
+  background: rgba(17, 20, 28, 0.05);
+  color: var(--ds-ink);
+}
+[data-theme="ds"] .ds-cfg-adv svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* 投料态服务告警（沿用既有 testid，卡内样式并入 hero 卡语言） */
+[data-theme="ds"] [data-testid='playground-offline-hint'] {
+  margin: 0 22px 16px;
+  border-radius: 14px;
+  border-color: rgba(245, 158, 11, 0.24);
+  background: var(--ds-warn-surface);
+}
+
+/* 1d. 最近处理（真稿 .recent/.recent-row：分组标题小字 + 行内发丝分隔） */
+[data-theme="ds"] .ds-recent {
+  padding: 14px 22px 18px;
+  border-top: 1px solid var(--ds-hair-faint);
+}
+[data-theme="ds"] .ds-recent-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ds-faint);
+  margin-bottom: 9px;
+}
+[data-theme="ds"] .ds-recent-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 12px;
+  text-align: left;
+  transition: background-color var(--ds-dur) var(--ds-ease);
+}
+[data-theme="ds"] .ds-recent-row:hover {
+  background: rgba(17, 20, 28, 0.04);
+}
+[data-theme="ds"] .ds-recent-row:disabled {
+  opacity: 0.6;
+}
+[data-theme="ds"] .ds-recent-ic {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--ds-neutral-surface);
+  display: grid;
+  place-items: center;
+  color: #546070;
+  flex: none;
+}
+[data-theme="ds"] .ds-recent-ic svg {
+  width: 14px;
+  height: 14px;
+}
+[data-theme="ds"] .ds-recent-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ds-ink);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-theme="ds"] .ds-recent-meta {
+  font-size: 10.5px;
+  color: var(--ds-faint);
+}
+[data-theme="ds"] .ds-recent-st {
+  margin-left: auto;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--ds-accent);
+  background: var(--ds-accent-surface);
+  padding: 3px 9px;
+  border-radius: 999px;
+  flex: none;
+  white-space: nowrap;
+}
+
+/* ============ 2. 单次处理 · 审阅态（画布玻璃卡 + 检查器 iOS 卡片组） ============ */
+
+/* 2a. 画布卡：玻璃（真稿 .canvas-card），覆盖 .saas-panel 白卡口径 */
+[data-theme="ds"] .saas-panel.ds-canvas-card {
+  background: var(--ds-glass);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: var(--ds-r-2xl);
+  box-shadow: var(--ds-sh-pop);
+  -webkit-backdrop-filter: var(--ds-blur);
+  backdrop-filter: var(--ds-blur);
+}
+
+/* 画布工具行：玻璃卡内透明化 + 文件名提升为页标题口径（真稿 .page-title 24px） */
+[data-theme="ds"] [data-testid='playground-toolbar'] {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom-color: var(--ds-hair-faint);
+  padding: 12px 16px;
+}
+[data-theme="ds"] [data-testid='playground-toolbar'] h3 {
+  font-size: 17px;
+  font-weight: 740;
+  letter-spacing: -0.015em;
+  color: var(--ds-ink);
+}
+[data-theme="ds"] [data-testid='playground-toolbar'] p {
+  font-size: 11.5px;
+  color: var(--ds-muted);
+}
+[data-theme="ds"] [data-testid='playground-toolbar'] > div:first-child > div:first-child {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: rgba(120, 134, 168, 0.13);
+  border-color: transparent;
+  color: #546070;
+}
+
+/* 工具簇=分段控件轨道（真稿 .tool-seg：灰轨道白滑块，白玻璃卡里不再套白框） */
+[data-theme="ds"] .ds-canvas-tools {
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: rgba(118, 128, 148, 0.14);
+  box-shadow: none;
+  padding: 3px;
+}
+[data-theme="ds"] .ds-canvas-tools button {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+[data-theme="ds"] .ds-canvas-tools button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--ds-ink);
+}
+[data-theme="ds"] .ds-canvas-tools button:disabled {
+  background: transparent;
+}
+
+/* 画布下的单导出条（file_id 行）并入玻璃卡语言 */
+[data-theme="ds"] .ds-canvas-card > div:nth-child(2) {
+  border-top-color: var(--ds-hair-faint);
+}
+
+/* 棋盘衬底（真稿 .canvas-body：repeating-conic 22px 格）。钩子=画布壳容器
+   #playground-bbox-editor（playground-page.tsx，Agent C 分区）；编辑器本体
+   （src/components/ImageBBoxEditor.tsx，A 分区）不碰——若其自带不透明底，
+   本图案只是不显，无副作用（门④浏览器核验）。 */
+[data-theme="ds"] #playground-bbox-editor {
+  background: repeating-conic-gradient(#e9ebef 0% 25%, #f1f2f5 0% 50%) 50% / 22px 22px;
+}
+
+/* 2b. 检查器（真稿 .inspector/.panel）：iOS 白卡组 */
+[data-theme="ds"] .ds-inspector {
+  scrollbar-width: thin;
+}
+[data-theme="ds"] .ds-inspector > .ds-inspector-card {
+  background: var(--ds-card);
+  border: 1px solid var(--ds-hair-faint);
+  border-radius: var(--ds-r-xl);
+  box-shadow: var(--ds-sh-card);
+  backdrop-filter: none;
+}
+
+/* 识别卡两按钮=分段双选（真稿 .seg-block：轨道灰、选中白滑块） */
+[data-theme="ds"] .ds-inspector-card .ds-inspector-seg {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 12px;
+  background: rgba(118, 128, 148, 0.14);
+}
+[data-theme="ds"] .ds-inspector-card .ds-inspector-seg > button {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 560;
+  color: var(--ds-ink-2);
+  padding: 0 8px;
+}
+[data-theme="ds"] .ds-inspector-card .ds-inspector-seg > button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--ds-ink);
+}
+
+/* 大胶囊 CTA（真稿 .big-cta：46px 渐变胶囊；子集口径保持红） */
+[data-theme="ds"] [data-testid='playground-redact-btn'] {
+  height: 46px;
+  border-radius: 999px;
+  border: none;
+  background: linear-gradient(180deg, #14b58b, #0c8468);
+  color: #ffffff;
+  font-size: 14.5px;
+  font-weight: 700;
+  box-shadow:
+    0 10px 26px -10px rgba(16, 163, 127, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+[data-theme="ds"] [data-testid='playground-redact-btn']:hover:not(:disabled) {
+  background: linear-gradient(180deg, #17c79a, #0e9070);
+  color: #ffffff;
+}
+[data-theme="ds"] [data-testid='playground-redact-btn']:disabled {
+  background: linear-gradient(180deg, #14b58b, #0c8468);
+  color: #ffffff;
+  opacity: 0.45;
+}
+/* 子集口径（识别中先匿名化已处理页）=红胶囊（既有语义，配色平移） */
+[data-theme="ds"] [data-testid='playground-redact-btn'][data-subset='true'] {
+  background: linear-gradient(180deg, #ef4444, #dc2626);
+  box-shadow: 0 10px 26px -10px rgba(220, 38, 38, 0.6);
+}
+[data-theme="ds"] [data-testid='playground-redact-btn'][data-subset='true']:hover:not(:disabled) {
+  background: linear-gradient(180deg, #f05252, #e13232);
+}
+
+/* 检查器「高级」抽屉开关=安静行（真稿 .adv） */
+[data-theme="ds"] [data-testid='playground-advanced-toggle'] {
+  border: 1px solid var(--ds-hair-faint);
+  border-radius: 999px;
+  background: var(--ds-card);
+  padding: 9px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ds-muted);
+}
+[data-theme="ds"] [data-testid='playground-advanced-toggle']:hover {
+  background: rgba(17, 20, 28, 0.04);
+  color: var(--ds-ink);
+}
+
+/* 处理方式/水印单选卡（真稿 seg-block 语义）：选中=tint 淡底、未选=白 */
+[data-theme="ds"] [data-testid^='playground-processing-mode-'],
+[data-theme="ds"] [data-testid^='playground-watermark-delivery-'] {
+  border-radius: 12px;
+  border-color: var(--ds-hair-faint);
+  background: #ffffff;
+}
+[data-theme="ds"] [data-testid^='playground-processing-mode-']:has(input:checked),
+[data-theme="ds"] [data-testid^='playground-watermark-delivery-']:has(input:checked) {
+  border-color: rgba(16, 163, 127, 0.4);
+  background: var(--ds-accent-surface);
+}
+[data-theme="ds"] [data-testid^='playground-processing-mode-']:has(input:checked) .text-primary,
+[data-theme="ds"] [data-testid^='playground-watermark-delivery-']:has(input:checked) .text-primary {
+  color: var(--ds-accent);
+}
+
+/* 检查器内阻止执行提示条=白卡内淡琥珀（ds 语义面） */
+[data-theme="ds"] [data-testid='playground-redact-disabled-reason'] {
+  border-color: var(--ds-hair-faint);
+  background: var(--ds-card-sunken);
+}
+
+/* ============ 3. 结果态（玻璃卡 + 同语言铺装） ============ */
+
+/* 视图切换=分段轨道（真稿 .seg 语义） */
+[data-theme="ds"] [data-testid='playground-result-view-toggle'] {
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: rgba(118, 128, 148, 0.14);
+  box-shadow: none;
+}
+[data-theme="ds"] [data-testid='playground-result-view-toggle'] button {
+  border-radius: 9px;
+}
+[data-theme="ds"] [data-testid='playground-result-view-toggle'] button:hover {
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--ds-ink);
+}
+[data-theme="ds"] [data-testid='playground-result-view-toggle'] button.bg-card {
+  background: var(--ds-card);
+}
+
+/* 成品预览卡（OutputResultView）=玻璃卡语言 */
+[data-theme="ds"] [data-testid='playground-output-view'] {
+  border-radius: var(--ds-r-2xl);
+  border-color: var(--ds-hair-faint);
+  box-shadow: var(--ds-sh-card);
+}
+
+/* 子集横幅=琥珀胶囊（ds 语义面） */
+[data-theme="ds"] [data-testid='playground-result-subset-banner'] {
+  border-radius: 999px;
+  border-color: rgba(245, 158, 11, 0.24);
+  background: var(--ds-warn-surface);
+  color: #a34a08;
+}
+
+/* 结果页水印 chip=中性胶囊 */
+[data-theme="ds"] [data-testid='playground-watermark-chip'] {
+  border-color: var(--ds-hair-faint);
+  background: var(--ds-card-sunken);
+  color: var(--ds-muted);
+  border-radius: 999px;
+}
+
+/* 对照双栏/图像结果卡的卡头（muted/30 条）并入白卡发丝语言；
+   对照窗格本身自带 20px 圆角卡（rounded-[20px]），只换卡头底色与发丝线 */
+[data-theme="ds"] [data-testid='playground-result-preview'] .bg-muted\/30 {
+  background: var(--ds-card-sunken);
+}
+
+/* ============ 4. 批量向导（胶囊步骤条 + 一步一屏聚焦卡） ============ */
+
+/* 4a. 胶囊步骤条（真稿 .stepper/.st/.st-line：完成绿勾/当前墨圈/未到灰） */
+[data-theme="ds"] [data-testid='batch-step-progress'] {
+  gap: 8px;
+}
+[data-theme="ds"] [data-testid='batch-step-progress'] [data-testid^='batch-step-'] {
+  gap: 8px;
+  height: 40px;
+  padding: 0 15px 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--ds-hair-faint);
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: var(--ds-sh-card);
+  font-size: 12.5px;
+  font-weight: 620;
+  color: var(--ds-muted);
+}
+[data-theme="ds"] [data-testid='batch-step-progress'] [data-testid^='batch-step-']:hover:not(:disabled) {
+  border-color: rgba(16, 163, 127, 0.35);
+  color: var(--ds-accent);
+  background: rgba(255, 255, 255, 0.85);
+}
+/* 当前步：白底 + 绿描边 + 墨圈号码 */
+[data-theme="ds"] [data-testid='batch-step-progress'] [data-state='current'] {
+  color: var(--ds-ink);
+  background: #ffffff;
+  box-shadow:
+    var(--ds-sh-card),
+    0 0 0 1.5px var(--ds-accent-bright);
+}
+/* 完成=绿 tint 胶囊 */
+[data-theme="ds"] [data-testid='batch-step-progress'] [data-state='done'] {
+  color: var(--ds-accent);
+  background: var(--ds-accent-surface);
+  border-color: rgba(16, 163, 127, 0.25);
+}
+/* 锁定=灰胶囊（低透明度保持既有语义） */
+[data-theme="ds"] [data-testid='batch-step-progress'] [data-state='locked'] {
+  background: rgba(246, 247, 250, 0.7);
+  opacity: 0.55;
+}
+
+/* 步骤号码圆片（真稿 .st .n：26px 圆）；完成态把数字换成白勾（lucide check 蒙版） */
+[data-theme="ds"] .ds-stepper-n {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  background: rgba(120, 134, 168, 0.14);
+  color: var(--ds-muted);
+  flex: none;
+}
+[data-theme="ds"] [data-state='current'] .ds-stepper-n {
+  background: var(--ds-ink);
+  color: #ffffff;
+}
+[data-theme="ds"] [data-state='done'] .ds-stepper-n {
+  font-size: 0;
+  background: var(--ds-accent-bright);
+  color: #ffffff;
+}
+[data-theme="ds"] [data-state='done'] .ds-stepper-n::before {
+  content: '';
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6L9 17l-5-5'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6L9 17l-5-5'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+
+/* 连接线（真稿 .st-line：2px 圆角线，完成段绿色） */
+[data-theme="ds"] .ds-stepper-line {
+  font-size: 0;
+  flex: 1;
+  min-width: 10px;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(120, 134, 168, 0.22);
+}
+[data-theme="ds"] .ds-stepper-line[data-done='true'] {
+  background: var(--ds-accent-bright);
+}
+
+/* 4b. 一步一屏聚焦卡（真稿 .step-card/.step-head） */
+[data-theme="ds"] .ds-step-card {
+  overflow: hidden;
+  background: var(--ds-card);
+  border: 1px solid var(--ds-hair-faint);
+  border-radius: var(--ds-r-2xl);
+  box-shadow: var(--ds-sh-pop);
+}
+[data-theme="ds"] .ds-step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 18px 24px 0;
+}
+[data-theme="ds"] .ds-step-head h2 {
+  font-size: 19px;
+  font-weight: 740;
+  letter-spacing: -0.015em;
+  color: var(--ds-ink);
+}
+[data-theme="ds"] .ds-step-head p {
+  font-size: 12px;
+  color: var(--ds-muted);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 聚焦卡内拖拽位（真稿 .drop 56px 版）；外距/内距由组件 tailwind 类承担 */
+[data-theme="ds"] .ds-step-drop {
+  border: 2px dashed rgba(16, 163, 127, 0.35);
+  border-radius: 18px;
+  background: rgba(16, 163, 127, 0.045);
+}
+[data-theme="ds"] .ds-step-drop:hover {
+  border-color: rgba(16, 163, 127, 0.55);
+  box-shadow: none;
+}
+[data-theme="ds"] .ds-step-drop.ring-4 {
+  border-color: rgba(16, 163, 127, 0.6);
+  background: rgba(16, 163, 127, 0.09);
+  box-shadow: none;
+}
+
+/* 文件队列行（真稿 .frow：34px 图标位 + 发丝分隔 + 尺寸右对齐） */
+[data-theme="ds"] .ds-step-files > div > div {
+  border-top-color: var(--ds-hair-faint);
+}
+[data-theme="ds"] .ds-step-files [data-testid^='step2-row-'] {
+  border-radius: 12px;
+}
+[data-theme="ds"] .ds-step-files [data-testid^='step2-row-']:hover {
+  background: rgba(17, 20, 28, 0.03);
+}
+
+/* 摘要块（真稿 .summary/.sum：sunken 面小卡 + 大数字墨色） */
+[data-theme="ds"] .ds-step-summary {
+  display: flex;
+  gap: 14px;
+  margin: 6px 24px 0;
+  flex-wrap: wrap;
+}
+[data-theme="ds"] .ds-step-summary > div {
+  flex: 1;
+  min-width: 120px;
+  background: rgba(246, 247, 250, 0.9);
+  border: 1px solid var(--ds-hair-faint);
+  border-radius: 14px;
+  padding: 11px 15px;
+}
+[data-theme="ds"] .ds-step-summary .ds-sum-k {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ds-faint);
+}
+[data-theme="ds"] .ds-step-summary .ds-sum-v {
+  font-size: 17px;
+  font-weight: 740;
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-ink);
+  margin-top: 2px;
+}
+[data-theme="ds"] .ds-step-summary .ds-sum-v small {
+  font-size: 11px;
+  font-weight: 560;
+  color: var(--ds-faint);
+  margin-left: 2px;
+}
+
+/* 左右分位动作条（真稿 .actionbar：tip 左 / ghost+绿胶囊右） */
+[data-theme="ds"] .ds-step-actionbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 24px 20px;
+  border-top: 1px solid var(--ds-hair-faint);
+  margin-top: 16px;
+}
+[data-theme="ds"] .ds-step-actionbar .ds-action-tip {
+  font-size: 11.5px;
+  color: var(--ds-faint);
+}
+
+/* 其余向导步骤（1/3/4/5）：卡片语言统一为聚焦卡（无独立稿，按六规则类推） */
+[data-theme="ds"] [data-testid='batch-step1-config'],
+[data-theme="ds"] [data-testid='batch-step3-recognize'],
+[data-theme="ds"] [data-testid='batch-step5-export'] {
+  border-radius: var(--ds-r-2xl);
+  border-color: var(--ds-hair-faint);
+  box-shadow: var(--ds-sh-card);
+}
+
+/* ============ 5. 工具页类推（还原/水印/供料/批量入口/文档中心：大标题页头 + 玻璃卡） ============ */
+
+/* 5a. 页头大标题化（规格 §四.1：32px/760 大标题 + kicker 退场 + 副标题 13.5px）。
+   DOM 复用既有 h1/p（classic 零改动），仅 ds 提升排版。 */
+[data-theme="ds"] [data-testid='restore'] h1,
+[data-theme="ds"] [data-testid='watermark-tool'] h1,
+[data-theme="ds"] [data-testid='agent-md-page'] h1 {
+  font-size: 32px;
+  font-weight: 760;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--ds-ink);
+}
+[data-theme="ds"] [data-testid='restore'] .saas-kicker,
+[data-theme="ds"] [data-testid='watermark-tool'] .saas-kicker,
+[data-theme="ds"] .saas-panel:has([data-testid='batch-hub-title']) .saas-kicker {
+  display: none;
+}
+[data-theme="ds"] [data-testid='restore'] section:first-child p,
+[data-theme="ds"] [data-testid='watermark-tool'] section:first-child p,
+[data-theme="ds"] .saas-panel:has([data-testid='batch-hub-title']) > div > p {
+  margin-top: 6px;
+  font-size: 13.5px;
+  color: var(--ds-muted);
+}
+[data-theme="ds"] [data-testid='batch-hub-title'] {
+  font-size: 32px;
+  font-weight: 760;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--ds-ink);
+}
+
+/* 5b. 供料模式页（agent-md）：四步动线卡=白卡组语言 */
+[data-theme="ds"] [data-testid='agent-md-page'] h1 {
+  margin: 0;
+}
+[data-theme="ds"] [data-testid='agent-md-step-upload'],
+[data-theme="ds"] [data-testid='agent-md-dropzone'] {
+  border-radius: var(--ds-r-2xl);
+}
+[data-theme="ds"] [data-testid='agent-md-dropzone'] {
+  border-color: rgba(16, 163, 127, 0.35);
+  background: rgba(16, 163, 127, 0.045);
+}
+[data-theme="ds"] [data-testid='agent-md-dropzone']:hover {
+  border-color: rgba(16, 163, 127, 0.55);
+  box-shadow: none;
+}
+[data-theme="ds"] [data-testid='agent-md-dropzone'] > div:first-of-type {
+  width: 56px;
+  height: 56px;
+  border-radius: 19px;
+  background: linear-gradient(150deg, #17c79a, #0c8468);
+  color: #ffffff;
+  box-shadow: 0 12px 26px -10px rgba(16, 163, 127, 0.6);
+}
+
+/* 5c. 还原/水印工具：拖入行=淡绿虚线卡（同上传语言） */
+[data-theme="ds"] [data-testid='restore-mapping-upload'],
+[data-theme="ds"] [data-testid='watermark-tool-upload'] {
+  border-color: rgba(16, 163, 127, 0.35);
+  background: rgba(16, 163, 127, 0.045);
+  border-radius: 16px;
+}
+[data-theme="ds"] [data-testid='restore-mapping-upload']:hover,
+[data-theme="ds"] [data-testid='watermark-tool-upload']:hover {
+  border-color: rgba(16, 163, 127, 0.55);
+  background: rgba(16, 163, 127, 0.07);
+}
+
+/* ============ 6. 文档中心（正文宋体例外：15px/1.95，规格 §五 挂账条款） ============ */
+[data-theme="ds"] .docs-prose {
+  font-family: var(--ds-serif);
+  font-size: 15px;
+  line-height: 1.95;
+}
+[data-theme="ds"] .docs-prose :is(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--ds-sans);
+}
+[data-theme="ds"] .docs-prose :is(code, pre, kbd) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* 文档中心左树：inset grouped 胶囊语言 */
+[data-theme="ds"] nav[aria-label='文档目录'] a,
+[data-theme="ds"] #docs-nav-mobile a {
+  border-radius: 10px;
+  transition:
+    background-color var(--ds-dur) var(--ds-ease),
+    color var(--ds-dur) var(--ds-ease);
+}
+[data-theme="ds"] nav[aria-label='文档目录'] a:hover,
+[data-theme="ds"] #docs-nav-mobile a:hover {
+  background: rgba(17, 20, 28, 0.045);
+  color: var(--ds-ink);
+}
+[data-theme="ds"] nav[aria-label='文档目录'] a.bg-accent,
+[data-theme="ds"] #docs-nav-mobile a.bg-accent {
+  background: var(--ds-accent-surface);
+  color: var(--ds-accent);
+}
+
+/* 文档中心本页目录（右栏）链接同语言 */
+[data-theme="ds"] aside[aria-label='本页目录'] a {
+  border-radius: 8px;
+}
+[data-theme="ds"] aside[aria-label='本页目录'] a:hover {
+  background: rgba(17, 20, 28, 0.045);
+  color: var(--ds-ink);
+}

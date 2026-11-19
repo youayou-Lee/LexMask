@@ -184,10 +184,12 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
 
     return (
       <div
-        className="flex min-h-0 w-full flex-shrink-0 flex-col gap-2.5 self-stretch overflow-x-hidden overflow-y-auto"
+        className="ds-inspector flex min-h-0 w-full flex-shrink-0 flex-col gap-2.5 self-stretch overflow-x-hidden overflow-y-auto"
         data-testid="playground-entity-panel"
       >
-        <Card className="overflow-hidden">
+        {/* Issue#355 Agent C：ds-inspector-card=检查器 iOS 卡组钩子；识别卡两按钮包一层
+            ds-inspector-seg（真稿 .seg-block 分段语义），classic 无 CSS 匹配零影响 */}
+        <Card className="ds-inspector-card overflow-hidden">
           <CardContent className="flex flex-col gap-2.5 p-3.5">
             {visualSkippedNotice && (
               <p
@@ -210,22 +212,24 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
             <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               {t('playground.recognitionSection')}
             </div>
-            {presetQuickSwitch}
-            <Button
-              onClick={onRerunNer}
-              disabled={isLoading}
-              className="h-9 w-full whitespace-nowrap"
-              data-testid="playground-rerun-btn"
-            >
-              {isLoading ? t('playground.recognizing') : t('playground.reRecognize')}
-            </Button>
+            <div className="ds-inspector-seg flex flex-col gap-2.5">
+              {presetQuickSwitch}
+              <Button
+                onClick={onRerunNer}
+                disabled={isLoading}
+                className="h-9 w-full whitespace-nowrap"
+                data-testid="playground-rerun-btn"
+              >
+                {isLoading ? t('playground.recognizing') : t('playground.reRecognize')}
+              </Button>
+            </div>
             <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
               {t('playground.rerunHint')}
             </p>
           </CardContent>
         </Card>
 
-        <Card className="overflow-hidden">
+        <Card className="ds-inspector-card overflow-hidden">
           <CardHeader className="p-3.5 pb-2.5">
             {/* Issue#351 A1：计数只保留右上 Badge 一处（删「已选 N / M」副文案） */}
             <div className="flex items-center justify-between gap-3">
@@ -419,7 +423,7 @@ export const PlaygroundEntityPanel: FC<PlaygroundEntityPanelProps> = memo(
               </div>
             )}
 
-            <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <Card className="ds-inspector-card flex min-h-0 flex-1 flex-col overflow-hidden">
               <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-muted/30 px-3.5">
                 <div className="min-w-0">
                   <span className="block truncate text-sm font-semibold text-foreground">

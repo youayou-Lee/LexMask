@@ -40,10 +40,14 @@ export function BatchStepProgress({ currentStep, canGoStep, goStep }: BatchStepP
         const isLocked = !canVisit && !isCompleted;
         const isIdle = canVisit && !isCurrent && !isCompleted;
         const title = isLocked ? t('batchWizard.stepLocked') : labels[stepNumber];
+        // Issue#355 Agent C：ds 胶囊步骤条状态钩子（真稿 ios-batch-wizard .st：
+        // 完成绿勾/当前墨圈/未到灰）。classic 无 CSS 匹配零影响。
+        const stepState = isCurrent ? 'current' : isCompleted ? 'done' : isLocked ? 'locked' : 'idle';
         return (
           <div key={stepNumber} className="flex shrink-0 items-center gap-1">
             <button
               type="button"
+              data-state={stepState}
               className={cn(
                 'inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium whitespace-nowrap select-none',
                 'transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
@@ -60,11 +64,15 @@ export function BatchStepProgress({ currentStep, canGoStep, goStep }: BatchStepP
               onClick={() => goStep(stepNumber)}
               data-testid={`batch-step-${stepNumber}`}
             >
-              <span className="tabular-nums mr-1">{stepNumber}</span>
+              <span className="ds-stepper-n tabular-nums mr-1">{stepNumber}</span>
               {labels[stepNumber]}
             </button>
             {i < stepOrder.length - 1 && (
-              <span className="hidden text-[11px] text-muted-foreground sm:inline" aria-hidden>
+              <span
+                className="ds-stepper-line hidden text-[11px] text-muted-foreground sm:inline"
+                aria-hidden
+                data-done={stepNumber < currentStep}
+              >
                 &rarr;
               </span>
             )}

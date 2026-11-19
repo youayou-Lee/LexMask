@@ -21,4 +21,5 @@ export const STORAGE_KEYS = {
   ACTIVE_PRESET_VISION_ID_LEGACY: 'legalRedaction:activePresetVisionId',
   PLAYGROUND_DRAFT: 'lexmask:playgroundDraft',
   BATCH_WIZ_FURTHEST_PREFIX: 'lr_batch_wiz_furthest_',
+  UI_THEME: 'lexmask:uiTheme',
 } as const;

@@ -265,7 +265,7 @@ export function HistoryFilters({
   const t = useT();
 
   return (
-    <section className="saas-panel relative z-30 mb-2 grid shrink-0 gap-2.5 overflow-visible rounded-[20px] border-border/70 bg-card/95 p-2.5 shadow-[var(--shadow-control)] xl:grid-cols-[minmax(260px,0.7fr)_minmax(340px,1fr)_auto] xl:items-center 2xl:p-3">
+    <section className="ios-glass saas-panel relative z-30 mb-2 grid shrink-0 gap-2.5 overflow-visible rounded-[20px] border-border/70 bg-card/95 p-2.5 shadow-[var(--shadow-control)] xl:grid-cols-[minmax(260px,0.7fr)_minmax(340px,1fr)_auto] xl:items-center 2xl:p-3">
       <div className="flex min-w-0 flex-col gap-1">
         <div className="flex min-w-0 flex-nowrap items-center gap-x-2">
           <span className="saas-kicker inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap !px-2 !py-1">

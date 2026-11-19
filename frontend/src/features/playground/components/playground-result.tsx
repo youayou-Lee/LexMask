@@ -14,6 +14,7 @@ import {
 import { useT } from '@/i18n';
 import { RESULT_MARK_HIGHLIGHT_MS } from '@/constants/timing';
 import { cn } from '@/lib/utils';
+import { useUiTheme } from '@/theme/ui-theme';
 import { getEntityRiskConfig } from '@/config/entityTypes';
 import { buildTextSegments } from '@/utils/textRedactionSegments';
 import type { VersionHistoryEntry } from '@/types';
@@ -92,6 +93,9 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
   onDownloadPseudonymCsv,
 }) => {
   const t = useT();
+  // Issue#355 Agent C：ds 结果态大标题页头（32px 文件名 + 副信息行，真稿布局六规则 §四.1）；
+  // classic 无页头（动作行即页头）零漂移。
+  const dsMode = useUiTheme((s) => s.theme) === 'ds';
   const [mobileTab, setMobileTab] = useState<'original' | 'redacted' | 'mapping'>('original');
   // Issue #83：结果页「对照 | 成品」视图切换（成品=下载文件的实际渲染）
   // Issue#327：子集预览恒为「成品」视图——对照视图是前端按框实时渲染的，
@@ -328,6 +332,19 @@ export const PlaygroundResult: FC<PlaygroundResultProps> = ({
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
       data-testid="playground-result"
     >
+      {dsMode && fileInfo && (
+        <div className="ds-page-head mb-1 shrink-0" data-testid="ds-result-head">
+          <div className="min-w-0">
+            <h1 className="ds-page-title truncate">{fileInfo.filename}</h1>
+            <p className="ds-page-sub">
+              {t('playground.result.headSub')
+                .replace('{count}', String(redactedCount))
+                .replace('{pages}', String(totalPages))}
+            </p>
+          </div>
+        </div>
+      )}
+
       <PlaygroundResultActionBar
         fileInfo={fileInfo}
         canDownload={resultReady}

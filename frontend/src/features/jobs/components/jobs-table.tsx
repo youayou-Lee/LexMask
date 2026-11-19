@@ -12,6 +12,7 @@ import {
 import { ArrowRight, Eye, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { t, useI18n, useT } from '@/i18n';
+import { useUiTheme } from '@/theme/ui-theme';
 import { cn } from '@/lib/utils';
 import { EmptyState } from '@/components/EmptyState';
 import { AsyncListShell } from '@/components/shared/AsyncListShell';
@@ -85,6 +86,26 @@ function formatUpdatedAt(value: string): string {
   return date.toLocaleString(locale === 'en' ? 'en-US' : 'zh-CN');
 }
 
+// Issue#355 ds 表格：人性化时间（定稿「今天 10:42 / 昨天 18:32 / 11-14 11:46」）。
+// classic 沿用 formatUpdatedAt（完整本地化时间），双轨互不影响。
+function formatUpdatedAtHuman(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return t('jobs.updatedAtUnknown');
+  const locale = useI18n.getState().locale === 'en' ? 'en' : 'zh';
+  const now = new Date();
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const dayDiff = Math.round((startOfDay(now) - startOfDay(date)) / 86_400_000);
+  const hm = date.toLocaleTimeString(locale === 'en' ? 'en-US' : 'zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  if (dayDiff === 0) return locale === 'en' ? `Today ${hm}` : `今天 ${hm}`;
+  if (dayDiff === 1) return locale === 'en' ? `Yesterday ${hm}` : `昨天 ${hm}`;
+  const md = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  return `${md} ${hm}`;
+}
+
 // Issue#351 B2：空态分流所需的全局口径（工单单位，与表体行数可对账）。
 export type JobsTableStats = {
   totalJobs: number;
@@ -114,12 +135,23 @@ const jobsGridStyle: CSSProperties = {
   columnGap: '10px',
 };
 
+// Issue#355 ds 骨架（定稿表格）：任务/状态/进度/统计/更新时间/3 操作 —— 8 列。
+// 4 个裸数字计数列合并为「已完成/总数 + 状态角标」统计列（定稿 §6.4）。
+const dsJobsGridStyle: CSSProperties = {
+  gridTemplateColumns:
+    'minmax(220px,2.1fr) minmax(92px,0.55fr) minmax(168px,1.05fr) minmax(92px,0.5fr) minmax(136px,0.7fr) minmax(44px,0.3fr) minmax(44px,0.3fr) minmax(44px,0.3fr)',
+  columnGap: '14px',
+};
+
 function stopRowClick(event: ReactMouseEvent) {
   event.stopPropagation();
 }
 
 const JOBS_MIN_PAGE_SIZE = 10;
 const JOBS_MAX_PAGE_SIZE = 20;
+// Issue#355：ds 表格行高下限（iOS 重置：inset grouped 行高 ≥64px，真稿 .row
+// min-height:64px；副信息行需要竖向空间）；classic 走密度系统。
+const JOBS_DS_ROW_MIN_HEIGHT = 64;
 const JOBS_TABLE_MIN_CHILD_HEIGHT = 22;
 const JOBS_TABLE_MAX_CHILD_HEIGHT = 34;
 const JOBS_TABLE_MIN_PADDING_Y = 3;
@@ -187,13 +219,20 @@ export function JobsTable({
 }: JobsTableProps) {
   const t = useT();
   const bodyRef = useRef<HTMLDivElement>(null);
+  // Issue#355 ds 骨架：定稿表格（8 列 + 合并统计列 + 副信息行 + 人性化时间 + 56px 行高下限）。
+  const dsMode = useUiTheme((s) => s.theme) === 'ds';
   const rowHeight = useProportionalRowHeight({
     pageSize,
     minPageSize: JOBS_MIN_PAGE_SIZE,
     maxPageSize: JOBS_MAX_PAGE_SIZE,
     bodyRef,
   });
-  const density = useMemo(() => getJobsTableDensity(pageSize, rowHeight), [pageSize, rowHeight]);
+  // ds 下行高不低于定稿 56px（副信息行需要竖向空间）；classic 密度系统原样。
+  const effectiveRowHeight = dsMode ? Math.max(rowHeight, JOBS_DS_ROW_MIN_HEIGHT) : rowHeight;
+  const density = useMemo(
+    () => getJobsTableDensity(pageSize, effectiveRowHeight),
+    [pageSize, effectiveRowHeight],
+  );
   const safePageSize = normalizeJobsPageSize(pageSize);
   const fillerRowCount = Math.max(0, safePageSize - rows.length);
   const bodyStyle: CSSProperties = {
@@ -241,7 +280,7 @@ export function JobsTable({
     >
       <div className="flex shrink-0 flex-nowrap items-center justify-between gap-3 border-b border-border/70 px-3 py-2.5 sm:px-4">
         <div className="page-section-heading min-w-0">
-          <h3 className="truncate text-sm font-semibold tracking-[-0.02em]">
+          <h3 className="jobs-table-heading truncate text-sm font-semibold tracking-[-0.02em]">
             {t('jobs.taskRecords')}
           </h3>
         </div>
@@ -252,19 +291,37 @@ export function JobsTable({
 
       <div
         className="jobs-table-head shrink-0 border-b border-border/70 bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground sm:px-4"
-        style={jobsGridStyle}
+        style={dsMode ? dsJobsGridStyle : jobsGridStyle}
       >
-        <span className="jobs-task-cell">{t('jobs.task')}</span>
-        <span className="jobs-count-head">{t('jobs.totalCountHeader')}</span>
-        <span className="jobs-count-head">{t('jobs.completedHeader')}</span>
-        <span className="jobs-count-head">{t('jobs.awaitingReviewHeader')}</span>
-        <span className="jobs-count-head">{t('jobs.abnormalHeader')}</span>
-        <span className="jobs-progress-cell">{t('jobs.progress')}</span>
-        <span className="jobs-status-cell">{t('jobs.currentStatus')}</span>
-        <span className="jobs-updated-cell">{t('jobs.updatedAt')}</span>
-        <span className="jobs-action-column-head">{t('jobNav.continueReview')}</span>
-        <span className="jobs-action-column-head">{t('jobs.viewDetail')}</span>
-        <span className="jobs-action-column-head">{t('jobs.deleteAction')}</span>
+        {dsMode ? (
+          <>
+            <span className="jobs-task-cell">{t('jobs.task')}</span>
+            <span className="jobs-status-cell">{t('jobs.currentStatus')}</span>
+            <span className="jobs-progress-cell">{t('jobs.progress')}</span>
+            <span className="jobs-count-head">{t('jobs.statsHeader')}</span>
+            <span className="jobs-updated-cell">{t('jobs.updatedAt')}</span>
+            {/* 冷评审 #4：操作三列 ghost 图标，表头合并为单个「操作」（占 3 列） */}
+            <span className="jobs-action-column-head" style={{ gridColumn: 'span 3' }}>
+              {t('jobs.actionsHeader')}
+            </span>
+            <span className="jobs-action-column-head" aria-hidden />
+            <span className="jobs-action-column-head" aria-hidden />
+          </>
+        ) : (
+          <>
+            <span className="jobs-task-cell">{t('jobs.task')}</span>
+            <span className="jobs-count-head">{t('jobs.totalCountHeader')}</span>
+            <span className="jobs-count-head">{t('jobs.completedHeader')}</span>
+            <span className="jobs-count-head">{t('jobs.awaitingReviewHeader')}</span>
+            <span className="jobs-count-head">{t('jobs.abnormalHeader')}</span>
+            <span className="jobs-progress-cell">{t('jobs.progress')}</span>
+            <span className="jobs-status-cell">{t('jobs.currentStatus')}</span>
+            <span className="jobs-updated-cell">{t('jobs.updatedAt')}</span>
+            <span className="jobs-action-column-head">{t('jobNav.continueReview')}</span>
+            <span className="jobs-action-column-head">{t('jobs.viewDetail')}</span>
+            <span className="jobs-action-column-head">{t('jobs.deleteAction')}</span>
+          </>
+        )}
       </div>
 
       <div
@@ -337,6 +394,7 @@ export function JobsTable({
                 showJobType={showJobType}
                 onDelete={onDelete}
                 stopEvent={stopRowClick}
+                dsMode={dsMode}
               />
             ))}
             {Array.from({ length: fillerRowCount }).map((_, index) => (
@@ -461,6 +519,7 @@ type JobRowProps = {
   showJobType: boolean;
   onDelete: (job: JobSummary) => void;
   stopEvent: (e: ReactMouseEvent) => void;
+  dsMode: boolean;
 };
 
 function MetricCell({
@@ -497,6 +556,7 @@ const JobRow = memo(function JobRow({
   showJobType,
   onDelete,
   stopEvent,
+  dsMode,
 }: JobRowProps) {
   const t = useT();
   const navLabels = buildJobPrimaryNavigationLabels(t);
@@ -534,46 +594,126 @@ const JobRow = memo(function JobRow({
         <div
           className="jobs-row-main overflow-hidden whitespace-nowrap px-3 py-2 sm:px-4"
           style={{
-            ...jobsGridStyle,
+            ...(dsMode ? dsJobsGridStyle : jobsGridStyle),
             height: `${density.rowHeight}px`,
             minHeight: `${density.rowHeight}px`,
             paddingTop: `${density.rowPaddingY}px`,
             paddingBottom: `${density.rowPaddingY}px`,
           }}
         >
-          <div className="jobs-task-cell min-w-0 overflow-hidden">
-            <div className="flex min-w-0 flex-nowrap items-center gap-2">
-              {showJobType ? <JobTypeBadge jobType={job.job_type} /> : null}
-              <p
-                className="truncate text-sm font-medium"
-                title={job.title || t('jobs.unnamedTask')}
-              >
-                {job.title || t('jobs.unnamedTask')}
-              </p>
-            </div>
-          </div>
+          {dsMode ? (
+            <>
+              {/* ds 任务列：类型徽章 + 标题 + 副信息行（定稿 .tname/.tmeta） */}
+              <div className="jobs-task-cell min-w-0 overflow-hidden">
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <div className="flex min-w-0 flex-nowrap items-center gap-2">
+                    {showJobType ? <JobTypeBadge jobType={job.job_type} /> : null}
+                    <p
+                      className="truncate text-sm font-medium"
+                      title={job.title || t('jobs.unnamedTask')}
+                    >
+                      {job.title || t('jobs.unnamedTask')}
+                    </p>
+                  </div>
+                  <p className="truncate text-[11px] leading-tight text-muted-foreground">
+                    {t('jobs.filesCount').replace('{n}', String(counts.total))}
+                  </p>
+                </div>
+              </div>
 
-          <MetricCell
-            value={counts.total}
-            title={t('jobs.totalCountHeader')}
-            testId={`job-total-count-${job.id}`}
-          />
-          <MetricCell
-            value={counts.completed}
-            title={t('jobs.completedHeader')}
-            testId={`job-completed-count-${job.id}`}
-          />
-          <MetricCell
-            value={counts.awaitingReview}
-            title={t('jobs.awaitingReviewHeader')}
-            testId={`job-awaiting-review-count-${job.id}`}
-          />
-          <MetricCell
-            value={counts.abnormal}
-            title={t('jobs.abnormalHeader')}
-            tone={counts.abnormal > 0 ? 'danger' : 'muted'}
-            testId={`job-abnormal-count-${job.id}`}
-          />
+              <div className="jobs-status-cell flex min-w-0 flex-nowrap items-center gap-2">
+                <span className="shrink-0 text-xs text-muted-foreground md:hidden">
+                  {t('jobs.currentStatus')}
+                </span>
+                <JobStatusBadge status={job.status} />
+              </div>
+
+              <div className="jobs-progress-cell min-w-0 overflow-hidden">
+                <div className="flex min-w-0 flex-nowrap items-center gap-2 whitespace-nowrap">
+                  <div className="h-1.5 min-w-[72px] flex-1 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className={cn(
+                        'h-full rounded-full transition-all',
+                        progressMeter.tone === 'danger'
+                          ? 'tone-progress-danger'
+                          : progressMeter.tone === 'success'
+                            ? 'tone-progress-success'
+                            : progressMeter.tone === 'warning'
+                              ? 'tone-progress-warning'
+                              : 'tone-progress-brand',
+                      )}
+                      style={{ width: `${progressMeter.percent}%` }}
+                    />
+                  </div>
+                  <span
+                    className="shrink-0 text-caption text-muted-foreground tabular-nums"
+                    data-testid={`job-progress-state-${job.id}`}
+                  >
+                    {progressMeter.percent}%
+                  </span>
+                </div>
+              </div>
+
+              {/* ds 统计列（定稿 .counts）：已完成/总数 + 待审/失败角标 */}
+              <div
+                className="jobs-metric-cell gap-1.5"
+                data-testid={`job-stats-${job.id}`}
+                title={`${t('jobs.completedHeader')} / ${t('jobs.totalCountHeader')}`}
+              >
+                <span className="jobs-metric-value">
+                  {counts.completed} / {counts.total}
+                </span>
+                {counts.awaitingReview > 0 && (
+                  <span className="tone-badge-review shrink-0 whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums">
+                    {t('jobs.awaitingBadge').replace('{n}', String(counts.awaitingReview))}
+                  </span>
+                )}
+                {counts.abnormal > 0 && (
+                  <span className="tone-badge-danger shrink-0 whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums">
+                    {t('jobs.failedBadge').replace('{n}', String(counts.abnormal))}
+                  </span>
+                )}
+              </div>
+
+              <div className="jobs-updated-cell hidden text-caption text-muted-foreground tabular-nums whitespace-nowrap md:block">
+                {formatUpdatedAtHuman(job.updated_at)}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="jobs-task-cell min-w-0 overflow-hidden">
+                <div className="flex min-w-0 flex-nowrap items-center gap-2">
+                  {showJobType ? <JobTypeBadge jobType={job.job_type} /> : null}
+                  <p
+                    className="truncate text-sm font-medium"
+                    title={job.title || t('jobs.unnamedTask')}
+                  >
+                    {job.title || t('jobs.unnamedTask')}
+                  </p>
+                </div>
+              </div>
+
+              <MetricCell
+                value={counts.total}
+                title={t('jobs.totalCountHeader')}
+                testId={`job-total-count-${job.id}`}
+              />
+              <MetricCell
+                value={counts.completed}
+                title={t('jobs.completedHeader')}
+                testId={`job-completed-count-${job.id}`}
+              />
+              <MetricCell
+                value={counts.awaitingReview}
+                title={t('jobs.awaitingReviewHeader')}
+                testId={`job-awaiting-review-count-${job.id}`}
+              />
+              <MetricCell
+                value={counts.abnormal}
+                title={t('jobs.abnormalHeader')}
+                tone={counts.abnormal > 0 ? 'danger' : 'muted'}
+                testId={`job-abnormal-count-${job.id}`}
+              />
 
           <div className="jobs-progress-cell min-w-0 overflow-hidden">
             <div className="flex min-w-0 flex-nowrap items-center gap-2 whitespace-nowrap">
@@ -611,6 +751,8 @@ const JobRow = memo(function JobRow({
           <div className="jobs-updated-cell hidden md:block text-caption text-muted-foreground tabular-nums whitespace-nowrap">
             {formatUpdatedAt(job.updated_at)}
           </div>
+            </>
+          )}
 
           <div className="jobs-action-cell" onClick={stopEvent}>
             {showPrimaryAction && primary.kind === 'link' ? (
@@ -618,7 +760,10 @@ const JobRow = memo(function JobRow({
                 asChild
                 variant="outline"
                 size="icon"
-                className={cn(actionIconBtnBase, 'bg-background hover:bg-muted')}
+                className={cn(
+                  actionIconBtnBase,
+                  'jobs-action-btn jobs-action-primary bg-background hover:bg-muted',
+                )}
               >
                 <Link
                   to={primary.to}
@@ -640,7 +785,7 @@ const JobRow = memo(function JobRow({
               asChild
               variant="outline"
               size="icon"
-              className={cn(actionIconBtnBase, 'bg-background hover:bg-muted')}
+              className={cn(actionIconBtnBase, 'jobs-action-btn bg-background hover:bg-muted')}
             >
               <Link
                 to={detailHref}
@@ -667,7 +812,7 @@ const JobRow = memo(function JobRow({
                 }}
                 className={cn(
                   actionIconBtnBase,
-                  'border border-transparent text-muted-foreground hover:border-[var(--error-border)] hover:bg-[var(--error-surface)] hover:text-[var(--error-foreground)] disabled:opacity-50',
+                  'jobs-action-btn border border-transparent text-muted-foreground hover:border-[var(--error-border)] hover:bg-[var(--error-surface)] hover:text-[var(--error-foreground)] disabled:opacity-50',
                 )}
                 title={t('jobs.deleteTask')}
                 aria-label={t('jobs.deleteTask')}

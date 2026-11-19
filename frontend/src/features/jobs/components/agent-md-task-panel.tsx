@@ -40,7 +40,7 @@ export function AgentMdTaskPanel({ items, view, loading, err, onRetry }: AgentMd
 
   return (
     <section
-      className="mb-2 shrink-0 rounded-xl border border-border/70 bg-muted/20 px-3 py-2"
+      className="jobs-agent-panel mb-2 shrink-0 rounded-xl border border-border/70 bg-muted/20 px-3 py-2"
       data-testid="agent-md-task-panel"
     >
       <div className="mb-1.5 flex items-center gap-2">

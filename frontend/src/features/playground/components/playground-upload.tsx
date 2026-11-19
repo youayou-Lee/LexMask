@@ -2,14 +2,18 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { FC } from 'react';
-import { ChevronDown, SlidersHorizontal } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, FileText, SlidersHorizontal } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { resolveLegalTextSelection, sameIdSelection } from '@/config/legalPreset';
 import type { EntityTypeConfig } from '@/config/entityTypes';
 import { Card } from '@/components/ui/card';
 import { useServiceHealth, type ServicesHealth } from '@/hooks/use-service-health';
-import { useT } from '@/i18n';
+import { useI18n, useT } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { fileApi } from '@/services/api';
 import { buildDefaultTextTypeIds } from '@/services/defaultRedactionPreset';
+import { useUiTheme } from '@/theme/ui-theme';
+import type { FileListItem } from '@/types';
 import type { usePlayground } from '../hooks/use-playground';
 import { PlaygroundUploadDropzone } from './playground-upload-dropzone';
 import { resolveTextTypeName } from './playground-upload-config';
@@ -48,8 +52,89 @@ function serviceSummary(entries: ServiceEntry[], t: Translate) {
     .join(', ');
 }
 
+// Issue#355 Agent C（ds 投料态）·最近处理：playground 源最近文件（只读 GET /files），
+// 行为=既有 ?file_id= 深链恢复协议（playground-page resume effect 承接）；拉取失败/为空
+// 整块不渲染（宁缺勿谎）。业务流程零改动：不新增端点、不改路由。
+const RECENT_FILE_LIMIT = 4;
+
+function formatRecentTime(value: string | null | undefined, locale: string): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const isEn = locale === 'en';
+  const now = new Date();
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const dayDiff = Math.round((startOfDay(now) - startOfDay(date)) / 86_400_000);
+  const hm = date.toLocaleTimeString(isEn ? 'en-US' : 'zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  if (dayDiff === 0) return isEn ? `Today ${hm}` : `今天 ${hm}`;
+  if (dayDiff === 1) return isEn ? `Yesterday ${hm}` : `昨天 ${hm}`;
+  const md = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  return `${md} ${hm}`;
+}
+
+const DsRecentFiles: FC = () => {
+  const t = useT();
+  const locale = useI18n((state) => state.locale);
+  const [, setSearchParams] = useSearchParams();
+  const [rows, setRows] = useState<FileListItem[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fileApi
+      .list(1, RECENT_FILE_LIMIT, { source: 'playground' })
+      .then((res) => {
+        if (!cancelled) setRows(Array.isArray(res?.files) ? res.files : []);
+      })
+      .catch(() => {
+        if (!cancelled) setRows([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!rows || rows.length === 0) return null;
+
+  return (
+    <div className="ds-recent" data-testid="playground-recent">
+      <div className="ds-recent-title">{t('playground.upload.recentTitle')}</div>
+      {rows.map((row) => {
+        const done = Boolean(row.has_output);
+        const time = formatRecentTime(row.created_at, locale);
+        return (
+          <button
+            key={row.file_id}
+            type="button"
+            className="ds-recent-row"
+            data-testid={`playground-recent-row-${row.file_id}`}
+            onClick={() => setSearchParams(new URLSearchParams({ file_id: row.file_id }))}
+          >
+            <span className="ds-recent-ic" aria-hidden>
+              <FileText />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="ds-recent-name block">{row.original_filename}</span>
+              {time && <span className="ds-recent-meta block">{time}</span>}
+            </span>
+            <span className="ds-recent-st">
+              {done ? t('playground.upload.recentResult') : t('playground.upload.recentResume')}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+};
+
 export const PlaygroundUpload: FC<PlaygroundUploadProps> = ({ ctx }) => {
   const t = useT();
+  // Issue#355 Agent C：ds=产品哲学样板（大上传页+小配置条，无配置面板/开关墙）；
+  // 识别项三区弹窗入口平移进配置条「高级设置」。classic 分支 DOM 零漂移。
+  const dsMode = useUiTheme((s) => s.theme) === 'ds';
   const { health, checking } = useServiceHealth();
   const { dropzone, uploadIssue, recognition: rec } = ctx;
   // Issue#262 二期 Task 10b：「高级 · 按类型微调」改开识别范围三区弹窗（替换 T6 内联抽屉）。
@@ -179,146 +264,225 @@ export const PlaygroundUpload: FC<PlaygroundUploadProps> = ({ ctx }) => {
     clearPlaygroundTextPresetTracking,
   ]);
 
-  return (
-    // Issue#262 Task 9b：纵向布局（界面稿形态）= 上传大卡 → 摘要卡。
-    // 根容器不设 min-h-0：flex min-height:auto 以内容为下限——内容自然撑高、
-    // 外层 page-stack 滚动；收起时 flex-1 吃掉剩余高度，页面不留大片空白。
-    <div className="flex min-w-0 flex-1 flex-col gap-3.5" data-testid="playground-upload">
-      <PlaygroundUploadDropzone
-        dropzone={dropzone}
-        disabled={uploadBlocked}
-        disabledReason={disabledReason}
-        uploadIssue={uploadIssue}
-      />
-
-      {/* 摘要卡（容器 testid 沿用 playground-type-panel）：chip 行 + 标签墙 + 说明行 + 人话告警，
-          「高级 · 按类型微调」入口打开识别范围三区弹窗（Task 10b）。 */}
-      <Card
-        className="w-full shrink-0 overflow-hidden border-border/70 bg-card"
-        data-testid="playground-type-panel"
-      >
-        <div className="flex flex-col gap-2.5 px-3.5 py-3">
-          <h3 className="sr-only">{t('playground.recognitionTypes')}</h3>
-          {/* 1) chip 行（法律卷宗（默认）/ 全部类型）+ 高级入口 */}
-          <div className="flex flex-wrap items-center gap-2">
-            <div
-              className="flex flex-wrap items-center gap-1.5"
-              role="group"
-              aria-label={t('playground.presetChipGroup')}
-              data-testid="playground-preset-chip-row"
-            >
-              <button
-                type="button"
-                data-testid="playground-preset-chip-legal"
-                aria-pressed={isLegalActive}
-                disabled={!catalogReady}
-                title={catalogHintKey ? t(catalogHintKey) : undefined}
-                onClick={selectLegalPreset}
-                className={cn(
-                  'rounded-full border px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                  isLegalActive
-                    ? 'border-foreground bg-background text-foreground shadow-[var(--shadow-sm)]'
-                    : 'border-border/70 bg-background/60 text-muted-foreground hover:border-border hover:text-foreground',
-                )}
-              >
-                {t('playground.presetLegal')}
-              </button>
-              <button
-                type="button"
-                data-testid="playground-preset-chip-all"
-                aria-pressed={isAllActive}
-                disabled={!catalogReady}
-                title={catalogHintKey ? t(catalogHintKey) : undefined}
-                onClick={selectAllTypes}
-                className={cn(
-                  'rounded-full border px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                  isAllActive
-                    ? 'border-foreground bg-background text-foreground shadow-[var(--shadow-sm)]'
-                    : 'border-border/70 bg-background/60 text-muted-foreground hover:border-border hover:text-foreground',
-                )}
-              >
-                {t('playground.presetAll')}
-              </button>
-            </div>
-            <button
-              type="button"
-              data-testid="playground-scope-entry"
-              aria-haspopup="dialog"
-              aria-expanded={scopeDialogOpen}
-              onClick={() => setScopeDialogOpen(true)}
-              className="ml-auto flex shrink-0 items-center gap-1 rounded-full border border-border/70 bg-muted/35 px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/35 hover:text-foreground"
-            >
-              <SlidersHorizontal className="size-3.5 shrink-0" />
-              {t('playground.advancedTypes')}
-            </button>
-          </div>
-          {/* 2) 标签墙：selectedTypes 实时镜像（弹窗勾选同步） */}
-          {selectedTagTypes.length > 0 && (
-            <div className="flex flex-wrap gap-1.5" data-testid="playground-selected-tags">
-              {selectedTagTypes.map((type) => (
-                <span
-                  key={type.id}
-                  data-testid={`playground-selected-tag-${type.id}`}
-                  className="rounded-md border border-border/60 bg-muted/30 px-1.5 py-0.5 text-[11px] leading-4 text-foreground/85"
-                  title={resolveTextTypeName(type.id, type.name, t)}
-                >
-                  {resolveTextTypeName(type.id, type.name, t)}
-                </span>
-              ))}
-            </div>
+  // 告警块（classic/ds 共用同一 JSX，双轨同源防漂移）
+  const offlineHintBlock = showOfflineHint ? (
+    <div
+      className="rounded-xl border border-[var(--warning-border)] bg-[var(--warning-surface)] px-2.5 py-1.5 text-xs leading-4 text-[var(--warning-foreground)]"
+      data-testid="playground-offline-hint"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 flex-1">{warningMainText}</p>
+        <button
+          type="button"
+          data-testid="playground-offline-hint-details"
+          aria-expanded={offlineDetailsOpen}
+          aria-controls="playground-offline-hint-details-panel"
+          onClick={() => setOfflineDetailsOpen((open) => !open)}
+          className="flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-medium transition-colors hover:bg-[var(--warning-foreground)]/10"
+        >
+          {t('playground.upload.detailsToggle')}
+          <ChevronDown
+            className={cn(
+              'size-3 shrink-0 transition-transform',
+              offlineDetailsOpen && 'rotate-180',
+            )}
+          />
+        </button>
+      </div>
+      {/* Issue#266：aria-controls 引用条件挂载的 id——收起时不在 DOM，ARIA
+          disclosure 允许指向暂缺元素；不改永久挂载+hidden（渲染行为变更出界）。 */}
+      {offlineDetailsOpen && (
+        <div
+          id="playground-offline-hint-details-panel"
+          className="mt-1 space-y-0.5 border-t border-[var(--warning-foreground)]/25 pt-1"
+        >
+          {attentionSummary && (
+            <p className="break-words">
+              <span className="font-medium">{t('playground.upload.affectedServices')}</span>{' '}
+              <span data-testid="playground-affected-services">{attentionSummary}</span>
+            </p>
           )}
-          {/* 3) 说明行（预览口径） */}
-          <p className="text-xs leading-4 text-muted-foreground">
-            {t('playground.upload.summaryNote')}
+          <p className="break-words">
+            <span className="font-medium">{t('playground.upload.nextAction')}</span>{' '}
+            {t(serviceActionKey)}
           </p>
-          {/* 4) 告警（人话主文案 + 「详情」折叠收黑话细节） */}
-          {showOfflineHint && (
-            <div
-              className="rounded-xl border border-[var(--warning-border)] bg-[var(--warning-surface)] px-2.5 py-1.5 text-xs leading-4 text-[var(--warning-foreground)]"
-              data-testid="playground-offline-hint"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <p className="min-w-0 flex-1">{warningMainText}</p>
+        </div>
+      )}
+    </div>
+  ) : null;
+
+  // ds 投料态「高级」入口：与 classic 的 playground-scope-entry 同一 testid/ARIA/弹窗，
+  // 仅落位与文案不同（真稿 .cfg-adv「高级设置 ▸」）。
+  const scopeEntryButton = (
+    <button
+      type="button"
+      data-testid="playground-scope-entry"
+      aria-haspopup="dialog"
+      aria-expanded={scopeDialogOpen}
+      onClick={() => setScopeDialogOpen(true)}
+      className={cn(
+        'shrink-0 items-center gap-1 text-xs font-medium transition-colors',
+        dsMode
+          ? 'ds-cfg-adv'
+          : 'ml-auto flex rounded-full border border-border/70 bg-muted/35 px-3 py-1 text-muted-foreground hover:bg-accent/35 hover:text-foreground',
+      )}
+    >
+      {dsMode ? (
+        <>
+          {t('playground.upload.advancedSettings')}
+          <ChevronRight className="size-3 shrink-0" />
+        </>
+      ) : (
+        <>
+          <SlidersHorizontal className="size-3.5 shrink-0" />
+          {t('playground.advancedTypes')}
+        </>
+      )}
+    </button>
+  );
+
+  if (!dsMode) {
+    return (
+      // Issue#262 Task 9b：纵向布局（界面稿形态）= 上传大卡 → 摘要卡。
+      // 根容器不设 min-h-0：flex min-height:auto 以内容为下限——内容自然撑高、
+      // 外层 page-stack 滚动；收起时 flex-1 吃掉剩余高度，页面不留大片空白。
+      <div className="flex min-w-0 flex-1 flex-col gap-3.5" data-testid="playground-upload">
+        <PlaygroundUploadDropzone
+          dropzone={dropzone}
+          disabled={uploadBlocked}
+          disabledReason={disabledReason}
+          uploadIssue={uploadIssue}
+        />
+
+        {/* 摘要卡（容器 testid 沿用 playground-type-panel）：chip 行 + 标签墙 + 说明行 + 人话告警，
+            「高级 · 按类型微调」入口打开识别范围三区弹窗（Task 10b）。 */}
+        <Card
+          className="w-full shrink-0 overflow-hidden border-border/70 bg-card"
+          data-testid="playground-type-panel"
+        >
+          <div className="flex flex-col gap-2.5 px-3.5 py-3">
+            <h3 className="sr-only">{t('playground.recognitionTypes')}</h3>
+            {/* 1) chip 行（法律卷宗（默认）/ 全部类型）+ 高级入口 */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div
+                className="flex flex-wrap items-center gap-1.5"
+                role="group"
+                aria-label={t('playground.presetChipGroup')}
+                data-testid="playground-preset-chip-row"
+              >
                 <button
                   type="button"
-                  data-testid="playground-offline-hint-details"
-                  aria-expanded={offlineDetailsOpen}
-                  aria-controls="playground-offline-hint-details-panel"
-                  onClick={() => setOfflineDetailsOpen((open) => !open)}
-                  className="flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-medium transition-colors hover:bg-[var(--warning-foreground)]/10"
+                  data-testid="playground-preset-chip-legal"
+                  aria-pressed={isLegalActive}
+                  disabled={!catalogReady}
+                  title={catalogHintKey ? t(catalogHintKey) : undefined}
+                  onClick={selectLegalPreset}
+                  className={cn(
+                    'rounded-full border px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                    isLegalActive
+                      ? 'border-foreground bg-background text-foreground shadow-[var(--shadow-sm)]'
+                      : 'border-border/70 bg-background/60 text-muted-foreground hover:border-border hover:text-foreground',
+                  )}
                 >
-                  {t('playground.upload.detailsToggle')}
-                  <ChevronDown
-                    className={cn(
-                      'size-3 shrink-0 transition-transform',
-                      offlineDetailsOpen && 'rotate-180',
-                    )}
-                  />
+                  {t('playground.presetLegal')}
+                </button>
+                <button
+                  type="button"
+                  data-testid="playground-preset-chip-all"
+                  aria-pressed={isAllActive}
+                  disabled={!catalogReady}
+                  title={catalogHintKey ? t(catalogHintKey) : undefined}
+                  onClick={selectAllTypes}
+                  className={cn(
+                    'rounded-full border px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                    isAllActive
+                      ? 'border-foreground bg-background text-foreground shadow-[var(--shadow-sm)]'
+                      : 'border-border/70 bg-background/60 text-muted-foreground hover:border-border hover:text-foreground',
+                  )}
+                >
+                  {t('playground.presetAll')}
                 </button>
               </div>
-              {/* Issue#266：aria-controls 引用条件挂载的 id——收起时不在 DOM，ARIA
-                  disclosure 允许指向暂缺元素；不改永久挂载+hidden（渲染行为变更出界）。 */}
-              {offlineDetailsOpen && (
-                <div
-                  id="playground-offline-hint-details-panel"
-                  className="mt-1 space-y-0.5 border-t border-[var(--warning-foreground)]/25 pt-1"
-                >
-                  {attentionSummary && (
-                    <p className="break-words">
-                      <span className="font-medium">{t('playground.upload.affectedServices')}</span>{' '}
-                      <span data-testid="playground-affected-services">{attentionSummary}</span>
-                    </p>
-                  )}
-                  <p className="break-words">
-                    <span className="font-medium">{t('playground.upload.nextAction')}</span>{' '}
-                    {t(serviceActionKey)}
-                  </p>
-                </div>
-              )}
+              {scopeEntryButton}
             </div>
+            {/* 2) 标签墙：selectedTypes 实时镜像（弹窗勾选同步） */}
+            {selectedTagTypes.length > 0 && (
+              <div className="flex flex-wrap gap-1.5" data-testid="playground-selected-tags">
+                {selectedTagTypes.map((type) => (
+                  <span
+                    key={type.id}
+                    data-testid={`playground-selected-tag-${type.id}`}
+                    className="rounded-md border border-border/60 bg-muted/30 px-1.5 py-0.5 text-[11px] leading-4 text-foreground/85"
+                    title={resolveTextTypeName(type.id, type.name, t)}
+                  >
+                    {resolveTextTypeName(type.id, type.name, t)}
+                  </span>
+                ))}
+              </div>
+            )}
+            {/* 3) 说明行（预览口径） */}
+            <p className="text-xs leading-4 text-muted-foreground">
+              {t('playground.upload.summaryNote')}
+            </p>
+            {/* 4) 告警（人话主文案 + 「详情」折叠收黑话细节） */}
+            {offlineHintBlock}
+          </div>
+        </Card>
+        {/* 识别范围三区弹窗：按需挂载（关闭即卸载，usePresets 等只在打开时运行） */}
+        {scopeDialogOpen && (
+          <RecognitionScopeDialog
+            open
+            onOpenChange={setScopeDialogOpen}
+            rec={rec}
+            visionApplicable={visionApplicable}
+          />
+        )}
+      </div>
+    );
+  }
+
+  // ── ds 投料态（产品哲学样板，真稿 ios-single-upload）──────────────────
+  // 大拖拽位 + 小配置条（方案 chip + ✓保留水印 + ✓页码过滤 + 高级▸）+ 最近处理。
+  // 产品铁律：投料态零配置面板/零开关墙——preset chips/标签墙不渲染（识别项
+  // 细分全部收进「高级设置」三区弹窗），默认值替选择。
+  return (
+    <div className="flex min-w-0 flex-1 flex-col" data-testid="playground-upload">
+      <div className="ds-upload-hero flex flex-col" data-testid="playground-upload-hero">
+        <PlaygroundUploadDropzone
+          dropzone={dropzone}
+          disabled={uploadBlocked}
+          disabledReason={disabledReason}
+          uploadIssue={uploadIssue}
+        />
+
+        {offlineHintBlock}
+
+        {/* 小配置条：默认值替选择（真稿 .config-strip） */}
+        <div className="ds-cfg-strip" data-testid="playground-config-strip">
+          <span className="ds-cfg-label">{t('playground.upload.schemeLabel')}</span>
+          <span className="ds-cfg-chip" data-testid="playground-scheme-chip">
+            {t('playground.upload.schemeDefault').replace(
+              '{count}',
+              String(selectedTypes.length),
+            )}
+          </span>
+          {rec.watermarkDelivery === 'keep' && (
+            <span className="ds-cfg-chip" data-testid="playground-cfg-watermark">
+              <Check aria-hidden />
+              {t('playground.upload.watermarkKeep')}
+            </span>
           )}
+          <span className="ds-cfg-chip" data-testid="playground-pagefilter-chip">
+            <Check aria-hidden />
+            {t('playground.upload.pageFilter')}
+          </span>
+          {scopeEntryButton}
         </div>
-      </Card>
+
+        {/* 最近处理：playground 源最近文件，?file_id= 深链恢复（既有协议） */}
+        <DsRecentFiles />
+      </div>
+
       {/* 识别范围三区弹窗：按需挂载（关闭即卸载，usePresets 等只在打开时运行） */}
       {scopeDialogOpen && (
         <RecognitionScopeDialog

@@ -9,17 +9,23 @@ import { OnboardingGuide } from '@/components/OnboardingGuide';
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
 import { PlaygroundProvider } from '@/features/playground/playground-context';
 import { SingleTaskProvider } from '@/features/single-task/single-task-context';
+import { useUiTheme } from '@/theme/ui-theme';
+import { cn } from '@/lib/utils';
 
 import { AppSidebar } from './app-sidebar';
 import { AppHeader } from './app-header';
 
 export function Layout() {
   const location = useLocation();
+  // Issue#355 ds 壳：悬浮玻璃侧栏 = floating 变体（侧栏独立浮层、主区满高透底），
+  // 预留宽 270px = 256 视宽 + 14 左缘（ds-theme.css §4 按 .ds-sidebar-shell 注入 14px 内边距）；
+  // classic 保持 inset（主区=圆角卡片 + m-2），双轨互不影响。
+  const dsMode = useUiTheme((s) => s.theme) === 'ds';
 
   return (
     <SidebarProvider
       className="h-dvh min-h-0 overflow-hidden"
-      style={{ '--sidebar-width': '17.5rem' } as CSSProperties}
+      style={{ '--sidebar-width': dsMode ? '270px' : '17.5rem' } as CSSProperties}
     >
       {/* Issue#194 Bug#1：SingleTaskProvider 必须在 PlaygroundProvider 外侧——
           PlaygroundProvider 自身渲染即调用 usePlayground()/usePlaygroundFile()，
@@ -29,7 +35,12 @@ export function Layout() {
         <PlaygroundProvider>
           <OfflineBanner />
           <AppSidebar />
-          <SidebarInset className="h-dvh overflow-hidden lg:h-[calc(100dvh-1rem)]">
+          <SidebarInset
+            className={cn(
+              'h-dvh overflow-hidden',
+              dsMode ? 'bg-transparent' : 'lg:h-[calc(100dvh-1rem)]',
+            )}
+          >
             <AppHeader />
             <main
               key={location.pathname}

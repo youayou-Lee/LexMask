@@ -20,6 +20,7 @@ import { EmptyState } from '@/components/EmptyState';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/features/auth/auth-context';
 import { useT } from '@/i18n';
+import { useUiTheme } from '@/theme/ui-theme';
 import { queryKeys } from '@/lib/query-keys';
 import { downloadFile } from '@/services/api-client';
 import {
@@ -37,6 +38,9 @@ const PAGE_SIZE = 20;
 export function ConsolePage() {
   const t = useT();
   const { status } = useAuth();
+  // Issue#355 iOS 重置：ds 下标题换 32px 大标题类、区块换白卡语言
+  // （ios-card，样式仅 ds 生效）；classic 类名原样。
+  const dsMode = useUiTheme((s) => s.theme) === 'ds';
   const [filter, setFilter] = useState('');
   const [selectedUser, setSelectedUser] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -110,10 +114,18 @@ export function ConsolePage() {
         <div className="page-stack gap-3 overflow-hidden" data-testid="admin-console-page">
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+              <h1
+                className={
+                  dsMode
+                    ? 'ds-page-title'
+                    : 'text-2xl font-semibold tracking-tight text-foreground'
+                }
+              >
                 {t('console.title')}
               </h1>
-              <p className="text-sm text-muted-foreground">{t('console.subtitle')}</p>
+              <p className={dsMode ? 'ds-page-sub' : 'text-sm text-muted-foreground'}>
+                {t('console.subtitle')}
+              </p>
             </div>
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -136,7 +148,7 @@ export function ConsolePage() {
           )}
 
           {/* ── 用户清单 ─────────────────────────────────────────────── */}
-          <section className="surface-subtle space-y-3 p-4">
+          <section className="ios-card surface-subtle space-y-3 p-4">
             <h2 className="text-sm font-semibold text-foreground">{t('console.usersTitle')}</h2>
             <div className="overflow-hidden rounded-lg border border-border bg-background">
               <Table>
@@ -203,7 +215,7 @@ export function ConsolePage() {
           </section>
 
           {/* ── 选中用户的文件清单 ───────────────────────────────────── */}
-          <section className="surface-subtle space-y-3 p-4">
+          <section className="ios-card surface-subtle space-y-3 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-foreground">
                 {selectedUser

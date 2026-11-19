@@ -447,6 +447,12 @@ const enBase: Record<string, string> = {
   'jobs.refreshing': 'Refreshing...',
   'jobs.clickRefresh': 'Refresh',
   'jobs.taskRecords': 'Task Records',
+  // Issue#355 ds table (mockup §6.4): merged stats column / subline / badges
+  'jobs.statsHeader': 'Stats',
+  'jobs.actionsHeader': 'Actions',
+  'jobs.filesCount': '{n} file(s)',
+  'jobs.awaitingBadge': 'Review {n}',
+  'jobs.failedBadge': 'Failed {n}',
   'jobs.cancelBeforeDelete': 'Cancel running tasks before deleting',
   'jobs.task': 'Task',
   'jobs.totalCountHeader': 'Total',
@@ -1095,6 +1101,10 @@ const enBase: Record<string, string> = {
   'layout.headerActions': 'Status and settings',
   'layout.toggleSidebar': 'Toggle sidebar',
   'layout.languageSwitch': 'Switch language',
+  // Issue#355 dual-track theme toggle (ds baseline / classic legacy)
+  'layout.uiThemeToggle': 'Interface style',
+  'layout.switchToClassic': 'Switch to classic style',
+  'layout.switchToModern': 'Switch to new style',
 
   'entityTag.CUSTOM': 'Custom',
 
@@ -2237,6 +2247,42 @@ Object.assign(enOverrides, {
   'toast.open': 'View',
   'toast.fallbackError': 'Operation failed. Please try again later.',
   'health.serviceName.visualFeatures': 'Visual Features',
+  // Issue#355 ds metrics strip notes (job-unit counts, same source as tab badges)
+  'ds.metrics.activeNote': 'In progress',
+  'ds.metrics.reviewNote': 'Needs review',
+  'ds.metrics.doneNote': 'Completed total',
+  'ds.metrics.riskNote': 'Needs attention',
+  // Issue#355 iOS reset · partition B (metric chips/footnotes + numeric pager + settings header)
+  'ds.metrics.activeChip': 'Live',
+  'ds.metrics.riskChipOk': 'No issues',
+  'ds.metrics.activeFoot': 'Recognizing and parsing',
+  'ds.metrics.reviewFoot': 'Confirm before delivery',
+  'ds.metrics.doneFoot': 'Ready for delivery',
+  'ds.metrics.riskFoot': 'Retry from the detail page',
+  'ds.pager.info': '{total} tasks in total · {size} per page',
+  'ds.pager.pageLabel': 'Page {page}',
+  'ds.settings.title': 'Advanced Settings',
+  'ds.settings.sub': 'Recognition items · Redaction presets · Word pools · Model services',
+  // Issue#355 iOS reset · partition C (workflow pages: upload/review/result/batch wizard)
+  'playground.chooseFile': 'Choose file',
+  'playground.upload.autoFlow': 'Upload once — recognition, redaction, and review run automatically',
+  'playground.upload.formatScan': 'Scanned',
+  'playground.upload.formatImage': 'Images',
+  'playground.upload.schemeLabel': 'Plan',
+  'playground.upload.schemeDefault': 'Default redaction · {count} entity types',
+  'playground.upload.watermarkKeep': 'Keep watermark',
+  'playground.upload.pageFilter': 'Page-number filter',
+  'playground.upload.advancedSettings': 'Advanced settings',
+  'playground.upload.historyLink': 'Recognition history',
+  'playground.upload.recentTitle': 'Recent',
+  'playground.upload.recentResume': 'Continue review',
+  'playground.upload.recentResult': 'View result',
+  'playground.result.headSub': 'Anonymization complete · {count} entities processed · {pages} pages',
+  'batchWizard.step2.headTitle': 'Upload files',
+  'batchWizard.step2.summaryFiles': 'Files',
+  'batchWizard.step2.summarySize': 'Total size',
+  'batchWizard.step2.filesUnit': 'files',
+  'batchWizard.step2.lockedTip': 'Plan and types were configured in the previous step. The next step starts recognition directly',
 });
 
 // Structured data module (keys mirror zh.ts).

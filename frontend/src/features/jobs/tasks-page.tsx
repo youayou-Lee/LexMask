@@ -16,12 +16,15 @@
 
 import React from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { ArrowUpRight, RefreshCw, Trash2 } from 'lucide-react';
 import { useT } from '@/i18n';
+import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { InteractionLockOverlay } from '@/components/InteractionLockOverlay';
 import { HistoryView } from '@/features/history';
+import { useUiTheme } from '@/theme/ui-theme';
 import { useJobs, type JobsStatusFilter } from './hooks/use-jobs';
 import { useAgentMdTasks } from './hooks/use-agent-md-tasks';
 import { AgentMdTaskPanel } from './components/agent-md-task-panel';
@@ -56,6 +59,9 @@ function JobsLedgerView({
 }) {
   const t = useT();
   const s = jobs;
+  // Issue#355 冷评审 #3：ds 下筛选面板整体不渲染（信息上移标题区/指标条，
+  // 刷新/清理按钮上移页签行右侧）；classic 分支保持原组装零漂移。
+  const dsMode = useUiTheme((s2) => s2.theme) === 'ds';
   const lockLabel = s.deletingJobId
     ? t('jobs.deletingEllipsis')
     : s.requeueingJobId || s.cleanupLoading
@@ -64,13 +70,15 @@ function JobsLedgerView({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="jobs-page">
-      <JobsFilters
-        onRefresh={s.refreshList}
-        onCleanup={() => s.setCleanupConfirmOpen(true)}
-        refreshing={s.refreshing}
-        tableBusy={s.tableBusy}
-        metrics={s.pageMetrics}
-      />
+      {!dsMode && (
+        <JobsFilters
+          onRefresh={s.refreshList}
+          onCleanup={() => s.setCleanupConfirmOpen(true)}
+          refreshing={s.refreshing}
+          tableBusy={s.tableBusy}
+          metrics={s.pageMetrics}
+        />
+      )}
 
       {s.notice && (
         <Alert className="mb-2" data-testid="jobs-notice">
@@ -152,6 +160,9 @@ export function TasksPage() {
   const t = useT();
   const [searchParams, setSearchParams] = useSearchParams();
   const view = readTasksView(searchParams.get('view'));
+  // Issue#355 验收期深化：ds 骨架（页面标题区/指标条）只在 ds 主题条件渲染——
+  // classic 分支不产生任何新 DOM（比 CSS 显隐更强的零回归保证）。
+  const dsMode = useUiTheme((s) => s.theme) === 'ds';
 
   // 工单 hook 在页面级实例化。Issue#268：
   // - initialTab 由 URL ?view= 注入（active→'active'、review→'awaiting_review'、
@@ -190,36 +201,79 @@ export function TasksPage() {
       data-testid="tasks-page"
     >
       <div className="page-shell !max-w-[min(100%,2048px)] !px-3 !py-3 sm:!px-4 2xl:!px-5 flex min-h-0 min-w-0 flex-1 flex-col gap-2">
-        <Tabs value={view} onValueChange={selectView} className="shrink-0">
-          <TabsList
-            className="rounded-xl border border-border/70 bg-muted/40 p-1"
-            data-testid="tasks-view-tabs"
-          >
-            <TabsTrigger
-              value="active"
-              className="whitespace-nowrap"
-              data-testid="tasks-tab-active"
+        {dsMode && (
+          <div className="shrink-0" data-testid="ds-page-header">
+            <h1 className="ds-page-title">{t('page.jobs.title')}</h1>
+            <p className="ds-page-sub">{t('page.jobs.sub')}</p>
+          </div>
+        )}
+        {dsMode && (
+          <DsMetricsStrip
+            activeJobs={jobs.pageMetrics.activeJobs + agentTasks.counts.active}
+            awaitingReview={jobs.pageMetrics.awaitingReviewItems + agentTasks.counts.awaiting_review}
+            completedJobs={jobs.pageMetrics.completedJobs}
+            riskJobs={jobs.pageMetrics.riskJobs}
+          />
+        )}
+        {/* Issue#355 冷评审 #3：ds 下页签与刷新/清理同一行（定稿工具行）；classic 维持上下两块 */}
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+          <Tabs value={view} onValueChange={selectView} className="shrink-0">
+            <TabsList
+              className="ios-segmented rounded-xl border border-border/70 bg-muted/40 p-1"
+              data-testid="tasks-view-tabs"
             >
-              {t('tasks.tab.active')}
-              <span className={tabCountClass}>
-                {jobs.pageMetrics.activeJobs + agentTasks.counts.active}
-              </span>
-            </TabsTrigger>
-            <TabsTrigger
-              value="review"
-              className="whitespace-nowrap"
-              data-testid="tasks-tab-review"
-            >
-              {t('tasks.tab.review')}
-              <span className={tabCountClass}>
-                {jobs.pageMetrics.awaitingReviewItems + agentTasks.counts.awaiting_review}
-              </span>
-            </TabsTrigger>
-            <TabsTrigger value="done" className="whitespace-nowrap" data-testid="tasks-tab-done">
-              {t('tasks.tab.done')}
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+              <TabsTrigger
+                value="active"
+                className="whitespace-nowrap"
+                data-testid="tasks-tab-active"
+              >
+                {t('tasks.tab.active')}
+                <span className={tabCountClass}>
+                  {jobs.pageMetrics.activeJobs + agentTasks.counts.active}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger
+                value="review"
+                className="whitespace-nowrap"
+                data-testid="tasks-tab-review"
+              >
+                {t('tasks.tab.review')}
+                <span className={tabCountClass}>
+                  {jobs.pageMetrics.awaitingReviewItems + agentTasks.counts.awaiting_review}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="done" className="whitespace-nowrap" data-testid="tasks-tab-done">
+                {t('tasks.tab.done')}
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+          {dsMode && (
+            <div className="flex shrink-0 items-center gap-2" data-testid="ds-tabs-actions">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={jobs.refreshList}
+                disabled={jobs.tableBusy}
+                data-testid="jobs-refresh-btn"
+                title={t('jobs.refreshTitle')}
+                className="h-8 min-w-[5.5rem] justify-center rounded-lg px-2.5 text-xs whitespace-nowrap"
+              >
+                <RefreshCw data-icon="inline-start" className={jobs.refreshing ? 'animate-spin' : ''} />
+                {jobs.refreshing ? t('jobs.refreshing') : t('jobs.clickRefresh')}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 rounded-lg border-destructive/25 px-2.5 text-xs whitespace-nowrap text-destructive hover:bg-destructive/10"
+                onClick={() => jobs.setCleanupConfirmOpen(true)}
+                data-testid="jobs-cleanup-btn"
+              >
+                <Trash2 data-icon="inline-start" />
+                {t('jobs.cleanupButton')}
+              </Button>
+            </div>
+          )}
+        </div>
 
         {/* 条件渲染（非 CSS 隐藏）：active/review 不发 /files，done 不重复抬列表请求。 */}
         {view === 'done' ? (
@@ -232,6 +286,116 @@ export function TasksPage() {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+/** ds 玻璃指标卡（Issue#355 真稿 ios-tasks-center .metrics）：4 张玻璃卡
+ * （backdrop-filter + 白玻璃描边 + sparkline 占位 + 变化胶囊）；
+ * 大数字墨色、仅异常红。口径=工单，与页签徽标同源（数值与 testid 沿用）。
+ * sparkline 为静态占位示意——时序数据另案（规格 §八挂账），胶囊文案为
+ * 语义提示而非虚构数值（无历史时点数据，不造假 delta）。 */
+type MetricChipTone = 'up' | 'warn' | 'bad' | 'flat';
+
+const METRIC_SPARKLINES: Record<MetricChipTone, { line: string; area?: string; color: string }> = {
+  up: {
+    line: 'M1 18 L10 14 L19 16 L28 10 L37 12 L46 7 L55 9 L61 4',
+    area: 'M1 18 L10 14 L19 16 L28 10 L37 12 L46 7 L55 9 L61 4 L61 24 L1 24 Z',
+    color: '#10A37F',
+  },
+  warn: { line: 'M1 12 L10 13 L19 11 L28 12 L37 10 L46 11 L55 12 L61 10', color: '#F0A32B' },
+  flat: { line: 'M1 14 L10 13 L19 14 L28 12 L37 13 L46 12 L55 13 L61 12', color: '#B9BDC3' },
+  bad: { line: 'M1 8 L10 12 L19 9 L28 15 L37 11 L46 16 L55 13 L61 18', color: '#DC2626' },
+};
+
+function MetricSparkline({ tone }: { tone: MetricChipTone }) {
+  const spark = METRIC_SPARKLINES[tone];
+  return (
+    <svg
+      className="ds-metric-spark"
+      width="62"
+      height="24"
+      viewBox="0 0 62 24"
+      fill="none"
+      aria-hidden
+    >
+      {spark.area ? <path d={spark.area} fill="rgba(16,163,127,.10)" /> : null}
+      <path d={spark.line} stroke={spark.color} strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function DsMetricsStrip({
+  activeJobs,
+  awaitingReview,
+  completedJobs,
+  riskJobs,
+}: {
+  activeJobs: number;
+  awaitingReview: number;
+  completedJobs: number;
+  riskJobs: number;
+}) {
+  const t = useT();
+  const cells = [
+    {
+      key: 'active',
+      label: t('tasks.tab.active'),
+      value: activeJobs,
+      valueTone: 'neutral',
+      chipTone: 'up' as MetricChipTone,
+      chipText: t('ds.metrics.activeChip'),
+      note: t('ds.metrics.activeFoot'),
+      sparkTone: 'up' as MetricChipTone,
+    },
+    {
+      key: 'review',
+      label: t('tasks.tab.review'),
+      value: awaitingReview,
+      valueTone: 'neutral',
+      chipTone: 'warn' as MetricChipTone,
+      chipText: t('ds.metrics.reviewNote'),
+      note: t('ds.metrics.reviewFoot'),
+      sparkTone: 'warn' as MetricChipTone,
+    },
+    {
+      key: 'done',
+      label: t('jobs.filter.completed'),
+      value: completedJobs,
+      valueTone: 'neutral',
+      chipTone: 'up' as MetricChipTone,
+      chipText: t('ds.metrics.doneNote'),
+      note: t('ds.metrics.doneFoot'),
+      sparkTone: 'up' as MetricChipTone,
+    },
+    {
+      key: 'risk',
+      label: t('jobs.abnormalHeader'),
+      value: riskJobs,
+      valueTone: riskJobs > 0 ? 'danger' : 'neutral',
+      chipTone: (riskJobs > 0 ? 'bad' : 'flat') as MetricChipTone,
+      chipText: riskJobs > 0 ? t('ds.metrics.riskNote') : t('ds.metrics.riskChipOk'),
+      note: t('ds.metrics.riskFoot'),
+      sparkTone: (riskJobs > 0 ? 'bad' : 'flat') as MetricChipTone,
+    },
+  ];
+
+  return (
+    <div className="ds-metrics shrink-0" data-testid="ds-metrics-strip">
+      {cells.map((cell) => (
+        <div className="ds-metric" key={cell.key} data-testid={`ds-metric-${cell.key}`}>
+          <span className="ds-metric-label">{cell.label}</span>
+          <span className="ds-metric-value" data-tone={cell.valueTone}>
+            {cell.value}
+          </span>
+          <span className="ds-metric-chip" data-tone={cell.chipTone}>
+            {cell.chipTone === 'up' ? <ArrowUpRight aria-hidden /> : null}
+            {cell.chipText}
+          </span>
+          <span className="ds-metric-note">{cell.note}</span>
+          <MetricSparkline tone={cell.sparkTone} />
+        </div>
+      ))}
     </div>
   );
 }
