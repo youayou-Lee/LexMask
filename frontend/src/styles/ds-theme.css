@@ -227,6 +227,17 @@
 [data-theme="ds"] .ds-header-actions button > span {
   display: none;
 }
+/* 风格切换=显性按钮（2026-11-19 用户验收裁定：切换键必须可见可读，不做纯图标） */
+[data-theme="ds"] .ds-header-actions button[data-testid='theme-toggle'] {
+  width: auto;
+  padding: 0 14px;
+  gap: 6px;
+}
+[data-theme="ds"] .ds-header-actions button[data-testid='theme-toggle'] > span {
+  display: inline;
+  font-size: 12px;
+  font-weight: 620;
+}
 [data-theme="ds"] .ds-header-actions div[role='status'] {
   width: 34px;
   height: 34px;
