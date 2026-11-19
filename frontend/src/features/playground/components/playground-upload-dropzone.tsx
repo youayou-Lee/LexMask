@@ -4,6 +4,7 @@ import type { FC } from 'react';
 import type { KeyboardEvent, MouseEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { useT } from '@/i18n';
+import { useUiTheme } from '@/theme/ui-theme';
 import { cn } from '@/lib/utils';
 import type { usePlayground } from '../hooks/use-playground';
 
@@ -23,6 +24,9 @@ export const PlaygroundUploadDropzone: FC<PlaygroundUploadDropzoneProps> = ({
   uploadIssue,
 }) => {
   const t = useT();
+  // Issue#355 Agent C：ds=产品哲学样板（大拖拽位：76px 绿渐变图标+21px 标题+绿胶囊
+  // CTA+格式 chips）；classic 分支 DOM 保持原样（ds 类钩子 inert——无 CSS 匹配零影响）。
+  const dsMode = useUiTheme((s) => s.theme) === 'ds';
   const { getRootProps, getInputProps, isDragActive, open } = dropzone;
   const handleOpenClick = (e: MouseEvent) => {
     e.stopPropagation();
@@ -43,6 +47,8 @@ export const PlaygroundUploadDropzone: FC<PlaygroundUploadDropzoneProps> = ({
   return (
     // Issue#262 Task 9b：上传大卡（界面稿形态）——旧组件内大标题/长说明/装饰性格式行
     // 移除（页头紧凑化后由页面页头承担），高度下限收敛到外层容器，卡内只留拖入提示/支持格式。
+    // Issue#355：ds 下外层高度下限交给内容（.ds-drop 自带 52px 上下 padding），
+    // 经典 min-h 仅 classic 生效——min-h-* 是 tailwind 工具类，需在 ds 里覆盖 min-height。
     <div className="flex min-h-[18rem] min-w-0 flex-1 items-stretch lg:min-h-[20rem] 2xl:min-h-[22rem]">
       <div
         {...getRootProps({
@@ -53,7 +59,7 @@ export const PlaygroundUploadDropzone: FC<PlaygroundUploadDropzoneProps> = ({
         aria-label={disabledReason || t('playground.dropHere')}
         aria-disabled={disabled}
         className={cn(
-          'saas-hero group relative w-full cursor-pointer border-2 border-dashed p-7 text-center transition-all duration-300 ease-out lg:px-10 2xl:p-9 2xl:px-12',
+          'saas-hero ds-drop group relative w-full cursor-pointer border-2 border-dashed p-7 text-center transition-all duration-300 ease-out lg:px-10 2xl:p-9 2xl:px-12',
           isDragActive
             ? 'border-primary bg-primary/[0.04] ring-4 ring-primary/10'
             : 'border-border hover:border-foreground/15 hover:shadow-lg',
@@ -65,7 +71,7 @@ export const PlaygroundUploadDropzone: FC<PlaygroundUploadDropzoneProps> = ({
         <div className="flex h-full flex-col items-center justify-center">
           <div
             className={cn(
-              'mx-auto mb-4 flex size-[3.75rem] items-center justify-center rounded-[20px] bg-foreground text-background transition-transform duration-300 group-hover:scale-110',
+              'ds-drop-ico mx-auto mb-4 flex size-[3.75rem] items-center justify-center rounded-[20px] bg-foreground text-background transition-transform duration-300 group-hover:scale-110',
               isDragActive && 'scale-110 animate-pulse',
             )}
           >
@@ -78,30 +84,75 @@ export const PlaygroundUploadDropzone: FC<PlaygroundUploadDropzoneProps> = ({
               />
             </svg>
           </div>
-          <p className="mb-1.5 text-lg font-semibold tracking-[-0.02em]">
+          <p className="ds-drop-title mb-1.5 text-lg font-semibold tracking-[-0.02em]">
             {t('playground.dropHere')}
           </p>
-          <p className="mb-5 text-sm text-muted-foreground">{t('playground.supportedFormats')}</p>
-          {uploadIssue && (
-            <div
-              className="mb-4 max-w-md rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive"
-              role="alert"
-              data-testid="playground-upload-issue"
-            >
-              {uploadIssue}
-            </div>
+          {dsMode ? (
+            // ds：一句话自动流程 + 格式 chips（收纳原「支持 .doc…」长句，信息不丢）
+            <>
+              <p className="ds-drop-sub mb-5 text-sm text-muted-foreground">
+                {t('playground.upload.autoFlow')}
+              </p>
+              {uploadIssue && (
+                <div
+                  className="mb-4 max-w-md rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive"
+                  role="alert"
+                  data-testid="playground-upload-issue"
+                >
+                  {uploadIssue}
+                </div>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleOpenClick}
+                disabled={disabled}
+                className="ds-drop-cta"
+              >
+                <svg className="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 4v16m8-8H4"
+                  />
+                </svg>
+                {t('playground.chooseFile')}
+              </Button>
+              <div className="ds-drop-formats" data-testid="playground-format-chips">
+                <span className="ds-drop-fmt">PDF</span>
+                <span className="ds-drop-fmt">Word</span>
+                <span className="ds-drop-fmt">{t('playground.upload.formatScan')}</span>
+                <span className="ds-drop-fmt">{t('playground.upload.formatImage')}</span>
+                <span className="ds-drop-fmt">txt</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="mb-5 text-sm text-muted-foreground">{t('playground.supportedFormats')}</p>
+              {uploadIssue && (
+                <div
+                  className="mb-4 max-w-md rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive"
+                  role="alert"
+                  data-testid="playground-upload-issue"
+                >
+                  {uploadIssue}
+                </div>
+              )}
+              <Button type="button" variant="outline" size="sm" onClick={handleOpenClick} disabled={disabled}>
+                <svg className="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 4v16m8-8H4"
+                  />
+                </svg>
+                {t('playground.clickToUpload')}
+              </Button>
+            </>
           )}
-          <Button type="button" variant="outline" size="sm" onClick={handleOpenClick} disabled={disabled}>
-            <svg className="size-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 4v16m8-8H4"
-              />
-            </svg>
-            {t('playground.clickToUpload')}
-          </Button>
         </div>
       </div>
     </div>

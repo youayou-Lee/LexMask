@@ -57,7 +57,8 @@ export const PlaygroundToolbar: FC<PlaygroundToolbarProps> = memo(
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1 rounded-2xl border border-border/70 bg-[var(--surface-control)] p-1 shadow-[var(--shadow-control)]">
+        {/* Issue#355 Agent C：ds-canvas-tools=审阅态画布工具簇分段轨道钩子（ds-only CSS） */}
+        <div className="ds-canvas-tools flex shrink-0 items-center gap-1 rounded-2xl border border-border/70 bg-[var(--surface-control)] p-1 shadow-[var(--shadow-control)]">
           {viewToggle && (
             <div
               className="mr-1 flex items-center rounded-xl border border-border/60 bg-muted/40 p-0.5"

@@ -1,13 +1,16 @@
 // Copyright 2026 LexMask Contributors
 
 import { useCallback, useEffect, useRef, useState, type FC, type ReactNode, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
+import { ArrowRight } from 'lucide-react';
 import { useT } from '@/i18n';
+import { cn } from '@/lib/utils';
 import { getEntityTypeName } from '@/config/entityTypes';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import ImageBBoxEditor from '@/components/ImageBBoxEditor';
 import { PaginationRail } from '@/components/PaginationRail';
 import { Button } from '@/components/ui/button';
+import { useUiTheme } from '@/theme/ui-theme';
 import { EncryptedPdfDialog } from './components/encrypted-pdf-dialog';
 import { PlaygroundUpload } from './components/playground-upload';
 import { PlaygroundToolbar } from './components/playground-toolbar';
@@ -41,6 +44,8 @@ const PlaygroundInner: FC = () => {
   const t = useT();
   const ctx = usePlaygroundContext();
   const ui = usePlaygroundUIContext();
+  // Issue#355 Agent C：ds 主题分支（投料态大标题页头/审阅态玻璃画布卡钩子）。
+  const dsMode = useUiTheme((s) => s.theme) === 'ds';
 
   const {
     stage,
@@ -371,17 +376,40 @@ const PlaygroundInner: FC = () => {
         <div className="page-shell !max-w-[min(100%,1200px)] !px-3 !py-3 sm:!px-5 sm:!py-4 2xl:!px-6">
           {/* Issue#262 Task 9b：紧凑页头（界面稿形态）。旧 kicker/大标题/长说明移除；
               dropzone 内的「文档 · PDF · 扫描件 · 图片」行经核实为装饰性文案
-              （无状态无回调，非功能选择器），已随上传卡重排删除。 */}
+              （无状态无回调，非功能选择器），已随上传卡重排删除。
+              Issue#355 Agent C：ds=大标题页头（32px + 副标题 + 右侧「识别历史」tint
+              胶囊，真稿 .page-head/.head-link）；classic 维持紧凑页头零漂移。 */}
           <div className="page-stack gap-3.5 overflow-y-auto">
-            <section className="flex flex-none flex-wrap items-end justify-between gap-3">
-              <div className="min-w-0 space-y-0.5">
-                <h1 className="text-lg font-semibold tracking-tight text-foreground">
+            <section
+              className={cn(
+                'flex flex-none flex-wrap items-end justify-between gap-3',
+                dsMode && 'ds-page-head',
+              )}
+            >
+              <div className={cn('min-w-0', dsMode ? '' : 'space-y-0.5')}>
+                <h1
+                  className={cn(
+                    dsMode
+                      ? 'ds-page-title'
+                      : 'text-lg font-semibold tracking-tight text-foreground',
+                  )}
+                >
                   {t('playground.upload.pageTitle')}
                 </h1>
-                <p className="text-sm leading-5 text-muted-foreground">
+                <p
+                  className={cn(
+                    dsMode ? 'ds-page-sub' : 'text-sm leading-5 text-muted-foreground',
+                  )}
+                >
                   {t('playground.upload.pageSub')}
                 </p>
               </div>
+              {dsMode && (
+                <Link to="/jobs?view=done" className="ds-head-link" data-testid="ds-upload-history-link">
+                  {t('playground.upload.historyLink')}
+                  <ArrowRight aria-hidden />
+                </Link>
+              )}
             </section>
             <PlaygroundUpload ctx={ctx} />
           </div>
@@ -391,7 +419,8 @@ const PlaygroundInner: FC = () => {
       {stage === 'preview' && (
         <div className="page-shell !max-w-[min(100%,2048px)] !px-3 !py-3 sm:!px-4 sm:!py-4 2xl:!px-6">
           <div className="grid min-h-0 flex-1 gap-3 overflow-hidden lg:grid-cols-[minmax(0,1fr)_20.75rem] xl:grid-cols-[minmax(0,1fr)_21.5rem]">
-            <div className="saas-panel flex min-w-0 flex-1 flex-col overflow-hidden">
+            {/* Issue#355 Agent C：ds-canvas-card=审阅态画布玻璃卡钩子（classic 无 CSS 匹配零影响） */}
+            <div className="saas-panel ds-canvas-card flex min-w-0 flex-1 flex-col overflow-hidden">
               {/* popout 尚不支持静态页面图协议（文本 PDF 打码模式只能拿到原始
                   PDF 下载地址当 img src，会开出坏窗口）——评审 I1：回退仅
                   扫描件/图片开放独立窗口，待 popout 支持静态页后再放开；
