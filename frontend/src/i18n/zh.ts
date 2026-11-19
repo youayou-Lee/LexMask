@@ -2221,6 +2221,26 @@ Object.assign(zhOverrides, {
   'ds.pager.pageLabel': '第 {page} 页',
   'ds.settings.title': '高级设置',
   'ds.settings.sub': '识别项 · 清单 · 词库 · 模型服务',
+  // Issue#355 iOS 重置 · C 分区（工作流页面：投料/审阅/结果/批量向导）
+  'playground.chooseFile': '选择文件',
+  'playground.upload.autoFlow': '上传后自动识别 → 自动脱敏 → 完成后通知复核',
+  'playground.upload.formatScan': '扫描件',
+  'playground.upload.formatImage': '图片',
+  'playground.upload.schemeLabel': '方案',
+  'playground.upload.schemeDefault': '默认打码 · {count} 类实体',
+  'playground.upload.watermarkKeep': '保留水印',
+  'playground.upload.pageFilter': '页码过滤',
+  'playground.upload.advancedSettings': '高级设置',
+  'playground.upload.historyLink': '识别历史',
+  'playground.upload.recentTitle': '最近处理',
+  'playground.upload.recentResume': '继续复核',
+  'playground.upload.recentResult': '查看结果',
+  'playground.result.headSub': '匿名化完成 · {count} 个实体已处理 · 共 {pages} 页',
+  'batchWizard.step2.headTitle': '上传文件',
+  'batchWizard.step2.summaryFiles': '文件',
+  'batchWizard.step2.summarySize': '总大小',
+  'batchWizard.step2.filesUnit': '个',
+  'batchWizard.step2.lockedTip': '方案与识别项在上一步已配置；下一步直接开始识别',
 });
 
 // Structured data module (keep zh wording verbatim).

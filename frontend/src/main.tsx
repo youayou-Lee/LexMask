@@ -19,6 +19,8 @@ import './index.css';
 import './styles/ds-theme.css';
 // Issue#355 iOS 重置：B 分区（数据页面）样式——编排者统一接线，顺序在 ds-theme 之后取覆盖
 import './styles/ios-pages-b.css';
+// Issue#355 iOS 重置：C 分区（工作流页面）样式——编排者统一接线
+import './styles/ios-pages-c.css';
 
 applyBrand();
 // Issue#355：渲染前把持久化主题刷到根节点，首帧即正确风格（防 FOUC）。

@@ -2263,6 +2263,26 @@ Object.assign(enOverrides, {
   'ds.pager.pageLabel': 'Page {page}',
   'ds.settings.title': 'Advanced Settings',
   'ds.settings.sub': 'Recognition items · Redaction presets · Word pools · Model services',
+  // Issue#355 iOS reset · partition C (workflow pages: upload/review/result/batch wizard)
+  'playground.chooseFile': 'Choose file',
+  'playground.upload.autoFlow': 'Upload once — recognition, redaction, and review run automatically',
+  'playground.upload.formatScan': 'Scanned',
+  'playground.upload.formatImage': 'Images',
+  'playground.upload.schemeLabel': 'Plan',
+  'playground.upload.schemeDefault': 'Default redaction · {count} entity types',
+  'playground.upload.watermarkKeep': 'Keep watermark',
+  'playground.upload.pageFilter': 'Page-number filter',
+  'playground.upload.advancedSettings': 'Advanced settings',
+  'playground.upload.historyLink': 'Recognition history',
+  'playground.upload.recentTitle': 'Recent',
+  'playground.upload.recentResume': 'Continue review',
+  'playground.upload.recentResult': 'View result',
+  'playground.result.headSub': 'Anonymization complete · {count} entities processed · {pages} pages',
+  'batchWizard.step2.headTitle': 'Upload files',
+  'batchWizard.step2.summaryFiles': 'Files',
+  'batchWizard.step2.summarySize': 'Total size',
+  'batchWizard.step2.filesUnit': 'files',
+  'batchWizard.step2.lockedTip': 'Plan and types were configured in the previous step. The next step starts recognition directly',
 });
 
 // Structured data module (keys mirror zh.ts).
