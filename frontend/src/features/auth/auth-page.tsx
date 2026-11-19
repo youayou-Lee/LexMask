@@ -105,23 +105,12 @@ export function AuthPage() {
       {dsMode ? (
         <>
           {/* Issue#355：登录页背景移植比赛主视觉（design-proto/competition-media/poster.html）——
-              桌面=左文案栏 + 右文书示意卡（登录表单在卡下方）；窄屏只留氛围底。
+              登录卡居中（用户裁定 2026-11-20「肯定居中」），海报元素（网格/光晕/文书卡）作氛围背景。
               纯 CSS 示意，无任何真实案卷数据。 */}
           <div className="ds-auth-poster-grid pointer-events-none absolute inset-0" aria-hidden="true" />
           <div className="ds-auth-poster-halo pointer-events-none absolute" aria-hidden="true" />
-          <div className="ds-auth-layout relative z-10 mx-auto flex min-h-[calc(100dvh-5rem)] w-full max-w-6xl items-center gap-16">
-            <div className="ds-auth-copy min-w-0 flex-1">
-              <div className="ds-auth-poster-kicker">Document Intelligence &amp; Redaction</div>
-              <div className="ds-auth-poster-title">
-                <span>只隐其名</span>
-                <span>不失其事</span>
-              </div>
-              <div className="ds-auth-poster-en">We remove who. We keep what happened.</div>
-              <div className="ds-auth-poster-lede">
-                姓名、证件号、银行账号、案号——一份文书中最敏感的部分，往往也正是它最不容外流的部分。墨隐在<b>不改写事实</b>的前提下完成遮蔽：扫描件与电子文档一并处理，逐页可核、可补、可退。
-              </div>
-            </div>
-            <div className="ds-auth-right w-[380px] shrink-0">
+          <div className="ds-auth-layout relative z-10 mx-auto flex min-h-[calc(100dvh-5rem)] w-full items-center justify-center">
+            <div className="ds-auth-right w-[400px] max-w-full shrink-0">
               <div className="ds-auth-poster-doc" aria-hidden="true">
                 <div className="ds-auth-doc-head">
                   <span className="ds-auth-doc-title">民事判决书</span>

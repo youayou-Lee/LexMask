@@ -51,9 +51,11 @@ afterEach(() => {
 });
 
 describe('Issue#355 登录页双轨', () => {
-  it('ds：海报骨架 + 文书示意卡 + 切换键在场，表单在右栏卡内可提交', () => {
+  it('ds：居中布局骨架 + 文书示意卡 + 切换键在场，表单在玻璃卡内可提交', () => {
     const { container } = renderAuth();
+    // 登录卡居中（用户裁定 2026-11-20「肯定居中」）：layout 容器 + card-wrap 均在
     expect(container.querySelector('.ds-auth-layout')).toBeTruthy();
+    expect(container.querySelector('.ds-auth-card-wrap')).toBeTruthy();
     expect(container.querySelector('.ds-auth-poster-doc')).toBeTruthy();
     expect(screen.getByRole('button', { name: /切换经典风格/ })).toBeTruthy();
     // 表单主体（双轨共用）
