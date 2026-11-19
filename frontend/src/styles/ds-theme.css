@@ -262,7 +262,9 @@
   -webkit-backdrop-filter: var(--ds-blur);
 }
 
-/* 品牌头 66px（设计稿 .brand）：34px 徽标 + 15px/700 名 + 10.5px 标语，无底部分隔线 */
+/* 品牌头 66px（设计稿 .brand）：34px 徽标 + 15px/700 名 + 10.5px 标语，无底部分隔线。
+   徽标去圆角裁剪与贴地影（2026-11-19 用户裁定换 logo：墨隐之眼 SVG 自带 iOS 圆角方底，
+   二次圆角=裁角、再叠影=双重阴影；classic 仍保留 10px/影） */
 [data-theme="ds"] [data-sidebar="header"] {
   height: 66px;
   padding: 0 16px;
@@ -271,7 +273,8 @@
 [data-theme="ds"] [data-sidebar="header"] img {
   width: 34px;
   height: 34px;
-  border-radius: 11px;
+  border-radius: 0;
+  box-shadow: none;
 }
 [data-theme="ds"] [data-sidebar="header"] span {
   font-size: 15px;
