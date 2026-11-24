@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { Palette } from 'lucide-react';
 import { BRAND, brandName, brandTagline } from '@/config/brand';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -251,12 +252,27 @@ export function AuthPage() {
           </footer>
         </>
       ) : (
-        <div className="flex min-h-dvh items-center justify-center">
-          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(15,23,42,0.04)_0%,transparent_38%,rgba(15,23,42,0.03)_100%)]" />
-          <Card className="relative z-10 w-full max-w-md border-border/70 bg-background/92">
-            {renderCardBody()}
-          </Card>
-        </div>
+        <>
+          <div className="flex min-h-dvh items-center justify-center">
+            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(15,23,42,0.04)_0%,transparent_38%,rgba(15,23,42,0.03)_100%)]" />
+            <Card className="relative z-10 w-full max-w-md border-border/70 bg-background/92">
+              {renderCardBody()}
+            </Card>
+          </div>
+          {/* Issue#355：classic 也要能一键切回新版（用户裁定 2026-11-25「旧的没有切换button」）。
+              样式沿用主壳顶栏切钮的 ghost 语言，独立于 ds 主题（classic 页无 AppHeader）。 */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="absolute right-6 top-6 z-20 h-9 gap-1.5 rounded-full border border-slate-200 bg-white/80 px-3 text-xs text-slate-700 shadow-sm backdrop-blur hover:bg-white hover:text-slate-900"
+            onClick={() => useUiTheme.getState().toggleTheme()}
+            aria-label={t('layout.switchToModern')}
+            data-testid="theme-toggle-classic"
+          >
+            <Palette className="size-3.5" />
+            <span>{t('layout.switchToModern')}</span>
+          </Button>
+        </>
       )}
     </div>
   );
