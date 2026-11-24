@@ -1758,6 +1758,23 @@ const enOverrides: Record<string, string> = {
   'auth.login.description': 'Enter the access password to open this workspace.',
   'auth.login.submit': 'Sign in',
   'auth.login.hint': 'Authentication is enabled for this deployment.',
+  // Issue#355 login page brand narrative (slogan kept as a Chinese wordmark in both locales)
+  'auth.ds.kicker': 'Compliance · Security · De-identification',
+  'auth.ds.claimA': '只隐其名',
+  'auth.ds.claimB': '不失其事',
+  'auth.ds.enLine': 'We remove who. We keep what happened.',
+  'auth.ds.lede':
+    'Names, ID numbers, bank accounts and docket numbers are often the parts of a document that must never leave the firm. {brand} masks them without rewriting the facts: scans and electronic files alike, reviewable page by page, correctable and reversible.',
+  'auth.ds.factCompliance': 'Compliance',
+  'auth.ds.factComplianceNote': 'De-identification · minimum necessary',
+  'auth.ds.factUsable': 'Usable',
+  'auth.ds.factUsableNote': 'Searchable · analyzable · deliverable',
+  'auth.ds.factAuditable': 'Auditable',
+  'auth.ds.factAuditableNote': 'Page-by-page review · correct and revert',
+  'auth.ds.privacy': 'Private deployment · Data stays on-prem',
+  'auth.ds.cardFoot': 'On-premise · Credentials never leave',
+  'auth.ds.footerValues': 'Compliance · Usable · Auditable',
+  'auth.ds.footerLocal': 'On-premise · Data stays local',
   'auth.setup.title': 'Create access password',
   'auth.setup.description':
     'This deployment is protected. Set the first admin password to continue.',
