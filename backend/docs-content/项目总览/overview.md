@@ -31,7 +31,9 @@ summary: 墨隐项目文档总纲：按顺序阅读，或从任一主题进入�
 
 ## 直接找
 
-- 我要操作产品 → [[single-file|单文件处理]] · [[batch|批量处理]] · [[feed-agent|供料模式]]
-- 我要配置识别项 → [[entity-types|识别项设置]] · [[config-list|配置清单]]
+- 我是新手 → [[product-intro|产品简介]] · [[quick-start|快速开始]] · [[philosophy|脱敏理念与能力边界]]
+- 我要操作产品 → [[single-file|单文件处理]] · [[batch|批量处理]] · [[feed-agent|供料模式]] · [[preview-adjust|预览与调整]]
+- 我要配置识别项 → [[entity-types|识别项设置]] · [[config-list|配置清单]] · [[lawyer-guide|律师场景配置指南]]
+- 账号与登录 → [[account-login|账号与登录]]
 - 我遇到问题 → [[faq|常见问题]] · [[errors|遇到报错怎么办]] · [[poor-results|识别效果不佳怎么办]]
 - 我要看更新 → [[changelog|版本更新记录]]

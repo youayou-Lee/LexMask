@@ -196,6 +196,9 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     OUTPUT_DIR: str = "./outputs"
     DATA_DIR: str = "./data"
+    # 文档中心内容根目录（Markdown 知识库，见 app/services/docs_service.py）。
+    # 相对路径按 backend 根解析；生产可用卷挂载覆盖以实现热更新。
+    DOCS_ROOT: str = "./docs-content"
     # 单文件上传上限（字节）；0 = 不限制。部署方需要时用环境变量恢复，如 MAX_FILE_SIZE=52428800。
     # ge=0：负数在启动时即报错——各校验点只对「0=不限 / 正数=上限」两种取值有定义
     MAX_FILE_SIZE: int = Field(default=0, ge=0)
@@ -1341,6 +1344,7 @@ class Settings(BaseSettings):
         self.DATA_DIR = _resolve_local_path(self.DATA_DIR)
         self.UPLOAD_DIR = _resolve_local_path(self.UPLOAD_DIR)
         self.OUTPUT_DIR = _resolve_local_path(self.OUTPUT_DIR)
+        self.DOCS_ROOT = _resolve_local_path(self.DOCS_ROOT)
         self.HAS_MODEL_PATH = _resolve_local_path(self.HAS_MODEL_PATH)
 
         d = self.DATA_DIR

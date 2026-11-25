@@ -188,6 +188,9 @@ jobs:
       - name: Lint with ruff
         run: pip install ruff && ruff check app/
 
+      - name: Docs knowledge-base lint (Issue#367)
+        run: python -m scripts.docs_lint
+
       - name: Import FastAPI app
         run: python -c "from app.main import app; print(app.title)"
 

@@ -1,12 +1,10 @@
 // Copyright 2026 LexMask Contributors
 
-// Issue#348：/docs 路由接线契约——把 DOCS_ROUTES 片段直挂 MemoryRouter，钉四件事：
+// Issue#348 / #368：/docs 路由接线契约——把 DOCS_ROUTES 片段直挂 MemoryRouter，钉四件事：
 // ① 片段恰含 docs / docs/:slug 两条（不漏挂、不额外挂别的）；
-// ② `/docs` 的落点是清单首篇（`location.pathname`），且落到文档中心组件而非兜底路由；
+// ② `/docs` 渲染文档中心组件本身（落点由页面按后端索引页决定，不再前端硬编码）；
 // ③ `docs/:slug` 挂的是 DocsPage（lazy 导入 + LazyPage 包裹）；
 // ④ 这两条真的被 `createBrowserRouter` 展开进 `/`（RequireAuth + Layout）的 children。
-// 注：钉的是「路由存在 + 重定向落点」，**不钉 replace 语义**——本文件没有 history 栈/URL 断言，
-// 重定向是否污染后退栈需在真实浏览器里验（e2e/smoke_routes.py），别把②读成「已证 replace」。
 // 页面自身的渲染行为在 docs-page.test.tsx 覆盖，此处只钉「路由 → 组件」接线。
 
 // @vitest-environment jsdom
@@ -14,7 +12,6 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { DOCS_MANIFEST } from './features/docs/docs-manifest';
 import { DOCS_ROUTES, router } from './router';
 
 // 用 stub 顶替 DocsPage：本文件只验证接线，不重复页面渲染断言（也就不依赖文档内容）。
@@ -23,8 +20,6 @@ vi.mock('./features/docs/docs-page', () => ({
 }));
 
 const docsRoutes = DOCS_ROUTES.filter((r) => r.path.startsWith('docs'));
-/** 清单首篇 = `getAllDocsEntries()` 的数组首位 = 文档页的阅读顺序首篇。 */
-const FIRST_SLUG = DOCS_MANIFEST[0].slug;
 
 function LocationProbe() {
   const location = useLocation();
@@ -47,7 +42,7 @@ function renderDocsRoutes(path: string) {
 
 afterEach(() => cleanup());
 
-describe('文档中心路由（#348）', () => {
+describe('文档中心路由（#348 / #368）', () => {
   it('路由表含 /docs 与 /docs/:slug 且指向文档中心元素', () => {
     expect(docsRoutes.map((r) => r.path).sort()).toEqual(['docs', 'docs/:slug']);
     for (const route of docsRoutes) {
@@ -64,12 +59,10 @@ describe('文档中心路由（#348）', () => {
     expect(childPaths).toContain('docs/:slug');
   });
 
-  it('/docs 重定向到清单首篇（产品简介）', async () => {
-    // 首篇必须是产品简介——重定向落点是用户进文档中心看到的第一页。
-    expect(FIRST_SLUG).toBe('product-intro');
+  it('/docs 渲染文档中心组件（落点由页面决定）', async () => {
     renderDocsRoutes('/docs');
     expect(await screen.findByTestId('docs-page-stub')).toBeTruthy();
-    expect(screen.getByTestId('location-probe').textContent).toBe('/docs/product-intro');
+    expect(screen.getByTestId('location-probe').textContent).toBe('/docs');
     expect(screen.queryByTestId('docs-route-fallback')).toBeNull();
   });
 

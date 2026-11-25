@@ -3,6 +3,8 @@ title: 识别项设置
 category: 配置与管理
 order: 2
 updated: 2026-11-18
+status: canonical
+summary: 识别项设置与识别范围调整。
 ---
 
 这一篇解决一个问题：**怎么让系统按您的要求决定「查什么、不查什么」。**

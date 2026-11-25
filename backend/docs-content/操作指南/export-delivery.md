@@ -3,6 +3,8 @@ title: 导出与交付
 category: 操作指南
 order: 4
 updated: 2026-11-18
+status: canonical
+summary: 打码 / 化名成品、ZIP 分卷与页账。
 ---
 
 成品怎么拿、怎么交给别人、交付前该检查什么，都在这一篇。导出这一步做对了，前面的复核才算真正落地。

@@ -3,6 +3,8 @@ title: 供料模式（喂 Agent）
 category: 操作指南
 order: 5
 updated: 2026-11-18
+status: canonical
+summary: 供料模式：案卷转脱敏 Markdown + 映射表 + 保留清单。
 ---
 
 供料模式解决一个具体问题：怎么把整本案卷安全地交给云端 AI 去做摘要、审阅、要素抽取。
