@@ -76,11 +76,11 @@ export function PlaygroundPageExport({
   const [open, setOpen] = useState(!defaultCollapsed);
 
   const counts = useMemo(() => {
-    // Issue#280 × #278：manual_verified 并入 success 桶展示（exportable 谓词，该页已可导出）。
+    // Issue#362：success / manual_verified 分列计数（与 batch-page-matrix 同口径）。
+    // 旧实现把 manual 并入 success 且模板漏替换 {manual}，结果页漏出字面量。
     const tally = { success: 0, failed: 0, pending: 0, manual_verified: 0 };
     status?.pages.forEach((cell) => {
-      if (cell.state === 'manual_verified') tally.success += 1;
-      else tally[cell.state] += 1;
+      tally[cell.state] += 1;
     });
     return tally;
   }, [status]);
@@ -137,6 +137,7 @@ export function PlaygroundPageExport({
           >
             {t('batchWizard.pages.summary')
               .replace('{success}', String(counts.success))
+              .replace('{manual}', String(counts.manual_verified))
               .replace('{failed}', String(counts.failed))
               .replace('{pending}', String(counts.pending))}
           </span>

@@ -64,6 +64,9 @@
 
 /* 1b. 大拖拽位（真稿 .drop）：绿虚线框 + 淡绿面 + 居中列 */
 [data-theme="ds"] .saas-hero.ds-drop {
+  /* Issue#362：组件仍带 Tailwind w-full，margin 22px×2 会把总宽撑成父宽+44px，
+     右/下缘越出外层卡片被 overflow-hidden 裁掉（右侧虚线与圆角消失）。 */
+  width: calc(100% - 44px);
   margin: 22px;
   min-height: 0;
   flex: none;
