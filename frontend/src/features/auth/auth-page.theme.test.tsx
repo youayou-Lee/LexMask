@@ -4,10 +4,10 @@
 
 // Issue#355 登录页双轨钉：
 // - ds：三栏海报构图（品牌主张 / 视口居中登录卡 / 脱敏文书叠卡 + 顶栏页脚），切换键在场；
-// - classic：原绿渐变白卡登录页（form + max-w-md 卡），无 ds 骨架；
+// - classic：原绿渐变白卡登录页（form + max-w-md 卡），无 ds 骨架，但保留「切回新版」键；
 // - 双轨表单主体共用 renderCardBody（防两份 JSX 漂移）。
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -71,7 +71,7 @@ describe('Issue#355 登录页双轨', () => {
     expect(screen.getByRole('button', { name: '进入系统' })).toBeTruthy();
   });
 
-  it('classic：原绿渐变白卡登录页，无 ds 骨架（零新 DOM）', () => {
+  it('classic：原绿渐变白卡登录页，无 ds 骨架；切换键可回新版', () => {
     useUiTheme.setState({ theme: 'classic' });
     const { container } = renderAuth();
     expect(container.querySelector('.ds-auth-stage')).toBeNull();
@@ -81,5 +81,12 @@ describe('Issue#355 登录页双轨', () => {
     expect(screen.getByLabelText('用户名')).toBeTruthy();
     expect(screen.getByLabelText('密码')).toBeTruthy();
     expect(container.querySelector('.max-w-md')).toBeTruthy();
+    // 用户裁定 2026-11-25：旧版页面也要有切回新版的 button
+    const back = screen.getByRole('button', { name: /切换新版风格/ });
+    expect(back).toBeTruthy();
+    fireEvent.click(back);
+    expect(useUiTheme.getState().theme).toBe('ds');
+    expect(container.querySelector('.ds-auth-stage')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /切换经典风格/ })).toBeTruthy();
   });
 });
