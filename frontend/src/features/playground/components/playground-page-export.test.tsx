@@ -143,6 +143,25 @@ describe('单文件任务的逐页结果与选页导出（Issue#257 需求重对
     expect(summary).not.toContain('zip');
   });
 
+  it('人工补框页在汇总里单列，模板不残留 {manual}（Issue#362）', async () => {
+    statusBox.current = makeStatus({
+      page_count: 3,
+      pages: [
+        { page: 1, state: 'success' },
+        { page: 2, state: 'manual_verified' },
+        { page: 3, state: 'pending' },
+      ],
+      failed_pages: [],
+    });
+    await renderSettled(<PlaygroundPageExport fileId="file-1" />);
+    const counts = screen.getByTestId('playground-page-export-counts').textContent ?? '';
+    expect(counts).toContain('成功 1');
+    expect(counts).toContain('人工 1');
+    expect(counts).toContain('未跑 1');
+    expect(counts).not.toContain('{');
+    expect(counts).not.toContain('}');
+  });
+
   it('非分页文件（docx/txt 之类）不渲染整块', async () => {
     statusBox.current = makeStatus({ paged: false, pages: [], failed_pages: [] });
     await renderSettled(<PlaygroundPageExport fileId="file-1" />);
