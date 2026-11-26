@@ -1,6 +1,6 @@
 ---
 title: 导出与交付
-category: 操作指南
+category: 功能介绍
 order: 4
 updated: 2026-11-18
 status: canonical

@@ -1,6 +1,6 @@
 ---
 title: 供料模式（喂 Agent）
-category: 操作指南
+category: 功能介绍
 order: 5
 updated: 2026-11-18
 status: canonical

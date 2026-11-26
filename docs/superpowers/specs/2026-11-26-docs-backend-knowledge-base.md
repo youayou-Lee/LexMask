@@ -16,7 +16,8 @@
 目标：
 
 - **后端托管**：文档存 `backend/docs-content/`，`DOCS_ROOT` 可配、可挂载卷；改文件即生效。
-- **知识库结构**：索引页只放摘要与链接；每个事实一个正本（`canonical_for`）；其他页只摘要并链回正本。
+- **用户文档边界**：只放用户需要的四类——是什么（产品简介）、功能介绍（单文件 / 批量 / 供料 / 还原 / 水印 / 预览 / 导出）、怎么用（快速开始 / 配置）、出问题怎么办（FAQ / 排障）；技术架构、证据、术语、维护规则等项目文档放 `docs/项目总文档/`，不进用户文档中心。
+- **知识库结构**：一个事实一个正本（`canonical_for`）；其他页只摘要并链回正本；用户文档不强制索引页（无 index 时落到第一篇）。
 - **双向链接**：正文写 `[[slug|标题]]`，后端解析前向链接并自动生成反链。
 - **Obsidian 兼容**：文件名即 slug（ASCII），`backend/docs-content` 可直接作为 vault 打开，graph/backlinks 原生可用。
 
@@ -33,9 +34,9 @@
 ### 2.2 Frontmatter
 
 ```yaml
-title: 产品定义              # 必填，中文标题
-category: 项目总览            # 必填，导航分类（篇）
-section: 第一章 · 认识墨隐     # 可选，分类内章节；前端按「篇 → 章 → 文档」三级分组
+title: 单文件处理             # 必填，中文标题
+category: 功能介绍            # 必填，导航分类（区域）
+section:                      # 可选，分类内分组；用户文档默认不用
 order: 1                    # 必填，分类内排序
 updated: 2026-11-26         # 必填，ISO 日期
 status: canonical           # 必填：index | canonical | summary | draft | deprecated
@@ -57,7 +58,7 @@ summary: 一句话摘要           # 可选，≤ 120 字；索引与导航用
 后端固定配置（不依赖文件系统顺序）：
 
 ```
-项目总览 → 新手必读 → 操作指南 → 配置与管理 → 常见问题与排障 → 更新日志
+新手必读 → 功能介绍 → 配置与管理 → 常见问题与排障 → 更新日志
 ```
 
 未登记的分类排在最后，并在 lint 中报警。
@@ -94,12 +95,12 @@ summary: 一句话摘要           # 可选，≤ 120 字；索引与导航用
 
 ```json
 {
-  "index": "overview",
+  "index": null,
   "sections": [
     {
-      "category": "项目总览",
+      "category": "新手必读",
       "items": [
-        {"slug":"overview","title":"项目总览","summary":"…","status":"index","order":0,"updated":"2026-11-26"}
+        {"slug":"product-intro","title":"产品简介","summary":"…","status":"canonical","order":1,"updated":"2026-11-26"}
       ]
     }
   ]
@@ -115,14 +116,14 @@ summary: 一句话摘要           # 可选，≤ 120 字；索引与导航用
 
 ```json
 {
-  "slug": "product-definition",
-  "title": "产品定义",
-  "category": "项目总览",
+  "slug": "product-intro",
+  "title": "产品简介",
+  "category": "新手必读",
   "status": "canonical",
   "updated": "2026-11-26",
-  "content": "# 产品定义\n\n…（[[…]] 已解析为标准链接）",
-  "links": [{"slug":"delivery-modes","title":"两种模式"}],
-  "backlinks": [{"slug":"overview","title":"项目总览"}]
+  "content": "# 产品简介\n\n…（[[…]] 已解析为标准链接）",
+  "links": [{"slug":"quick-start","title":"快速开始"}],
+  "backlinks": [{"slug":"product-definition","title":"产品定义"}]
 }
 ```
 
@@ -161,9 +162,10 @@ CI 与本地均可跑；失败返回非 0：
 1. `git mv frontend/src/features/docs-content/* backend/docs-content/`，目录结构保留；
 2. 文件名改为 slug（如 `新手必读/产品简介.md` → `新手必读/product-intro.md`），frontmatter 补 `status`/`canonical_for`/`summary`；
 3. 删除 `docs-manifest.ts` 与相关测试；
-4. 新增 `项目总览/`（索引 + 15 篇，已就绪）；
-5. `产品简介`、`脱敏理念与能力边界` 改为 `status: summary` + `canonical: overview` 或对应正本，正文只留 3 行摘要与链接；
-6. 后端路由、前端 fetch、测试同 PR。
+4. 项目总文档（技术 / 证据 / 术语 / 维护规则）放 `docs/项目总文档/`，**不进** `backend/docs-content/`——用户文档中心只放用户内容；
+5. `产品简介`、`脱敏理念与能力边界` 改为自包含的用户页（不链项目文档），正文只留用户需要的内容；
+6. 「功能介绍」区覆盖：单文件处理、批量处理、预览与调整、导出与交付、供料模式、还原工具、水印检测；
+7. 后端路由、前端 fetch、测试同 PR。
 
 ## 9. 安全
 

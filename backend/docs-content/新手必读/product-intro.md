@@ -3,16 +3,13 @@ title: 产品简介
 category: 新手必读
 order: 1
 updated: 2026-11-26
-status: summary
-canonical: product-definition
-summary: 面向用户的入口：本产品是什么、三种使用形态、第一次使用建议。
+status: canonical
+summary: 本产品是什么、三种使用形态、第一次使用建议。
 ---
 
 # 产品简介
 
 本产品是一套部署在您自己服务器或内网中的文档脱敏工作台：上传文件后自动识别敏感信息，您逐条复核确认，再打码或替换成化名，导出可以对外提供的成品；需要交给 AI 时，还可以输出结构化供料。原始文件始终留在您的部署环境里。
-
-完整定义、产物形态与行业范围见 [[overview|项目总览]]，特别是 [[product-definition|产品定义]] 与 [[delivery-modes|两种模式]]。
 
 ## 三种主要使用形态
 

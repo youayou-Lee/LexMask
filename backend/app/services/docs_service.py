@@ -30,9 +30,8 @@ INLINE_CODE_RE = re.compile(r"(`[^`\n]*`)")
 FRONTMATTER_RE = re.compile(r"^---\r?\n(.*?)\r?\n---(?:\r?\n|$)", re.S)
 
 CATEGORY_ORDER = [
-    "项目总览",
     "新手必读",
-    "操作指南",
+    "功能介绍",
     "配置与管理",
     "常见问题与排障",
     "更新日志",
@@ -442,8 +441,6 @@ def lint(root: Path | None = None) -> list[str]:
             else:
                 owners[fact] = doc.slug
 
-    if store.index_slug is None:
-        problems.append("ERROR: 缺少 status=index 的索引页")
     for source, target in store.missing_links:
         problems.append(f"ERROR: 断链：{source} -> [[{target}]]")
 

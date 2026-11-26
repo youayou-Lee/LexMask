@@ -65,7 +65,8 @@ cd frontend && npm run build && npm test && npm run lint
 | 海光 DCU（K100_AI / DTK 26.04）首次部署教程（历史参考） | [docs/deploy/](./docs/deploy/) |
 | 海光 DCU 适配总览（镜像矩阵/卡型/坑清单） | [docs/dcu/海光DCU适配总览.md](./docs/dcu/海光DCU适配总览.md) |
 | 开发工作流 / 测试门禁 / 仓库纪律 | [docs/WORKFLOW.md](./docs/WORKFLOW.md) · [docs/开发门禁-测试与独立评审规范.md](./docs/开发门禁-测试与独立评审规范.md) · [docs/协同开发规范-gh使用与仓库纪律.md](./docs/协同开发规范-gh使用与仓库纪律.md) |
-| 用户文档中心（使用说明 / 操作指南 / 常见问题 / 更新日志） | 登录后左侧导航「文档中心」，或直接访问 `/docs` |
+| 用户文档中心（产品简介 / 功能介绍 / 配置 / 常见问题 / 更新日志） | 登录后左侧导航「文档中心」，或直接访问 `/docs` |
+| 项目总文档（技术 / 证据 / 术语 / 维护规则，非用户文档） | [docs/项目总文档/](./docs/项目总文档/) |
 | 性能与质量白皮书 | [docs/性能与质量白皮书.md](./docs/性能与质量白皮书.md) |
 | NER 评测套件 | [eval/README.md](./eval/README.md) |
 

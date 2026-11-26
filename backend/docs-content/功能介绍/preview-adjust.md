@@ -1,6 +1,6 @@
 ---
 title: 预览与调整
-category: 操作指南
+category: 功能介绍
 order: 3
 updated: 2026-11-18
 status: canonical

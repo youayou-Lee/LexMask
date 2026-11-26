@@ -1,6 +1,6 @@
 ---
 title: 批量处理
-category: 操作指南
+category: 功能介绍
 order: 2
 updated: 2026-11-18
 status: canonical
