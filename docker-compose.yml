@@ -57,6 +57,8 @@ services:
       - backend-data:/app/data
       - backend-uploads:/app/uploads
       - backend-outputs:/app/outputs
+      # 文档中心内容（Issue#368）：挂载后改 Markdown 即生效，不需要重建镜像。
+      - ./backend/docs-content:/app/docs-content:ro
     networks:
       - redaction-net
     healthcheck:

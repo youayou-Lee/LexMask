@@ -6,20 +6,18 @@ import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-import { buildDocsNav, getAllDocsEntries, loadDocRaw, splitDocsFrontmatter } from './docs-manifest';
-import type { DocsEntry, DocsNavSection } from './docs-manifest';
+import { fetchDoc, fetchDocsList } from '@/services/docsApi';
+import type { DocsDetail, DocsNavItem, DocsNavSection } from '@/services/docsApi';
 
 /**
  * 相邻文档（上一篇/下一篇）。
  *
- * 顺序口径 = `entries` 数组顺序（`getAllDocsEntries()` 返回的登记顺序，即阅读顺序
- * 新手必读 → 操作指南 → 配置与管理 → 常见问题与排障 → 更新日志），不在此处重新排序
- * （`order` 是分类内序号，与阅读顺序不同）。
- * 纯函数：供测试直接钉行为。
+ * 顺序口径 = 扁平化后的导航顺序（分类顺序 → 分类内 order → slug），
+ * 与左侧目录一致；不在此处重新排序。
  */
 export function resolveAdjacentSlug(
   slug: string,
-  entries: DocsEntry[],
+  entries: DocsNavItem[],
 ): { prev: string | null; next: string | null } {
   const index = entries.findIndex((e) => e.slug === slug);
   if (index === -1) return { prev: null, next: null };
@@ -27,6 +25,10 @@ export function resolveAdjacentSlug(
     prev: index > 0 ? entries[index - 1].slug : null,
     next: index < entries.length - 1 ? entries[index + 1].slug : null,
   };
+}
+
+function flattenEntries(sections: DocsNavSection[]): DocsNavItem[] {
+  return sections.flatMap((section) => section.items);
 }
 
 /** 标题文本 → 锚点 id（中文保留，空白转 `-`，标点剔除）。 */
@@ -51,9 +53,23 @@ function flattenText(node: React.ReactNode): string {
 
 // react-markdown v10 默认不给 heading 加 id —— 用 components 覆盖 h2/h3，
 // id 由「渲染出的标题文本」生成，与本页目录同源，保证锚点能对上。
+// 站内文档链接（后端已解析为 /docs/{slug}）用路由跳转，不整页刷新。
 const markdownComponents: Components = {
   h2: ({ children }) => <h2 id={slugifyHeading(flattenText(children))}>{children}</h2>,
   h3: ({ children }) => <h3 id={slugifyHeading(flattenText(children))}>{children}</h3>,
+  a: ({ href, children }) => {
+    if (href && href.startsWith('/docs/')) {
+      return <Link to={href}>{children}</Link>;
+    }
+    if (href && href.startsWith('#')) {
+      return <a href={href}>{children}</a>;
+    }
+    return (
+      <a href={href} target="_blank" rel="noreferrer">
+        {children}
+      </a>
+    );
+  },
 };
 
 interface TocItem {
@@ -83,6 +99,22 @@ function extractToc(markdown: string): TocItem[] {
   return items;
 }
 
+function groupBySection(
+  items: DocsNavItem[],
+): Array<{ section: string; items: DocsNavItem[] }> {
+  const groups: Array<{ section: string; items: DocsNavItem[] }> = [];
+  for (const item of items) {
+    const section = item.section ?? '';
+    const last = groups[groups.length - 1];
+    if (last && last.section === section) {
+      last.items.push(item);
+    } else {
+      groups.push({ section, items: [item] });
+    }
+  }
+  return groups;
+}
+
 function DocsNavList({
   sections,
   currentSlug,
@@ -97,22 +129,31 @@ function DocsNavList({
           <p className="mb-1 px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             {section.category}
           </p>
-          <ul className="space-y-0.5">
-            {section.items.map((item) => (
-              <li key={item.slug}>
-                <Link
-                  to={`/docs/${item.slug}`}
-                  className={`block truncate rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-accent ${
-                    item.slug === currentSlug
-                      ? 'bg-accent font-medium text-foreground'
-                      : 'text-muted-foreground'
-                  }`}
-                >
-                  {item.title}
-                </Link>
-              </li>
-            ))}
-          </ul>
+          {groupBySection(section.items).map((group, index) => (
+            <div key={`${group.section}-${index}`}>
+              {group.section ? (
+                <p className="mb-0.5 mt-2 px-2 text-[11px] font-medium text-muted-foreground/80">
+                  {group.section}
+                </p>
+              ) : null}
+              <ul className="space-y-0.5">
+                {group.items.map((item) => (
+                  <li key={item.slug}>
+                    <Link
+                      to={`/docs/${item.slug}`}
+                      className={`block truncate rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-accent ${
+                        item.slug === currentSlug
+                          ? 'bg-accent font-medium text-foreground'
+                          : 'text-muted-foreground'
+                      }`}
+                    >
+                      {item.title}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </div>
       ))}
     </>
@@ -121,19 +162,19 @@ function DocsNavList({
 
 export function DocsPage() {
   const { slug } = useParams<{ slug: string }>();
-  const [entries, setEntries] = React.useState<DocsEntry[] | null>(null);
-  const [nav, setNav] = React.useState<DocsNavSection[]>([]);
-  const [raw, setRaw] = React.useState<string | null>(null);
+  const [sections, setSections] = React.useState<DocsNavSection[] | null>(null);
+  const [indexSlug, setIndexSlug] = React.useState<string | null>(null);
+  const [detail, setDetail] = React.useState<DocsDetail | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [navOpen, setNavOpen] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
-    getAllDocsEntries()
-      .then((all) => {
+    fetchDocsList()
+      .then((payload) => {
         if (cancelled) return;
-        setEntries(all);
-        setNav(buildDocsNav(all));
+        setSections(payload.sections);
+        setIndexSlug(payload.index);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -143,9 +184,14 @@ export function DocsPage() {
     };
   }, []);
 
-  const currentSlug = slug ?? entries?.[0]?.slug ?? null;
+  const entries = React.useMemo(
+    () => (sections ? flattenEntries(sections) : []),
+    [sections],
+  );
+  const fallbackSlug = indexSlug ?? entries[0]?.slug ?? null;
+  const currentSlug = slug ?? fallbackSlug;
 
-  // 切换文档时收起窄屏抽屉——抽屉展开着会挡住新一篇的正文（M-3）。
+  // 切换文档时收起窄屏抽屉——抽屉展开着会挡住新一篇的正文。
   React.useEffect(() => {
     setNavOpen(false);
   }, [currentSlug]);
@@ -153,19 +199,13 @@ export function DocsPage() {
   React.useEffect(() => {
     // 清单未到位不取正文：未知 slug 在清单到位后由渲染层重定向，若先按 slug 发一次请求，
     // 失败写入的 error 会盖住重定向（表现为「文档加载失败」而不是回到目录）。
-    if (!currentSlug || !entries) return;
+    if (!sections || !currentSlug) return;
     if (!entries.some((entry) => entry.slug === currentSlug)) return;
     let cancelled = false;
-    setRaw(null);
-    loadDocRaw(currentSlug)
-      .then((text) => {
-        if (cancelled) return;
-        // 门⑥ I-1：正文渲染依赖 frontmatter 可剥离（与清单解析同一分界实现）。
-        // 剥不开的原文直接显式报错，不把元数据当正文渲染（fail-closed）。
-        if (!splitDocsFrontmatter(text)) {
-          throw new Error(`文档 frontmatter 剥离失败（与清单解析口径不一致）：${currentSlug}`);
-        }
-        setRaw(text);
+    setDetail(null);
+    fetchDoc(currentSlug)
+      .then((payload) => {
+        if (!cancelled) setDetail(payload);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -173,7 +213,7 @@ export function DocsPage() {
     return () => {
       cancelled = true;
     };
-  }, [currentSlug, entries]);
+  }, [currentSlug, sections, entries]);
 
   if (error) {
     return (
@@ -182,7 +222,7 @@ export function DocsPage() {
       </div>
     );
   }
-  if (!entries) {
+  if (!sections) {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="h-7 w-7 animate-spin rounded-full border-2 border-border border-t-foreground" />
@@ -190,21 +230,30 @@ export function DocsPage() {
     );
   }
   if (!slug) {
-    return <Navigate to={`/docs/${entries[0].slug}`} replace />;
+    if (!fallbackSlug) {
+      return (
+        <div className="flex h-full items-center justify-center px-6">
+          <p className="text-sm text-muted-foreground">文档库为空</p>
+        </div>
+      );
+    }
+    return <Navigate to={`/docs/${fallbackSlug}`} replace />;
   }
 
   const current = entries.find((e) => e.slug === slug);
-  // 未知 slug（手输错字 / 旧链接 / 清单改名）回文档中心首页——渲染空正文或错误页都不如
-  // 把人送回目录树。真实路由里 `/docs` 本身就是重定向到清单首篇。
+  // 未知 slug（手输错字 / 旧链接 / 文档改名）回文档中心首页——渲染空正文或错误页都不如
+  // 把人送回目录树。真实路由里 `/docs` 本身会落到索引页。
   if (!current) {
     return <Navigate to="/docs" replace />;
   }
+  const currentCategory =
+    sections.find((section) => section.items.some((item) => item.slug === slug))?.category ?? '';
   const { prev, next } = resolveAdjacentSlug(slug, entries);
-  // `loadDocRaw` 返回的是**含 frontmatter 的原文**，frontmatter 分界与清单解析共用
-  // splitDocsFrontmatter（单一真源，门⑥ I-1——两套正则不同源会让元数据渲染进正文）。
-  // 加载时已校验可剥离，这里的 `?? ''` 只是类型兜底；正文交给 react-markdown 渲染。
-  const body = raw == null ? '' : (splitDocsFrontmatter(raw)?.body ?? '');
+  const body = detail?.slug === slug ? detail.content : '';
   const toc = extractToc(body);
+  const canonicalTitle = detail?.canonical
+    ? entries.find((e) => e.slug === detail.canonical)?.title
+    : undefined;
 
   return (
     <div className="flex h-full min-h-0 flex-col lg:flex-row">
@@ -226,7 +275,7 @@ export function DocsPage() {
             aria-label="文档目录（窄屏）"
             className="max-h-72 overflow-y-auto px-3 pb-3"
           >
-            <DocsNavList sections={nav} currentSlug={currentSlug} />
+            <DocsNavList sections={sections} currentSlug={currentSlug} />
           </nav>
         ) : null}
       </div>
@@ -235,19 +284,56 @@ export function DocsPage() {
         aria-label="文档目录"
         className="hidden w-64 shrink-0 overflow-y-auto border-r border-border/70 px-3 py-4 lg:block"
       >
-        <DocsNavList sections={nav} currentSlug={currentSlug} />
+        <DocsNavList sections={sections} currentSlug={currentSlug} />
       </nav>
       <article className="min-h-0 min-w-0 flex-1 overflow-y-auto px-6 py-6 lg:px-10">
         <div className="mx-auto max-w-3xl">
-          <p className="mb-1 text-xs text-muted-foreground">文档中心 / {current?.category}</p>
+          <p className="mb-1 text-xs text-muted-foreground">文档中心 / {currentCategory}</p>
           <h1 className="mb-4 text-2xl font-semibold tracking-tight text-foreground">
-            {current?.title}
+            {detail?.title ?? current.title}
           </h1>
-          <div className="docs-prose text-sm leading-7 text-foreground">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-              {body}
-            </ReactMarkdown>
-          </div>
+          {detail?.status === 'summary' && detail.canonical ? (
+            <p className="mb-4 rounded-lg border border-border/70 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              本文为摘要，正本见{' '}
+              <Link to={`/docs/${detail.canonical}`} className="underline underline-offset-2">
+                {canonicalTitle ?? detail.canonical}
+              </Link>
+              。
+            </p>
+          ) : null}
+          {body ? (
+            <div className="docs-prose text-sm leading-7 text-foreground">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                {body}
+              </ReactMarkdown>
+            </div>
+          ) : (
+            <div className="flex h-32 items-center justify-center">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-border border-t-foreground" />
+            </div>
+          )}
+          {detail && detail.backlinks.length > 0 ? (
+            <section
+              aria-label="被引用"
+              className="mt-8 rounded-lg border border-border/70 px-4 py-3"
+            >
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                本文被以下文档引用
+              </p>
+              <ul className="space-y-1 text-sm">
+                {detail.backlinks.map((link) => (
+                  <li key={link.slug}>
+                    <Link
+                      to={`/docs/${link.slug}`}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      {link.title}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
           <div className="mt-8 flex items-center justify-between border-t border-border/70 pt-4 text-sm">
             {prev ? (
               <Link to={`/docs/${prev}`} className="text-muted-foreground hover:text-foreground">

@@ -225,11 +225,18 @@ function StructuredPoliciesCompatRoute() {
   return <Navigate to={`/structured/datasets${location.search}${location.hash}`} replace />;
 }
 
-// Issue#348：文档中心路由片段——导出仅为路由契约测试直挂（行为无差异）。
-// `docs` 重定向目标是清单首篇（`product-intro` 产品简介）；DOCS_MANIFEST 首条
-// 换成别的篇目时，这里与 router.docs.test.tsx 的断言要一起改。
+// Issue#348 / #368：文档中心路由片段——导出仅为路由契约测试直挂（行为无差异）。
+// `/docs` 与 `/docs/:slug` 都渲染 DocsPage；`/docs` 的落点由页面按后端返回的索引页
+// （status=index）决定，不再前端硬编码首篇。
 export const DOCS_ROUTES: Array<{ path: string; element: React.ReactNode }> = [
-  { path: 'docs', element: <Navigate to="/docs/product-intro" replace /> },
+  {
+    path: 'docs',
+    element: (
+      <LazyPage>
+        <Docs />
+      </LazyPage>
+    ),
+  },
   {
     path: 'docs/:slug',
     element: (
