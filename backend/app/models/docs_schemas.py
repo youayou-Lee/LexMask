@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class DocsNavItem(BaseModel):
     slug: str
     title: str
+    section: str = ""
     summary: str = ""
     status: str
     order: int

@@ -1,6 +1,7 @@
 ---
 title: 术语与口径
 category: 项目总览
+section: 第五章 · 边界与口径
 order: 13
 updated: 2026-11-26
 status: canonical

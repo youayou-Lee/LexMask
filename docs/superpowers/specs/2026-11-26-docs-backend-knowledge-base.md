@@ -34,7 +34,8 @@
 
 ```yaml
 title: 产品定义              # 必填，中文标题
-category: 项目总览            # 必填，导航分类
+category: 项目总览            # 必填，导航分类（篇）
+section: 第一章 · 认识墨隐     # 可选，分类内章节；前端按「篇 → 章 → 文档」三级分组
 order: 1                    # 必填，分类内排序
 updated: 2026-11-26         # 必填，ISO 日期
 status: canonical           # 必填：index | canonical | summary | draft | deprecated

@@ -99,6 +99,22 @@ function extractToc(markdown: string): TocItem[] {
   return items;
 }
 
+function groupBySection(
+  items: DocsNavItem[],
+): Array<{ section: string; items: DocsNavItem[] }> {
+  const groups: Array<{ section: string; items: DocsNavItem[] }> = [];
+  for (const item of items) {
+    const section = item.section ?? '';
+    const last = groups[groups.length - 1];
+    if (last && last.section === section) {
+      last.items.push(item);
+    } else {
+      groups.push({ section, items: [item] });
+    }
+  }
+  return groups;
+}
+
 function DocsNavList({
   sections,
   currentSlug,
@@ -113,22 +129,31 @@ function DocsNavList({
           <p className="mb-1 px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             {section.category}
           </p>
-          <ul className="space-y-0.5">
-            {section.items.map((item) => (
-              <li key={item.slug}>
-                <Link
-                  to={`/docs/${item.slug}`}
-                  className={`block truncate rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-accent ${
-                    item.slug === currentSlug
-                      ? 'bg-accent font-medium text-foreground'
-                      : 'text-muted-foreground'
-                  }`}
-                >
-                  {item.title}
-                </Link>
-              </li>
-            ))}
-          </ul>
+          {groupBySection(section.items).map((group, index) => (
+            <div key={`${group.section}-${index}`}>
+              {group.section ? (
+                <p className="mb-0.5 mt-2 px-2 text-[11px] font-medium text-muted-foreground/80">
+                  {group.section}
+                </p>
+              ) : null}
+              <ul className="space-y-0.5">
+                {group.items.map((item) => (
+                  <li key={item.slug}>
+                    <Link
+                      to={`/docs/${item.slug}`}
+                      className={`block truncate rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-accent ${
+                        item.slug === currentSlug
+                          ? 'bg-accent font-medium text-foreground'
+                          : 'text-muted-foreground'
+                      }`}
+                    >
+                      {item.title}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </div>
       ))}
     </>

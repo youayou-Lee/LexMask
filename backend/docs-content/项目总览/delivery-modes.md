@@ -1,6 +1,7 @@
 ---
 title: 两种模式
 category: 项目总览
+section: 第一章 · 认识墨隐
 order: 2
 updated: 2026-11-26
 status: canonical

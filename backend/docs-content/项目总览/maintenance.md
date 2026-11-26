@@ -1,6 +1,7 @@
 ---
 title: 维护规则
 category: 项目总览
+section: 附录
 order: 15
 updated: 2026-11-26
 status: canonical

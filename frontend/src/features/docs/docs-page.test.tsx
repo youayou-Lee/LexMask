@@ -27,11 +27,28 @@ vi.mock('@/services/docsApi', () => ({
 }));
 
 const entries: DocsNavItem[] = [
-  { slug: 'doc-a', title: '甲篇', summary: '', status: 'canonical', order: 1, updated: '2026-11-17' },
-  { slug: 'doc-b', title: '乙篇', summary: '', status: 'canonical', order: 2, updated: '2026-11-17' },
+  {
+    slug: 'doc-a',
+    title: '甲篇',
+    section: '第一章 · 甲',
+    summary: '',
+    status: 'canonical',
+    order: 1,
+    updated: '2026-11-17',
+  },
+  {
+    slug: 'doc-b',
+    title: '乙篇',
+    section: '第一章 · 甲',
+    summary: '',
+    status: 'canonical',
+    order: 2,
+    updated: '2026-11-17',
+  },
   {
     slug: 'doc-c',
     title: '丙篇',
+    section: '第二章 · 乙',
     summary: '',
     status: 'canonical',
     order: 1,
@@ -144,6 +161,9 @@ describe('DocsPage', () => {
     expect(within(nav).getByRole('link', { name: '丙篇' }).getAttribute('href')).toBe(
       '/docs/doc-c',
     );
+    // 章节层级：同一 section 的文档归在一组，组标题可见。
+    expect(within(nav).getByText('第一章 · 甲')).toBeTruthy();
+    expect(within(nav).getByText('第二章 · 乙')).toBeTruthy();
     expect(mocks.fetchDoc).toHaveBeenCalledWith('doc-b');
   });
 

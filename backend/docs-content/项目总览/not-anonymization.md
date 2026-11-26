@@ -1,6 +1,7 @@
 ---
 title: 不是匿名化
 category: 项目总览
+section: 第五章 · 边界与口径
 order: 11
 updated: 2026-11-26
 status: canonical

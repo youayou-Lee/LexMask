@@ -1,6 +1,7 @@
 ---
 title: 行业定位
 category: 项目总览
+section: 第一章 · 认识墨隐
 order: 3
 updated: 2026-11-26
 status: canonical

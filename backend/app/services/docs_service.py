@@ -50,6 +50,7 @@ class DocsDoc:
     slug: str
     title: str
     category: str
+    section: str
     order: int
     updated: str
     status: str
@@ -300,6 +301,7 @@ def _load_doc(path: Path) -> DocsDoc:
     title = _as_str(fields, "title", required=True)
     body = _strip_leading_title(body, title)
     category = _as_str(fields, "category", required=True)
+    section = _as_str(fields, "section")
     order = _as_order(fields)
     status = _as_str(fields, "status") or "canonical"
     if status not in _VALID_STATUS:
@@ -315,6 +317,7 @@ def _load_doc(path: Path) -> DocsDoc:
         slug=slug,
         title=title,
         category=category,
+        section=section,
         order=order,
         updated=_as_str(fields, "updated", required=True),
         status=status,
@@ -373,6 +376,7 @@ def list_docs() -> dict[str, Any]:
                     {
                         "slug": doc.slug,
                         "title": doc.title,
+                        "section": doc.section,
                         "summary": doc.summary,
                         "status": doc.status,
                         "order": doc.order,

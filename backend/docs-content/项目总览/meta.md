@@ -1,6 +1,7 @@
 ---
 title: 版本与索引
 category: 项目总览
+section: 附录
 order: 14
 updated: 2026-11-26
 status: canonical

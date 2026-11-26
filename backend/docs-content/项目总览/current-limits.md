@@ -1,6 +1,7 @@
 ---
 title: 当前能力边界
 category: 项目总览
+section: 第三章 · 能力与使用
 order: 7
 updated: 2026-11-26
 status: canonical

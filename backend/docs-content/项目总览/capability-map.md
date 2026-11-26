@@ -1,6 +1,7 @@
 ---
 title: 能力地图
 category: 项目总览
+section: 第三章 · 能力与使用
 order: 5
 updated: 2026-11-26
 status: canonical

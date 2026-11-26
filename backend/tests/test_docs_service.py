@@ -14,6 +14,7 @@ def _doc(
     title: str,
     *,
     category: str = "项目总览",
+    section: str = "",
     order: int = 1,
     status: str = "canonical",
     summary: str = "",
@@ -25,10 +26,16 @@ def _doc(
         "---",
         f"title: {title}",
         f"category: {category}",
-        f"order: {order}",
-        "updated: 2026-11-26",
-        f"status: {status}",
     ]
+    if section:
+        lines.append(f"section: {section}")
+    lines.extend(
+        [
+            f"order: {order}",
+            "updated: 2026-11-26",
+            f"status: {status}",
+        ]
+    )
     if summary:
         lines.append(f"summary: {summary}")
     if canonical:
@@ -156,6 +163,15 @@ def test_leading_h1_matching_title_is_stripped(docs_root: Path) -> None:
     # 页面用 frontmatter title 渲染 h1；正文同标题 H1 必须剥掉，避免双标题。
     assert "# 甲篇" not in alpha["content"]
     assert "正文第一段。" in alpha["content"]
+
+
+def test_list_exposes_section_for_nav_grouping(docs_root: Path) -> None:
+    _write(docs_root, "index", _doc("索引", status="index", order=0))
+    _write(docs_root, "alpha", _doc("甲篇", section="第一章 · 认识", order=1))
+    _write(docs_root, "beta", _doc("乙篇", section="第二章 · 能力", order=2))
+
+    items = docs_service.list_docs()["sections"][0]["items"]
+    assert [item["section"] for item in items] == ["", "第一章 · 认识", "第二章 · 能力"]
 
 
 def test_invalid_filename_is_reported(docs_root: Path) -> None:

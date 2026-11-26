@@ -7,6 +7,7 @@ import { get } from './api-client';
 export interface DocsNavItem {
   slug: string;
   title: string;
+  section?: string;
   summary: string;
   status: 'index' | 'canonical' | 'summary' | 'draft' | 'deprecated' | string;
   order: number;
