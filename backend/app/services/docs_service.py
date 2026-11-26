@@ -268,6 +268,25 @@ def _build_store(root: Path, mtime_ns: int) -> DocsStore:
     )
 
 
+def _strip_leading_title(body: str, title: str) -> str:
+    """去掉正文开头与 frontmatter title 相同的 H1。
+
+    页面本身已经用 frontmatter 的 title 渲染 h1；正文再带 `# 同标题` 会出现双标题。
+    只剥第一块（前导空白允许），不要动正文中间的标题。
+    """
+    lines = body.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if re.fullmatch(rf"#\s+{re.escape(title.strip())}\s*#*\s*", line.strip()):
+            rest = lines[index + 1:]
+            if rest and not rest[0].strip():
+                rest = rest[1:]
+            return "".join(lines[:index] + rest)
+        return body
+    return body
+
+
 def _load_doc(path: Path) -> DocsDoc:
     slug = path.stem
     if not SLUG_RE.fullmatch(slug):
@@ -279,6 +298,7 @@ def _load_doc(path: Path) -> DocsDoc:
 
     fields, body = split_frontmatter(text)
     title = _as_str(fields, "title", required=True)
+    body = _strip_leading_title(body, title)
     category = _as_str(fields, "category", required=True)
     order = _as_order(fields)
     status = _as_str(fields, "status") or "canonical"

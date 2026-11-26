@@ -147,6 +147,17 @@ def test_store_reloads_on_file_change(docs_root: Path) -> None:
     assert "第二版" in (docs_service.get_doc("index") or {})["content"]
 
 
+def test_leading_h1_matching_title_is_stripped(docs_root: Path) -> None:
+    _write(docs_root, "index", _doc("索引", status="index", order=0))
+    _write(docs_root, "alpha", _doc("甲篇", extra="# 甲篇\n\n正文第一段。"))
+
+    alpha = docs_service.get_doc("alpha")
+    assert alpha is not None
+    # 页面用 frontmatter title 渲染 h1；正文同标题 H1 必须剥掉，避免双标题。
+    assert "# 甲篇" not in alpha["content"]
+    assert "正文第一段。" in alpha["content"]
+
+
 def test_invalid_filename_is_reported(docs_root: Path) -> None:
     _write(docs_root, "overview", _doc("总览", status="index", order=0))
     (docs_root / "中文名.md").write_text(_doc("非法"), encoding="utf-8")
