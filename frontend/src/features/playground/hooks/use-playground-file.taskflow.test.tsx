@@ -825,7 +825,7 @@ describe('Issue#194 终审 A：待确认扫描件回场不重复提交', () => {
     expect(screen.getByTestId('stage').textContent).toBe('preview');
     expect(harness.file!.isLoading).toBe(false);
     // 提示该文件识别完成待确认（i18n 新键），实体列表允许为空（不新造 UI）
-    expect(showToast).toHaveBeenCalledWith('该文件识别已完成，请确认识别结果后开始匿名化', 'info');
+    expect(showToast).toHaveBeenCalledWith('该文件识别已完成，请确认识别结果后开始脱敏', 'info');
   });
 
   it('(g) rerun 前未命中 awaiting_review（真未识别过）：照旧自动重提', async () => {

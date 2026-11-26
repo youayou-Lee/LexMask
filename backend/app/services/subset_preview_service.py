@@ -85,7 +85,7 @@ def _has_selected_regions(
 def _normalize_pages(pages: Sequence[int], page_count: int) -> list[int]:
     """1-based 升序去重；空/越界/负数一律 400（不静默退化全卷）。"""
     if not pages:
-        raise PartialExportError("subset_pages_empty", "至少选择一页后再开始匿名化")
+        raise PartialExportError("subset_pages_empty", "至少选择一页后再开始脱敏")
     normalized = sorted({int(p) for p in pages})
     if normalized[0] < 1 or normalized[-1] > page_count:
         raise PartialExportError(

@@ -2769,7 +2769,7 @@ class VisionService:
                 progress_cb=progress_cb,
                 source_path=delivery_source,
             )
-        raise ValueError(f"不支持的文件类型进行匿名化: {file_type}")
+        raise ValueError(f"不支持的文件类型进行脱敏: {file_type}")
 
     async def _recognition_source(self, file_path: str) -> tuple[str, dict | None]:
         """解析识别用的 PDF 源：开启预处理且本卷命中时返回净化副本。

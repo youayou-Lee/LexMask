@@ -162,7 +162,7 @@ class RedactionReport(BaseModel):
         default_factory=dict,
         description="Detection source distribution: ocr_has, visual_features, manual.",
     )
-    coverage_rate: float = Field(default=0.0, description="匿名化覆盖率（已匿名化/总识别）")
+    coverage_rate: float = Field(default=0.0, description="脱敏覆盖率（已脱敏/总识别）")
     redaction_mode: str = ""
     created_at: str = ""
 

@@ -170,7 +170,7 @@ class Redactor(TextRedactorMixin, ImageRedactorMixin):
             # 先将 .doc 转换为 .docx 再处理
             converted_path = await self._convert_doc_to_docx(file_path)
             if not converted_path or not os.path.exists(converted_path):
-                raise ValueError("DOC 转换失败，无法匿名化")
+                raise ValueError("DOC 转换失败，无法脱敏")
             redacted_count = await self._redact_docx(
                 converted_path, output_path, selected_entities, context
             )
@@ -582,7 +582,7 @@ class Redactor(TextRedactorMixin, ImageRedactorMixin):
         redacted_text = file_info.get("redacted_text")
 
         if not redacted_path or not os.path.exists(redacted_path):
-            raise ValueError("匿名化文件不存在")
+            raise ValueError("脱敏文件不存在")
 
         # 统一转为字符串比较（兼容枚举和字符串）
         ft = str(file_type.value) if hasattr(file_type, 'value') else str(file_type)
@@ -593,7 +593,7 @@ class Redactor(TextRedactorMixin, ImageRedactorMixin):
             logger.warning("output ext %s mismatches file_type %s, returning placeholder compare", out_ext, ft)
             return {
                 "original": file_info.get("content", "[原始文本不可用]"),
-                "redacted": f"[匿名化输出类型不匹配 ({out_ext})，请重新执行匿名化]",
+                "redacted": f"[脱敏输出类型不匹配 ({out_ext})，请重新执行脱敏]",
                 "changes": [],
             }
         is_docx = ft in ("docx", "doc")
@@ -629,7 +629,7 @@ class Redactor(TextRedactorMixin, ImageRedactorMixin):
             redacted_content = self._extract_pdf_text(redacted_path)
         else:
             original_content = "[图片文件，请查看预览]"
-            redacted_content = "[已匿名化图片，请查看预览]"
+            redacted_content = "[已脱敏图片，请查看预览]"
 
         # 计算变更
         changes = self._compute_changes(

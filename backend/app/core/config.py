@@ -173,7 +173,7 @@ class Settings(BaseSettings):
     """应用配置"""
 
     # 应用基础配置
-    APP_NAME: str = "DataShield 匿名化数据基础设施"
+    APP_NAME: str = "DataShield 脱敏数据基础设施"
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = False
     # Session/CSRF cookies carry the Secure flag by default (HTTPS-only). A

@@ -782,7 +782,7 @@ def build_batch_zip(request: BatchDownloadRequest, owner_id: str | None = None) 
     """
     pairs, manifest = collect_batch_zip_entries(request, owner_id)
     if not pairs:
-        raise ValueError("没有可下载的文件（不存在或未匿名化）")
+        raise ValueError("没有可下载的文件（不存在或未脱敏）")
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

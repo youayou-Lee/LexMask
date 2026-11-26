@@ -426,7 +426,7 @@ async def create_batch_export(
     _assert_batch_delivery_ready(request, store, owner_id)
     entries, manifest = _fms.collect_batch_zip_entries(request, owner_id=owner_id)
     if not entries:
-        raise HTTPException(status_code=400, detail="没有可导出的文件（不存在或未匿名化）")
+        raise HTTPException(status_code=400, detail="没有可导出的文件（不存在或未脱敏）")
     estimate = _export.estimate_volumes(entries)
     task = _export.export_task_manager.submit(
         owner_id=owner_id,
@@ -839,7 +839,7 @@ async def download_file(
     下载文件
 
     - redacted=False: 下载原始文件
-    - redacted=True: 下载匿名化后的文件
+    - redacted=True: 下载脱敏后的文件
     """
     snapshot = await _fms.get_file_snapshot(file_id)
     if not snapshot or _fms.file_owner_id(snapshot) != owner_id:
@@ -850,7 +850,7 @@ async def download_file(
         if not file_path:
             raise HTTPException(
                 status_code=400,
-                detail="子集预览尚未生成" if preview else "文件尚未匿名化",
+                detail="子集预览尚未生成" if preview else "文件尚未脱敏",
             )
         prefix = "redacted_preview_" if preview else "redacted_"
         filename = f"{prefix}{snapshot.get('original_filename') or file_id}"
@@ -902,7 +902,7 @@ async def get_page_image(
         if not file_path:
             raise HTTPException(
                 status_code=400,
-                detail="子集预览尚未生成" if preview else "文件尚未匿名化",
+                detail="子集预览尚未生成" if preview else "文件尚未脱敏",
             )
         expected_dir = settings.OUTPUT_DIR
         if preview:

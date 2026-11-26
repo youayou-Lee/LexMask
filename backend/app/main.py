@@ -1,5 +1,5 @@
 """
-匿名化数据基础设施 - FastAPI 应用入口
+脱敏数据基础设施 - FastAPI 应用入口
 """
 from __future__ import annotations
 
@@ -365,7 +365,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="匿名化数据基础设施，支持 Word/PDF/图片等多格式文档的敏感信息自动识别与匿名化处理，基于 GB/T 37964-2019 国家标准",
+    description="脱敏数据基础设施，支持 Word/PDF/图片等多格式文档的敏感信息自动识别与脱敏处理，基于 GB/T 37964-2019 国家标准",
     docs_url="/docs" if settings.DEBUG else None,
     redoc_url="/redoc" if settings.DEBUG else None,
     lifespan=lifespan,
