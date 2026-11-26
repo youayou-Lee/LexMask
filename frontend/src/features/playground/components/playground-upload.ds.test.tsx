@@ -41,7 +41,7 @@ const PENDING_I18N_KEYS: Record<string, string> = {
   'playground.upload.recentResume': '继续复核',
   'playground.upload.recentResult': '查看结果',
   'playground.upload.historyLink': '识别历史',
-  'playground.result.headSub': '匿名化完成 · {count} 个实体已处理 · 共 {pages} 页',
+  'playground.result.headSub': '脱敏完成 · {count} 个实体已处理 · 共 {pages} 页',
 };
 
 const mockHealthState = vi.hoisted(() => ({

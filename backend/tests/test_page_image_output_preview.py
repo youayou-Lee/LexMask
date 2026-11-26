@@ -104,7 +104,7 @@ class TestOutputPageImage:
         }
         resp = client.get(f"/api/v1/files/{file_id}/page-image?page=1&redacted=true")
         assert resp.status_code == 400
-        assert "尚未匿名化" in resp.json()["message"]
+        assert "尚未脱敏" in resp.json()["message"]
 
     def test_redacted_missing_file_404(self):
         _make_pdf(os.path.join(settings.UPLOAD_DIR, "ghost.pdf"), 1)

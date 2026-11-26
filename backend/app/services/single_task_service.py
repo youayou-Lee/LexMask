@@ -41,7 +41,7 @@ _ITEM_STATUS_ZH: dict[str, str] = {
     JobItemStatus.VISION.value: "识别中",
     JobItemStatus.AWAITING_REVIEW.value: "待审核",
     JobItemStatus.REVIEW_APPROVED.value: "已确认",
-    JobItemStatus.REDACTING.value: "匿名化中",
+    JobItemStatus.REDACTING.value: "脱敏中",
     JobItemStatus.COMPLETED.value: "已完成",
     JobItemStatus.FAILED.value: "已失败",
     JobItemStatus.CANCELLED.value: "已取消",
@@ -231,7 +231,7 @@ async def submit_single_redaction(
         # 在 zh 界面会被前端兜底文案「匿名化失败」吞掉，用户无从知道下一步该做什么
         label = _ITEM_STATUS_ZH.get(items[0]["status"], items[0]["status"])
         raise ValueError(
-            f"识别任务当前状态为「{label}」，无法开始匿名化；请刷新页面后重试，"
+            f"识别任务当前状态为「{label}」，无法开始脱敏；请刷新页面后重试，"
             "若任务已取消或已失败，请重新识别"
         )
     async with _submit_lock:

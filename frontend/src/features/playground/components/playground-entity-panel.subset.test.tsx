@@ -2,14 +2,14 @@
 
 // @vitest-environment jsdom
 
-// Issue#327 门⑥ C-1 返工：「先匿名化已处理的 N/M 页」入口在识别在飞时必须可点。
+// Issue#327 门⑥ C-1 返工：「先脱敏已处理的 N/M 页」入口在识别在飞时必须可点。
 //
 // 缺陷实证（评审 C-1）：识别在飞时 isLoading 恒 true，而主按钮的 disabled 是
 // `shownSelectedCount === 0 || isLoading || replaceUnready`——识别中画布本来就没有框
 // （框在审阅提交时才落 file_store），三条全中 ⇒ 子集入口在目标场景里根本不存在。
 //
 // 本文件钉的是**面板内部判定**：子集口径下按钮必须 enabled（哪怕 isLoading=true、
-// 勾选数=0），文案是「先匿名化已处理的 54/86 页」，点击真正回调 onRedact。
+// 勾选数=0），文案是「先脱敏已处理的 54/86 页」，点击真正回调 onRedact。
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -68,7 +68,7 @@ describe('Issue#327：识别在飞时的子集入口（门⑥ C-1）', () => {
 
     const btn = screen.getByTestId('playground-redact-btn') as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
-    expect(btn.textContent).toContain('先匿名化已处理的 54/86 页');
+    expect(btn.textContent).toContain('先脱敏已处理的 54/86 页');
     expect(btn.getAttribute('data-subset')).toBe('true');
 
     fireEvent.click(btn);

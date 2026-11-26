@@ -1410,7 +1410,7 @@ class DicomJobService:
             raise DicomWorkflowError(
                 409,
                 "DICOM_JOB_ACTIVE",
-                "该检查已有执行中的匿名化任务",
+                "该检查已有执行中的脱敏任务",
                 {"job_id": active["id"]},
             )
         return row
@@ -1643,7 +1643,7 @@ class DicomJobService:
             message = (
                 exc.message
                 if isinstance(exc, DicomWorkflowError)
-                else "DICOM匿名化执行失败，请查看服务端日志"
+                else "DICOM脱敏执行失败，请查看服务端日志"
             )
             now = _now()
             with self._connect() as conn:

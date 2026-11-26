@@ -158,7 +158,7 @@ const enBase: Record<string, string> = {
   'playground.subsetPreviewReady':
     'Preview generated for {done}/{total} processed pages; go back to edit and regenerate anytime',
   // Issue#327：识别在飞时的主按钮（子集口径）
-  'playground.subsetAction': 'Anonymize the {done}/{total} processed pages first',
+  'playground.subsetAction': 'Redact the {done}/{total} processed pages first',
   // 结果页常驻提示（验收口径②：让用户看见「本次只含这批页」）
   'playground.subsetBanner':
     'Preview contains only the {done} processed pages (of {total} in the document)',
@@ -166,7 +166,7 @@ const enBase: Record<string, string> = {
   'playground.subsetSnapshotUnavailable':
     'Failed to read the recognition snapshot; nothing was submitted to avoid missed redactions. Please retry.',
   // 子集选页弹窗（2026-11-16）：识别中先匿名化指定页
-  'playground.subsetPickerTitle': 'Choose pages to anonymize',
+  'playground.subsetPickerTitle': 'Choose pages to redact',
   'playground.subsetPickerHint':
     'Only the {done} processed pages can be selected (of {total} in the document).',
   'playground.subsetPickerCount': '{count} / {total} pages selected',
@@ -176,9 +176,9 @@ const enBase: Record<string, string> = {
   // 选页提交前页账已变（识别继续推进）——作废本次选择，让用户重选
   'playground.subsetPagesStale': 'The page ledger changed; please pick the pages again.',
   'playground.subsetPagesUnknown': 'Failed to read the page ledger. Please try again later.',
-  'playground.subsetPagesEmpty': 'Select at least one page to anonymize.',
+  'playground.subsetPagesEmpty': 'Select at least one page to redact.',
   'playground.subsetPickerFinished':
-    'Recognition has finished. Close this dialog and use "Start anonymization" for the whole file.',
+    'Recognition has finished. Close this dialog and use "Start redaction" for the whole file.',
   'playground.title': 'Process One File',
   'playground.recognizing': 'Recognizing...',
   // 识别在飞时的主按钮文案（带上任务进度，避免与右下角进度卡对不上）
@@ -599,7 +599,7 @@ const enBase: Record<string, string> = {
   'system.error.apiKeyCreate': 'Failed to create the API key.',
   'system.error.apiKeyRevoke': 'Failed to revoke the API key.',
 
-  'sidebar.subtitle': 'Legal document anonymization',
+  'sidebar.subtitle': 'Legal document redaction',
 
   'jobDetail.progressTotal': '{n} items total',
   'jobDetail.progressRedacted': '{n} redacted',
@@ -1319,7 +1319,7 @@ const enOverrides: Record<string, string> = {
   // Issue#262 Task 9b: compact page header + summary card (mockup alignment); old
   // kicker/title/desc/standards/configDesc keys removed with the upload-page reskin.
   'playground.upload.pageTitle': 'Single File',
-  'playground.upload.pageSub': 'Run one file first and confirm the anonymization result',
+  'playground.upload.pageSub': 'Run one file first and confirm the redaction result',
   'playground.upload.summaryNote':
     '80+ general types such as medical and financial entities stay on by default. Use "Advanced · fine-tune types" to adjust anytime.',
   'playground.upload.visualOfflineHint':
@@ -2294,7 +2294,7 @@ Object.assign(enOverrides, {
   'playground.upload.recentTitle': 'Recent',
   'playground.upload.recentResume': 'Continue review',
   'playground.upload.recentResult': 'View result',
-  'playground.result.headSub': 'Anonymization complete · {count} entities processed · {pages} pages',
+  'playground.result.headSub': 'Redaction complete · {count} entities processed · {pages} pages',
   'batchWizard.step2.headTitle': 'Upload files',
   'batchWizard.step2.summaryFiles': 'Files',
   'batchWizard.step2.summarySize': 'Total size',

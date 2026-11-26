@@ -508,7 +508,7 @@ async def create_item_subset_preview(
             error_code="subset_preview_item_not_in_flight",
             message=(
                 "当前任务状态不支持子集预览（全卷成品已生成或正在生成）；"
-                "请刷新页面后改用完整匿名化/下载入口"
+                "请刷新页面后改用完整脱敏/下载入口"
             ),
             detail={"status": item.get("status")},
         )
